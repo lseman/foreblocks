@@ -1,3 +1,10 @@
+"""foreblocks.ts_handler.impute.
+
+This module implements the impute pieces for its package.
+It belongs to the time-series preprocessing, filtering, imputation, and analysis area of Foreblocks.
+It exposes classes such as PositionalEncoding, EncoderLayer, SAITS, SaitsDataset.
+"""
+
 import math
 import warnings
 

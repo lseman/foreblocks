@@ -1,3 +1,10 @@
+"""foreblocks.models.transformer.patching.
+
+This module defines patch tokenization and detokenization utilities.
+It belongs to the modular transformer layers and helpers area of Foreblocks.
+It exposes classes such as PatchInfo, PatchTokenizer, PatchDetokenizer.
+"""
+
 import math
 from dataclasses import dataclass
 

@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.head_types.
+
+This module implements the head types pieces for its package.
+It belongs to the forecasting head composition and projection modules area of Foreblocks.
+It exposes classes such as BaseRunState, ParallelNoneState, SerialInvertState, SerialAddState.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

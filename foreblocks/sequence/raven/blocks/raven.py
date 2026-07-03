@@ -1,3 +1,10 @@
+"""foreblocks.sequence.raven.blocks.raven.
+
+This module implements the raven pieces for its package.
+It belongs to the composable neural-network blocks area of Foreblocks.
+It exposes classes such as Raven.
+"""
+
 from __future__ import annotations
 
 import math

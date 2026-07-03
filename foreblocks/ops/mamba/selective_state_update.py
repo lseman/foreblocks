@@ -1,17 +1,17 @@
-"""Triton selective state update kernel for single-token autoregressive decoding.
+"""foreblocks.ops.mamba.selective_state_update.
 
-Ported from mamba-ssm (Tri Dao / Albert Gu). This is the inference kernel that
-updates the SSM state with a single new token and computes the output.
+Fused Triton kernel for Mamba single-token inference (state update + projection).
 
-Key optimizations vs. hand-written PyTorch:
-- Single kernel launch (vs. 5-6 PyTorch ops)
-- Shared memory tiling for B/C over dstate dimension
-- Tuned block sizes per dstate size (4-8 warps)
-- Handles grouped B/C, z-gating, D-skip, dt_bias
+Implements the core inference loop for S6/Mamba models: given a single new token,
+update the SSM state (A_t, B_t, C_t via dt-dependent projections) and produce output.
+Fuses 5-6 separate PyTorch ops into one kernel launch, reducing memory I/O and
+kernel overhead during autoregressive decoding.
 
-Usage:
-    from foreblocks.ops.mamba.selective_state_update import selective_state_update
-    out = selective_state_update(state, x, dt, A, B, C, D, z=..., dt_bias=...)
+Ported from mamba-ssm (Tri Dao, Albert Gu). Handles grouped B/C tensors (for
+MoE or multi-head designs), optional z-gating, and dt_bias injection.
+
+Core API:
+- selective_state_update: fused state update + output computation for inference
 """
 
 from __future__ import annotations

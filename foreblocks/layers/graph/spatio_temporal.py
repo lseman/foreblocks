@@ -1,3 +1,10 @@
+"""foreblocks.layers.graph.spatio_temporal.
+
+This module implements the spatio temporal pieces for its package.
+It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
+It exposes classes such as GraphWaveNetBlock.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

@@ -1,3 +1,10 @@
+"""foreblocks.core.sampling.
+
+This module defines sampling utilities.
+It belongs to the core model, training, evaluation, and sampling infrastructure area of Foreblocks.
+It exposes classes such as ScheduledSampling.
+"""
+
 from collections.abc import Callable
 
 from foreblocks.ui.node_spec import node

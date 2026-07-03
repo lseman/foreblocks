@@ -1,3 +1,10 @@
+"""foreblocks.models.transformer.sype.
+
+This module defines SyPE positional and warping utilities.
+It belongs to the modular transformer layers and helpers area of Foreblocks.
+It exposes classes such as AdaptiveWarp, SyPERotator.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

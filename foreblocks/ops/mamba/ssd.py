@@ -1,3 +1,10 @@
+"""foreblocks.ops.mamba.ssd.
+
+This module implements the ssd pieces for its package.
+It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+It exposes functions such as segment_sum, chunked_ssd_forward_modular, chunked_ssd_forward_triton, chunked_ssd_forward_triton_parallel.
+"""
+
 from __future__ import annotations
 
 import torch

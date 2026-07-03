@@ -1,3 +1,10 @@
+"""foreblocks.sequence.mamba.utils.
+
+This module implements the utils pieces for its package.
+It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+It exposes functions such as auto_dt_rank, inverse_softplus, fused_out_2d, conv_step.
+"""
+
 from __future__ import annotations
 
 import math

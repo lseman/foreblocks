@@ -1,3 +1,10 @@
+"""foreblocks.ts_handler.auto_filter.registry.
+
+This module implements the registry pieces for its package.
+It belongs to the automatic signal filtering and denoising pipelines area of Foreblocks.
+It exposes functions such as register_filter.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable

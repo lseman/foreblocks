@@ -1,3 +1,9 @@
+"""foreblocks.ts_handler.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the time-series preprocessing, filtering, imputation, and analysis area of Foreblocks.
+"""
+
 from importlib import import_module
 
 

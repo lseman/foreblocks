@@ -1,3 +1,10 @@
+"""foreblocks.layers.embeddings.informer_time_embedding.
+
+This module implements the informer time embedding pieces for its package.
+It belongs to the positional, rotary, time, and sequence embedding layers area of Foreblocks.
+It exposes classes such as InformerTimeEmbedding.
+"""
+
 import math
 
 import torch

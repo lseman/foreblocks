@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.cache.paged.
+
+This module implements the paged pieces for its package.
+It belongs to the attention key-value cache implementations area of Foreblocks.
+It exposes classes such as PagedKVCache.
+"""
+
 import torch
 from torch import Tensor
 

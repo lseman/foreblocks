@@ -117,12 +117,13 @@ def split_tvt(
     return X[i_train], y[i_train], X[i_valid], y[i_valid], X[i_test], y[i_test]
 
 
-def _build_hist_cfg() -> Any:
+def _build_hist_cfg(binning_method: str = "adaptive") -> Any:
     hcfg = foreforest.HistogramConfig()
-    hcfg.method = "adaptive"
+    hcfg.method = binning_method
     hcfg.max_bins = 256
     hcfg.use_missing_bin = True
-    hcfg.adaptive_binning = True
+    if binning_method == "adaptive":
+        hcfg.adaptive_binning = True
     hcfg.use_parallel = False
     return hcfg
 
@@ -171,6 +172,7 @@ def _build_forest_cfg(
     cfg.objective = objective
     cfg.n_estimators = 300
     cfg.learning_rate = 0.05
+    cfg.quantile_tau = forest_overrides.get("quantile_tau", 0.5)
     cfg.colsample_bytree = 0.8
     cfg.colsample_bynode = 0.8
     cfg.gbdt_use_subsample = True
@@ -182,7 +184,7 @@ def _build_forest_cfg(
     cfg.dart_drop_rate = 0.10
     cfg.dart_max_drop = 3
     cfg.dart_normalize = True
-    cfg.hist_cfg = _build_hist_cfg()
+    cfg.hist_cfg = _build_hist_cfg(forest_overrides.get("binning_method", "adaptive"))
     cfg.tree_cfg = tree_cfg
     for k, v in forest_overrides.items():
         setattr(cfg, k, v)
@@ -715,6 +717,22 @@ def main() -> None:
     )
     reg_rows.append(
         run_foreforest_regression(
+            "foreforest_cat_gradient",
+            Xr_tr,
+            yr_tr,
+            Xr_va,
+            yr_va,
+            Xr_te,
+            yr_te,
+            tree_overrides={},
+            forest_overrides={
+                "dart_enabled": False,
+                "binning_method": "categorical_gradient",
+            },
+        )
+    )
+    reg_rows.append(
+        run_foreforest_regression(
             "foreforest_sota_oblique",
             Xr_tr,
             yr_tr,
@@ -745,6 +763,23 @@ def main() -> None:
                 "dart_enabled": False,
                 "objective": foreforest.Objective.HuberError,
                 "huber_delta": 1.5,
+            },
+        )
+    )
+    reg_rows.append(
+        run_foreforest_regression(
+            "foreforest_quantile",
+            Xr_tr,
+            yr_tr,
+            Xr_va,
+            yr_va,
+            Xr_te,
+            yr_te,
+            tree_overrides={},
+            forest_overrides={
+                "dart_enabled": False,
+                "objective": foreforest.Objective.QuantileError,
+                "quantile_tau": 0.5,
             },
         )
     )

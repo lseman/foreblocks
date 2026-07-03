@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.variants.base.
+
+This module implements the base pieces for its package.
+It belongs to the attention pattern variants area of Foreblocks.
+It exposes classes such as AttentionImpl.
+"""
+
 from typing import Protocol, runtime_checkable
 
 import torch

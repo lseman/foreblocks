@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.modules.linear_att.deltanet.
+
+This module implements the deltanet pieces for its package.
+It belongs to the linear and gated attention backends area of Foreblocks.
+It exposes classes such as DeltaNetBackend.
+"""
+
 from __future__ import annotations
 
 from math import ceil

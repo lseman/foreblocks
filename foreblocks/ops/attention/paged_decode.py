@@ -1,3 +1,10 @@
+"""foreblocks.ops.attention.paged_decode.
+
+This module implements the paged decode pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes functions such as triton_paged_decode.
+"""
+
 import torch
 
 

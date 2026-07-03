@@ -1,3 +1,10 @@
+"""foreblocks.sequence.raven.configuration.
+
+This module defines configuration objects and defaults.
+It belongs to the Raven sequence-model integration helpers area of Foreblocks.
+It exposes classes such as RavenConfig.
+"""
+
 from __future__ import annotations
 
 import warnings

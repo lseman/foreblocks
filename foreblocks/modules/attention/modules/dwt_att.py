@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.modules.dwt_att.
+
+This module implements the dwt att pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as DWTAttention.
+"""
+
 import math
 
 import torch

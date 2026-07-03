@@ -1,3 +1,19 @@
+"""foreblocks.models.transformer.mhc.
+
+Multi-stream information routing via learned, manifold-constrained gating.
+
+MHC (Manifold Hyper-Connection) enables transformer blocks to maintain and
+intelligently mix multiple parallel representation streams, routing information
+across streams based on learned pre-aggregation, post-write, and residual gates
+that satisfy doubly-stochastic constraints. Designed for models that separate
+concerns into distinct streams (e.g., temporal trend, seasonality, anomaly).
+
+Core API:
+- MHCHyperConnection: learnable stream routing module
+- mhc_init_streams, mhc_collapse_streams: stream lifecycle helpers
+- sinkhorn_doubly_stochastic: differentiable matrix projection
+"""
+
 import torch
 import torch.nn as nn
 

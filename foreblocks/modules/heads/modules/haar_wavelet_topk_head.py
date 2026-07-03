@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.haar_wavelet_topk_head.
+
+This module implements the haar wavelet topk head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as HaarWaveletTopK, HaarWaveletTopKHead.
+"""
+
 from __future__ import annotations
 
 import math

@@ -1,3 +1,10 @@
+"""foreblocks.third_party.flash_softpick_attn.
+
+This module implements the flash softpick attn pieces for its package.
+It belongs to the Foreblocks package functionality area of Foreblocks.
+It exposes classes such as ParallelSoftpickAttentionFunction.
+"""
+
 # Adapted from the flash-linear-attention repository
 # This is only for reference purpose, I do not recommend using this code outside of the FLA and Flame repositories because of the missing dependencies
 

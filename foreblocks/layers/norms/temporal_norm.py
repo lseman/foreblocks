@@ -1,3 +1,10 @@
+"""foreblocks.layers.norms.temporal_norm.
+
+This module implements the temporal norm pieces for its package.
+It belongs to the normalization layers and normalization helpers area of Foreblocks.
+It exposes classes such as TemporalNorm.
+"""
+
 import torch
 import torch.nn as nn
 

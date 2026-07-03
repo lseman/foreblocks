@@ -1,3 +1,10 @@
+"""foreblocks.experimental.attention_kernels.custom_att.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
+It exposes classes such as CustomAttFunction, CustomAttDropoutFunction, RMSNorm, FlashAttnRMSNorm.
+"""
+
 import math
 import os
 

@@ -1,3 +1,9 @@
+"""foreblocks.ops.mamba.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+"""
+
 from foreblocks.ops.mamba.causal_conv1d import (
     CAUSAL_CONV1D_TRITON_AVAILABLE,
     causal_depthwise_conv1d,

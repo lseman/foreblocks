@@ -1,4 +1,11 @@
 # -*- coding: utf-8 -*-
+"""foreblocks.models.transformer.tf_base.
+
+This module implements the tf base pieces for its package.
+It belongs to the modular transformer layers and helpers area of Foreblocks.
+It exposes classes such as NormWrapper, ResidualRunCfg, ResidualBlockMixin, MHCBlockMixin.
+"""
+
 # Transformer with Toggleable GateSkip + Hybrid Attention (+ PatchTST-style OPTIONAL patching)
 # Adds: Kimi linear attention as a selectable option:
 #   attention_mode in {"standard","linear","hybrid","kimi","hybrid_kimi","kimi_3to1"}
@@ -62,6 +69,7 @@ from foreblocks.modules.skip.gateskip import (
     apply_skip_to_kv,
 )
 from foreblocks.modules.skip.mod import (
+    LayerDropoutSchedule,
     MoDBudgetScheduler,
     MoDRouter,
     mod_capacity,
@@ -954,6 +962,7 @@ class BaseTransformer(nn.Module, ABC):
         use_attention_residual: bool = False,
         attn_residual_type: str = "full",
         attention_residual_block_size: int = 8,
+        layer_dropout_schedule: Optional["LayerDropoutSchedule"] = None,
         **kwargs,
     ):
         super().__init__()
@@ -1011,6 +1020,9 @@ class BaseTransformer(nn.Module, ABC):
         self.mod_mode = str(mod_mode)
         self.mod_lambda = float(mod_lambda)
         self.mod_budget_scheduler = mod_budget_scheduler
+
+        # Per-layer dropout schedule
+        self.layer_dropout_schedule = layer_dropout_schedule
 
         # Modules
         self.patcher = PatchTokenizer(
@@ -1080,11 +1092,17 @@ class BaseTransformer(nn.Module, ABC):
             self.layers = nn.ModuleList()
             for i in range(num_layers):
                 layer_attn_type = self._get_layer_attention_type(i)
+                # Per-layer dropout: use the schedule if available, else flat dropout
+                layer_dropout = (
+                    self.layer_dropout_schedule.get_dropout(i)
+                    if self.layer_dropout_schedule
+                    else dropout
+                )
                 layer_kwargs = self._build_layer_kwargs(
                     d_model,
                     nhead,
                     dim_feedforward,
-                    dropout,
+                    layer_dropout,
                     activation,
                     att_type,
                     norm_strategy,
@@ -1133,6 +1151,7 @@ class BaseTransformer(nn.Module, ABC):
 
         self.register_buffer("aux_loss", torch.tensor(0.0), persistent=False)
         self.register_buffer("mod_aux_loss", torch.tensor(0.0), persistent=False)
+        self._materialize_configured_attention_backends()
         self.apply(self._init_weights)
         self._print_init_summary(
             att_type=att_type,
@@ -1501,6 +1520,35 @@ class BaseTransformer(nn.Module, ABC):
             layer.set_layer_attention_type(self._get_layer_attention_type(layer_idx))
         return layer
 
+    def _configured_attention_types(self) -> List[str]:
+        return sorted(
+            {self._get_layer_attention_type(i) for i in range(self.num_layers)}
+        )
+
+    def _materialize_configured_attention_backends(self) -> None:
+        """
+        Build the attention modules required by this model's routing schedule.
+
+        Encoder/decoder layers instantiate their currently selected backend at
+        construction time. Full models also call this hook so shared-layer
+        schedules can materialize every backend they will route through. A
+        parameter created during the first forward would otherwise be invisible
+        to the optimizer and omitted from checkpoints created before warmup.
+        """
+        if self.shared_layer is not None:
+            layer = self.shared_layer
+            materialize = getattr(layer, "materialize_attention_type", None)
+            if callable(materialize):
+                for attn_type in self._configured_attention_types():
+                    materialize(attn_type)
+            return
+
+        for i in range(self.num_layers):
+            layer = self._get_layer(i)
+            materialize = getattr(layer, "materialize_attention_type", None)
+            if callable(materialize):
+                materialize(self._get_layer_attention_type(i))
+
     def _get_layer_keep_rate(self, layer_idx: int) -> float:
         if self.mod_budget_scheduler is None:
             return 1.0
@@ -1559,4 +1607,18 @@ __all__ = [
     "MHCBlockMixin",
     "BaseTransformerLayer",
     "BaseTransformer",
+    "TransformerEncoder",
+    "TransformerDecoder",
 ]
+
+
+def __getattr__(name: str):
+    if name == "TransformerEncoder":
+        from foreblocks.models.transformer.tf_encoder import TransformerEncoder
+
+        return TransformerEncoder
+    if name == "TransformerDecoder":
+        from foreblocks.models.transformer.tf_decoder import TransformerDecoder
+
+        return TransformerDecoder
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

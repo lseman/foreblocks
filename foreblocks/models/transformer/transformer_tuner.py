@@ -1,3 +1,10 @@
+"""foreblocks.models.transformer.transformer_tuner.
+
+This module implements the transformer tuner pieces for its package.
+It belongs to the modular transformer layers and helpers area of Foreblocks.
+It exposes classes such as TunerConfig, SpectralPeak, ScaleBandShare, DecompositionRecommendation.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterable

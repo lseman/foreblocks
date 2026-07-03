@@ -27,7 +27,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -139,6 +139,71 @@ def _dur_seconds(start_iso: str | None, end_iso: str | None) -> int | None:
         return None
 
 
+def _run_duration_sql() -> str:
+    return (
+        "strftime('%s', COALESCE(end_time, datetime('now'))) - "
+        "strftime('%s', start_time)"
+    )
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        x = float(value)
+    except (TypeError, ValueError):
+        return None
+    if x != x:
+        return None
+    return x
+
+
+def _metric_lower_is_better(metric_key: str) -> bool:
+    key = metric_key.lower()
+    return any(
+        token in key
+        for token in (
+            "loss",
+            "error",
+            "rmse",
+            "mae",
+            "mse",
+            "mape",
+            "nll",
+            "perplexity",
+            "wer",
+            "cer",
+        )
+    )
+
+
+def _pick_primary_metric(metric_rows: list[dict[str, Any]]) -> str | None:
+    if not metric_rows:
+        return None
+    preference = [
+        "val_loss",
+        "valid_loss",
+        "loss",
+        "val_rmse",
+        "rmse",
+        "val_mae",
+        "mae",
+        "mse",
+        "accuracy",
+        "acc",
+        "f1",
+        "auc",
+    ]
+
+    def rank(row: dict[str, Any]) -> tuple[int, int, str]:
+        key = str(row["key"])
+        try:
+            pref = preference.index(key.lower())
+        except ValueError:
+            pref = 999
+        return (-int(row.get("run_count") or 0), pref, key)
+
+    return sorted(metric_rows, key=rank)[0]["key"]
+
+
 # -----------------------------------------------------------------------------
 # Models
 # -----------------------------------------------------------------------------
@@ -198,7 +263,259 @@ async def health_check(tracker: MLTracker = Depends(get_tracker)):
     return {
         "status": "healthy" if ok else "degraded",
         "tracker_path": str(tracker.tracking_uri),
+        "sqlite_path": str(tracker.db_path),
         "artifacts_path": str(tracker.artifacts_path),
+    }
+
+
+@app.get("/api/overview")
+async def get_overview(
+    experiment_name: str | None = None,
+    metric_key: str | None = None,
+    objective: str = Query("auto", pattern="^(auto|min|max)$"),
+    tracker: MLTracker = Depends(get_tracker),
+):
+    """
+    Return a W&B-style project overview directly from the SQLite store.
+
+    This endpoint is intentionally aggregate-heavy and full-run-light: the UI
+    can render metric catalogs, health summaries, recent activity, and best-run
+    cards without fetching every run and recomputing the same summaries.
+    """
+    where = ["1=1"]
+    params: list[Any] = []
+    experiment: dict[str, Any] | None = None
+
+    if experiment_name:
+        exp_id = tracker.get_experiment(experiment_name)
+        if exp_id is None:
+            return {
+                "experiment": None,
+                "totals": {
+                    "runs": 0,
+                    "finished": 0,
+                    "running": 0,
+                    "failed": 0,
+                    "canceled": 0,
+                    "success_rate": 0.0,
+                    "avg_duration": None,
+                    "recent_24h": 0,
+                },
+                "status_counts": {},
+                "metric_catalog": [],
+                "param_catalog": [],
+                "primary_metric": None,
+                "best_run": None,
+                "recent_runs": [],
+            }
+        where.append("r.experiment_id = ?")
+        params.append(exp_id)
+        experiment = {"experiment_id": exp_id, "name": experiment_name}
+
+    where_sql = " AND ".join(where)
+    duration_sql = _run_duration_sql()
+
+    with tracker._get_db() as conn:
+        totals = conn.execute(
+            f"""
+            SELECT
+                COUNT(*) AS runs,
+                SUM(CASE WHEN status = 'FINISHED' THEN 1 ELSE 0 END) AS finished,
+                SUM(CASE WHEN status = 'RUNNING' THEN 1 ELSE 0 END) AS running,
+                SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed,
+                SUM(CASE WHEN status = 'CANCELED' THEN 1 ELSE 0 END) AS canceled,
+                AVG(CASE WHEN end_time IS NOT NULL THEN {duration_sql} END) AS avg_duration,
+                SUM(CASE WHEN start_time >= datetime('now', '-1 day') THEN 1 ELSE 0 END) AS recent_24h
+            FROM runs r
+            WHERE {where_sql}
+            """,
+            params,
+        ).fetchone()
+
+        status_rows = conn.execute(
+            f"""
+            SELECT status, COUNT(*) AS count
+            FROM runs r
+            WHERE {where_sql}
+            GROUP BY status
+            ORDER BY count DESC
+            """,
+            params,
+        ).fetchall()
+
+        metric_rows_raw = conn.execute(
+            f"""
+            SELECT
+                m.key,
+                COUNT(*) AS point_count,
+                COUNT(DISTINCT m.run_id) AS run_count,
+                MIN(m.value) AS min,
+                MAX(m.value) AS max,
+                AVG(m.value) AS mean,
+                MAX(m.step) AS max_step
+            FROM metrics m
+            JOIN runs r ON r.run_id = m.run_id
+            WHERE {where_sql}
+            GROUP BY m.key
+            ORDER BY run_count DESC, point_count DESC, m.key ASC
+            """,
+            params,
+        ).fetchall()
+
+        param_rows = conn.execute(
+            f"""
+            SELECT p.key, p.value
+            FROM params p
+            JOIN runs r ON r.run_id = p.run_id
+            WHERE {where_sql}
+            """,
+            params,
+        ).fetchall()
+
+        recent_rows = conn.execute(
+            f"""
+            SELECT r.run_id, r.name, r.status, r.start_time, r.end_time,
+                   e.name AS experiment_name,
+                   {duration_sql} AS duration
+            FROM runs r
+            JOIN experiments e ON e.experiment_id = r.experiment_id
+            WHERE {where_sql}
+            ORDER BY r.start_time DESC
+            LIMIT 12
+            """,
+            params,
+        ).fetchall()
+
+        metric_catalog = [
+            {
+                "key": row["key"],
+                "point_count": int(row["point_count"] or 0),
+                "run_count": int(row["run_count"] or 0),
+                "min": row["min"],
+                "max": row["max"],
+                "mean": row["mean"],
+                "max_step": int(row["max_step"] or 0),
+            }
+            for row in metric_rows_raw
+        ]
+
+        primary_metric = metric_key or _pick_primary_metric(metric_catalog)
+        best_run = None
+        if primary_metric:
+            direction = (
+                "min"
+                if objective == "auto" and _metric_lower_is_better(primary_metric)
+                else "max"
+                if objective == "auto"
+                else objective
+            )
+            order = "ASC" if direction == "min" else "DESC"
+            best_row = conn.execute(
+                f"""
+                WITH latest AS (
+                    SELECT m.run_id, m.key, m.value, m.step,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY m.run_id, m.key
+                               ORDER BY m.step DESC, m.timestamp DESC
+                           ) AS rn
+                    FROM metrics m
+                    JOIN runs r ON r.run_id = m.run_id
+                    WHERE {where_sql} AND m.key = ?
+                )
+                SELECT r.run_id, r.name, r.status, r.start_time, r.end_time,
+                       latest.value, latest.step
+                FROM latest
+                JOIN runs r ON r.run_id = latest.run_id
+                WHERE latest.rn = 1
+                ORDER BY latest.value {order}
+                LIMIT 1
+                """,
+                params + [primary_metric],
+            ).fetchone()
+            if best_row is not None:
+                best_run = {
+                    "run_id": best_row["run_id"],
+                    "name": best_row["name"],
+                    "status": best_row["status"],
+                    "start_time": best_row["start_time"],
+                    "end_time": best_row["end_time"],
+                    "metric_key": primary_metric,
+                    "metric_value": best_row["value"],
+                    "metric_step": best_row["step"],
+                    "objective": direction,
+                    "duration": _dur_seconds(best_row["start_time"], best_row["end_time"]),
+                }
+
+    param_stats: dict[str, dict[str, Any]] = {}
+    for row in param_rows:
+        key = row["key"]
+        stat = param_stats.setdefault(
+            key,
+            {
+                "key": key,
+                "run_count": 0,
+                "numeric_count": 0,
+                "distinct_count": 0,
+                "examples": [],
+                "_values": set(),
+                "_numeric": [],
+            },
+        )
+        value = row["value"]
+        stat["run_count"] += 1
+        stat["_values"].add(value)
+        if len(stat["examples"]) < 4 and value not in stat["examples"]:
+            stat["examples"].append(value)
+        numeric = _coerce_float(value)
+        if numeric is not None:
+            stat["numeric_count"] += 1
+            stat["_numeric"].append(numeric)
+
+    param_catalog = []
+    for stat in param_stats.values():
+        numeric_values = stat.pop("_numeric")
+        values = stat.pop("_values")
+        stat["distinct_count"] = len(values)
+        if numeric_values:
+            stat["min"] = min(numeric_values)
+            stat["max"] = max(numeric_values)
+            stat["mean"] = sum(numeric_values) / len(numeric_values)
+        else:
+            stat["min"] = stat["max"] = stat["mean"] = None
+        param_catalog.append(stat)
+    param_catalog.sort(key=lambda x: (-int(x["run_count"]), x["key"]))
+
+    run_count = int(totals["runs"] or 0)
+    finished = int(totals["finished"] or 0)
+    return {
+        "experiment": experiment,
+        "totals": {
+            "runs": run_count,
+            "finished": finished,
+            "running": int(totals["running"] or 0),
+            "failed": int(totals["failed"] or 0),
+            "canceled": int(totals["canceled"] or 0),
+            "success_rate": (finished / run_count * 100.0) if run_count else 0.0,
+            "avg_duration": int(totals["avg_duration"]) if totals["avg_duration"] else None,
+            "recent_24h": int(totals["recent_24h"] or 0),
+        },
+        "status_counts": {row["status"]: int(row["count"] or 0) for row in status_rows},
+        "metric_catalog": metric_catalog,
+        "param_catalog": param_catalog[:200],
+        "primary_metric": primary_metric,
+        "best_run": best_run,
+        "recent_runs": [
+            {
+                "run_id": row["run_id"],
+                "name": row["name"],
+                "status": row["status"],
+                "start_time": row["start_time"],
+                "end_time": row["end_time"],
+                "experiment_name": row["experiment_name"],
+                "duration": int(row["duration"]) if row["duration"] is not None else None,
+            }
+            for row in recent_rows
+        ],
     }
 
 
@@ -562,38 +879,6 @@ async def compare_runs(
             "metric_keys": sorted(all_metrics),
             "param_keys": sorted(all_params),
         }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/api/runs/{run_id}")
-async def delete_run(run_id: str, tracker: MLTracker = Depends(get_tracker)):
-    """
-    Permanently deletes a run:
-      - rows in metrics/params/tags/artifacts/runs
-      - artifacts directory on disk
-    """
-    try:
-        # remove artifacts on disk
-        art_dir = tracker.artifacts_path / run_id
-        if art_dir.exists():
-            shutil.rmtree(art_dir, ignore_errors=True)
-
-        # delete rows
-        with tracker._get_db() as conn:
-            conn.execute("DELETE FROM metrics WHERE run_id = ?", (run_id,))
-            conn.execute("DELETE FROM params WHERE run_id = ?", (run_id,))
-            conn.execute("DELETE FROM tags WHERE run_id = ?", (run_id,))
-            conn.execute("DELETE FROM artifacts WHERE run_id = ?", (run_id,))
-            deleted = conn.execute(
-                "DELETE FROM runs WHERE run_id = ?", (run_id,)
-            ).rowcount
-
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Run not found")
-        return JSONResponse({"success": True, "run_id": run_id})
     except HTTPException:
         raise
     except Exception as e:

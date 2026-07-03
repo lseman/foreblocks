@@ -1,3 +1,10 @@
+"""foreblocks.models.transformer.tf_encoder.
+
+This module implements the tf encoder pieces for its package.
+It belongs to the modular transformer layers and helpers area of Foreblocks.
+It exposes classes such as TransformerEncoderLayer, TransformerEncoder.
+"""
+
 from __future__ import annotations
 
 import math
@@ -200,9 +207,21 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             if self.attention_residual_mode == "block"
             else AttentionResidual(d_model)
         )
+        self.materialize_attention_type()
 
     def set_layer_attention_type(self, layer_attention_type: str) -> None:
         self.layer_attention_type = str(layer_attention_type)
+
+    def materialize_attention_type(
+        self, layer_attention_type: str | None = None
+    ) -> nn.Module:
+        previous = self.layer_attention_type
+        if layer_attention_type is not None:
+            self.layer_attention_type = str(layer_attention_type)
+        try:
+            return self._self_attn()
+        finally:
+            self.layer_attention_type = previous
 
     # ── Lazy attention factories ──────────────────────────────────────
     # Each module is instantiated at most once, on first access.

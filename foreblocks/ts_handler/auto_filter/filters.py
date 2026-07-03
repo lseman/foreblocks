@@ -1,3 +1,10 @@
+"""foreblocks.ts_handler.auto_filter.filters.
+
+This module implements the filters pieces for its package.
+It belongs to the automatic signal filtering and denoising pipelines area of Foreblocks.
+It exposes functions such as moving_average, gaussian_filter, savgol_filter, butter_lowpass.
+"""
+
 from __future__ import annotations
 
 import sys

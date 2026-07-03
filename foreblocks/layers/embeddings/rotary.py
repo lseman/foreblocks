@@ -1,3 +1,10 @@
+"""foreblocks.layers.embeddings.rotary.
+
+This module implements the rotary pieces for its package.
+It belongs to the positional, rotary, time, and sequence embedding layers area of Foreblocks.
+It exposes classes such as ApplyRotaryEmb, ApplyRotaryEmbQKV_, ApplyRotaryEmbKV_, RotaryEmbedding.
+"""
+
 # Copyright (c) 2025, Tri Dao
 # Optimized version with improved performance (batched + cu_seqlens support)
 

@@ -1,3 +1,10 @@
+"""foreblocks.ops.attention.fla_linear_attention.
+
+This module implements the fla linear attention pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes functions such as can_use_fla_linear_attn, fla_recurrent_linear_attn_forward.
+"""
+
 import os
 
 import torch

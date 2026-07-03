@@ -1,3 +1,10 @@
+"""foreblocks.sequence.forecast_blocks.
+
+This module implements the forecast blocks pieces for its package.
+It belongs to the Foreblocks package functionality area of Foreblocks.
+It exposes classes such as Mamba2ModelBlock, Mamba3ModelBlock, HybridMambaModelBlock, RavenModelBlock.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable

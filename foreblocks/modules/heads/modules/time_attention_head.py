@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.time_attention_head.
+
+This module implements the time attention head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as TimeAttention, TimeAttentionHead.
+"""
+
 from __future__ import annotations
 
 import torch

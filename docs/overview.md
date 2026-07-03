@@ -34,11 +34,14 @@ The docs are organized to make that split explicit while still showing how the p
 | Goal | Best starting page |
 | --- | --- |
 | Run a first end-to-end training loop | [Getting Started](getting-started) |
+| Quick config reference | [Cheat Sheet](cheatsheet) |
+| Upgrade for SOTA features (LLRD, dropout schedule) | [Upgrade Guide](upgrade-guide) |
 | Start from raw multivariate series | [Preprocessor Guide](preprocessor) |
 | Understand stable top-level imports | [Public API](reference/public-api) |
 | Customize model blocks or training internals | [Custom Blocks Guide](custom_blocks) |
-| Work with transformer backbones | [Transformer Guide](transformer) |
-| Enable expert routing | [MoE Guide](moe) |
+| Work with transformer backbones | [Transformer Guide](transformer) → [Advanced](transformer-advanced) |
+| Enable expert routing | [MoE Guide](moe) → [Advanced](moe-advanced) |
+| Production tuning and optimization | [Advanced Transformer](transformer-advanced) & [Advanced MoE](moe-advanced) |
 | Run neural architecture search | [DARTS Guide](darts) |
 | Generate synthetic time series | [Time Series Generator](foretools/tsgen) |
 | Run budgeted hyperparameter search | [BOHB Search](foretools/bohb) |

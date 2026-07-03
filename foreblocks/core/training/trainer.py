@@ -200,19 +200,40 @@ class Trainer:
             print(
                 f"[NAS] Training with NAS. Found {len(_alpha_params)} architecture parameters."
             )
-            self.optimizer = optimizer or torch.optim.AdamW(
-                _weight_params,
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay,
-            )
+            # LLRD only applies to weight params, not alpha params
+            if getattr(self.config, "use_llrd", False):
+                from foreblocks.core.training.llrd import get_llrd_param_groups
+                param_groups = get_llrd_param_groups(
+                    self.model,
+                    base_lr=self.config.learning_rate,
+                    weight_decay=self.config.weight_decay,
+                    decay=getattr(self.config, "llrd_decay", 0.9),
+                )
+                # Filter to only include NAS weight params
+                weight_param_ids = {id(p) for p in _weight_params}
+                param_groups = [
+                    {**g, "params": [p for p in g["params"] if id(p) in weight_param_ids]}
+                    for g in param_groups
+                ]
+                param_groups = [g for g in param_groups if g["params"]]
+            else:
+                param_groups = _weight_params
+            self.optimizer = optimizer or torch.optim.AdamW(param_groups)
         else:
             self._alpha_params: list[torch.nn.Parameter] = []
             self._weight_params = list(self.model.parameters())
-            self.optimizer = optimizer or torch.optim.AdamW(
-                self.model.parameters(),
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay,
-            )
+            # LLRD: build param groups by layer depth
+            if getattr(self.config, "use_llrd", False):
+                from foreblocks.core.training.llrd import get_llrd_param_groups
+                param_groups = get_llrd_param_groups(
+                    self.model,
+                    base_lr=self.config.learning_rate,
+                    weight_decay=self.config.weight_decay,
+                    decay=getattr(self.config, "llrd_decay", 0.9),
+                )
+            else:
+                param_groups = self.model.parameters()
+            self.optimizer = optimizer or torch.optim.AdamW(param_groups)
 
         # ── Scheduler ──────────────────────────────────────────────────
         self.scheduler = self._create_scheduler()
@@ -361,6 +382,30 @@ class Trainer:
                 T_max=max(1, getattr(self.config, "num_epochs", 100)),
                 eta_min=getattr(self.config, "min_lr", 1e-6),
             )
+        if stype == "warmup_cosine":
+            from foreblocks.core.training.llrd import WarmupCosineLR
+            # Compute warmup_steps: either explicit or from ratio
+            warmup_steps = getattr(self.config, "warmup_steps", 0)
+            if warmup_steps == 0:
+                warmup_ratio = getattr(self.config, "warmup_ratio", 0.0)
+                steps_per_epoch = getattr(self.config, "steps_per_epoch", None)
+                num_epochs = getattr(self.config, "num_epochs", 100)
+                if warmup_ratio > 0 and steps_per_epoch:
+                    warmup_steps = int(warmup_ratio * num_epochs * steps_per_epoch)
+            # Total steps for cosine annealing
+            steps_per_epoch = getattr(self.config, "steps_per_epoch", None)
+            num_epochs = getattr(self.config, "num_epochs", 100)
+            if steps_per_epoch:
+                total_steps = num_epochs * steps_per_epoch
+            else:
+                # Fallback: treat num_epochs as total steps (documented limitation)
+                total_steps = num_epochs
+            return WarmupCosineLR(
+                self.optimizer,
+                warmup_steps=warmup_steps,
+                total_steps=total_steps,
+                min_lr_ratio=getattr(self.config, "min_lr", 1e-6) / getattr(self.config, "learning_rate", 1e-3),
+            )
         return None
 
     # ── Training infrastructure helpers ────────────────────────────────
@@ -374,8 +419,16 @@ class Trainer:
             yield
 
     def _step_scheduler(self, train_loss: float, val_loss: float | None = None) -> None:
-        """Step scheduler using the correct API for metric-aware schedulers."""
+        """Step scheduler using the correct API for metric-aware schedulers.
+
+        Note: WarmupCosineLR is a step-level scheduler (stepped after each optimizer step),
+        not epoch-level, so it is NOT stepped here.
+        """
         if self.scheduler is None:
+            return
+        # WarmupCosineLR is stepped per-optimizer-step, not per-epoch
+        from foreblocks.core.training.llrd import WarmupCosineLR
+        if isinstance(self.scheduler, WarmupCosineLR):
             return
         metric = val_loss if val_loss is not None else train_loss
         if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -423,6 +476,9 @@ class Trainer:
         Returns ``(total_loss, avg_components)``.
         """
         _global_step = {"step": self.global_step}
+        # Pass step-level scheduler (only WarmupCosineLR for now)
+        from foreblocks.core.training.llrd import WarmupCosineLR
+        step_scheduler = self.scheduler if isinstance(self.scheduler, WarmupCosineLR) else None
         train_loss, components, batches = training_loop.train_epoch(
             model=self.model,
             train_loader=train_loader,
@@ -440,6 +496,7 @@ class Trainer:
             forward_pass_fn=training_loop.forward_pass,
             backward_step_fn=training_loop.backward_step,
             device=self.device,
+            scheduler=step_scheduler,
         )
         self.global_step = _global_step["step"]
         return train_loss, components
@@ -495,6 +552,9 @@ class Trainer:
                             cb.on_epoch_begin(self, epoch)
 
                     _global_step = {"step": self.global_step}
+                    # Pass step-level scheduler (only WarmupCosineLR for now)
+                    from foreblocks.core.training.llrd import WarmupCosineLR
+                    step_scheduler = self.scheduler if isinstance(self.scheduler, WarmupCosineLR) else None
                     train_loss, components, batches = training_loop.train_epoch(
                         model=self.model,
                         train_loader=train_loader,
@@ -511,6 +571,7 @@ class Trainer:
                         forward_pass_fn=training_loop.forward_pass,
                         backward_step_fn=training_loop.backward_step,
                         device=self.device,
+                        scheduler=step_scheduler,
                     )
                     self.global_step = _global_step["step"]
 

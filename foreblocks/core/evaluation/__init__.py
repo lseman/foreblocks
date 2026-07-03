@@ -1,3 +1,9 @@
+"""foreblocks.core.evaluation.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the evaluation and benchmarking helpers area of Foreblocks.
+"""
+
 from importlib import import_module
 
 

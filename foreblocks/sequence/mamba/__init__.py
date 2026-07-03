@@ -1,3 +1,10 @@
+"""foreblocks.sequence.mamba.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+It exposes classes such as SlidingWindowAttention, HybridMamba2Block, RotaryEmbedding.
+"""
+
 from foreblocks.ops.mamba import (  # rotary_apply, rotary_apply_fallback stubs below
     CAUSAL_CONV1D_TRITON_AVAILABLE,
     CHUNKED_SSD_TRITON_AVAILABLE,

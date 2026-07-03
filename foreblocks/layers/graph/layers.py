@@ -1,3 +1,10 @@
+"""foreblocks.layers.graph.layers.
+
+This module implements the layers pieces for its package.
+It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
+It exposes classes such as CachedNorm, MessagePassing, GraphConvBase, GCNConv.
+"""
+
 from __future__ import annotations
 
 import math

@@ -30,6 +30,18 @@ class FeatureConfig:
     use_loo: bool = False
     use_woe: bool = False
     use_autoencoder: bool = False
+    # Autoencoder settings
+    ae_latent_dim: int = 8
+    ae_encoder_arch: str = "64,32"  # comma-separated
+    ae_decoder_arch: str = "32,64"  # comma-separated
+    ae_activation: str = "relu"
+    ae_dropout: float = 0.1
+    ae_learning_rate: float = 1e-3
+    ae_batch_size: int = 64
+    ae_epochs: int = 50
+    ae_patience: int = 10
+    ae_max_features: int = 100
+    ae_min_features: int = 4
 
     # Global thresholds
     rare_threshold: float = 0.01

@@ -1,3 +1,9 @@
+"""foreblocks.sequence.raven.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the Raven sequence-model integration helpers area of Foreblocks.
+"""
+
 from foreblocks.ops.raven import (
     ACT2FN,
     Attention,

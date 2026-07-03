@@ -1,3 +1,10 @@
+"""foreblocks.layers.graph.norms.
+
+This module implements the norms pieces for its package.
+It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
+It exposes classes such as GraphNorm.
+"""
+
 from __future__ import annotations
 
 from typing import Literal

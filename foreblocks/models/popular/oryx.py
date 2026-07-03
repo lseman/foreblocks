@@ -1,3 +1,10 @@
+"""foreblocks.models.popular.oryx.
+
+This module implements the oryx pieces for its package.
+It belongs to the implementations of widely used forecasting architectures area of Foreblocks.
+It exposes classes such as OryxMixerBlock, OryxLayer, OryxTransformer.
+"""
+
 from __future__ import annotations
 
 import torch

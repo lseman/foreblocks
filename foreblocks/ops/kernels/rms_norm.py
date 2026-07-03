@@ -1,3 +1,10 @@
+"""foreblocks.ops.kernels.rms_norm.
+
+This module implements the rms norm pieces for its package.
+It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
+It exposes classes such as RMSNormTritonFunction, FusedAddRMSNormFunction.
+"""
+
 # rms_norm.py
 # -----------------------------------------------------------------------------
 # Triton kernels and autograd functions for RMS Normalization, fused

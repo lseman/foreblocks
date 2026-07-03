@@ -1,3 +1,9 @@
+"""foreblocks.modules.attention.utils.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+"""
+
 from foreblocks.modules.attention.utils.compaction import (
     AttentionMatchingCompactor,
     AttentionMatchingConfig,

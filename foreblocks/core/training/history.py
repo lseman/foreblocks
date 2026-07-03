@@ -1,3 +1,10 @@
+"""foreblocks.core.training.history.
+
+This module implements the history pieces for its package.
+It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
+It exposes classes such as TrainingHistory.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

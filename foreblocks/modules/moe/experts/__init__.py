@@ -1,3 +1,9 @@
+"""foreblocks.modules.moe.experts.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
+"""
+
 from foreblocks.modules.moe.experts import dispatchers, moe, moe_logging, routers
 from foreblocks.modules.moe.experts.dispatchers import (
     DroplessPackedDispatcher,

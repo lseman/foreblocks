@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.modules.linear_att.base.
+
+This module implements the base pieces for its package.
+It belongs to the linear and gated attention backends area of Foreblocks.
+It exposes classes such as RoPEMixin, FeatureMapRegistry.
+"""
+
 from __future__ import annotations
 
 from typing import Optional

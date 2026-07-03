@@ -1,3 +1,10 @@
+"""foreblocks.ops.attention.fla_gated_delta_rule.
+
+This module implements the fla gated delta rule pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes functions such as can_use_fla_gated_delta_rule, fla_gated_delta_rule_forward.
+"""
+
 import os
 
 import torch

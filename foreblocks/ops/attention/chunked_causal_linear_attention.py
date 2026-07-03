@@ -1,3 +1,10 @@
+"""foreblocks.ops.attention.chunked_causal_linear_attention.
+
+This module implements the chunked causal linear attention pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes functions such as can_use_fused_recurrent_linear_attn, fused_recurrent_causal_linear_attn, chunked_causal_linear_attn.
+"""
+
 # chunked_causal_linear_attention.py
 # -----------------------------------------------------------------------------
 # Chunk-parallel causal linear attention plus a fused Triton inference path.

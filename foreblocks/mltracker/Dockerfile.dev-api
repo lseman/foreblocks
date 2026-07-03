@@ -1,0 +1,22 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    MLTRACKER_DIR=/data/mltracker \
+    PORT=8000
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    "fastapi>=0.100" \
+    "uvicorn[standard]>=0.22" \
+    "pydantic>=2.0" \
+    "python-multipart>=0.0.9"
+
+COPY foreblocks/__init__.py ./foreblocks/__init__.py
+COPY foreblocks/mltracker ./foreblocks/mltracker
+
+RUN mkdir -p /data/mltracker
+
+EXPOSE 8000

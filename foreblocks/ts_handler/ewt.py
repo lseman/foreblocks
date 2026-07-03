@@ -1,3 +1,10 @@
+"""foreblocks.ts_handler.ewt.
+
+This module implements the ewt pieces for its package.
+It belongs to the time-series preprocessing, filtering, imputation, and analysis area of Foreblocks.
+It exposes functions such as apply_ewt_and_detrend_parallel.
+"""
+
 # ============================
 # Standard Library
 # ============================

@@ -1,7 +1,16 @@
-"""Core configuration objects used by foreblocks models and trainers.
+"""foreblocks.config.
 
-This module defines type-safe data classes for model architecture and
-training behavior.
+Type-safe configuration schemas for model architecture and training.
+
+Foreblocks models require structured, composable configuration to define
+architecture parameters (encoder depth, attention heads), data handling
+(sequence length, forecasting horizon), and training behavior (learning rate
+schedules, loss weighting, regularization). This module provides @dataclass
+config objects that serve as contracts between components.
+
+Core API:
+- ModelConfig: sequence-to-sequence architecture parameters
+- TrainingConfig: optimization and training loop settings
 """
 
 from dataclasses import dataclass
@@ -49,6 +58,12 @@ class TrainingConfig:
     lr_step_size: int = 30
     lr_gamma: float = 0.1
     min_lr: float = 1e-6
+    # ── Layer-wise LR decay (LLRD) + warmup-cosine ──
+    use_llrd: bool = False  # Enable layer-wise learning rate decay
+    llrd_decay: float = 0.9  # Decay factor per layer depth
+    warmup_steps: int = 0  # Number of linear warmup steps (for warmup_cosine scheduler)
+    warmup_ratio: float = 0.0  # Alternative: warmup as fraction of total training steps
+    steps_per_epoch: int | None = None  # Steps per epoch (for warmup_ratio calculation)
     verbose: bool = True
     log_interval: int = 10
     save_best_model: bool = True

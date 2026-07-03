@@ -1,3 +1,10 @@
+"""foreblocks.ops.mamba.triton_ops.
+
+This module implements the triton ops pieces for its package.
+It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+It exposes functions such as dt_prep_fallback, dt_prep_bwd_triton, fused_out_fallback, fused_out_bwd_triton.
+"""
+
 from __future__ import annotations
 
 import torch

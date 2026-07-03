@@ -1,3 +1,9 @@
+"""foreblocks.ops.kernels.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
+"""
+
 # Legacy shim modules (kept for backward compatibility)
 from foreblocks.ops.kernels import kernels  # noqa: F401
 from foreblocks.ops.kernels import triton_helpers  # noqa: F401

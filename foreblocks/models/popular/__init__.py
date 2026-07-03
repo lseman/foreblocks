@@ -1,3 +1,9 @@
+"""foreblocks.models.popular.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the implementations of widely used forecasting architectures area of Foreblocks.
+"""
+
 from foreblocks.models.popular.autoformer import Autoformer
 from foreblocks.models.popular.crossformer import CrossFormer
 from foreblocks.models.popular.dlinear import DLinear

@@ -1,3 +1,10 @@
+"""foreblocks.experimental.attention_kernels.src.triton_fwd.
+
+This module implements the triton fwd pieces for its package.
+It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
+It exposes functions such as triton_flash_fwd, can_use_triton_fwd, triton_flash_decode, can_use_triton_decode.
+"""
+
 import torch
 import triton
 import triton.language as tl

@@ -1,3 +1,10 @@
+"""foreblocks.ops.attention.fused_rope.
+
+This module implements the fused rope pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes functions such as triton_apply_rope, triton_apply_rope_bthd.
+"""
+
 import torch
 
 

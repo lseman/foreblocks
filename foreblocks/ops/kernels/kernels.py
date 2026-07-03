@@ -1,3 +1,9 @@
+"""foreblocks.ops.kernels.kernels.
+
+This module implements the kernels pieces for its package.
+It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
+"""
+
 # kernels.py - backward-compatibility shim
 # All content has been split into per-kernel modules.
 from foreblocks.ops.kernels.grouped_gemm import *  # noqa: F401, F403

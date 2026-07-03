@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.revin_head.
+
+This module implements the revin head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as RevIN, RevINHead.
+"""
+
 from __future__ import annotations
 
 import torch

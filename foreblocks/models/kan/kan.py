@@ -1,3 +1,9 @@
+"""foreblocks.models.kan.kan.
+
+This module implements the kan pieces for its package.
+It belongs to the Kolmogorov-Arnold Network model components area of Foreblocks.
+"""
+
 from foreblocks.models.kan.backbone import (
     BackBone,
     Backbone,

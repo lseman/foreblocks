@@ -1,3 +1,10 @@
+"""foreblocks.core.evaluation.model_evaluator.
+
+This module implements the model evaluator pieces for its package.
+It belongs to the evaluation and benchmarking helpers area of Foreblocks.
+It exposes classes such as ModelEvaluator.
+"""
+
 # ============================================================================
 # Model Evaluator (unchanged from original)
 # ============================================================================

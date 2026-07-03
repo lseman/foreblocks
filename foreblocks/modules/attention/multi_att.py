@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.multi_att.
+
+This module implements the multi att pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes classes such as MultiAttention.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

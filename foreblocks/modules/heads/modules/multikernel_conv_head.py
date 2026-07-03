@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.multikernel_conv_head.
+
+This module implements the multikernel conv head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as MultiKernelConv, MultiKernelConvHead.
+"""
+
 from __future__ import annotations
 
 import torch

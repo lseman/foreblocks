@@ -1,3 +1,9 @@
+"""foreblocks.ops.raven.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the Raven sequence-model integration helpers area of Foreblocks.
+"""
+
 from __future__ import annotations
 
 from typing import Any

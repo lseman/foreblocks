@@ -155,7 +155,8 @@ class BOHB:
 
         # Convergence detection parameters
         self.max_no_improvement_rounds = (
-            max_no_improvement_rounds if max_no_improvement_rounds is not None
+            max_no_improvement_rounds
+            if max_no_improvement_rounds is not None
             else max(20, int(n_iterations * 0.4))  # Default: 40% of total rounds
         )
         self.convergence_threshold = float(convergence_threshold)
@@ -183,7 +184,7 @@ class BOHB:
 
         losses = self._round_losses
         n = len(losses)
-        recent = losses[-self.convergence_lookback:]
+        recent = losses[-self.convergence_lookback :]
 
         # === Signal 1: No-improvement count ===
         # Count consecutive rounds where no improvement occurred
@@ -196,7 +197,9 @@ class BOHB:
             else:
                 rounds_without_improvement += 1
 
-        no_improvement_detected = rounds_without_improvement >= self.max_no_improvement_rounds
+        no_improvement_detected = (
+            rounds_without_improvement >= self.max_no_improvement_rounds
+        )
 
         # === Signal 2: Plateau detection (last K rounds) ===
         # Check if the last few rounds have settled
@@ -206,13 +209,18 @@ class BOHB:
         range_last_k = max(last_k) - min(last_k)
 
         # Improvement from start of window to current best
-        window_start = losses[-self.convergence_lookback] if self.convergence_lookback < n else losses[0]
+        window_start = (
+            losses[-self.convergence_lookback]
+            if self.convergence_lookback < n
+            else losses[0]
+        )
         improvement_frac = (window_start - best_last_k) / (abs(window_start) + 1e-8)
 
         # Use a relative threshold: improvement must be tiny compared to best loss
         plateau_detected = (
             range_last_k < self.convergence_threshold * max(abs(best_last_k), 1e-6)
-            and improvement_frac < self.min_improvement_frac * 3  # Relaxed for early rounds
+            and improvement_frac
+            < self.min_improvement_frac * 3  # Relaxed for early rounds
         )
 
         # === Signal 3: Low improvement variance ===
@@ -223,7 +231,9 @@ class BOHB:
             improvement_var = float(np.var(recent_improvements))
             # Use relative variance: variance should be tiny compared to improvement scale
             improvement_scale = abs(best_last_k) + 1e-6
-            low_var = improvement_var < (self.convergence_threshold * improvement_scale) ** 2
+            low_var = (
+                improvement_var < (self.convergence_threshold * improvement_scale) ** 2
+            )
         else:
             low_var = False
 
@@ -234,9 +244,13 @@ class BOHB:
         if n_signals >= 2 or (n_signals >= 1 and no_improvement_detected):
             reasons = []
             if no_improvement_detected:
-                reasons.append(f"no improvement for {rounds_without_improvement} rounds")
+                reasons.append(
+                    f"no improvement for {rounds_without_improvement} rounds"
+                )
             if plateau_detected:
-                reasons.append(f"plateau (range={range_last_k:.6g} over last {k_plateau} rounds)")
+                reasons.append(
+                    f"plateau (range={range_last_k:.6g} over last {k_plateau} rounds)"
+                )
             if low_var:
                 reasons.append(f"low improvement variance={improvement_var:.2e}")
 
@@ -314,15 +328,18 @@ class BOHB:
             for s, n, r in scheduler.brackets():
                 self._run_bracket(it, s, n, r, scheduler)
 
-            # Record best loss for this round
-            self._round_losses.append(self.best_loss if self.best_loss < float("inf") else float("inf"))
+            # Record best loss for this round; skip inf to avoid false convergence
+            if self.best_loss < float("inf"):
+                self._round_losses.append(self.best_loss)
 
             # Check convergence after each bracket completes
             if not converged_info.get("converged", False):
                 converged_info = self.check_convergence()
                 if converged_info["converged"]:
                     if self.verbose:
-                        print(f"\n  >> Convergence detected: {converged_info['reason']}")
+                        print(
+                            f"\n  >> Convergence detected: {converged_info['reason']}"
+                        )
                         print(f"  >> Stopping early (best loss: {self.best_loss:.6g})")
                     break
 
@@ -408,7 +425,9 @@ class BOHB:
         if max_workers > 1:
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
-        def _record_completion(rung_idx: int, config: dict[str, Any], loss: float) -> None:
+        def _record_completion(
+            rung_idx: int, config: dict[str, Any], loss: float
+        ) -> None:
             self.tpe.observe(config, loss, budget=rung_budgets[rung_idx])
             self._update_best(config, loss)
             predicted = self._predict_final_loss(loss, rung_budgets[rung_idx])
@@ -442,15 +461,15 @@ class BOHB:
                     if cache_key in self.config_cache:
                         if self.verbose:
                             print("    (cache hit)")
-                        _record_completion(rung_idx, config, self.config_cache[cache_key])
+                        _record_completion(
+                            rung_idx, config, self.config_cache[cache_key]
+                        )
                         continue
 
                     if executor is not None:
                         fut = executor.submit(self._evaluate_objective, config, budget)
                     else:
-                        fut = _ImmediateFuture(
-                            self._evaluate_objective(config, budget)
-                        )
+                        fut = _ImmediateFuture(self._evaluate_objective(config, budget))
                     in_flight[fut] = (rung_idx, config)
 
                 if not in_flight:
@@ -612,7 +631,11 @@ class BOHB:
                 return None
             raise
 
-        if not isinstance(raw_loss, (int, float)) or np.isnan(raw_loss) or np.isinf(raw_loss):
+        if (
+            not isinstance(raw_loss, (int, float))
+            or np.isnan(raw_loss)
+            or np.isinf(raw_loss)
+        ):
             if self.handle_errors:
                 if self.verbose:
                     print(f"    Invalid loss returned: {raw_loss}")
@@ -763,7 +786,9 @@ class BOHB:
         losses = np.array([l for _, l in obs], dtype=float)
 
         # Filter to positive, finite values
-        valid = np.isfinite(budgets) & np.isfinite(losses) & (budgets > 0) & (losses > 0)
+        valid = (
+            np.isfinite(budgets) & np.isfinite(losses) & (budgets > 0) & (losses > 0)
+        )
         budgets = budgets[valid]
         losses = losses[valid]
 
@@ -793,8 +818,9 @@ class BOHB:
             if mad > 1e-8:
                 z = residual / (1.4826 * mad)  # Normalized MAD
                 weights = np.where(
-                    z <= 1.5, 1.0,
-                    1.5 / z  # Huber weight for outliers
+                    z <= 1.5,
+                    1.0,
+                    1.5 / z,  # Huber weight for outliers
                 )
 
             # --- Step 2: Time decay weighting ---
@@ -818,7 +844,9 @@ class BOHB:
             prior_precision = 1.0  # Weak prior (slope ~ N(0, 1))
             data_precision = 1.0 / max(se_k**2, 1e-8)
             posterior_precision = prior_precision + data_precision
-            k_shrunk = (prior_precision * 0.0 + data_precision * k) / posterior_precision
+            k_shrunk = (
+                prior_precision * 0.0 + data_precision * k
+            ) / posterior_precision
 
             # --- Step 5: Conservative bounds ---
             k_final = float(k_shrunk)

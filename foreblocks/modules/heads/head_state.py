@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.head_state.
+
+This module implements the head state pieces for its package.
+It belongs to the forecasting head composition and projection modules area of Foreblocks.
+It exposes classes such as HeadStateManager.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterator

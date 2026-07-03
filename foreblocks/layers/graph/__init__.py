@@ -1,3 +1,9 @@
+"""foreblocks.layers.graph.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
+"""
+
 from foreblocks.layers.graph.latent import (
     AdaptiveEdgeSparsifier,
     CorrelationConfig,

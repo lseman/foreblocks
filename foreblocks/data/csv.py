@@ -1,3 +1,10 @@
+"""foreblocks.data.csv.
+
+This module implements the csv pieces for its package.
+It belongs to the data loading and dataset helpers area of Foreblocks.
+It exposes classes such as CSVSource.
+"""
+
 from typing import Annotated, Any
 
 import numpy as np

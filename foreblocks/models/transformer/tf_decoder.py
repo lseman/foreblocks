@@ -1,3 +1,10 @@
+"""foreblocks.models.transformer.tf_decoder.
+
+This module implements the tf decoder pieces for its package.
+It belongs to the modular transformer layers and helpers area of Foreblocks.
+It exposes classes such as TransformerDecoderLayer, TransformerDecoder.
+"""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -200,9 +207,21 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         self.self_input_residual = residual_cls(d_model)
         self.cross_input_residual = residual_cls(d_model)
         self.ff_input_residual = residual_cls(d_model)
+        self.materialize_attention_type()
 
     def set_layer_attention_type(self, layer_attention_type: str) -> None:
         self.layer_attention_type = str(layer_attention_type)
+
+    def materialize_attention_type(
+        self, layer_attention_type: str | None = None
+    ) -> nn.Module:
+        previous = self.layer_attention_type
+        if layer_attention_type is not None:
+            self.layer_attention_type = str(layer_attention_type)
+        try:
+            return self._self_attn()
+        finally:
+            self.layer_attention_type = previous
 
     # ── Lazy attention factories (decoder uses 5 self-attn backends) ──
     def _build_std(self) -> MultiAttention:

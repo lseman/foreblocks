@@ -1,3 +1,10 @@
+"""foreblocks.experimental.attention_kernels.src.triton_bwd.
+
+This module implements the triton bwd pieces for its package.
+It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
+It exposes functions such as triton_flash_bwd, can_use_triton_bwd.
+"""
+
 import os
 
 import torch

@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.time2vec_head.
+
+This module implements the time2vec head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as Time2Vec, Time2VecHead.
+"""
+
 from __future__ import annotations
 
 import math

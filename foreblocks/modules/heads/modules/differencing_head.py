@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.differencing_head.
+
+This module implements the differencing head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as Differencing, DifferencingHead.
+"""
+
 from __future__ import annotations
 
 import torch

@@ -1,3 +1,10 @@
+"""foreblocks.modules.moe.experts.moe.
+
+This module implements the moe pieces for its package.
+It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
+It exposes classes such as MoEFeedForwardDMoE.
+"""
+
 # transformer_moe_dmoe.py
 # -----------------------------------------------------------------------------
 # Enhanced dMoE FeedForward (fast path)

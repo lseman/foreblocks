@@ -1,3 +1,10 @@
+"""foreblocks.third_party.vsgd.
+
+This module implements the vsgd pieces for its package.
+It belongs to the Foreblocks package functionality area of Foreblocks.
+It exposes classes such as VSGD.
+"""
+
 # https://github.com/generativeai-tue/vsgd
 
 

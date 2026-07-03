@@ -115,6 +115,7 @@ class TrustRegion:
     for each continuous parameter, shrinking only the "hard" parameters
     that are not contributing to improvement.
     """
+
     center: np.ndarray
     lengths: np.ndarray  # Per-parameter lengths (one per continuous param)
     success_count: int = 0
@@ -172,9 +173,7 @@ class TrustRegion:
             self.success_count += 1
             self.failure_count = 0
             if self.success_count >= self.success_tolerance:
-                self.lengths = np.minimum(
-                    self.lengths * self.expand_factor, 1.0
-                )
+                self.lengths = np.minimum(self.lengths * self.expand_factor, 1.0)
                 self.success_count = 0
         else:
             self.failure_count += 1
@@ -206,9 +205,7 @@ class TrustRegion:
             self.success_count += 1
             self.failure_count = 0
             if self.success_count >= self.success_tolerance:
-                self.lengths = np.minimum(
-                    self.lengths * self.expand_factor, 1.0
-                )
+                self.lengths = np.minimum(self.lengths * self.expand_factor, 1.0)
                 self.success_count = 0
         else:
             self.failure_count += 1
@@ -1172,7 +1169,9 @@ class TPE:
                     batch_configs.append(self._generate_candidate(sampler, attempts))
 
                 # Vectorized batch scoring
-                batch_scores = self._acq_ratio_batch(batch_configs, models_for_score[0], models_for_score[1])
+                batch_scores = self._acq_ratio_batch(
+                    batch_configs, models_for_score[0], models_for_score[1]
+                )
 
                 for i, cfg in enumerate(batch_configs):
                     candidates.append(cfg)
@@ -1652,7 +1651,9 @@ class TPE:
 
             kernel = RBF(length_scale=ls) + WhiteKernel(noise_level=1e-4)
             gp = GaussianProcessRegressor(
-                kernel=kernel, alpha=1e-8, normalize_y=True,
+                kernel=kernel,
+                alpha=1e-8,
+                normalize_y=True,
                 n_restarts_optimizer=0,
             )
             gp.fit(X, y)
@@ -1688,7 +1689,9 @@ class TPE:
 
             kernel = RBF(length_scale=ls) + WhiteKernel(noise_level=1e-4)
             gp = GaussianProcessRegressor(
-                kernel=kernel, alpha=1e-8, normalize_y=True,
+                kernel=kernel,
+                alpha=1e-8,
+                normalize_y=True,
                 n_restarts_optimizer=0,
             )
             gp.fit(X, y)
@@ -1726,7 +1729,9 @@ class TPE:
 
             kernel = RBF(length_scale=ls) + WhiteKernel(noise_level=1e-4)
             gp = GaussianProcessRegressor(
-                kernel=kernel, alpha=1e-8, normalize_y=True,
+                kernel=kernel,
+                alpha=1e-8,
+                normalize_y=True,
                 n_restarts_optimizer=0,
             )
             gp.fit(X, y)
@@ -2355,9 +2360,7 @@ class TPE:
         if self.bandwidth_cv_enabled and vals.size >= self.bandwidth_cv_min_obs:
             bw = self._bandwidth_loo_cv(vals, param)
         else:
-            bw = self._bandwidth(
-                vals, param, numeric_bounds=(lo, hi)
-            )
+            bw = self._bandwidth(vals, param, numeric_bounds=(lo, hi))
         bw *= self._get_bandwidth_factor(param)
         bw = max(float(bw), 1.0)
         return IntModel(
@@ -2681,7 +2684,7 @@ class TPE:
                     if d < 1e-8:
                         continue
                     sim = math.exp(cooccur[v1][v2])
-                    grad[i] += sim * x / (d + 1e-8)
+                    grad[i] -= sim * x / (d + 1e-8)
             emb -= lr * grad
             emb /= np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12
 
@@ -3176,12 +3179,19 @@ class TPE:
         bw: float,
         weights: np.ndarray | None,
     ) -> float:
+        # Use hash of array content, not id() (memory address)
+        c_key = hash(centers.tobytes()) + hash(centers.shape)
+        w_key = (
+            hash(weights.tobytes()) + hash(weights.shape)
+            if weights is not None
+            else None
+        )
         key = (
             "cdf",
-            id(centers),
+            c_key,
             float(bw),
             float(x),
-            id(weights) if weights is not None else None,
+            w_key,
         )
         if self.kde_cache_size > 0 and key in self._kde_cache:
             self._kde_cache.move_to_end(key)
@@ -3207,12 +3217,18 @@ class TPE:
         bw: float,
         weights: np.ndarray | None,
     ) -> float:
+        c_key = hash(centers.tobytes()) + hash(centers.shape)
+        w_key = (
+            hash(weights.tobytes()) + hash(weights.shape)
+            if weights is not None
+            else None
+        )
         key = (
             "pdf",
-            id(centers),
+            c_key,
             float(bw),
             float(x),
-            id(weights) if weights is not None else None,
+            w_key,
         )
         if self.kde_cache_size > 0 and key in self._kde_cache:
             self._kde_cache.move_to_end(key)
@@ -3500,7 +3516,7 @@ class TPE:
 
         for _ in range(n_evals):
             log_bw_mid = (a + b) / 2
-            bw_cand = 10 ** log_bw_mid
+            bw_cand = 10**log_bw_mid
 
             # Compute LOO LPD for this bandwidth
             lpd = 0.0
@@ -3514,7 +3530,12 @@ class TPE:
                 dists = np.abs(others - v[i])
                 z = dists / max(bw_cand, self.min_bandwidth)
                 # Log-space computation for stability
-                log_pdf_i = float(logsumexp(-0.5 * z**2) - math.log(n - 1) - math.log(max(bw_cand, self.min_bandwidth)) - 0.9189)
+                log_pdf_i = float(
+                    logsumexp(-0.5 * z**2)
+                    - math.log(n - 1)
+                    - math.log(max(bw_cand, self.min_bandwidth))
+                    - 0.9189
+                )
                 lpd += max(log_pdf_i, -50.0)
 
             if lpd > best_lpd:
@@ -4166,7 +4187,9 @@ class TPE:
             # Prior-only models: use prior log-density
             if good_kind == "prior_only" and bad_kind == "prior_only":
                 for i, cfg in enumerate(configs):
-                    log_scores[i] += _model_log_prior(good, param) - _model_log_prior(bad, param)
+                    log_scores[i] += _model_log_prior(good, param) - _model_log_prior(
+                        bad, param
+                    )
                 continue
 
             if info.typ == "float":
@@ -4177,10 +4200,13 @@ class TPE:
 
                     if centers_g is not None and np.asarray(centers_g).size > 0:
                         # Vectorized KDE scoring
-                        vals = np.array([
-                            self._transform(float(cfg.get(param, 0)), param)
-                            for cfg in configs
-                        ], dtype=float)
+                        vals = np.array(
+                            [
+                                self._transform(float(cfg.get(param, 0)), param)
+                                for cfg in configs
+                            ],
+                            dtype=float,
+                        )
 
                         bw_g = float(_model_attr(good, "bw", 1.0))
                         bw_b = float(_model_attr(bad, "bw", 1.0))
@@ -4190,46 +4216,70 @@ class TPE:
                         w_b = _model_attr(bad, "w")
 
                         if centers_g.size > 0:
-                            z_g = (vals[:, np.newaxis] - centers_g[np.newaxis, :]) / max(bw_g, 1e-12)
+                            z_g = (
+                                vals[:, np.newaxis] - centers_g[np.newaxis, :]
+                            ) / max(bw_g, 1e-12)
                             log_kde_g = norm.logpdf(z_g) - math.log(max(bw_g, 1e-12))
                             if w_g is not None:
-                                log_kde_g = logsumexp(log_kde_g, axis=1, b=np.asarray(w_g, dtype=float))
+                                log_kde_g = logsumexp(
+                                    log_kde_g, axis=1, b=np.asarray(w_g, dtype=float)
+                                )
                             else:
-                                log_kde_g = logsumexp(log_kde_g, axis=1) - math.log(centers_g.size)
+                                log_kde_g = logsumexp(log_kde_g, axis=1) - math.log(
+                                    centers_g.size
+                                )
 
                             prior_w_g = float(_model_attr(good, "prior_w", 0.0))
                             if prior_w_g > 0:
-                                log_prior_g = np.full(n_candidates, _model_log_prior(good, param))
+                                log_prior_g = np.full(
+                                    n_candidates, _model_log_prior(good, param)
+                                )
                                 log_kde_g = logsumexp(
-                                    [log_kde_g + math.log(1.0 - prior_w_g),
-                                     log_prior_g + math.log(prior_w_g)]
+                                    [
+                                        log_kde_g + math.log(1.0 - prior_w_g),
+                                        log_prior_g + math.log(prior_w_g),
+                                    ]
                                 )
                             log_scores += log_kde_g
 
                         if centers_b.size > 0:
-                            z_b = (vals[:, np.newaxis] - centers_b[np.newaxis, :]) / max(bw_b, 1e-12)
+                            z_b = (
+                                vals[:, np.newaxis] - centers_b[np.newaxis, :]
+                            ) / max(bw_b, 1e-12)
                             log_kde_b = norm.logpdf(z_b) - math.log(max(bw_b, 1e-12))
                             if w_b is not None:
-                                log_kde_b = logsumexp(log_kde_b, axis=1, b=np.asarray(w_b, dtype=float))
+                                log_kde_b = logsumexp(
+                                    log_kde_b, axis=1, b=np.asarray(w_b, dtype=float)
+                                )
                             else:
-                                log_kde_b = logsumexp(log_kde_b, axis=1) - math.log(centers_b.size)
+                                log_kde_b = logsumexp(log_kde_b, axis=1) - math.log(
+                                    centers_b.size
+                                )
 
                             prior_w_b = float(_model_attr(bad, "prior_w", 0.0))
                             if prior_w_b > 0:
-                                log_prior_b = np.full(n_candidates, _model_log_prior(bad, param))
+                                log_prior_b = np.full(
+                                    n_candidates, _model_log_prior(bad, param)
+                                )
                                 log_kde_b = logsumexp(
-                                    [log_kde_b + math.log(1.0 - prior_w_b),
-                                     log_prior_b + math.log(prior_w_b)]
+                                    [
+                                        log_kde_b + math.log(1.0 - prior_w_b),
+                                        log_prior_b + math.log(prior_w_b),
+                                    ]
                                 )
                             log_scores -= log_kde_b
                     else:
                         # Single-point model (no centers): sequential
                         for i, cfg in enumerate(configs):
-                            log_scores[i] += _model_log_pdf(good, float(cfg.get(param, 0)), param) - _model_log_pdf(bad, float(cfg.get(param, 0)), param)
+                            log_scores[i] += _model_log_pdf(
+                                good, float(cfg.get(param, 0)), param
+                            ) - _model_log_pdf(bad, float(cfg.get(param, 0)), param)
 
                 except Exception:
                     for i, cfg in enumerate(configs):
-                        log_scores[i] += _model_log_pdf(good, float(cfg.get(param, 0)), param) - _model_log_pdf(bad, float(cfg.get(param, 0)), param)
+                        log_scores[i] += _model_log_pdf(
+                            good, float(cfg.get(param, 0)), param
+                        ) - _model_log_pdf(bad, float(cfg.get(param, 0)), param)
 
             elif info.typ == "int":
                 centers_g = _model_attr(good, "probs")
@@ -4237,16 +4287,22 @@ class TPE:
                 if centers_g is not None and centers_b is not None:
                     for i, cfg in enumerate(configs):
                         val = float(cfg.get(param, 0))
-                        log_scores[i] += _model_log_pdf(good, val, param) - _model_log_pdf(bad, val, param)
+                        log_scores[i] += _model_log_pdf(
+                            good, val, param
+                        ) - _model_log_pdf(bad, val, param)
                 else:
                     for i, cfg in enumerate(configs):
                         val = float(cfg.get(param, 0))
-                        log_scores[i] += _model_log_pdf(good, val, param) - _model_log_pdf(bad, val, param)
+                        log_scores[i] += _model_log_pdf(
+                            good, val, param
+                        ) - _model_log_pdf(bad, val, param)
 
             elif info.typ == "choice":
                 for i, cfg in enumerate(configs):
                     val = cfg.get(param)
-                    log_scores[i] += _model_log_pdf(good, val, param) - _model_log_pdf(bad, val, param)
+                    log_scores[i] += _model_log_pdf(good, val, param) - _model_log_pdf(
+                        bad, val, param
+                    )
 
         # Score joint parameters (sequential, can't easily vectorize)
         for group_name, group in joint.get("groups", {}).items():
@@ -4281,31 +4337,58 @@ class TPE:
                 for model_key, model_data in group_good.items():
                     if model_data.get("kind") == "prior_only":
                         continue
-                    model_centers = np.asarray(model_data.get("centers", []), dtype=float)
-                    model_cov = np.asarray(model_data.get("cov", np.eye(len(params))), dtype=float)
+                    model_centers = np.asarray(
+                        model_data.get("centers", []), dtype=float
+                    )
+                    model_cov = np.asarray(
+                        model_data.get("cov", np.eye(len(params))), dtype=float
+                    )
                     if model_centers.size > 0:
                         try:
-                            lp_g += float(multivariate_normal.logpdf(vec, mean=model_centers, cov=model_cov, allow_singular=True))
+                            lp_g += float(
+                                multivariate_normal.logpdf(
+                                    vec,
+                                    mean=model_centers,
+                                    cov=model_cov,
+                                    allow_singular=True,
+                                )
+                            )
                         except Exception:
                             lp_g += -50.0
 
-                for model_key, model_data in group.get("bad_values", {}).items():
+                for model_key, model_data in (
+                    bad_joint_groups.get("groups", {})
+                    .get(group_name, {})
+                    .get("values", {})
+                    .items()
+                ):
                     if model_data.get("kind") == "prior_only":
                         continue
-                    model_centers = np.asarray(model_data.get("centers", []), dtype=float)
-                    model_cov = np.asarray(model_data.get("cov", np.eye(len(params))), dtype=float)
+                    model_centers = np.asarray(
+                        model_data.get("centers", []), dtype=float
+                    )
+                    model_cov = np.asarray(
+                        model_data.get("cov", np.eye(len(params))), dtype=float
+                    )
                     if model_centers.size > 0:
                         try:
-                            lp_b += float(multivariate_normal.logpdf(vec, mean=model_centers, cov=model_cov, allow_singular=True))
+                            lp_b += float(
+                                multivariate_normal.logpdf(
+                                    vec,
+                                    mean=model_centers,
+                                    cov=model_cov,
+                                    allow_singular=True,
+                                )
+                            )
                         except Exception:
                             lp_b += -50.0
 
                 log_scores[i] += lp_g - lp_b
 
         # Convert from log space to linear for acquisition strategy
-        # Use logsumexp trick for numerical stability
-        with np.errstate(over='ignore', under='ignore'):
-            scores = np.exp(log_scores)
+        # Handle overflow: exp(>709) = inf; cap log_scores to avoid inf
+        log_scores = np.minimum(log_scores, 700.0)
+        scores = np.exp(log_scores)
 
         return scores
 

@@ -46,7 +46,7 @@ editLink: true
   <div class="path-card">
     <p class="route-kicker">Path 03</p>
     <h3><a href="transformer/">Explore advanced backbones</a></h3>
-    <p>Learn transformer attention, MoE routing, custom blocks, and Custom Mamba for stronger models.</p>
+    <p>Learn transformer attention, MoE routing, custom blocks, and Custom Mamba for stronger models. See <a href="transformer-advanced/">Advanced Transformer Features</a> for LLRD, per-layer dropout, GateSkip, MoD, mHC, and <a href="moe-advanced/">Advanced MoE</a> for production tuning.</p>
   </div>
   <div class="path-card">
     <p class="route-kicker">Path 04</p>

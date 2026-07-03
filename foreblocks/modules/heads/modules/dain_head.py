@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.dain_head.
+
+This module implements the dain head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as DAIN, DAINHead.
+"""
+
 from __future__ import annotations
 
 import torch

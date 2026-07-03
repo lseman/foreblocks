@@ -24,6 +24,7 @@ struct TreeConfig {
     double gamma_                                    = 0.0;
     double max_delta_step                            = 0.0;
     int    n_bins                                    = 256;
+    int    num_classes                               = 1;  // >1 => multiclass C-1 output
     enum class Growth { LeafWise, LevelWise, Oblivious } growth = Growth::LeafWise;
     double leaf_gain_eps                             = 0.0;
     bool   allow_zero_gain                           = false;
@@ -114,14 +115,18 @@ struct Node {
     bool                 oblique_missing_left = true;
     int  left = -1, right = -1, sibling = -1;
 
-    double G = 0.0, H = 0.0;
+    // Gradient/hessian sums (size 1 for scalar, K=num_classes-1 for multiclass)
+    std::vector<double> G;
+    std::vector<double> H;
     int    C  = 0;
     int    lo = 0, hi = 0;
+    int    K  = 1;  // num classes - 1; 1 means scalar
 
     double best_gain       = -1e300;
-    double leaf_value      = 0.0;
-    double goss_weighted_G = 0.0;
-    double goss_weighted_H = 0.0;
+    std::vector<double> leaf_values;  // size 1 for scalar, K for multiclass
+    // GOSS weighted sums (size K)
+    std::vector<double> goss_weighted_G;
+    std::vector<double> goss_weighted_H;
     double goss_rest_scale = 1.0;
 
     bool   uses_goss       = false;
@@ -129,8 +134,8 @@ struct Node {
     double min_constraint = -std::numeric_limits<double>::infinity();
     double max_constraint = std::numeric_limits<double>::infinity();
 
-    mutable std::vector<double> hist_G, hist_H;
-    mutable std::vector<int>    hist_C;
+    mutable std::vector<double> hist_G, hist_H;  // size total_hist_size_ * K
+    mutable std::vector<int>    hist_C;  // size total_hist_size_
     mutable std::vector<int>    hist_features;
     mutable bool                hist_valid         = false;
     mutable bool                hist_goss_weighted = false;
@@ -144,14 +149,22 @@ struct Node {
 };
 
 struct HistPair {
+    // G and H are flattened: G[class * total_hist_size_ + feature_offset + bin]
+    // For scalar (K=1): G[class*H + f*b] == G[f*b]
+    // For multiclass (K>1): G[c*T + f*b] where T = total_hist_size_
     std::vector<double> G, H;
-    std::vector<int>    C;
+    std::vector<int>    C;  // counts are shared across classes (size total_hist_size_)
+    int    K = 1;  // number of classes (1 = scalar, >1 = multiclass)
+    size_t total_hist_size = 0;  // total bins across all features
+
     bool                goss_weighted = false;
 
-    void resize(size_t size) {
-        G.resize(size);
-        H.resize(size);
-        C.resize(size);
+    void resize(size_t hist_size, int K_ = 1) {
+        total_hist_size = hist_size;
+        K = K_;
+        G.resize(static_cast<size_t>(hist_size) * static_cast<size_t>(K), 0.0);
+        H.resize(static_cast<size_t>(hist_size) * static_cast<size_t>(K), 0.0);
+        C.resize(hist_size, 0);
     }
 
     void clear() {
@@ -170,6 +183,12 @@ struct HistPair {
             C[i] -= o.C[i];
         }
     }
+
+    // Access per-class per-bin gradient/hessian
+    inline double &g(size_t class_idx, size_t bin) { return G[class_idx * total_hist_size + bin]; }
+    inline double &h(size_t class_idx, size_t bin) { return H[class_idx * total_hist_size + bin]; }
+    inline const double &g(size_t class_idx, size_t bin) const { return G[class_idx * total_hist_size + bin]; }
+    inline const double &h(size_t class_idx, size_t bin) const { return H[class_idx * total_hist_size + bin]; }
 };
 
 class HistogramPool {
@@ -177,17 +196,19 @@ private:
     std::vector<std::unique_ptr<HistPair>> pool_;
     std::queue<size_t>                     available_;
     size_t                                 hist_size_;
+    int                                    K_;
     size_t                                 max_pool_size_;
     std::mutex                             mutex_;
 
 public:
-    explicit HistogramPool(size_t size, size_t max_size = 100) : hist_size_(size), max_pool_size_(max_size) {}
+    explicit HistogramPool(size_t size, int K, size_t max_size = 100)
+        : hist_size_(size), K_(K), max_pool_size_(max_size) {}
 
     std::unique_ptr<HistPair> get() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (available_.empty()) {
             auto hp = std::make_unique<HistPair>();
-            hp->resize(hist_size_);
+            hp->resize(hist_size_, K_);
             return hp;
         }
         const auto idx = available_.front();
@@ -199,7 +220,7 @@ public:
 
     void return_histogram(std::unique_ptr<HistPair> hp) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!hp || hp->G.size() != hist_size_) return;
+        if (!hp || static_cast<int>(hp->G.size()) != static_cast<int>(hist_size_ * K_)) return;
         if (pool_.size() >= max_pool_size_) return;
         const size_t idx = pool_.size();
         pool_.push_back(std::move(hp));
@@ -214,3 +235,5 @@ public:
 };
 
 } // namespace foretree
+
+enum class ClassWeight { Auto = 0, Balanced = 1, None = 2 };

@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.fft_topk_head.
+
+This module implements the fft topk head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as FFTTopK, FFTTopKHead.
+"""
+
 from __future__ import annotations
 
 import torch

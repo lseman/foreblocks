@@ -1,3 +1,10 @@
+"""foreblocks.layers.graph.common.
+
+This module implements the common pieces for its package.
+It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
+It exposes functions such as is_batched_adj, add_self_loops, normalize_gcn, normalize_row.
+"""
+
 from __future__ import annotations
 
 from typing import Literal

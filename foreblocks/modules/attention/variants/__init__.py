@@ -1,3 +1,9 @@
+"""foreblocks.modules.attention.variants.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the attention pattern variants area of Foreblocks.
+"""
+
 from foreblocks.modules.attention.variants.base import AttentionImpl
 from foreblocks.modules.attention.variants.dilated_sliding_window import (
     DilatedSlidingWindowAttentionImpl,

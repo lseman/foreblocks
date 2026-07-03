@@ -184,6 +184,11 @@ PYBIND11_MODULE(foreforest, m) {
         .def_readwrite("rng_seed", &ForeForestConfig::rng_seed)
         .def_readwrite("focal_gamma", &ForeForestConfig::focal_gamma)
         .def_readwrite("huber_delta", &ForeForestConfig::huber_delta)
+        .def_readwrite("quantile_tau", &ForeForestConfig::quantile_tau)
+        .def_readwrite("num_classes", &ForeForestConfig::num_classes)
+        .def_readwrite("scale_pos_weight", &ForeForestConfig::scale_pos_weight)
+        .def_readwrite("class_weight", &ForeForestConfig::class_weight)
+        .def_readwrite("custom_class_weights", &ForeForestConfig::custom_class_weights)
         .def_readwrite("colsample_bytree", &ForeForestConfig::colsample_bytree)
         .def_readwrite("colsample_bynode", &ForeForestConfig::colsample_bynode)
         // .def_readwrite("use_raw_matrix_for_exact", &ForeForestConfig::use_raw_matrix_for_exact)
@@ -221,7 +226,13 @@ PYBIND11_MODULE(foreforest, m) {
         .value("SquaredError", ForeForestConfig::Objective::SquaredError)
         .value("BinaryLogloss", ForeForestConfig::Objective::BinaryLogloss)
         .value("BinaryFocalLoss", ForeForestConfig::Objective::BinaryFocalLoss)
-        .value("HuberError", ForeForestConfig::Objective::HuberError);
+        .value("HuberError", ForeForestConfig::Objective::HuberError)
+        .value("QuantileError", ForeForestConfig::Objective::QuantileError);
+
+    py::enum_<ClassWeight>(m, "ClassWeight")
+        .value("None", ClassWeight::None)
+        .value("Balanced", ClassWeight::Balanced)
+        .value("Auto", ClassWeight::Auto);
 
     // --------------------- ForeForest (Python-facing) ----------
     py::class_<ForeForest>(m, "ForeForest")
@@ -288,7 +299,7 @@ PYBIND11_MODULE(foreforest, m) {
             py::arg("X"), py::arg("y"), py::arg("X_valid") = py::none(), py::arg("y_valid") = py::none(),
             "Fit a scalar-output forest. `y` and optional `y_valid` must be 1-D arrays of length N.")
 
-        // predict: X float64 (N x P) -> float64 (N)
+        // predict: X float64 (N x P) -> float64 (N) or (N, K)
         .def(
             "predict",
             [](const ForeForest &self, py::array_t<double, py::array::c_style | py::array::forcecast> X) {
@@ -296,15 +307,24 @@ PYBIND11_MODULE(foreforest, m) {
                 const py::ssize_t   N   = X.shape(0);
                 const py::ssize_t   P   = X.shape(1);
                 std::vector<double> out = self.predict(X.data(), static_cast<int>(N), static_cast<int>(P));
-                py::array_t<double> arr({N});
-                if (!out.empty()) {
-                    std::memcpy(arr.mutable_data(), out.data(), sizeof(double) * static_cast<size_t>(N));
+                int K = std::max(self.cfg_.num_classes - 1, 1);
+                if (K <= 1) {
+                    py::array_t<double> arr({N});
+                    if (!out.empty()) {
+                        std::memcpy(arr.mutable_data(), out.data(), sizeof(double) * static_cast<size_t>(N));
+                    }
+                    return arr;
+                } else {
+                    // Multiclass: return N x K matrix
+                    py::array_t<double> arr({N, K});
+                    if (!out.empty()) {
+                        std::memcpy(arr.mutable_data(), out.data(), sizeof(double) * out.size());
+                    }
+                    return arr;
                 }
-                return arr;
             },
             py::arg("X"),
-            "Predict one scalar value per row. "
-            "Forest prediction uses raw `X`, so neural-leaf inference is applied automatically when enabled.")
+            "Predict. Returns (N,) for scalar, (N,) for binary, (N, K) for multiclass.")
 
         .def(
             "predict_margin",
@@ -330,20 +350,44 @@ PYBIND11_MODULE(foreforest, m) {
                 const py::ssize_t N = X.shape(0);
                 const py::ssize_t P = X.shape(1);
                 std::vector<double> out = self.predict_contrib(X.data(), static_cast<int>(N), static_cast<int>(P));
-                py::array_t<double> arr({N, P + 1});
-                if (!out.empty()) {
-                    std::memcpy(arr.mutable_data(), out.data(), sizeof(double) * out.size());
+                int K = std::max(self.cfg_.num_classes - 1, 1);
+                if (K <= 1) {
+                    py::array_t<double> arr({N, P + 1});
+                    if (!out.empty()) {
+                        std::memcpy(arr.mutable_data(), out.data(), sizeof(double) * out.size());
+                    }
+                    return arr;
+                } else {
+                    // Multiclass: N x K x (P+1)
+                    py::array_t<double> arr({N, K * (P + 1)});
+                    if (!out.empty()) {
+                        std::memcpy(arr.mutable_data(), out.data(), sizeof(double) * out.size());
+                    }
+                    return arr;
                 }
-                return arr;
             },
             py::arg("X"),
-            "Predict TreeSHAP contributions on the raw-margin scale. The last column is the bias term.")
+            "Predict TreeSHAP contributions. Returns (N, P+1) for scalar/binary, (N, K*(P+1)) for multiclass.")
 
         .def("feature_importance_gain",
              [](const ForeForest &self) {
                  std::vector<double> v = self.feature_importance_gain();
                  py::array_t<double> arr({static_cast<py::ssize_t>(v.size())});
                  if (!v.empty()) std::memcpy(arr.mutable_data(), v.data(), sizeof(double) * v.size());
+                 return arr;
+             })
+        .def("feature_importance_cover",
+             [](const ForeForest &self) {
+                 std::vector<double> v = self.feature_importance_cover();
+                 py::array_t<double> arr({static_cast<py::ssize_t>(v.size())});
+                 if (!v.empty()) std::memcpy(arr.mutable_data(), v.data(), sizeof(double) * v.size());
+                 return arr;
+             })
+        .def("feature_importance_frequency",
+             [](const ForeForest &self) {
+                 std::vector<int> v = self.feature_importance_frequency();
+                 py::array_t<int> arr({static_cast<py::ssize_t>(v.size())});
+                 if (!v.empty()) std::memcpy(arr.mutable_data(), v.data(), sizeof(int) * v.size());
                  return arr;
              })
         .def("train_metric_history",

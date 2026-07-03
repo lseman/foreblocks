@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.head_helper.
+
+This module implements the head helper pieces for its package.
+It belongs to the forecasting head composition and projection modules area of Foreblocks.
+It exposes classes such as HeadComposer.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterator

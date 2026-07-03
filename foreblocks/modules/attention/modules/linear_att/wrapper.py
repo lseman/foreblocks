@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.modules.linear_att.wrapper.
+
+This module implements the wrapper pieces for its package.
+It belongs to the linear and gated attention backends area of Foreblocks.
+It exposes classes such as ModernLinearAttention.
+"""
+
 from __future__ import annotations
 
 from typing import Literal

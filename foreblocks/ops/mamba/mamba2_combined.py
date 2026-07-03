@@ -1,3 +1,10 @@
+"""foreblocks.ops.mamba.mamba2_combined.
+
+This module implements the mamba2 combined pieces for its package.
+It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+It exposes functions such as mamba2_split_conv1d_scan_combined.
+"""
+
 from __future__ import annotations
 
 import torch

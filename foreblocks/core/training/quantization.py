@@ -1,3 +1,10 @@
+"""foreblocks.core.training.quantization.
+
+This module defines quantization helpers.
+It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
+It exposes classes such as QuantizationConfig, QuantizationObserver, QuantizedLinear, DynamicQuantizedLinear.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

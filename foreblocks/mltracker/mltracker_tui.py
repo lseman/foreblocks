@@ -1,3 +1,10 @@
+"""foreblocks.mltracker.mltracker_tui.
+
+This module implements the mltracker tui pieces for its package.
+It belongs to the experiment tracking, client, API, and dashboard support area of Foreblocks.
+It exposes functions such as create_app, main.
+"""
+
 from __future__ import annotations
 
 import math

@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.utils.compaction.
+
+This module implements the compaction pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes classes such as AttentionMatchingConfig, AttentionMatchingCompactor.
+"""
+
 from dataclasses import dataclass
 
 import torch

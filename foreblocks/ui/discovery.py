@@ -1,3 +1,10 @@
+"""foreblocks.ui.discovery.
+
+This module implements the discovery pieces for its package.
+It belongs to the node metadata, discovery, and UI-facing schema helpers area of Foreblocks.
+It exposes functions such as categories_map, discover_nodes, discover_nodes_payload.
+"""
+
 # foreblocks/discovery.py
 from __future__ import annotations
 

@@ -1,3 +1,9 @@
+"""foreblocks.models.kan.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the Kolmogorov-Arnold Network model components area of Foreblocks.
+"""
+
 from foreblocks.models.kan.backbone import (
     BackBone,
     Backbone,

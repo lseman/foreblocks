@@ -1,3 +1,10 @@
+"""foreblocks.layers.graph.latent.
+
+This module implements the latent pieces for its package.
+It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
+It exposes classes such as AdaptiveEdgeSparsifier, CorrelationConfig, LatentCorrelationLearner.
+"""
+
 from __future__ import annotations
 
 import math

@@ -1,3 +1,10 @@
+"""foreblocks.layers.norms.revin.
+
+This module implements the revin pieces for its package.
+It belongs to the normalization layers and normalization helpers area of Foreblocks.
+It exposes classes such as RevIN.
+"""
+
 import torch
 import torch.nn as nn
 

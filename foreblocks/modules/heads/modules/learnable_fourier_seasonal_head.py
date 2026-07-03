@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.learnable_fourier_seasonal_head.
+
+This module implements the learnable fourier seasonal head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as LearnableFourierSeasonal, LearnableFourierSeasonalHead.
+"""
+
 from __future__ import annotations
 
 import math

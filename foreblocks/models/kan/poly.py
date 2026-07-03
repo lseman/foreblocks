@@ -1,3 +1,10 @@
+"""foreblocks.models.kan.poly.
+
+This module implements the poly pieces for its package.
+It belongs to the Kolmogorov-Arnold Network model components area of Foreblocks.
+It exposes classes such as PolyLayerConfig, HahnPolynomials, ChebyshevPolynomials, JacobiPolynomials.
+"""
+
 from __future__ import annotations
 
 import math

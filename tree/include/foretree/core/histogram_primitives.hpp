@@ -137,6 +137,8 @@ public:
         if (!layout_ || !codes || hist_g_.size() != layout_->total_size())
             return;
 
+#ifdef FF_NO_TBB
+        // Sequential accumulation
         auto accumulate_one = [&](int i) {
             const uint16_t* row = codes + static_cast<size_t>(i) * P;
             const double gi = static_cast<double>(g[i]);
@@ -168,6 +170,99 @@ public:
                 }
             }
         }
+#else
+        // Parallel accumulation with per-thread buffers
+        const size_t total_bins = layout_->total_size();
+        const int num_threads = std::min(n_samples, static_cast<int>(std::thread::hardware_concurrency()));
+        if (num_threads <= 1 || n_samples < 100) {
+            // Too few samples — sequential
+            for (int i = 0; i < n_samples; ++i) {
+                const int idx = sample_indices ? sample_indices[i] : i;
+                if (idx < 0) continue;
+                const uint16_t* row = codes + static_cast<size_t>(idx) * P;
+                const double gi = static_cast<double>(g[idx]);
+                const double hi = static_cast<double>(h[idx]);
+                for (int j = 0; j < P; ++j) {
+                    const uint16_t bin = row[j];
+                    const uint16_t max_bins = layout_->bins_for_feature(j);
+                    if (bin >= max_bins) continue;
+                    const size_t offset = layout_->get_offset(j, bin);
+                    if (offset >= total_bins) continue;
+                    hist_g_[offset] += gi;
+                    hist_h_[offset] += hi;
+                    if constexpr (WITH_COUNTS) hist_c_[offset] += 1;
+                }
+            }
+            return;
+        }
+
+        // Per-thread accumulators
+        struct ThreadHist {
+            std::vector<double> G, H;
+            std::vector<int>    C;
+            void init(size_t size) {
+                G.assign(size, 0.0); H.assign(size, 0.0); C.assign(size, 0);
+            }
+            void add(const ThreadHist& o) {
+                for (size_t i = 0; i < G.size(); ++i) {
+                    G[i] += o.G[i]; H[i] += o.H[i]; C[i] += o.C[i];
+                }
+            }
+        };
+        std::vector<ThreadHist> thread_hists(static_cast<size_t>(num_threads));
+        for (auto& th : thread_hists) th.init(total_bins);
+
+        // Partition work across threads
+        std::vector<std::pair<int, int>> ranges;
+        for (int t = 0; t < num_threads; ++t) {
+            int start = static_cast<int>(static_cast<size_t>(n_samples) * static_cast<size_t>(t) / static_cast<size_t>(num_threads));
+            int end   = static_cast<int>(static_cast<size_t>(n_samples) * static_cast<size_t>(t + 1) / static_cast<size_t>(num_threads));
+            if (sample_indices) {
+                while (start < end && start < n_samples && sample_indices[start] < 0) start++;
+            }
+            ranges.emplace_back(start, end);
+        }
+
+        // Each thread accumulates into its own buffer
+        auto thread_worker = [&](int t, int start, int end) {
+            auto& th = thread_hists[static_cast<size_t>(t)];
+            for (int i = start; i < end; ++i) {
+                const int idx = sample_indices ? sample_indices[i] : i;
+                if (idx < 0) continue;
+                const uint16_t* row = codes + static_cast<size_t>(idx) * P;
+                const double gi = static_cast<double>(g[idx]);
+                const double hi = static_cast<double>(h[idx]);
+                for (int j = 0; j < P; ++j) {
+                    const uint16_t bin = row[j];
+                    const uint16_t max_bins = layout_->bins_for_feature(j);
+                    if (bin >= max_bins) continue;
+                    const size_t offset = layout_->get_offset(j, bin);
+                    if (offset >= total_bins) continue;
+                    th.G[offset] += gi;
+                    th.H[offset] += hi;
+                    if constexpr (WITH_COUNTS) th.C[offset] += 1;
+                }
+            }
+        };
+
+        // Launch threads
+        std::vector<std::thread> workers;
+        workers.reserve(static_cast<size_t>(num_threads));
+        for (int t = 0; t < num_threads; ++t) {
+            workers.emplace_back(thread_worker, t, ranges[static_cast<size_t>(t)].first, ranges[static_cast<size_t>(t)].second);
+        }
+        for (auto& w : workers) w.join();
+
+        // Merge into main buffer
+        for (int t = 0; t < num_threads; ++t) {
+            const auto& th = thread_hists[static_cast<size_t>(t)];
+            for (size_t i = 0; i < total_bins; ++i) {
+                hist_g_[i] += th.G[i];
+                hist_h_[i] += th.H[i];
+                if constexpr (WITH_COUNTS) hist_c_[i] += th.C[i];
+            }
+        }
+#endif
     }
 
     const std::vector<double>& gradients() const { return hist_g_; }

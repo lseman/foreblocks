@@ -1,3 +1,10 @@
+"""foreblocks.modules.moe.experts.dispatchers.
+
+This module implements the dispatchers pieces for its package.
+It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
+It exposes classes such as DroplessPackedDispatcher, ExpertChoiceDispatcher.
+"""
+
 from __future__ import annotations
 
 import math

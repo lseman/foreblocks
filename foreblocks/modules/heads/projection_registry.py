@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.projection_registry.
+
+This module implements the projection registry pieces for its package.
+It belongs to the forecasting head composition and projection modules area of Foreblocks.
+It exposes classes such as ProjectionRegistry.
+"""
+
 from __future__ import annotations
 
 from typing import Any

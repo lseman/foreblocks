@@ -1,3 +1,10 @@
+"""foreblocks.core.training.losses.
+
+This module defines training losses and loss helpers.
+It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
+It exposes classes such as LossComputer.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable

@@ -12,14 +12,16 @@ ForeBlocks ships a flexible encoder-decoder transformer stack centered on `Trans
 
 The current implementation supports:
 
+- **Training optimization**: Layer-wise LR decay (LLRD) + warmup-cosine scheduler for SOTA fine-tuning
+- **Per-layer dropout schedule**: Depth-scaled attention dropout (deeper layers → higher dropout)
 - multiple attention backends and per-layer attention routing
 - encoder and decoder patching
 - CT-PatchTST-style encoder tokenization
 - paper-style Attention Residuals
-- GateSkip
-- Mixture-of-Depths (MoD)
-- mHC residual stream mixing
-- MoE feedforward blocks
+- GateSkip (residual path gating)
+- Mixture-of-Depths (MoD) dynamic layer skipping
+- mHC residual stream mixing (manifold-constrained hyper-connections)
+- MoE feedforward blocks with multiple routers and load-balancing
 - gradient checkpointing and shared-layer reuse
 
 Related docs:
@@ -27,6 +29,8 @@ Related docs:
 - [Documentation Overview](overview)
 - [Getting Started](getting-started)
 - [Custom Blocks](custom_blocks)
+- **[Advanced Transformer Features](transformer-advanced)** — LLRD, per-layer dropout, GateSkip, MoD, mHC, attention variants
+- **[Advanced MoE](moe-advanced)** — routers, load-balancing, expert types, production tuning
 - [MoE](moe)
 - [DARTS](darts)
 

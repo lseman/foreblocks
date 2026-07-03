@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.dropoutts_head.
+
+This module implements the dropoutts head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as DropoutTSHead.
+"""
+
 from __future__ import annotations
 
 import torch

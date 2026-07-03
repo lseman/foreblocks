@@ -1,3 +1,9 @@
+"""foreblocks.mltracker.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the experiment tracking, client, API, and dashboard support area of Foreblocks.
+"""
+
 from importlib import import_module
 
 

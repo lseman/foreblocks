@@ -1,3 +1,9 @@
+"""foreblocks.ts_handler.auto_filter.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the automatic signal filtering and denoising pipelines area of Foreblocks.
+"""
+
 from __future__ import annotations
 
 import sys as _sys

@@ -5,6 +5,7 @@ import type {
   Experiment,
   HealthResponse,
   MetricHistoryResponse,
+  OverviewResponse,
   Run,
   RunsResponse,
 } from '../types';
@@ -63,6 +64,14 @@ export async function getHealth(): Promise<HealthResponse> {
 
 export async function getExperiments(): Promise<Experiment[]> {
   return getJson<Experiment[]>('/experiments');
+}
+
+export async function getOverview(experimentName: string, metricKey?: string): Promise<OverviewResponse> {
+  const params = new URLSearchParams();
+  if (experimentName) params.set('experiment_name', experimentName);
+  if (metricKey) params.set('metric_key', metricKey);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return getJson<OverviewResponse>(`/overview${suffix}`);
 }
 
 export async function getRuns(experimentName: string): Promise<Run[]> {

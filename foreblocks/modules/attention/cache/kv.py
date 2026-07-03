@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.cache.kv.
+
+This module implements the kv pieces for its package.
+It belongs to the attention key-value cache implementations area of Foreblocks.
+It exposes classes such as KVProvider, DenseKVProvider, PagedKVProvider.
+"""
+
 from abc import ABC, abstractmethod
 
 import torch

@@ -1,3 +1,9 @@
+"""foreblocks.modules.attention.modules.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+"""
+
 from foreblocks.modules.attention.modules.autocor_att import (
     AutoCorrelation,
     AutoCorrelationLayer,

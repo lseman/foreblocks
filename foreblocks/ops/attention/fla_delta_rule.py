@@ -1,3 +1,10 @@
+"""foreblocks.ops.attention.fla_delta_rule.
+
+This module implements the fla delta rule pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes functions such as can_use_fla_delta_rule, can_use_fla_recurrent_delta_rule, fla_delta_rule_forward, fla_recurrent_delta_rule.
+"""
+
 import os
 
 import torch

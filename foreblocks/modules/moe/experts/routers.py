@@ -1,3 +1,10 @@
+"""foreblocks.modules.moe.experts.routers.
+
+This module implements the routers pieces for its package.
+It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
+It exposes classes such as RouterOutput, Router, LinearRouter, NoisyTopKRouter.
+"""
+
 from __future__ import annotations
 
 import dataclasses

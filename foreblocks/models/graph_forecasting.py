@@ -1,3 +1,10 @@
+"""foreblocks.models.graph_forecasting.
+
+This module implements the graph forecasting pieces for its package.
+It belongs to the forecasting, anomaly, and backbone model definitions area of Foreblocks.
+It exposes classes such as GraphForecastingModel.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

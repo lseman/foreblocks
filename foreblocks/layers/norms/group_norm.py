@@ -1,3 +1,10 @@
+"""foreblocks.layers.norms.group_norm.
+
+This module implements the group norm pieces for its package.
+It belongs to the normalization layers and normalization helpers area of Foreblocks.
+It exposes classes such as ChannelLastGroupNorm.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

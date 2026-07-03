@@ -1,3 +1,10 @@
+"""foreblocks.ts_handler.filters.
+
+This module implements the filters pieces for its package.
+It belongs to the time-series preprocessing, filtering, imputation, and analysis area of Foreblocks.
+It exposes functions such as adaptive_savgol_filter, kalman_filter, lowess_filter, wiener_filter.
+"""
+
 from __future__ import annotations
 
 import numpy as np

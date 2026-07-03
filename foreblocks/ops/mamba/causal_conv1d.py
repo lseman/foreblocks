@@ -1,3 +1,10 @@
+"""foreblocks.ops.mamba.causal_conv1d.
+
+This module implements the causal conv1d pieces for its package.
+It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+It exposes functions such as causal_depthwise_conv1d_reference, causal_depthwise_conv1d_triton, causal_depthwise_conv1d_bwd_triton, causal_depthwise_conv1d.
+"""
+
 from __future__ import annotations
 
 import torch

@@ -1,3 +1,4 @@
+from .autoencoder import AutoencoderConfig, AutoencoderTransformer
 from .base import BaseFeatureTransformer
 from .binning import BinningTransformer
 from .categorical import CategoricalTransformer
@@ -14,6 +15,8 @@ from .statistical import StatisticalTransformer
 
 
 __all__ = [
+    "AutoencoderConfig",
+    "AutoencoderTransformer",
     "FeatureConfig",
     "BaseFeatureTransformer",
     "DateTimeTransformer",

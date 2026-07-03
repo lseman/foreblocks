@@ -1,3 +1,10 @@
+"""foreblocks.modules.moe.experts.expert_blocks.
+
+This module implements the expert blocks pieces for its package.
+It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
+It exposes classes such as MoE_SwiGLUExpert, MoE_FFNExpert, MTPHead.
+"""
+
 from __future__ import annotations
 
 import math

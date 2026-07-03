@@ -1,3 +1,10 @@
+"""foreblocks.layers.norms.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the normalization layers and normalization helpers area of Foreblocks.
+It exposes functions such as create_norm_layer.
+"""
+
 from foreblocks.layers.norms.group_norm import ChannelLastGroupNorm
 from foreblocks.layers.norms.layer_norm import AdaptiveLayerNorm, FastLayerNorm
 from foreblocks.layers.norms.revin import RevIN

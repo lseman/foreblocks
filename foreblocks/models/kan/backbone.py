@@ -1,3 +1,10 @@
+"""foreblocks.models.kan.backbone.
+
+This module implements the backbone pieces for its package.
+It belongs to the Kolmogorov-Arnold Network model components area of Foreblocks.
+It exposes classes such as PolyKAN, PolyKANBlock, HeteroMoKANLayer, FlattenHead.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

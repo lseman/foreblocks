@@ -1,3 +1,10 @@
+"""foreblocks.ops.kernels.layer_norm.
+
+This module implements the layer norm pieces for its package.
+It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
+It exposes classes such as LayerNormTritonFunction.
+"""
+
 # layer_norm.py
 # -----------------------------------------------------------------------------
 # Triton kernels and autograd function for Layer Normalization.

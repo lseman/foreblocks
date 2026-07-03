@@ -1,3 +1,9 @@
+"""foreblocks.ops.attention.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+"""
+
 try:
     from foreblocks.ops.attention.fla_backend import (
         fla_chunk_delta_rule,

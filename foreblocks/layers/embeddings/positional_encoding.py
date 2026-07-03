@@ -1,3 +1,10 @@
+"""foreblocks.layers.embeddings.positional_encoding.
+
+This module implements the positional encoding pieces for its package.
+It belongs to the positional, rotary, time, and sequence embedding layers area of Foreblocks.
+It exposes classes such as PositionalEncoding.
+"""
+
 import math
 
 import torch

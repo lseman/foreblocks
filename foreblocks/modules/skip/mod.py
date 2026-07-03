@@ -355,3 +355,62 @@ class MoDBudgetScheduler:
             raise ValueError(f"Unknown layer_profile: {self.layer_profile}")
 
         return float(max(0.0, min(1.0, base * scale)))
+
+
+@dataclass
+class LayerDropoutSchedule:
+    """Depth-scaled attention dropout for transformers.
+
+    Deeper layers typically benefit from higher dropout (stochastic-depth style)
+    to prevent overfitting in later refinement stages. This scheduler provides
+    per-layer dropout rates based on layer depth.
+
+    Parameters
+    ----------
+    num_layers : int
+        Total number of transformer layers.
+    base_dropout : float
+        Base dropout rate (used for all layers when profile="flat").
+    max_dropout : float, optional
+        Maximum dropout rate (applied to the deepest layer).
+        If None, no depth scaling — returns base_dropout for all layers.
+    profile : str, optional
+        Depth profile strategy (default "deeper_more"):
+        - "flat": identical dropout for all layers (max_dropout is ignored)
+        - "deeper_more": deeper layers get higher dropout
+        - "deeper_less": deeper layers get lower dropout
+    """
+
+    num_layers: int
+    base_dropout: float
+    max_dropout: float | None = None
+    profile: str = "flat"
+
+    def get_dropout(self, layer_idx: int) -> float:
+        """Get the dropout rate for a specific layer.
+
+        Parameters
+        ----------
+        layer_idx : int
+            Layer index (0-indexed, 0 is the first/shallowest layer).
+
+        Returns
+        -------
+        float
+            Dropout rate (clamped to [0, 1]).
+        """
+        if self.max_dropout is None or self.profile == "flat":
+            return float(max(0.0, min(1.0, self.base_dropout)))
+
+        depth = (layer_idx + 1) / max(1, self.num_layers)
+
+        if self.profile == "deeper_more":
+            # Deeper layers: [base_dropout, max_dropout]
+            p = self.base_dropout + (self.max_dropout - self.base_dropout) * depth
+        elif self.profile == "deeper_less":
+            # Deeper layers: [max_dropout, base_dropout]
+            p = self.max_dropout + (self.base_dropout - self.max_dropout) * depth
+        else:
+            raise ValueError(f"Unknown profile: {self.profile}")
+
+        return float(max(0.0, min(1.0, p)))

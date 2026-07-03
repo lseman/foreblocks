@@ -1,3 +1,10 @@
+"""foreblocks.core.training.conformal.
+
+This module implements the conformal pieces for its package.
+It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
+It exposes classes such as DefaultFeatureExtractor, ConformalPredictionEngine.
+"""
+
 # conformal.py — Complete State-of-the-Art Conformal Prediction Engine (Corrected v4)
 # =================================================================================
 # Fixes (vs v3):

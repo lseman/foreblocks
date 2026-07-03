@@ -1,3 +1,10 @@
+"""foreblocks.sequence.mamba.norms.
+
+This module implements the norms pieces for its package.
+It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+It exposes classes such as RMSNormWeightOnly, RMSNorm.
+"""
+
 from __future__ import annotations
 
 import torch

@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.decomposition_head.
+
+This module implements the decomposition head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as DecompositionHead, DecompositionBlock.
+"""
+
 from __future__ import annotations
 
 import torch

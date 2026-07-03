@@ -1,3 +1,10 @@
+"""foreblocks.ops.kernels.swiglu.
+
+This module implements the swiglu pieces for its package.
+It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
+It exposes functions such as swiglu_gate, grouped_mlp_swiglu.
+"""
+
 # swiglu.py
 # -----------------------------------------------------------------------------
 # SwiGLU activation kernels (Triton) and grouped MLP SwiGLU for packed MoE.

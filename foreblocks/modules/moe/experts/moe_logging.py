@@ -1,3 +1,10 @@
+"""foreblocks.modules.moe.experts.moe_logging.
+
+This module implements the moe logging pieces for its package.
+It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
+It exposes classes such as MoELogger, ReportInputs.
+"""
+
 # moe_logging_and_report.py
 # ──────────────────────────────────────────────────────────────────────────────
 # Minimal utilities to LOG and PLOT how a Mixture-of-Experts (MoE) helped your

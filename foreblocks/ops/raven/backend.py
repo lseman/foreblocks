@@ -1,3 +1,10 @@
+"""foreblocks.ops.raven.backend.
+
+This module implements the backend pieces for its package.
+It belongs to the Raven sequence-model integration helpers area of Foreblocks.
+It exposes functions such as fla_path, has_fla_checkout, fla_import_path, import_fla_module.
+"""
+
 from __future__ import annotations
 
 import sys

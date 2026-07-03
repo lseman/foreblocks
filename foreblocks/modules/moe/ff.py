@@ -1,3 +1,10 @@
+"""foreblocks.modules.moe.ff.
+
+This module implements the ff pieces for its package.
+It belongs to the mixture-of-experts layers and utilities area of Foreblocks.
+It exposes classes such as FeedForwardBlock.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Callable

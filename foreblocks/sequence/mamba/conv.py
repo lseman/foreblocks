@@ -1,3 +1,10 @@
+"""foreblocks.sequence.mamba.conv.
+
+This module implements the conv pieces for its package.
+It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+It exposes classes such as CausalDepthwiseConv1d.
+"""
+
 from __future__ import annotations
 
 import torch

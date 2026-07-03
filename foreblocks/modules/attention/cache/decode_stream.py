@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.cache.decode_stream.
+
+This module implements the decode stream pieces for its package.
+It belongs to the attention key-value cache implementations area of Foreblocks.
+It exposes functions such as paged_stream_decode_standard.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

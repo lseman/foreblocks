@@ -1,3 +1,10 @@
+"""foreblocks.ui.auto_spec.
+
+This module implements the auto spec pieces for its package.
+It belongs to the node metadata, discovery, and UI-facing schema helpers area of Foreblocks.
+It exposes classes such as PortIn, PortOutBundle.
+"""
+
 # foreblocks/auto_spec.py
 from __future__ import annotations
 

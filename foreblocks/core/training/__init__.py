@@ -1,3 +1,9 @@
+"""foreblocks.core.training.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
+"""
+
 from typing import TYPE_CHECKING
 
 from foreblocks.core.training.batch_io import (

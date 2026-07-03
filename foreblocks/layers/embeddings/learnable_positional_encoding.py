@@ -1,3 +1,10 @@
+"""foreblocks.layers.embeddings.learnable_positional_encoding.
+
+This module implements the learnable positional encoding pieces for its package.
+It belongs to the positional, rotary, time, and sequence embedding layers area of Foreblocks.
+It exposes classes such as LearnablePositionalEncoding.
+"""
+
 import math
 
 import torch

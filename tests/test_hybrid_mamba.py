@@ -7,11 +7,7 @@ from foreblocks.sequence.mamba import (
     RMS_NORM_TRITON_AVAILABLE,
     ROTARY_TRITON_AVAILABLE,
     FeedForward,
-
     Mamba2Block,
-
-
-
     chunked_ssd_forward,
     chunked_ssd_forward_reference,
     dt_prep_bwd_triton,
@@ -20,7 +16,6 @@ from foreblocks.sequence.mamba import (
     fused_out_fallback,
     rms_norm,
     rms_norm_fallback,
-
 )
 
 

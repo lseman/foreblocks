@@ -94,7 +94,18 @@ def _as_2d(X, n: int) -> np.ndarray | None:
         X = X.reshape(-1, 1)
     if X.shape[0] != n:
         raise ValueError(f"exog has {X.shape[0]} rows but y has {n}.")
-    return np.where(np.isfinite(X), X, 0.0)
+    # Forward-fill then back-fill NaN, falling back to column mean, then 0
+    X = X.copy()
+    for col in range(X.shape[1]):
+        mask = np.isnan(X[:, col]) | ~np.isfinite(X[:, col])
+        if mask.all():
+            X[:, col] = 0.0
+            continue
+        vals = X[~mask, col]
+        X[:, col] = np.where(
+            mask, np.interp(np.where(mask)[0], np.where(~mask)[0], vals), X[:, col]
+        )
+    return X
 
 
 def difference(y: np.ndarray, d: int, D: int, s: int) -> np.ndarray:
@@ -536,11 +547,18 @@ if _HAS_JAX:
             return jnp.zeros((0,), dtype=jnp.float64)
 
         kappa = jnp.tanh(raw)
-        row = jnp.asarray([kappa[0]], dtype=jnp.float64)
-        for k in range(1, n):
-            kk = kappa[k]
-            row = jnp.concatenate([row - kk * row[::-1], jnp.asarray([kk])])
-        return row
+
+        def step(carry, kk):
+            idx, phi = carry
+            phi_new = phi.at[:idx].set(phi[:idx] - kk * phi[idx - 1 :: -1])
+            phi_new = phi_new.at[idx].set(kk)
+            return (idx + 1, phi_new), None
+
+        init_phi = jnp.zeros((n,), dtype=jnp.float64)
+        init_phi = init_phi.at[0].set(kappa[0])
+        init = (1, init_phi)
+        (final_idx, phi), _ = lax.scan(step, init, kappa[1:])
+        return phi
 
     def _jax_constrain_invertible(raw: jnp.ndarray) -> jnp.ndarray:
         return -_jax_constrain_stationary(raw)
@@ -550,8 +568,10 @@ if _HAS_JAX:
         n = coeffs.shape[0]
         out = jnp.zeros((n * s + 1,), dtype=jnp.float64)
         out = out.at[0].set(1.0)
-        for i in range(n):
-            out = out.at[(i + 1) * s].set(sign * coeffs[i])
+        if n > 0:
+            indices = jnp.arange(1, n + 1) * s
+            values = sign * coeffs
+            out = out.at[indices].set(values)
         return out
 
     def _jax_combine_ar_lags_fixed(
@@ -849,7 +869,12 @@ class SarimaxScratch:
 
         for t in range(n - 2, -1, -1):
             Pn = P_pred[t + 1]
-            J = np.linalg.lstsq(Pn, T @ P_filt[t].T, rcond=1e-12)[0].T
+            try:
+                J = np.linalg.solve(Pn, T @ P_filt[t].T).T
+            except np.linalg.LinAlgError:
+                J = np.linalg.lstsq(
+                    Pn + 1e-12 * np.eye(Pn.shape[0]), T @ P_filt[t].T, rcond=None
+                )[0].T
             a_smooth[t] = a_filt[t] + J @ (a_smooth[t + 1] - a_pred[t + 1])
             dP = P_smooth[t + 1] - Pn
             P_smooth[t] = P_filt[t] + J @ dP @ J.T
@@ -902,27 +927,26 @@ class SarimaxScratch:
 
     def fit(
         self,
-        y,
-        exog=None,
+        y: np.ndarray | list[float],
+        exog: np.ndarray | None = None,
         *,
-        maxiter=300,
-        method="L-BFGS-B",  # kept for compatibility, but ignored in JAX path
-        verbose=False,
-        seed=0,
-        diffuse_scale=1e6,
-        diffuse_burn=None,
-        pre_differenced=False,
-        compute_smoother=True,
-        use_numba=True,
-        init_params=None,
+        maxiter: int = 300,
+        method: str = "L-BFGS-B",
+        verbose: bool | int = False,
+        seed: int = 0,
+        diffuse_scale: float = 1e6,
+        diffuse_burn: int | None = None,
+        pre_differenced: bool = False,
+        compute_smoother: bool = True,
+        use_numba: bool = True,
+        init_params: np.ndarray | None = None,
         use_jax_autodiff: bool = True,
         jax_enable_x64: bool = True,
         jax_jit: bool = True,
-        # New Optax-related arguments (optional)
-        optax_optimizer=None,  # you can pass custom optax optimizer
-        optax_maxiter: int = 500,  # usually more iterations than scipy
-        optax_tol: float = 1e-6,  # loss change tolerance for early stopping
-        optax_patience: int = 30,  # how many steps without improvement before stop
+        optax_optimizer: Any = None,
+        optax_maxiter: int = 500,
+        optax_tol: float = 1e-6,
+        optax_patience: int = 30,
     ) -> SarimaxFit:
         y0 = _as_1d(y)
         X0 = _as_2d(exog, n=y0.size)
@@ -979,6 +1003,14 @@ class SarimaxScratch:
         # JAX AUTODIFF + OPTAX path
         # ------------------------------------------------------------
         use_jax_path = bool(use_jax_autodiff and _HAS_JAX)
+        # defaults in case all optimization paths raise
+        theta_opt_np = theta0.copy()
+        best_loss = float("inf")
+        final_step = -1
+        optimizer_name = method
+        opt_message = "optimization failed"
+        optax_used = False
+        scipy_converged = False
 
         if use_jax_path:
             if jax_enable_x64:
@@ -1195,6 +1227,9 @@ class SarimaxScratch:
             optimizer_name = method
             opt_message = str(getattr(res, "message", ""))
             optax_used = False
+            scipy_converged = (
+                bool(getattr(res, "converged", False)) if res is not None else False
+            )
 
         # ─── Final decode & filtering (same for both paths) ─────────────────────
         dec = self._decode_params(theta_opt_np, k_exog, use_numba=use_numba)
@@ -1264,12 +1299,17 @@ class SarimaxScratch:
             },
             nll=nll_hat,
             aicc=score,
-            converged=(best_loss < 1e20),  # crude check — improve if needed
+            converged=(
+                scipy_converged if not use_jax_path else (optax_used or scipy_converged)
+            )
+            and best_loss < 1e6,
             info=info,
         )
         return self.fit_
 
-    def filter_smoother(self, y, exog=None) -> dict[str, np.ndarray]:
+    def filter_smoother(
+        self, y: np.ndarray | list[float], exog: np.ndarray | None = None
+    ) -> dict[str, np.ndarray]:
         if self.fit_ is None:
             raise RuntimeError("Call fit() first.")
         fit = self.fit_
@@ -1312,15 +1352,15 @@ class SarimaxScratch:
 
     def forecast(
         self,
-        y,
+        y: np.ndarray | list[float],
         steps: int,
-        exog=None,
-        exog_future=None,
+        exog: np.ndarray | None = None,
+        exog_future: np.ndarray | None = None,
         *,
-        return_intervals=True,
-        alpha=0.05,
-        num_sim=2000,
-        seed=0,
+        return_intervals: bool = True,
+        alpha: float = 0.05,
+        num_sim: int = 2000,
+        seed: int = 0,
     ) -> dict[str, np.ndarray]:
         if self.fit_ is None:
             raise RuntimeError("Call fit() first.")
@@ -1392,17 +1432,20 @@ class SarimaxScratch:
         if not return_intervals:
             return {"mean": mean}
 
-        rng = np.random.default_rng(seed)
-        sims = np.zeros((num_sim, steps))
-        sqrt_s = float(np.sqrt(max(sigma2, 1e-12)))
-        for r in range(num_sim):
-            a_sim = a_last.copy()
-            for h in range(steps):
-                a_sim = T @ a_sim + R * rng.normal(0.0, sqrt_s)
-                sims[r, h] = det_future[h] + float(Z @ a_sim)
+        # Analytical forecast intervals via Kalman filter covariance propagation
+        from scipy.stats import norm
 
-        lo = np.quantile(sims, alpha / 2.0, axis=0)
-        hi = np.quantile(sims, 1.0 - alpha / 2.0, axis=0)
+        z = float(norm.ppf(1.0 - alpha / 2.0))
+        m_state = T.shape[0]
+        forecast_var = np.zeros(steps, dtype=float)
+        P_h = filt["P_filt"][-1].copy()
+        RRt = R * sigma2 * R  # outer product since R is 1-d: R @ sigma2 @ R.T
+        for h in range(steps):
+            if h > 0:
+                P_h = T @ P_h @ T.T + RRt
+            forecast_var[h] = float(Z @ P_h @ Z) + sigma2
+        lo = mean - z * np.sqrt(forecast_var)
+        hi = mean + z * np.sqrt(forecast_var)
         return {"mean": mean, "lo": lo, "hi": hi}
 
 
@@ -1411,11 +1454,19 @@ class SarimaxScratch:
 # ---------------------------------------------------------------------------
 
 
-def _theta_dim(*, k_exog, include_intercept, p, q, P, Q):
+def _theta_dim(
+    *, k_exog: int, include_intercept: bool, p: int, q: int, P: int, Q: int
+) -> int:
     return (1 if include_intercept else 0) + k_exog + p + P + q + Q + 1
 
 
-def _project_theta_init(theta_src, src_spec, dst_spec, *, k_exog):
+def _project_theta_init(
+    theta_src: np.ndarray | None,
+    src_spec: SarimaxSpec,
+    dst_spec: SarimaxSpec,
+    *,
+    k_exog: int,
+) -> np.ndarray | None:
     if theta_src is None:
         return None
     theta_src = np.asarray(theta_src, dtype=float).reshape(-1)
@@ -1489,12 +1540,12 @@ class AutoConfig:
 
 
 def auto_sarimax_stepwise(
-    y,
-    exog=None,
+    y: np.ndarray | list[float],
+    exog: np.ndarray | None = None,
     *,
-    seasonal_period=1,
-    cfg=None,
-    verbose=False,
+    seasonal_period: int = 1,
+    cfg: AutoConfig | None = None,
+    verbose: bool | int = False,
 ) -> SarimaxFit:
     """Hyndman–Khandakar stepwise SARIMAX search with AICc."""
     import time

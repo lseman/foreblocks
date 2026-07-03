@@ -185,6 +185,8 @@ struct SplitContext {
 
     bool   use_entropy = false; // reserved for future use
     double eps         = 1e-15; // reserved for future use
+    int    K              = 1;    // number of output classes (1=scalar, >1=multiclass)
+    size_t total_hist_size = 0;   // total bins across all features (for multiclass indexing)
 };
 
 // ============================================================================
@@ -198,6 +200,8 @@ struct HistProvider {
     const std::vector<int>    &C;
     int                        finite_bins;
     int                        miss_id;
+    int                        K = 1;  // classes (1=scalar, >1=multiclass)
+    int                        total_hist_size = 0;  // bins across all features
 
     HistProvider(const SplitContext &c, int feat, const std::vector<double> &g, const std::vector<double> &h,
                  const std::vector<int> &cc)
@@ -211,21 +215,44 @@ struct HistProvider {
         GL = HL = 0.0;
         CL      = 0;
     }
+    // Sum G/H across K classes for multiclass split evaluation
     void add_prefix(int t, double &GL, double &HL, int &CL) const {
-        const size_t off = ctx.get_histogram_offset(f, t);
-        if (off < G.size()) {
-            GL += G[off];
-            HL += H[off];
-            CL += C[off];
+        const size_t base_off = ctx.get_histogram_offset(f, t);
+        if (K <= 1) {
+            if (base_off < G.size()) {
+                GL += G[base_off];
+                HL += H[base_off];
+            }
+            CL += (base_off < C.size()) ? C[base_off] : 0;
+        } else {
+            for (int c = 0; c < K; ++c) {
+                const size_t off = static_cast<size_t>(c) * static_cast<size_t>(total_hist_size) + base_off;
+                if (off < G.size()) {
+                    GL += G[off];
+                    HL += H[off];
+                }
+            }
+            CL += C[t];
         }
     }
     bool boundary_valid(int /*t*/) const { return true; }
     void missing(double &Gm, double &Hm, int &Cm, bool &has_miss) const {
-        const size_t moff = ctx.get_histogram_offset(f, miss_id);
-        Gm                = (moff < G.size()) ? G[moff] : 0.0;
-        Hm                = (moff < H.size()) ? H[moff] : 0.0;
-        Cm                = (moff < C.size()) ? C[moff] : 0;
-        has_miss          = (Cm > 0);
+        const size_t base_off = ctx.get_histogram_offset(f, miss_id);
+        if (K <= 1) {
+            Gm  = (base_off < G.size()) ? G[base_off] : 0.0;
+            Hm  = (base_off < H.size()) ? H[base_off] : 0.0;
+        } else {
+            Gm = Hm = 0.0;
+            for (int c = 0; c < K; ++c) {
+                const size_t off = static_cast<size_t>(c) * static_cast<size_t>(total_hist_size) + base_off;
+                if (off < G.size()) {
+                    Gm += G[off];
+                    Hm += H[off];
+                }
+            }
+        }
+        Cm  = (base_off < C.size()) ? C[base_off] : 0;
+        has_miss = (Cm > 0);
     }
     int total_count() const { return ctx.Cp; }
 };

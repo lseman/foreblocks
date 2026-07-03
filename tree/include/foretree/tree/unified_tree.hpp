@@ -104,8 +104,10 @@ public:
 
         initialize_caching_();
 
+        K_ = std::max(cfg_.num_classes - 1, 1);
         Node r;
         r.id    = next_id_++;
+        r.K     = K_;
         r.depth = 0;
         r.lo    = 0;
         r.hi    = static_cast<int>(index_pool_.size());
@@ -123,9 +125,10 @@ public:
 
         for (auto &n : nodes_) {
             if (n.is_leaf) {
-                const double GG = n.uses_goss ? n.goss_weighted_G : n.G;
-                const double HH = n.uses_goss ? n.goss_weighted_H : n.H;
-                n.leaf_value = leaf_value_scalar_(GG, HH, n.min_constraint, n.max_constraint);
+                const auto [GG_vec, HH_vec] = node_totals_for_leaf_(n);
+                double GG = 0.0, HH = 0.0;
+                for (size_t i = 0; i < GG_vec.size(); ++i) { GG += GG_vec[i]; HH += HH_vec[i]; }
+                n.leaf_values = leaf_values_(GG, HH, n.min_constraint, n.max_constraint);
             }
         }
         pack_();
@@ -201,6 +204,10 @@ public:
         }
         if (Xb.size() != n_sz * p_sz) {
             throw std::invalid_argument("UnifiedTree::predict_contrib: Xb size must equal N*P");
+        }
+        // Multiclass TreeSHAP not yet implemented
+        if (cfg_.num_classes > 1) {
+            throw std::runtime_error("UnifiedTree::predict_contrib: TreeSHAP not supported for multiclass yet");
         }
         if (!packed_) return std::vector<double>(static_cast<size_t>(N) * static_cast<size_t>(P_ + 1), 0.0);
 
@@ -363,19 +370,25 @@ public:
         if (leaf_id < 0) return 0.0;
 
         const Node *leaf_node = by_id_(leaf_id);
-        if (!leaf_node) {
-            if (leaf_id >= static_cast<int>(leaf_val_.size())) return 0.0;
-            return leaf_val_[static_cast<size_t>(leaf_id)];
-        }
+        if (!leaf_node) return 0.0;
 
-        if (!leaf_node->has_neural_leaf()) return leaf_node->leaf_value;
+        if (!leaf_node->has_neural_leaf()) {
+            if (K_ <= 1) {
+                if (leaf_id >= static_cast<int>(leaf_val_.size())) return 0.0;
+                return leaf_val_[static_cast<size_t>(leaf_id)];
+            } else {
+                // Multiclass: return first class
+                if (leaf_id >= static_cast<int>(leaf_val_.size() / K_)) return 0.0;
+                return leaf_val_[static_cast<size_t>(leaf_id) * K_];
+            }
+        }
 
         if (!raw_view.Xraw) {
             throw std::runtime_error(
                 "UnifiedTree::predict: neural leaf inference requires raw features; call predict(..., Xraw) or use ForeForest.predict(...)");
         }
 
-        if (!row_has_valid_neural_inputs_(row_idx, raw_view)) return leaf_node->leaf_value;
+        if (!row_has_valid_neural_inputs_(row_idx, raw_view)) return (leaf_node->leaf_values.empty()) ? 0.0 : leaf_node->leaf_values[0];
 
         const double *row_ptr = raw_view.Xraw + static_cast<size_t>(row_idx) * static_cast<size_t>(P_);
         return leaf_node->neural_leaf->predict_one(row_ptr);
@@ -433,7 +446,7 @@ public:
     double tree_expected_value_from_node_(int id) const {
         if (id < 0) return 0.0;
         if (id >= static_cast<int>(is_leaf_.size())) return 0.0;
-        if (is_leaf_[id] != 0) return leaf_val_[static_cast<size_t>(id)];
+        if (is_leaf_[id] != 0) return leaf_val_[static_cast<size_t>(id) * K_];
 
         const int left_id  = left_[static_cast<size_t>(id)];
         const int right_id = right_[static_cast<size_t>(id)];
@@ -602,7 +615,7 @@ public:
         extend_path_(path, unique_depth, parent_zero_fraction, parent_one_fraction, parent_feature_index);
 
         if (is_leaf_[static_cast<size_t>(node_id)] != 0) {
-            const double leaf_value = leaf_val_[static_cast<size_t>(node_id)];
+            const double leaf_value = leaf_val_[static_cast<size_t>(node_id) * K_];
             for (int i = 1; i <= unique_depth; ++i) {
                 const double weight = unwound_path_sum_(path, unique_depth, i);
                 const auto &el = path[static_cast<size_t>(i)];
@@ -645,6 +658,8 @@ public:
     }
 
     const std::vector<double> &feature_importance_gain() const { return feat_gain_; }
+    const std::vector<double> &feature_importance_cover() const { return feat_cover_; }
+    const std::vector<int> &feature_importance_frequency() const { return feat_frequency_; }
 
     int n_nodes() const { return static_cast<int>(nodes_.size()); }
     int n_leaves() const {
@@ -686,7 +701,9 @@ public:
             if (nd->is_leaf) {
                 S[nd->id].leaves     = 1;
                 S[nd->id].internal   = 0;
-                const double Rleaf   = leaf_objective_optimal_(nd->G, nd->H);
+                double Gs = 0.0, Hs = 0.0;
+                for (size_t c = 0; c < nd->G.size(); ++c) { Gs += nd->G[c]; Hs += nd->H[c]; }
+                const double Rleaf   = leaf_objective_optimal_(Gs, Hs);
                 S[nd->id].R_sub      = Rleaf;
                 S[nd->id].R_collapse = Rleaf;
                 S[nd->id].alpha_star = std::numeric_limits<double>::infinity();
@@ -700,7 +717,9 @@ public:
             dst.leaves      = L.leaves + R.leaves;
             dst.internal    = L.internal + R.internal + 1;
             dst.R_sub       = L.R_sub + R.R_sub - cfg_.gamma_;
-            dst.R_collapse  = leaf_objective_optimal_(nd->G, nd->H);
+            double Gs2 = 0.0, Hs2 = 0.0;
+            for (size_t c = 0; c < nd->G.size(); ++c) { Gs2 += nd->G[c]; Hs2 += nd->H[c]; }
+            dst.R_collapse  = leaf_objective_optimal_(Gs2, Hs2);
             const int denom = std::max(dst.leaves - 1, 1);
             dst.alpha_star  = (dst.R_collapse - dst.R_sub) / static_cast<double>(denom);
         };
@@ -720,7 +739,10 @@ public:
                 nd->miss_left  = true;
                 nd->oblique_missing_left = true;
                 nd->best_gain  = -std::numeric_limits<double>::infinity();
-                nd->leaf_value = leaf_value_scalar_(nd->G, nd->H, nd->min_constraint, nd->max_constraint);
+                const auto [GG_vec, HH_vec] = node_totals_for_leaf_(*nd);
+                double GG = 0.0, HH = 0.0;
+                for (size_t i = 0; i < GG_vec.size(); ++i) { GG += GG_vec[i]; HH += HH_vec[i]; }
+                nd->leaf_values = leaf_values_(GG, HH, nd->min_constraint, nd->max_constraint);
             }
         };
         apply(root);
@@ -740,6 +762,7 @@ public:
     const std::vector<double>   *g_  = nullptr;
     const std::vector<double>   *h_  = nullptr;
     int                          N_ = 0, P_ = 0;
+    int                          K_ = 1;  // num classes - 1 (1=scalar)
 
     TreeConfig                     cfg_;
     const GradientHistogramSystem *ghs_ = nullptr;
@@ -761,6 +784,8 @@ public:
     std::vector<int>     feat_pool_;
     mutable std::mt19937 rng_;
     std::vector<double>  feat_gain_;
+    std::vector<double>  feat_cover_;  // sum of hessian (weight) at nodes using this feature
+    std::vector<int>     feat_frequency_;  // count of splits using this feature
 
     std::vector<int>     feat_, thr_, left_, right_;
     std::vector<double>  split_value_;
@@ -775,7 +800,8 @@ public:
     std::vector<int>     oblique_features_flat_;
     std::vector<double>  oblique_weights_flat_;
     std::vector<double>  oblique_thresholds_;
-    std::vector<double>  leaf_val_;
+    // leaf_val_ stores K values per leaf (flat: leaf_val_[leaf_id * K + c])
+    std::vector<double>  leaf_val_;  // size Nn * K
 
     const double  *Xraw_       = nullptr;
     const uint8_t *Xmiss_      = nullptr;
@@ -794,7 +820,10 @@ public:
         
         if (cfg_.goss.adaptive) {
             const int total = n.hi - n.lo;
-            const double mean = n.G / std::max(total, 1);
+            // Sum G across classes for multiclass
+            double G_sum = 0.0;
+            for (size_t c = 0; c < n.G.size(); ++c) G_sum += n.G[c];
+            const double mean = G_sum / std::max(total, 1);
             double var = 0.0;
             for (int i = n.lo; i < n.hi; ++i) {
                 const double gi = (*g_)[index_pool_[i]];
@@ -928,7 +957,7 @@ public:
 
     void initialize_caching_() {
         if (cfg_.cache_histograms) {
-            hist_pool_ = std::make_unique<HistogramPool>(total_hist_size_, cfg_.max_histogram_pool_size);
+            hist_pool_ = std::make_unique<HistogramPool>(total_hist_size_, K_, cfg_.max_histogram_pool_size);
         }
         if (cfg_.cache_histograms && !cfg_.goss.enabled && !tree_subsample_applied_ &&
             static_cast<int>(index_pool_.size()) >= cfg_.cache_threshold) {
@@ -969,7 +998,7 @@ public:
         }
 
         tree_histogram_ = std::make_unique<HistPair>();
-        tree_histogram_->resize(total_hist_size_);
+        tree_histogram_->resize(total_hist_size_, K_);
         tree_histogram_->clear();
 
         for (int r : index_pool_) {
@@ -987,6 +1016,8 @@ public:
         packed_  = false;
         root_id_ = 0;
         feat_gain_.assign(P_, 0.0);
+        feat_cover_.assign(P_, 0.0);
+        feat_frequency_.assign(P_, 0);
         feat_pool_.clear();
         tree_subsample_applied_ = false;
         split_kind_.clear();
@@ -1023,15 +1054,19 @@ public:
 
     // -------------------------- Accumulators / GOSS --------------------------
     void accum_(Node &n) {
-        n.G = 0.0;
-        n.H = 0.0;
+        const int K_ = std::max(n.K, 1);
+        n.G.assign(static_cast<size_t>(K_), 0.0);
+        n.H.assign(static_cast<size_t>(K_), 0.0);
         std::normal_distribution<double> noise(0.0, cfg_.sgld_noise_scale);
         for (int i = n.lo; i < n.hi; ++i) {
             const int r = index_pool_[i];
             double g = (*g_)[r];
             if (cfg_.sgld_enabled) g += noise(rng_);
-            n.G += g;
-            n.H += (*h_)[r];
+            double h = (*h_)[r];
+            for (int c = 0; c < K_; ++c) {
+                n.G[static_cast<size_t>(c)] += g;
+                n.H[static_cast<size_t>(c)] += h;
+            }
         }
         n.C = n.hi - n.lo;
     }
@@ -1046,17 +1081,22 @@ public:
         n.goss_rest_indices_.clear();
     }
 
-    std::pair<double, double> sum_grad_hess_for_rows_(const std::vector<int> &rows) {
-        double G = 0.0;
-        double H = 0.0;
+    // Sum gradients across K classes for multiclass
+    std::pair<std::vector<double>, std::vector<double>> sum_grad_hess_for_rows_(const std::vector<int> &rows) {
+        const int K_ = 1; // scalar input: same gradient per class
+        std::vector<double> G_out(static_cast<size_t>(K_), 0.0);
+        std::vector<double> H_out(static_cast<size_t>(K_), 0.0);
         std::normal_distribution<double> noise(0.0, cfg_.sgld_noise_scale);
         for (int r : rows) {
             double g = (*g_)[r];
             if (cfg_.sgld_enabled) g += noise(rng_);
-            G += g;
-            H += (*h_)[r];
+            double h = (*h_)[r];
+            for (int c = 0; c < K_; ++c) {
+                G_out[static_cast<size_t>(c)] += g;
+                H_out[static_cast<size_t>(c)] += h;
+            }
         }
-        return {G, H};
+        return {G_out, H_out};
     }
 
     bool select_goss_rows_(Node &n) {
@@ -1129,8 +1169,12 @@ public:
         const auto [Gt, Ht] = sum_grad_hess_for_rows_(n.goss_top_indices_);
         const auto [Gr, Hr] = sum_grad_hess_for_rows_(n.goss_rest_indices_);
 
-        n.goss_weighted_G = Gt + n.goss_rest_scale * Gr;
-        n.goss_weighted_H = cfg_.goss.scale_hessian ? (Ht + n.goss_rest_scale * Hr) : (Ht + Hr);
+        n.goss_weighted_G.resize(Gt.size());
+        n.goss_weighted_H.resize(Ht.size());
+        for (size_t c = 0; c < Gt.size(); ++c) {
+            n.goss_weighted_G[c] = Gt[c] + n.goss_rest_scale * Gr[c];
+            n.goss_weighted_H[c] = cfg_.goss.scale_hessian ? (Ht[c] + n.goss_rest_scale * Hr[c]) : (Ht[c] + Hr[c]);
+        }
     }
 
     // -------------------------- Scoring / priority ---------------------------
@@ -1143,23 +1187,61 @@ public:
         if (cfg_.max_delta_step > 0.0) step = std::clamp(step, -cfg_.max_delta_step, cfg_.max_delta_step);
         return std::clamp(step, min_constraint, max_constraint);
     }
+
+    // Multiclass: compute K leaf values (one per class). For K=1, same as leaf_value_scalar_.
+    std::vector<double> leaf_values_(double G, double H, double min_constraint, double max_constraint) const {
+        std::vector<double> out;
+        const int K_ = std::max(cfg_.num_classes - 1, 1);
+        out.resize(static_cast<size_t>(K_));
+        for (int c = 0; c < K_; ++c) {
+            double v = 0.0;
+            if (H + cfg_.lambda_ > 0.0) {
+                v = -splitx::soft(G, cfg_.alpha_) / (H + cfg_.lambda_);
+            }
+            double step = v;
+            if (cfg_.max_delta_step > 0.0) step = std::clamp(step, -cfg_.max_delta_step, cfg_.max_delta_step);
+            out[static_cast<size_t>(c)] = std::clamp(step, min_constraint, max_constraint);
+        }
+        return out;
+    }
     
     double leaf_objective_optimal_(double G, double H) const {
         return -0.5 * splitx::soft(G, cfg_.alpha_) * splitx::soft(G, cfg_.alpha_) / (H + cfg_.lambda_);
     }
 
-    inline std::pair<double, double> node_totals_for_leaf_(const Node &n) const {
-        if (node_uses_goss_(n)) {
-            return {n.goss_weighted_G, n.goss_weighted_H};
+    // Returns per-class G/H sums for multiclass, or {scalar, scalar} for K=1
+    inline std::pair<std::vector<double>, std::vector<double>> node_totals_for_leaf_(const Node &n) const {
+        const int K_ = std::max(n.K, 1);
+        std::vector<double> G_out(static_cast<size_t>(K_), 0.0);
+        std::vector<double> H_out(static_cast<size_t>(K_), 0.0);
+        for (int c = 0; c < K_; ++c) {
+            G_out[static_cast<size_t>(c)] = node_uses_goss_(n) ? n.goss_weighted_G[static_cast<size_t>(c)] : n.G[static_cast<size_t>(c)];
+            H_out[static_cast<size_t>(c)] = node_uses_goss_(n) ? n.goss_weighted_H[static_cast<size_t>(c)] : n.H[static_cast<size_t>(c)];
         }
-        return {n.G, n.H};
+        return {G_out, H_out};
+    }
+
+    // Sum node G/H across K classes
+    inline std::pair<double, double> node_totals_summed_(const Node &n) const {
+        double G = 0.0, H = 0.0;
+        const int K_ = std::max(n.K, 1);
+        for (int c = 0; c < K_; ++c) {
+            G += node_uses_goss_(n) ? n.goss_weighted_G[static_cast<size_t>(c)] : n.G[static_cast<size_t>(c)];
+            H += node_uses_goss_(n) ? n.goss_weighted_H[static_cast<size_t>(c)] : n.H[static_cast<size_t>(c)];
+        }
+        return {G, H};
     }
 
     double priority_(double gain, const Node &nd) const {
         double pr = gain;
         if (cfg_.on_tree.enabled) pr -= cfg_.on_tree.ccp_alpha;
         if (cfg_.leaf_depth_penalty > 0.0) pr /= (1.0 + cfg_.leaf_depth_penalty * static_cast<double>(nd.depth));
-        if (cfg_.leaf_hess_boost > 0.0) pr *= (1.0 + cfg_.leaf_hess_boost * std::max(0.0, nd.H));
+        if (cfg_.leaf_hess_boost > 0.0) {
+            // Use total hessian across classes for multiclass
+            double H_sum = 0.0;
+            for (size_t c = 0; c < nd.H.size(); ++c) H_sum += nd.H[c];
+            pr *= (1.0 + cfg_.leaf_hess_boost * std::max(0.0, H_sum));
+        }
         return pr;
     }
 
@@ -1331,7 +1413,7 @@ public:
 
             if (nd.hist_valid && nd.hist_features == feats && nd.hist_goss_weighted == goss_here) {
                 auto hist = T.hist_pool_ ? T.hist_pool_->get() : std::make_unique<HistPair>();
-                hist->resize(T.total_hist_size_);
+                hist->resize(T.total_hist_size_, T.K_);
                 hist->G             = nd.hist_G;
                 hist->H             = nd.hist_H;
                 hist->C             = nd.hist_C;
@@ -1340,7 +1422,7 @@ public:
             }
 
             auto hist = T.hist_pool_ ? T.hist_pool_->get() : std::make_unique<HistPair>();
-            hist->resize(T.total_hist_size_);
+            hist->resize(T.total_hist_size_, T.K_);
             hist->clear();
 
             if (!goss_here && T.tree_histogram_ && feats == T.tree_features_ && nd.C >= T.cfg_.cache_threshold &&
@@ -1424,9 +1506,10 @@ public:
             }
 
             HistPair top_hist, rest_hist;
-            top_hist.resize(T.total_hist_size_);
+            int K_ = std::max(T.K_, 1);
+            top_hist.resize(T.total_hist_size_, K_);
             top_hist.clear();
-            rest_hist.resize(T.total_hist_size_);
+            rest_hist.resize(T.total_hist_size_, K_);
             rest_hist.clear();
 
             HistogramBuilder builder(T, index_pool);
@@ -1447,8 +1530,15 @@ public:
             auto feats = T.select_features_();
             auto hist  = build_histogram(nd, feats);
 
-            const double Gtot = nd.uses_goss ? nd.goss_weighted_G : nd.G;
-            const double Htot = nd.uses_goss ? nd.goss_weighted_H : nd.H;
+            int K_ = std::max(static_cast<int>(hist->K), 1);
+            std::vector<double> Gtot_vec(static_cast<size_t>(K_), 0.0);
+            std::vector<double> Htot_vec(static_cast<size_t>(K_), 0.0);
+            for (int c = 0; c < K_; ++c) {
+                Gtot_vec[static_cast<size_t>(c)] = nd.uses_goss ? nd.goss_weighted_G[static_cast<size_t>(c)] : nd.G[static_cast<size_t>(c)];
+                Htot_vec[static_cast<size_t>(c)] = nd.uses_goss ? nd.goss_weighted_H[static_cast<size_t>(c)] : nd.H[static_cast<size_t>(c)];
+            }
+            double Gtot = 0.0, Htot = 0.0;
+            for (int c = 0; c < K_; ++c) { Gtot += Gtot_vec[static_cast<size_t>(c)]; Htot += Htot_vec[static_cast<size_t>(c)]; }
 
             foretree::splitx::SplitContext ctx;
             ctx.G         = &hist->G;
@@ -1456,6 +1546,8 @@ public:
             ctx.C         = &hist->C;
             ctx.P         = T.P_;
             ctx.B         = 0;
+            ctx.K         = K_;
+            ctx.total_hist_size = T.total_hist_size_;
             ctx.Gp        = Gtot;
             ctx.Hp        = Htot;
             ctx.Cp        = nd.C;
@@ -1513,12 +1605,20 @@ public:
         }
 
         foretree::splitx::Candidate best_split(const Node &nd, const SplitHyper &hyp, const std::vector<int8_t> *mono) {
-            const double Gtot = nd.uses_goss ? nd.goss_weighted_G : nd.G;
-            const double Htot = nd.uses_goss ? nd.goss_weighted_H : nd.H;
+            int K_ = std::max(static_cast<int>(nd.K), 1);
+            std::vector<double> Gtot_vec(static_cast<size_t>(K_), 0.0);
+            std::vector<double> Htot_vec(static_cast<size_t>(K_), 0.0);
+            for (int c = 0; c < K_; ++c) {
+                Gtot_vec[static_cast<size_t>(c)] = nd.uses_goss ? nd.goss_weighted_G[static_cast<size_t>(c)] : nd.G[static_cast<size_t>(c)];
+                Htot_vec[static_cast<size_t>(c)] = nd.uses_goss ? nd.goss_weighted_H[static_cast<size_t>(c)] : nd.H[static_cast<size_t>(c)];
+            }
+            double Gtot = 0.0, Htot = 0.0;
+            for (int c = 0; c < K_; ++c) { Gtot += Gtot_vec[static_cast<size_t>(c)]; Htot += Htot_vec[static_cast<size_t>(c)]; }
 
             foretree::splitx::SplitContext ctx;
             ctx.P        = T.P_;
             ctx.B        = 0;
+            ctx.K        = K_;
             ctx.Gp       = Gtot;
             ctx.Hp       = Htot;
             ctx.Cp       = nd.C;
@@ -1820,6 +1920,8 @@ public:
         Node ln, rn;
         ln.id    = next_id_++;
         rn.id    = next_id_++;
+        ln.K     = K_;
+        rn.K     = K_;
         ln.depth = nd.depth + 1;
         rn.depth = nd.depth + 1;
         ln.lo    = nd.lo;
@@ -1837,7 +1939,7 @@ public:
             if (mono != 0) {
                 // To compute the exact mid, we'd need the left and right weights, but they aren't computed here cleanly.
                 // We'll approximate the `mid` bound directly using the parent's actual weight, which guarantees safety and simplicity.
-                const double node_weight = leaf_value_scalar_(nd.G, nd.H, nd.min_constraint, nd.max_constraint);
+                const double node_weight = leaf_value_scalar_(nd.G[0], nd.H[0], nd.min_constraint, nd.max_constraint);
                 const double mid_bound   = std::clamp(node_weight, nd.min_constraint, nd.max_constraint);
                 if (mono > 0) {
                     ln.max_constraint = mid_bound;
@@ -1876,8 +1978,14 @@ public:
         nd.goss_rest_indices_.clear();
         nd.goss_rest_scale = 1.0;
 
-        if (sp.feat >= 0 && sp.feat < static_cast<int>(feat_gain_.size()) && std::isfinite(sp.gain))
+        if (sp.feat >= 0 && sp.feat < static_cast<int>(feat_gain_.size()) && std::isfinite(sp.gain)) {
             feat_gain_[sp.feat] += sp.gain;
+            feat_frequency_[sp.feat]++;
+            // Cover = sum of left+right hessian (total node hessian before split)
+            double node_h = 0.0;
+            for (size_t c = 0; c < nd.H.size(); ++c) node_h += nd.H[c];
+            feat_cover_[sp.feat] += node_h;
+        }
 
         if (cfg_.use_sibling_subtract && !node_uses_goss_(nd) && !node_uses_goss_(ln) && !node_uses_goss_(rn)) {
             auto              features = select_features_();
@@ -1915,8 +2023,10 @@ public:
     }
 
     inline double parent_leaf_objective_(const Node &nd) const {
-        const auto [GG, HH] = node_totals_for_leaf_(nd);
-        return leaf_objective_optimal_(GG, HH);
+        const auto [G_vec, H_vec] = node_totals_for_leaf_(nd);
+        double G = 0.0, H = 0.0;
+        for (size_t i = 0; i < G_vec.size(); ++i) { G += G_vec[i]; H += H_vec[i]; }
+        return leaf_objective_optimal_(G, H);
     }
 
     inline bool accept_split_(const Node &nd, const foretree::splitx::Candidate &sp) const {
@@ -1937,11 +2047,13 @@ public:
     }
 
     inline void finalize_leaf_(Node &n) {
-        const auto [GG, HH] = node_totals_for_leaf_(n);
+        const auto [G_vec, H_vec] = node_totals_for_leaf_(n);
+        double G = 0.0, H = 0.0;
+        for (size_t i = 0; i < G_vec.size(); ++i) { G += G_vec[i]; H += H_vec[i]; }
         if (should_use_neural_leaf_(n))
-            create_neural_leaf_(n, GG, HH);
+            create_neural_leaf_(n, G, H);
         else
-            n.leaf_value = leaf_value_scalar_(GG, HH, n.min_constraint, n.max_constraint);
+            n.leaf_values = leaf_values_(G, H, n.min_constraint, n.max_constraint);
     }
 
     // ------------------------------- Growth -----------------------------------
@@ -2095,7 +2207,7 @@ public:
     }
 
     void create_neural_leaf_(Node &n, double GG, double HH) {
-        n.leaf_value = leaf_value_scalar_(GG, HH, n.min_constraint, n.max_constraint);
+        n.leaf_values = leaf_values_(GG, HH, n.min_constraint, n.max_constraint);
         
         if (!cfg_.neural_leaf.enabled) return;
         if (!Xraw_eval_) return;
@@ -2236,13 +2348,19 @@ public:
         oblique_weights_flat_.clear();
         oblique_thresholds_.assign(Nn, std::numeric_limits<double>::quiet_NaN());
         
-        leaf_val_.assign(Nn, 0.0);
+        K_ = std::max(cfg_.num_classes - 1, 1);
+        const size_t Nsz = static_cast<size_t>(Nn);
+        const size_t Ksz = static_cast<size_t>(K_);
+        leaf_val_.assign(Nsz * Ksz, 0.0);
 
         for (auto &n : nodes_) {
             cover_[n.id] = std::max(0, n.C);
             if (n.is_leaf) {
-                is_leaf_[n.id]  = 1;
-                leaf_val_[n.id] = n.leaf_value;
+                is_leaf_[n.id] = 1;
+                const size_t off = static_cast<size_t>(n.id) * Ksz;
+                for (size_t c = 0; c < Ksz; ++c) {
+                    leaf_val_[off + c] = (c < n.leaf_values.size()) ? n.leaf_values[c] : 0.0;
+                }
             } else {
                 is_leaf_[n.id]   = 0;
                 feat_[n.id]      = n.feature;

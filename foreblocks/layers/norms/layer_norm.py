@@ -1,3 +1,10 @@
+"""foreblocks.layers.norms.layer_norm.
+
+This module implements the layer norm pieces for its package.
+It belongs to the normalization layers and normalization helpers area of Foreblocks.
+It exposes classes such as FastLayerNorm, AdaptiveLayerNorm.
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

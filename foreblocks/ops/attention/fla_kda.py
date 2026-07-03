@@ -1,3 +1,10 @@
+"""foreblocks.ops.attention.fla_kda.
+
+This module implements the fla kda pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes functions such as can_use_fla_kda, fla_kda_forward.
+"""
+
 import os
 
 import torch

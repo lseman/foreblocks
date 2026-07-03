@@ -1,3 +1,10 @@
+"""foreblocks.ops.attention.fused_norm_gate.
+
+This module implements the fused norm gate pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes functions such as can_use_fused_rmsnorm_sigmoid_gate, fused_rmsnorm_sigmoid_gate.
+"""
+
 import os
 
 import torch

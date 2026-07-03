@@ -1,3 +1,10 @@
+"""foreblocks.layers.graph.tggc.
+
+This module implements the tggc pieces for its package.
+It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
+It exposes classes such as MovingAverage, SeriesDecomposition, LatentCorrelationLayer, GraphGegenbauerConv.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

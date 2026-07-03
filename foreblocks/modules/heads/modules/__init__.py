@@ -1,3 +1,9 @@
+"""foreblocks.modules.heads.modules.
+
+Package initializer that exposes the public symbols for this namespace.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+"""
+
 from foreblocks.modules.heads.modules.chronos2_embed_head import Chronos2EmbedHead
 from foreblocks.modules.heads.modules.dain_head import DAIN, DAINHead
 from foreblocks.modules.heads.modules.decomposition_head import (

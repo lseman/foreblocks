@@ -1,3 +1,10 @@
+"""foreblocks.ops.attention.fla_gdn2.
+
+This module implements the fla gdn2 pieces for its package.
+It belongs to the attention modules, variants, caches, and utilities area of Foreblocks.
+It exposes functions such as can_use_fla_gdn2, can_use_fla_gdn2_chunk, fla_gdn2_forward, fla_gdn2_chunk_forward.
+"""
+
 import os
 
 import torch

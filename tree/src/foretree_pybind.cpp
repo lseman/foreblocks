@@ -526,7 +526,8 @@ PYBIND11_MODULE(foretree, m) {
         .def_readwrite("oblique_ridge", &TreeConfig::oblique_ridge)
         .def_readwrite("axis_vs_oblique_guard", &TreeConfig::axis_vs_oblique_guard)
         .def_readwrite("interaction_seeded_oblique", &TreeConfig::interaction_seeded_oblique)
-        .def_readwrite("goss", &TreeConfig::goss);
+        .def_readwrite("goss", &TreeConfig::goss)
+        .def_readwrite("num_classes", &TreeConfig::num_classes);
 
     // ---------------- UnifiedTree (binned API) ----------------
     py::class_<UnifiedTree>(m, "UnifiedTree", py::dynamic_attr())
@@ -630,17 +631,25 @@ PYBIND11_MODULE(foretree, m) {
                     pred = self.predict(Xv, N, P, static_cast<const double*>(xr.ptr));
                 }
 
-                if (static_cast<int>(pred.size()) != N) {
-                    throw std::runtime_error("UnifiedTree::predict_binned: expected one scalar prediction per row");
+                // Multiclass support: K = max(num_classes - 1, 1) classes
+                int K = std::max(self.cfg_.num_classes - 1, 1);
+                if (static_cast<int>(pred.size()) != N * K) {
+                    throw std::runtime_error("UnifiedTree::predict_binned: prediction size mismatch");
                 }
 
-                py::array_t<double> out({static_cast<py::ssize_t>(N)});
-                std::memcpy(out.request().ptr, pred.data(), pred.size() * sizeof(double));
-                return out;
+                if (K <= 1) {
+                    py::array_t<double> out({static_cast<py::ssize_t>(N)});
+                    std::memcpy(out.request().ptr, pred.data(), pred.size() * sizeof(double));
+                    return out;
+                } else {
+                    // Multiclass: return N x K matrix
+                    py::array_t<double> out({static_cast<py::ssize_t>(N), static_cast<py::ssize_t>(K)});
+                    std::memcpy(out.request().ptr, pred.data(), pred.size() * sizeof(double));
+                    return out;
+                }
             },
             py::arg("Xb"), py::arg("Xraw") = py::none(),
-            "Predict one scalar value per row from binned features. "
-            "If the tree contains neural leaves, `Xraw` must be provided for correct inference.")
+            "Predict from binned features. Returns (N,) for scalar or (N, K) for multiclass.")
 
         .def(
             "predict_contrib_binned",
@@ -668,14 +677,24 @@ PYBIND11_MODULE(foretree, m) {
                     contrib = self.predict_contrib(Xv, N, P, static_cast<const double*>(xr.ptr));
                 }
 
-                py::array_t<double> out({static_cast<py::ssize_t>(N), static_cast<py::ssize_t>(P + 1)});
-                if (!contrib.empty()) {
-                    std::memcpy(out.request().ptr, contrib.data(), contrib.size() * sizeof(double));
+                int K = std::max(self.cfg_.num_classes - 1, 1);
+                if (K <= 1) {
+                    py::array_t<double> out({static_cast<py::ssize_t>(N), static_cast<py::ssize_t>(P + 1)});
+                    if (!contrib.empty()) {
+                        std::memcpy(out.request().ptr, contrib.data(), contrib.size() * sizeof(double));
+                    }
+                    return out;
+                } else {
+                    // Multiclass: K sets of (P+1) contributions each
+                    py::array_t<double> out({static_cast<py::ssize_t>(N), static_cast<py::ssize_t>(K * (P + 1))});
+                    if (!contrib.empty()) {
+                        std::memcpy(out.request().ptr, contrib.data(), contrib.size() * sizeof(double));
+                    }
+                    return out;
                 }
-                return out;
             },
             py::arg("Xb"), py::arg("Xraw") = py::none(),
-            "Predict TreeSHAP contributions on the raw-margin scale. The last column is the bias term.")
+            "Predict TreeSHAP contributions. Returns (N, P+1) for scalar or (N, K*(P+1)) for multiclass.")
 
         // --- introspection: properties ---
         .def_property_readonly("n_nodes", &UnifiedTree::n_nodes)
@@ -686,6 +705,14 @@ PYBIND11_MODULE(foretree, m) {
         .def("feature_importance_gain",
              [](const UnifiedTree& self) {
                  return self.feature_importance_gain();
+             })
+        .def("feature_importance_cover",
+             [](const UnifiedTree& self) {
+                 return self.feature_importance_cover();
+             })
+        .def("feature_importance_frequency",
+             [](const UnifiedTree& self) {
+                 return self.feature_importance_frequency();
              })
         .def("post_prune_ccp", &UnifiedTree::post_prune_ccp,
              py::arg("ccp_alpha"));

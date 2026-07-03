@@ -83,7 +83,7 @@ class qNoisyEISelector:
             return 0.0
 
         # Filter to max observations for speed
-        obs_filtered = observations[-self.max_obs_for_gp:]
+        obs_filtered = observations[-self.max_obs_for_gp :]
         losses = np.array([o[1] for o in obs_filtered], dtype=float)
 
         # Handle infinite/NaN losses
@@ -96,9 +96,7 @@ class qNoisyEISelector:
         best_loss = float(np.min(losses))
 
         # Compute GP predictive distribution at candidate
-        mu, sigma = self._predict_gp(
-            config, obs_filtered, distance_fn
-        )
+        mu, sigma = self._predict_gp(config, obs_filtered, distance_fn)
 
         # Account for pending evaluations (noisy best)
         pending_mu = 0.0
@@ -119,7 +117,9 @@ class qNoisyEISelector:
         z = (best_loss - mu - pending_mu) / total_noise_sigma
 
         # Expected Improvement = (best - mu - pending) * Phi(z) + sigma * phi(z)
-        ei = (best_loss - mu - pending_mu) * norm.cdf(z) + total_noise_sigma * norm.pdf(z)
+        ei = (best_loss - mu - pending_mu) * norm.cdf(z) + total_noise_sigma * norm.pdf(
+            z
+        )
 
         return float(max(0.0, ei))
 
@@ -176,11 +176,12 @@ class qNoisyEISelector:
             remaining.remove(best_idx)
 
             # Add fantasy observation for next iteration
-            # Use GP predictive mean as the fantasy value
-            mu, _ = self._predict_gp(
-                candidates[best_idx], temp_obs, distance_fn
+            # Add GP predictive noise so selection is not overconfident
+            mu, sigma = self._predict_gp(candidates[best_idx], temp_obs, distance_fn)
+            fantasy_loss = float(mu) + abs(sigma) * float(
+                np.random.default_rng().normal(0, 1)
             )
-            temp_obs.append((dict(candidates[best_idx]), float(mu), None))
+            temp_obs.append((dict(candidates[best_idx]), fantasy_loss, None))
 
         return selected
 
@@ -236,7 +237,11 @@ class qNoisyEISelector:
 
             # Convert back from log space
             mu_linear = float(np.expm1(mu[0]))
-            std_linear = float(std[0]) * abs(mu_linear + 1) / abs(mu[0] + 1e-8) if abs(mu[0]) > 1e-8 else float(std[0])
+            std_linear = (
+                float(std[0]) * abs(mu_linear + 1) / abs(mu[0] + 1e-8)
+                if abs(mu[0]) > 1e-8
+                else float(std[0])
+            )
 
             return max(mu_linear, 0.0), max(std_linear, 1e-6)
         except Exception:
@@ -381,9 +386,10 @@ class qNoisyEISelector:
         for cfg in configs:
             try:
                 dist = sum(
-                    abs(float(cfg.get(p, 0)) - float(c.get(p, 0)))
+                    abs(float(cfg.get(p, 0)) - float(config.get(p, 0)))
                     for p in config
-                    if isinstance(cfg.get(p), (int, float)) and isinstance(config.get(p), (int, float))
+                    if isinstance(cfg.get(p), (int, float))
+                    and isinstance(config.get(p), (int, float))
                 )
             except (TypeError, ValueError):
                 dist = 1.0
@@ -399,6 +405,6 @@ class qNoisyEISelector:
         weights = weights / weights.sum()
 
         mu = float(np.sum(weights * near_losses))
-        sigma = float(np.sqrt(np.sum(weights * (near_losses - mu)**2)))
+        sigma = float(np.sqrt(np.sum(weights * (near_losses - mu) ** 2)))
 
         return max(mu, 0.0), max(sigma, 1e-6)

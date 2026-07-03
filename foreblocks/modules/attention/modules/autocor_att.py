@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.modules.autocor_att.
+
+This module implements the autocor att pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as AutoCorrelation, AutoCorrelationLayer.
+"""
+
 import math
 
 import torch

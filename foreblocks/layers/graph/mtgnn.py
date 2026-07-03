@@ -1,3 +1,10 @@
+"""foreblocks.layers.graph.mtgnn.
+
+This module implements the mtgnn pieces for its package.
+It belongs to the graph and spatio-temporal neural-network layers area of Foreblocks.
+It exposes classes such as MTGNNGraphConstructor, MTGNNProp, MTGNNMixProp, MTGNNDilatedInception.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

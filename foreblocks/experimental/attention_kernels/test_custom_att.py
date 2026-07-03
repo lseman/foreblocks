@@ -1,3 +1,10 @@
+"""foreblocks.experimental.attention_kernels.test_custom_att.
+
+Smoke and correctness tests for custom attention kernels.
+It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
+It exposes functions such as ref, run.
+"""
+
 import math
 import sys
 from pathlib import Path

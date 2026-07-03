@@ -1,3 +1,10 @@
+"""foreblocks.core.training.nas.
+
+This module implements the nas pieces for its package.
+It belongs to the training-loop, optimizer, scheduler, and loss utilities area of Foreblocks.
+It exposes classes such as NASHelper.
+"""
+
 from __future__ import annotations
 
 import logging

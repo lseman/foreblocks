@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.modules.linear_att.rda.
+
+This module implements the rda pieces for its package.
+It belongs to the linear and gated attention backends area of Foreblocks.
+It exposes classes such as RDABackend.
+"""
+
 from __future__ import annotations
 
 from typing import Optional

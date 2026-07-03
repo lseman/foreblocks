@@ -11,6 +11,8 @@ from sklearn.utils.validation import check_is_fitted
 from foretools.fengineer.filters import CorrelationFilter
 from foretools.fengineer.selectors import FeatureSelector
 from foretools.fengineer.transformers import (
+    AutoencoderConfig,
+    AutoencoderTransformer,
     BinningTransformer,
     CategoricalTransformer,
     ClusteringTransformer,
@@ -22,6 +24,7 @@ from foretools.fengineer.transformers import (
     RandomFourierFeaturesTransformer,
     StatisticalTransformer,
 )
+from foretools.fengineer.transformers.autoencoder import AutoencoderConfig as _AEConfig
 
 
 # Enhanced SOTA Feature Engineer with RFECV integration
@@ -45,6 +48,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         self.correlation_filter_ = None
         self.selector_ = None
         self.final_scaler_ = None
+        self.autoencoder_ = None
         self.output_features_ = []
         self.output_fill_values_ = pd.Series(dtype="float64")
         self.fitted_ = False
@@ -161,7 +165,62 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                 ClusteringTransformer(self.config),
             ),
         }
+        # Autoencoder (if enabled) - special: compresses all features into latent space
+        if getattr(self.config, "use_autoencoder", False):
+            try:
+                ae_latent_dim = int(getattr(self.config, "ae_latent_dim", 8))
+            except Exception:
+                ae_latent_dim = 8
+            ae_encoder_raw = self._parse_list_str(
+                getattr(self.config, "ae_encoder_arch", "64,32")
+            )
+            ae_decoder_raw = self._parse_list_str(
+                getattr(self.config, "ae_decoder_arch", "32,64")
+            )
+
+            # Ensure encoder ends with latent_dim
+            if ae_encoder_raw and ae_encoder_raw[-1] != ae_latent_dim:
+                ae_encoder_raw = ae_encoder_raw + [ae_latent_dim]
+            elif not ae_encoder_raw:
+                ae_encoder_raw = [
+                    max(8, ae_latent_dim * 4),
+                    max(4, ae_latent_dim * 2),
+                    ae_latent_dim,
+                ]
+
+            # Ensure decoder starts from latent_dim and ends at input_dim
+            if ae_decoder_raw and ae_decoder_raw[0] != ae_latent_dim:
+                ae_decoder_raw = [ae_latent_dim] + ae_decoder_raw
+
+            ae_cfg = AutoencoderConfig(
+                enabled=True,
+                latent_dim=ae_latent_dim,
+                encoder_arch=ae_encoder_raw,
+                decoder_arch=ae_decoder_raw,
+                activation=getattr(self.config, "ae_activation", "relu"),
+                dropout=getattr(self.config, "ae_dropout", 0.1),
+                learning_rate=getattr(self.config, "ae_learning_rate", 1e-3),
+                batch_size=getattr(self.config, "ae_batch_size", 64),
+                epochs=getattr(self.config, "ae_epochs", 50),
+                patience=getattr(self.config, "ae_patience", 10),
+                max_features=getattr(self.config, "ae_max_features", 100),
+                min_features=getattr(self.config, "ae_min_features", 4),
+                random_state=getattr(self.config, "random_state", 42),
+            )
+            registry["autoencoder"] = (
+                True,
+                AutoencoderTransformer(self.config, ae_cfg),
+            )
+
         return {name: tf for name, (enabled, tf) in registry.items() if enabled}
+
+    @staticmethod
+    def _parse_list_str(val: str | int | float) -> list[int]:
+        try:
+            s = str(val).strip()
+            return [int(x.strip()) for x in s.split(",") if x.strip()]
+        except Exception:
+            return [64, 32]
 
     @staticmethod
     def _transform_with_optional_y(
@@ -198,8 +257,13 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                 transformer.fit(current_X, y)
                 transformed = self._transform_with_optional_y(transformer, current_X, y)
                 if transformed is not None and not transformed.empty:
-                    current_X = pd.concat([current_X, transformed], axis=1)
-                    self.feature_stats_[name] = transformed.shape[1]
+                    # Autoencoder replaces the entire feature matrix
+                    if isinstance(transformer, (AutoencoderTransformer,)):
+                        current_X = transformed
+                        self.feature_stats_[name] = transformed.shape[1]
+                    else:
+                        current_X = pd.concat([current_X, transformed], axis=1)
+                        self.feature_stats_[name] = transformed.shape[1]
                 else:
                     self.feature_stats_[name] = 0
             except Exception as exc:
@@ -286,26 +350,37 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             try:
                 transformed = transformer.transform(current_X)
                 if transformed is not None and not transformed.empty:
-                    current_X = pd.concat([current_X, transformed], axis=1)
+                    # Autoencoder replaces the entire feature matrix
+                    if isinstance(transformer, (AutoencoderTransformer,)):
+                        current_X = transformed
+                    else:
+                        current_X = pd.concat([current_X, transformed], axis=1)
             except Exception as e:
                 self.logger.warning(f"Transform failed for {name}: {e}")
 
-        # Apply correlation filtering
-        if self.correlation_filter_ is not None:
-            current_X = self.correlation_filter_.transform(current_X)
+        # Autoencoder replaces the entire matrix, skip correlation filter + selection
+        has_autoencoder = any(
+            isinstance(t, (AutoencoderTransformer,))
+            for t in self.transformers_.values()
+        )
 
-        # Apply feature selection
-        if self.selector_ is not None:
-            selected_features = self.selector_.get_selected_features()
-            if selected_features:
-                missing_selected = [
-                    c for c in selected_features if c not in current_X.columns
-                ]
-                if missing_selected:
-                    current_X = current_X.copy()
-                    for col in missing_selected:
-                        current_X[col] = np.nan
-                current_X = current_X[selected_features]
+        if not has_autoencoder:
+            # Apply correlation filtering
+            if self.correlation_filter_ is not None:
+                current_X = self.correlation_filter_.transform(current_X)
+
+            # Apply feature selection
+            if self.selector_ is not None:
+                selected_features = self.selector_.get_selected_features()
+                if selected_features:
+                    missing_selected = [
+                        c for c in selected_features if c not in current_X.columns
+                    ]
+                    if missing_selected:
+                        current_X = current_X.copy()
+                        for col in missing_selected:
+                            current_X[col] = np.nan
+                    current_X = current_X[selected_features]
 
         # Enforce fitted output schema/order for robust inference on small/unseen batches.
         if self.output_features_:

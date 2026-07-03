@@ -59,9 +59,9 @@ class FloatModel(BaseParamModel):
             if self.prior_w > 0 and self.rng.random() < self.prior_w:
                 x = self.sample_prior_model_space(self.param)
             elif self.kind == "single_float":
-                x = float(
-                    self.rng.normal(loc=self.mu, scale=max(1.0, self.min_bandwidth))
-                )
+                lo, hi = self.float_bounds(self.param)
+                domain = max(1e-6, hi - lo)
+                x = float(self.rng.normal(loc=self.mu, scale=domain * 0.1))
             else:
                 x = self.sample_mixture_1d(self.vals, float(self.bw), self.w)
 
@@ -145,7 +145,8 @@ class IntModel(BaseParamModel):
             if self.prior_w > 0 and self.rng.random() < self.prior_w:
                 x = self.sample_prior_model_space(self.param)
             elif self.kind == "single_int":
-                x = float(self.rng.normal(loc=self.mu, scale=5.0))
+                domain = max(1.0, float(self.hi - self.lo))
+                x = float(self.rng.normal(loc=self.mu, scale=max(1.0, domain * 0.1)))
             else:
                 x = self.sample_mixture_1d(self.vals, float(self.bw), self.w)
 
@@ -159,7 +160,8 @@ class IntModel(BaseParamModel):
 
         val = float(x)
         if self.kind == "single_int":
-            log_kde = norm.logpdf(val, loc=self.mu, scale=5.0)
+            domain = max(1.0, float(self.hi - self.lo))
+            log_kde = norm.logpdf(val, loc=self.mu, scale=max(1.0, domain * 0.1))
         else:
             centers = self.vals
             bw = float(self.bw)

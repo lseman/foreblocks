@@ -1,3 +1,10 @@
+"""foreblocks.layers.norms.rms_norm.
+
+This module implements the rms norm pieces for its package.
+It belongs to the normalization layers and normalization helpers area of Foreblocks.
+It exposes classes such as RMSNorm, AdaptiveRMSNorm.
+"""
+
 import torch
 import torch.nn as nn
 

@@ -1,3 +1,10 @@
+"""foreblocks.modules.attention.modules.frequency_att.
+
+This module implements the frequency att pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as FourierModeSelector, FourierBlock, FrequencyAttention.
+"""
+
 from typing import Literal
 
 import torch

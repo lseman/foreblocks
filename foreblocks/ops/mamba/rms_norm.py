@@ -1,3 +1,10 @@
+"""foreblocks.ops.mamba.rms_norm.
+
+This module implements the rms norm pieces for its package.
+It belongs to the Mamba and state-space operator kernels area of Foreblocks.
+It exposes functions such as rms_norm_fallback, rms_norm.
+"""
+
 from __future__ import annotations
 
 import torch

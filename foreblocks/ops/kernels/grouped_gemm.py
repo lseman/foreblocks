@@ -1,3 +1,10 @@
+"""foreblocks.ops.kernels.grouped_gemm.
+
+This module implements the grouped gemm pieces for its package.
+It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
+It exposes functions such as grouped_mm_varM.
+"""
+
 # grouped_gemm.py
 # -----------------------------------------------------------------------------
 # Grouped GEMM (Triton) for packed MoE segments with variable M per expert.

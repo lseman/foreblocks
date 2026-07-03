@@ -1,3 +1,10 @@
+"""foreblocks.modules.moe.experts.moe_utils.
+
+This module implements the moe utils pieces for its package.
+It belongs to the expert routing, dispatch, and expert-layer implementations area of Foreblocks.
+It exposes functions such as maybe_compile, autocast_bf16_enabled, supports_grouped_prepacked, optimized_topk_routing.
+"""
+
 from __future__ import annotations
 
 import inspect

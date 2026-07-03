@@ -1,3 +1,10 @@
+"""foreblocks.experimental.attention_kernels.bench.
+
+Benchmark entry points and measurement helpers.
+It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
+It exposes functions such as bench_case, main.
+"""
+
 import argparse
 import sys
 import time

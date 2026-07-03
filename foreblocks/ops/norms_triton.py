@@ -1,3 +1,9 @@
+"""foreblocks.ops.norms_triton.
+
+This module implements the norms triton pieces for its package.
+It belongs to the low-level optimized operations and kernel wrappers area of Foreblocks.
+"""
+
 # triton_backend.py - backward-compatibility shim
 # Triton norm kernels have been moved to foreblocks/transformer/kernels/.
 # Import from the canonical locations directly:

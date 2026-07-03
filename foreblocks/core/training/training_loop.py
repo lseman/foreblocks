@@ -105,6 +105,7 @@ def backward_step(
     total_batches: int,
     scaler: Any,
     amp_enabled: bool,
+    scheduler: Any = None,
 ) -> None:
     """Execute the backward pass with gradient accumulation and clipping.
 
@@ -113,6 +114,9 @@ def backward_step(
     ``loss.backward()`` + ``optimizer.step()`` is used.  The optimizer
     is only stepped when the gradient-accumulation boundary is reached
     or the last batch is processed.
+
+    If a step-level scheduler (e.g., WarmupCosineLR) is provided, it is
+    stepped immediately after the optimizer step.
     """
     loss = loss / config.gradient_accumulation_steps
 
@@ -131,6 +135,8 @@ def backward_step(
                 )
             scaler.step(optimizer)
             scaler.update()
+            if scheduler is not None:
+                scheduler.step()
             optimizer.zero_grad(set_to_none=True)
     else:
         loss.backward()
@@ -143,6 +149,8 @@ def backward_step(
                     model.parameters(), clip_val
                 )
             optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
 
@@ -167,6 +175,7 @@ def train_epoch(
     forward_pass_fn: Any = forward_pass,
     backward_step_fn: Any = backward_step,
     device: torch.device = torch.device("cpu"),
+    scheduler: Any = None,
 ) -> tuple[float, dict[str, float], int]:
     """Train for one epoch.  Returns ``(total_loss, avg_components, batch_idx)``.
 
@@ -228,7 +237,7 @@ def train_epoch(
             amp_enabled = getattr(config, "use_amp", False) and device.type == "cuda"
             backward_step_fn(
                 loss, model, config, optimizer, batch_idx, total_batches, scaler,
-                amp_enabled,
+                amp_enabled, scheduler=scheduler,
             )
             total_loss += float(loss.detach())
             global_step_ref["step"] = global_step_ref.get("step", 0) + 1

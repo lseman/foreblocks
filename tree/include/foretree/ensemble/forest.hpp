@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -91,7 +92,12 @@ inline void bulk_iota(Context &ctx, int n, F &&fn) {
 // ============================================================================
 struct ForeForestConfig {
     enum class Mode { Bagging, GBDT, FWBoost } mode                = Mode::Bagging;
-    enum class Objective { SquaredError, BinaryLogloss, BinaryFocalLoss, HuberError } objective = Objective::SquaredError;
+    enum class Objective { SquaredError, BinaryLogloss, BinaryFocalLoss, HuberError, QuantileError } objective = Objective::SquaredError;
+    double quantile_tau = 0.5;  // Quantile regression level (0-1)
+    int    num_classes    = 1;  // >1 => multiclass C-1 output
+    double scale_pos_weight = 1.0;  // Weight for positive class in binary
+    ClassWeight class_weight = ClassWeight::None;  // Class balancing strategy
+    std::vector<double> custom_class_weights;  // Manual per-class weights (size = num_classes)
 
     int      n_estimators  = 100;
     double   learning_rate = 0.1;
@@ -331,21 +337,62 @@ public:
         if (P != P_) throw std::invalid_argument("ForeForest: P mismatch");
 
         auto pr = ghs_->prebin_matrix(X, N, P);
-        std::vector<double> out(static_cast<size_t>(N) * static_cast<size_t>(P + 1), 0.0);
+        int K_ = std::max(cfg_.num_classes - 1, 1);
+        
+        if (K_ <= 1) {
+            // Scalar path: P+1 contributions
+            std::vector<double> out(static_cast<size_t>(N) * static_cast<size_t>(P + 1), 0.0);
+            std::vector<double> contrib;
+
+            for (size_t t = 0; t < trees_.size(); ++t) {
+                const double wt = tree_weights_[t];
+                contrib = trees_[t].predict_contrib(*pr.first, N, P, X);
+                for (size_t i = 0; i < out.size(); ++i) out[i] += wt * contrib[i];
+            }
+
+            if (cfg_.mode == ForeForestConfig::Mode::Bagging && !trees_.empty()) {
+                const double invT = 1.0 / static_cast<double>(trees_.size());
+                for (double &v : out) v *= invT;
+            } else if (cfg_.mode == ForeForestConfig::Mode::GBDT || cfg_.mode == ForeForestConfig::Mode::FWBoost) {
+                for (int i = 0; i < N; ++i) {
+                    out[static_cast<size_t>(i) * static_cast<size_t>(P + 1) + static_cast<size_t>(P)] += base_score_;
+                }
+            }
+
+            return out;
+        }
+        
+        // Multiclass: K*(P+1) per sample
+        std::vector<double> out(static_cast<size_t>(N) * static_cast<size_t>(K_) * static_cast<size_t>(P + 1), 0.0);
         std::vector<double> contrib;
 
         for (size_t t = 0; t < trees_.size(); ++t) {
             const double wt = tree_weights_[t];
+            int tree_class = static_cast<int>(t) % K_;  // round-robin
             contrib = trees_[t].predict_contrib(*pr.first, N, P, X);
-            for (size_t i = 0; i < out.size(); ++i) out[i] += wt * contrib[i];
+            // Accumulate into class tree_class's SHAP block
+            for (int i = 0; i < N; ++i) {
+                for (int j = 0; j <= P; ++j) {
+                    size_t out_idx = static_cast<size_t>(i) * static_cast<size_t>(K_) * static_cast<size_t>(P + 1)
+                                   + static_cast<size_t>(tree_class) * static_cast<size_t>(P + 1)
+                                   + static_cast<size_t>(j);
+                    out[out_idx] += wt * contrib[static_cast<size_t>(i) * static_cast<size_t>(P + 1) + static_cast<size_t>(j)];
+                }
+            }
         }
 
         if (cfg_.mode == ForeForestConfig::Mode::Bagging && !trees_.empty()) {
             const double invT = 1.0 / static_cast<double>(trees_.size());
             for (double &v : out) v *= invT;
         } else if (cfg_.mode == ForeForestConfig::Mode::GBDT || cfg_.mode == ForeForestConfig::Mode::FWBoost) {
+            // Add base_score to bias (last element) of each class
             for (int i = 0; i < N; ++i) {
-                out[static_cast<size_t>(i) * static_cast<size_t>(P + 1) + static_cast<size_t>(P)] += base_score_;
+                for (int c = 0; c < K_; ++c) {
+                    size_t bias_idx = static_cast<size_t>(i) * static_cast<size_t>(K_) * static_cast<size_t>(P + 1)
+                                    + static_cast<size_t>(c) * static_cast<size_t>(P + 1)
+                                    + static_cast<size_t>(P);
+                    out[bias_idx] += base_score_;
+                }
             }
         }
 
@@ -366,6 +413,28 @@ public:
         }
         return agg;
     }
+    // Cover: sum of hessian (weight) at nodes using each feature, weighted by tree weight
+    std::vector<double> feature_importance_cover() const {
+        std::vector<double> agg(P_, 0.0);
+        for (size_t t = 0; t < trees_.size(); ++t) {
+            const double wt = tree_weights_[t];
+            const auto  &c  = trees_[t].feature_importance_cover();
+            const int    m  = std::min<int>(P_, (int)c.size());
+            for (int j = 0; j < m; ++j) agg[j] += wt * c[j];
+        }
+        return agg;
+    }
+    // Frequency: count of splits using each feature, weighted by tree weight
+    std::vector<int> feature_importance_frequency() const {
+        std::vector<int> agg(P_, 0);
+        for (size_t t = 0; t < trees_.size(); ++t) {
+            const double wt = tree_weights_[t];
+            const auto  &f  = trees_[t].feature_importance_frequency();
+            const int    m  = std::min<int>(P_, (int)f.size());
+            for (int j = 0; j < m; ++j) agg[j] += static_cast<int>(wt * f[j]);
+        }
+        return agg;
+    }
 
     int                        size() const { return (int)trees_.size(); }
     const std::vector<double> &train_metric_history() const { return train_metric_history_; }
@@ -377,6 +446,7 @@ public:
         if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) return "logloss";
         if (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) return "focal_loss";
         if (cfg_.objective == ForeForestConfig::Objective::HuberError) return "huber_loss";
+        if (cfg_.objective == ForeForestConfig::Objective::QuantileError) return "quantile_loss";
         return "mse";
     }
 
@@ -431,6 +501,10 @@ private:
             cfg_.objective != ForeForestConfig::Objective::SquaredError) {
             throw std::invalid_argument("ForeForest: FWBoost currently supports SquaredError objective only");
         }
+        if (cfg_.objective == ForeForestConfig::Objective::QuantileError && cfg_.mode != ForeForestConfig::Mode::GBDT) {
+            throw std::invalid_argument("ForeForest: QuantileError requires GBDT mode");
+        }
+        if (cfg_.quantile_tau <= 0.0 || cfg_.quantile_tau >= 1.0) throw std::invalid_argument("ForeForest: quantile_tau must be in (0, 1)");
         if (cfg_.efb_enabled && cfg_.tree_cfg.split_mode != TreeConfig::SplitMode::Histogram) {
             throw std::invalid_argument("ForeForest: EFB currently supports histogram split mode only");
         }
@@ -611,6 +685,74 @@ private:
         return z / (1.0 + z);
     }
 
+    // Compute per-sample weights based on class_weight setting
+    std::vector<double> compute_sample_weights_(const double *y, int n) const {
+        std::vector<double> w((size_t)n, 1.0);
+        int K_ = std::max(cfg_.num_classes - 1, 1);
+        bool is_binary = (K_ <= 1) || (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) 
+                        || (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss);
+        
+        if (cfg_.class_weight == ClassWeight::None) {
+            // Only apply scale_pos_weight if set
+            if (cfg_.scale_pos_weight != 1.0 && is_binary) {
+                for (int i = 0; i < n; ++i) {
+                    w[static_cast<size_t>(i)] = (y[i] >= 0.5) ? cfg_.scale_pos_weight : 1.0;
+                }
+            }
+            return w;
+        }
+        
+        if (cfg_.class_weight == ClassWeight::Balanced || cfg_.class_weight == ClassWeight::Auto) {
+            if (is_binary) {
+                // Compute n_pos, n_neg
+                int n_pos = 0, n_neg = 0;
+                for (int i = 0; i < n; ++i) {
+                    if (y[i] >= 0.5) n_pos++; else n_neg++;
+                }
+                int total = n_pos + n_neg;
+                if (total > 0 && n_pos > 0 && n_neg > 0) {
+                    double w_pos = static_cast<double>(total) / (2.0 * n_pos);   // lighter weight for majority
+                    double w_neg = static_cast<double>(total) / (2.0 * n_neg);   // heavier weight for minority
+                    for (int i = 0; i < n; ++i) {
+                        w[static_cast<size_t>(i)] = (y[i] >= 0.5) ? w_pos : w_neg;
+                    }
+                }
+            } else {
+                // Multiclass: inverse frequency
+                std::vector<int> class_counts((size_t)K_, 0);
+                for (int i = 0; i < n; ++i) {
+                    int c = static_cast<int>(y[i]);
+                    if (c >= 0 && c < K_) class_counts[static_cast<size_t>(c)]++;
+                }
+                for (int i = 0; i < n; ++i) {
+                    int c = static_cast<int>(y[i]);
+                    if (c >= 0 && c < K_ && class_counts[static_cast<size_t>(c)] > 0) {
+                        w[static_cast<size_t>(i)] = static_cast<double>(n) / (static_cast<double>(K_) * static_cast<double>(class_counts[static_cast<size_t>(c)]));
+                    }
+                }
+            }
+        } else if (cfg_.class_weight == ClassWeight::Balanced && cfg_.scale_pos_weight != 1.0 && is_binary) {
+            // Combine: use balanced weighting but scale_pos_weight overrides positive class
+            int n_pos = 0, n_neg = 0;
+            for (int i = 0; i < n; ++i) { if (y[i] >= 0.5) n_pos++; else n_neg++; }
+            int total = n_pos + n_neg;
+            double w_pos = static_cast<double>(total) / (2.0 * n_pos);
+            double w_neg = static_cast<double>(total) / (2.0 * n_neg);
+            for (int i = 0; i < n; ++i) {
+                w[static_cast<size_t>(i)] = (y[i] >= 0.5) ? cfg_.scale_pos_weight : w_neg;
+            }
+        } else if (!cfg_.custom_class_weights.empty()) {
+            // Manual weights
+            for (int i = 0; i < n; ++i) {
+                int c = static_cast<int>(y[i]);
+                if (c >= 0 && c < static_cast<int>(cfg_.custom_class_weights.size())) {
+                    w[static_cast<size_t>(i)] = cfg_.custom_class_weights[static_cast<size_t>(c)];
+                }
+            }
+        }
+        return w;
+    }
+
     double compute_base_score_(const double *y, int n) const {
         if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss || cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) {
             double p = std::accumulate(y, y + n, 0.0) / std::max(1, n);
@@ -625,16 +767,28 @@ private:
     }
 
     void compute_grad_hess_(const double *y, int n, const std::vector<double> &F_ref, std::vector<double> &g,
-                            std::vector<double> &h) {
+                            std::vector<double> &h) const {
         if ((int)F_ref.size() != n) throw std::invalid_argument("ForeForest: F_ref size mismatch");
         if ((int)g.size() != n || (int)h.size() != n)
             throw std::invalid_argument("ForeForest: gradient/hessian buffer size mismatch");
 
+        // Compute per-sample weights
+        std::vector<double> sw = compute_sample_weights_(y, n);
+        
+        // Check if any weighting is needed
+        bool needs_weight = std::any_of(sw.begin(), sw.end(), [](double w) { return w != 1.0; });
+        
         if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
             execx::bulk_iota(ctx_, n, [&](int i) {
                 const double p = sigmoid_(F_ref[i]);
-                g[i]           = p - y[i];
-                h[i]           = std::max(1e-12, p * (1.0 - p));
+                double gw = p - y[i];
+                double hw = std::max(1e-12, p * (1.0 - p));
+                if (needs_weight) {
+                    gw *= sw[static_cast<size_t>(i)];
+                    hw *= sw[static_cast<size_t>(i)];
+                }
+                g[static_cast<size_t>(i)] = gw;
+                h[static_cast<size_t>(i)] = hw;
             });
             return;
         }
@@ -649,9 +803,14 @@ private:
                 
                 // Gradient of Focal Loss wrt log-odds F_ref
                 // This is a simplified derivation for standard focal loss.
-                g[i] = mod * (p - yi) - gamma * std::pow(1.0 - p_t, gamma - 1.0) * p * (1.0 - p) * (yi * (1.0 - p) - (1.0 - yi) * p) * std::log(std::max(1e-12, p_t));
-                // Approximation for Hessian to ensure positive definiteness and stability:
-                h[i] = std::max(1e-5, mod * p * (1.0 - p)); 
+                double gw = mod * (p - yi) - gamma * std::pow(1.0 - p_t, gamma - 1.0) * p * (1.0 - p) * (yi * (1.0 - p) - (1.0 - yi) * p) * std::log(std::max(1e-12, p_t));
+                double hw = std::max(1e-5, mod * p * (1.0 - p));
+                if (needs_weight) {
+                    gw *= sw[static_cast<size_t>(i)];
+                    hw *= sw[static_cast<size_t>(i)];
+                }
+                g[static_cast<size_t>(i)] = gw;
+                h[static_cast<size_t>(i)] = hw;
             });
             return;
         }
@@ -660,28 +819,102 @@ private:
             const double delta = cfg_.huber_delta;
             execx::bulk_iota(ctx_, n, [&](int i) {
                 const double d = F_ref[i] - y[i];
+                double gw, hw;
                 if (std::abs(d) <= delta) {
-                    g[i] = d;
-                    h[i] = 1.0;
+                    gw = d;
+                    hw = 1.0;
                 } else {
-                    g[i] = delta * (d > 0 ? 1.0 : -1.0);
-                    // Hessian for Huber outside delta is 0, but we use a small epsilon for tree splitting stability
-                    h[i] = 1e-4; 
+                    gw = delta * (d > 0 ? 1.0 : -1.0);
+                    hw = 1e-4;
                 }
+                if (needs_weight) {
+                    gw *= sw[static_cast<size_t>(i)];
+                    hw *= sw[static_cast<size_t>(i)];
+                }
+                g[static_cast<size_t>(i)] = gw;
+                h[static_cast<size_t>(i)] = hw;
+            });
+            return;
+        }
+        
+        if (cfg_.objective == ForeForestConfig::Objective::QuantileError) {
+            const double tau = cfg_.quantile_tau;
+            execx::bulk_iota(ctx_, n, [&](int i) {
+                const double d = y[i] - F_ref[i];
+                double gw = (d >= 0.0) ? (tau - 1.0) : tau;
+                double hw = std::max(1e-5, tau * (1.0 - tau));
+                if (needs_weight) {
+                    gw *= sw[static_cast<size_t>(i)];
+                    hw *= sw[static_cast<size_t>(i)];
+                }
+                g[static_cast<size_t>(i)] = gw;
+                h[static_cast<size_t>(i)] = hw;
             });
             return;
         }
 
         execx::bulk_iota(ctx_, n, [&](int i) {
-            g[i] = F_ref[i] - y[i];
-            h[i] = 1.0;
+            double gw = F_ref[i] - y[i];
+            double hw = 1.0;
+            if (needs_weight) {
+                gw *= sw[static_cast<size_t>(i)];
+                hw *= sw[static_cast<size_t>(i)];
+            }
+            g[static_cast<size_t>(i)] = gw;
+            h[static_cast<size_t>(i)] = hw;
         });
     }
 
     void compute_grad_hess_(const double *y, int n, double scalar_F, std::vector<double> &g,
-                            std::vector<double> &h) {
+                            std::vector<double> &h) const {
         std::vector<double> F((size_t)n, scalar_F);
         compute_grad_hess_(y, n, F, g, h);
+    }
+
+    // Multiclass: compute gradients for one class c (one-vs-rest)
+    void compute_grad_hess_multiclass_(const double *y, int n, const std::vector<double> &F_all,
+                                       int class_c, std::vector<double> &g, std::vector<double> &h,
+                                       std::vector<double> &prob_c_out) const {
+        int K_ = std::max(cfg_.num_classes - 1, 1);
+        if (K_ <= 1) {
+            compute_grad_hess_(y, n, F_all.empty() ? 0.0 : F_all[0], g, h);
+            return;
+        }
+        // Compute sample weights
+        std::vector<double> sw = compute_sample_weights_(y, n);
+        bool needs_weight = std::any_of(sw.begin(), sw.end(), [](double w) { return w != 1.0; });
+        
+        // For multiclass: softmax over K-1 explicit classes + implicit Kth class
+        g.assign(static_cast<size_t>(n), 0.0);
+        h.assign(static_cast<size_t>(n), 0.0);
+        prob_c_out.assign(static_cast<size_t>(n), 0.0);
+
+        for (int i = 0; i < n; ++i) {
+            // Compute softmax: exp(F_c) / (sum exp(F_j) + 1) for Kth class
+            double max_f = -std::numeric_limits<double>::infinity();
+            for (int c = 0; c < K_; ++c) {
+                max_f = std::max(max_f, F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)]);
+            }
+            double sum_exp = 0.0;
+            for (int c = 0; c < K_; ++c) {
+                sum_exp += std::exp(F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] - max_f);
+            }
+            sum_exp += 1.0; // implicit Kth class
+            double log_sum_exp = std::log(sum_exp) + max_f;
+            double p_c = std::exp(F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(class_c)] - log_sum_exp);
+            prob_c_out[static_cast<size_t>(i)] = p_c;
+            
+            // Target: 1 if y == class_c, 0 otherwise (for one-vs-rest)
+            double target = (static_cast<int>(y[i]) == class_c) ? 1.0 : 0.0;
+            double gw = p_c - target;
+            double hw = std::max(1e-12, p_c * (1.0 - p_c));
+            if (needs_weight) {
+                gw *= sw[static_cast<size_t>(i)];
+                hw *= sw[static_cast<size_t>(i)];
+            }
+            g[static_cast<size_t>(i)] = gw;
+            h[static_cast<size_t>(i)] = hw;
+        }
     }
 
     TreeConfig make_tree_cfg_() const {
@@ -774,52 +1007,120 @@ private:
                      const std::vector<uint16_t> *Xb_valid, int N_valid, const double *y_valid,
                      const double *Xraw_valid) {
         const int           M = cfg_.n_estimators;
-        std::vector<double> F(N_, base_score_);
+        int K_ = std::max(cfg_.num_classes - 1, 1);
+        
+        if (K_ <= 1) {
+            // Scalar path
+            std::vector<double> F(N_, base_score_);
+            std::vector<double> pred_buffer(N_);
+            const bool          has_valid = (Xb_valid && y_valid && N_valid > 0);
+            std::vector<double> F_valid;
+            std::vector<double> pred_valid_buffer;
+            if (has_valid) {
+                F_valid.assign((size_t)N_valid, base_score_);
+                pred_valid_buffer.resize((size_t)N_valid);
+            }
+            int rounds_without_improve = 0;
+
+            for (int m = 0; m < M; ++m) {
+                std::vector<int>    dropped = select_dropout_trees_();
+                std::vector<double> Fbase   = compute_base_prediction_(F, dropped, pred_buffer);
+
+                const auto &F_ref = dropped.empty() ? F : Fbase;
+                compute_grad_hess_(y, N_, F_ref, g, h);
+
+                std::vector<int> rows = sample_rows_for_gbdt_();
+                uint64_t         seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (m + 1);
+                UnifiedTree      T    = build_tree_(g, h, rows, seed);
+
+                double wt_new = cfg_.learning_rate;
+                if (cfg_.dart_enabled && cfg_.dart_normalize && !dropped.empty()) {
+                    wt_new = apply_dart_normalization_(dropped, F, pred_buffer, has_valid ? &F_valid : nullptr, Xb_valid,
+                                                       N_valid, Xraw_valid, has_valid ? &pred_valid_buffer : nullptr);
+                }
+
+                trees_.push_back(std::move(T));
+                tree_weights_.push_back(wt_new);
+
+                predict_tree_on_binned_(trees_.back(), *codes_, N_, P_, Xraw_neural_, pred_buffer);
+                for (int i = 0; i < N_; ++i) { F[i] += wt_new * pred_buffer[i]; }
+
+                train_metric_history_.push_back(compute_metric_from_margin_(F, y, N_));
+
+                if (has_valid) {
+                    predict_tree_on_binned_(trees_.back(), *Xb_valid, N_valid, P_, Xraw_valid, pred_valid_buffer);
+                    for (int i = 0; i < N_valid; ++i) { F_valid[(size_t)i] += wt_new * pred_valid_buffer[(size_t)i]; }
+
+                    const double valid_metric = compute_metric_from_margin_(F_valid, y_valid, N_valid);
+                    valid_metric_history_.push_back(valid_metric);
+
+                    const bool improved = (valid_metric + cfg_.early_stopping_min_delta) < best_score_;
+                    if (improved) {
+                        best_score_            = valid_metric;
+                        best_iteration_        = (int)trees_.size();
+                        rounds_without_improve = 0;
+                    } else if (cfg_.early_stopping_enabled) {
+                        ++rounds_without_improve;
+                        if (rounds_without_improve >= cfg_.early_stopping_rounds) {
+                            early_stopped_ = true;
+                            break;
+                        }
+                    }
+                } else {
+                    best_iteration_ = (int)trees_.size();
+                }
+            }
+            return;
+        }
+        
+        // Multiclass: K-1 trees per round
+        int rounds = K_ > 1 ? M / K_ : M;
+        std::vector<double> F_all(static_cast<size_t>(N_) * static_cast<size_t>(K_), base_score_);
         std::vector<double> pred_buffer(N_);
+        std::vector<double> prob_c(N_);
         const bool          has_valid = (Xb_valid && y_valid && N_valid > 0);
         std::vector<double> F_valid;
         std::vector<double> pred_valid_buffer;
         if (has_valid) {
-            F_valid.assign((size_t)N_valid, base_score_);
-            pred_valid_buffer.resize((size_t)N_valid);
+            F_valid.assign((size_t)N_valid * static_cast<size_t>(K_), base_score_);
+            pred_valid_buffer.resize(static_cast<size_t>(N_valid));
         }
         int rounds_without_improve = 0;
 
-        for (int m = 0; m < M; ++m) {
-            std::vector<int>    dropped = select_dropout_trees_();
-            std::vector<double> Fbase   = compute_base_prediction_(F, dropped, pred_buffer);
+        for (int r = 0; r < rounds; ++r) {
+            for (int c = 0; c < K_; ++c) {
+                // Compute gradients for class c (one-vs-all)
+                compute_grad_hess_multiclass_(y, N_, F_all, c, g, h, prob_c);
 
-            const auto &F_ref = dropped.empty() ? F : Fbase;
-            compute_grad_hess_(y, N_, F_ref, g, h);
+                std::vector<int> rows = sample_rows_for_gbdt_();
+                uint64_t         seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * ((r * K_ + c) + 1);
+                
+                // Build tree with K=1 (scalar output) but multiclass-aware config
+                TreeConfig tc = make_tree_cfg_();
+                tc.num_classes = 1;
+                tc.rng_seed = seed;
+                UnifiedTree T(tc, ghs_.get());
+                if (Xraw_exact_) { T.set_raw_matrix(Xraw_exact_, Xmiss_exact_); }
+                T.set_raw_for_neural(Xraw_neural_, Xmiss_neural_);
+                T.set_neural_leaf_config(cfg_.neural_cfg);
+                T.fit_with_row_ids(*codes_, N_, P_, g, h, rows);
 
-            std::vector<int> rows = sample_rows_for_gbdt_();
-            uint64_t         seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (m + 1);
-            UnifiedTree      T    = build_tree_(g, h, rows, seed);
+                trees_.push_back(std::move(T));
+                tree_weights_.push_back(cfg_.learning_rate);
 
-            double wt_new = cfg_.learning_rate;
-            if (cfg_.dart_enabled && cfg_.dart_normalize && !dropped.empty()) {
-                wt_new = apply_dart_normalization_(dropped, F, pred_buffer, has_valid ? &F_valid : nullptr, Xb_valid,
-                                                   N_valid, Xraw_valid, has_valid ? &pred_valid_buffer : nullptr);
+                // Update F for this class
+                predict_tree_on_binned_(trees_.back(), *codes_, N_, P_, Xraw_neural_, pred_buffer);
+                for (int i = 0; i < N_; ++i) {
+                    F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] += cfg_.learning_rate * pred_buffer[i];
+                }
             }
 
-            trees_.push_back(std::move(T));
-            tree_weights_.push_back(wt_new);
-
-            predict_tree_on_binned_(trees_.back(), *codes_, N_, P_, Xraw_neural_, pred_buffer);
-            for (int i = 0; i < N_; ++i) { F[i] += wt_new * pred_buffer[i]; }
-
-            train_metric_history_.push_back(compute_metric_from_margin_(F, y, N_));
+            train_metric_history_.push_back(compute_metric_from_margin_(F_all, y, N_));
 
             if (has_valid) {
-                predict_tree_on_binned_(trees_.back(), *Xb_valid, N_valid, P_, Xraw_valid, pred_valid_buffer);
-                for (int i = 0; i < N_valid; ++i) { F_valid[(size_t)i] += wt_new * pred_valid_buffer[(size_t)i]; }
-
-                const double valid_metric = compute_metric_from_margin_(F_valid, y_valid, N_valid);
-                valid_metric_history_.push_back(valid_metric);
-
-                const bool improved = (valid_metric + cfg_.early_stopping_min_delta) < best_score_;
+                const bool improved = false; // Simplified: no early stopping for multiclass yet
                 if (improved) {
-                    best_score_            = valid_metric;
+                    best_score_            = valid_metric_history_.back();
                     best_iteration_        = (int)trees_.size();
                     rounds_without_improve = 0;
                 } else if (cfg_.early_stopping_enabled) {
@@ -1058,76 +1359,184 @@ private:
         return cfg_.learning_rate * new_tree_scale;
     }
 
-    double compute_metric_from_margin_(const std::vector<double> &margin, const double *y, int n) {
-        if (!y || n <= 0 || (int)margin.size() < n) return std::numeric_limits<double>::infinity();
-        if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
-            double loss = 0.0;
-            // Parallel reduction would be ideal, but for now we keep the simple loop with an atomic or std::reduce in C++17.
-            // Given n is large, we can just use a basic loop as it's not the main bottleneck yet.
-            for (int i = 0; i < n; ++i) {
-                const double yi = y[i];
-                const double pi = std::clamp(sigmoid_(margin[(size_t)i]), 1e-12, 1.0 - 1e-12);
-                loss += -(yi * std::log(pi) + (1.0 - yi) * std::log(1.0 - pi));
-            }
-            return loss / std::max(1, n);
-        }
-        
-        if (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) {
-            double loss = 0.0;
-            const double gamma = cfg_.focal_gamma;
-            for (int i = 0; i < n; ++i) {
-                const double yi = y[i];
-                const double pi = std::clamp(sigmoid_(margin[(size_t)i]), 1e-12, 1.0 - 1e-12);
-                const double p_t = yi * pi + (1.0 - yi) * (1.0 - pi);
-                loss += -std::pow(1.0 - p_t, gamma) * std::log(p_t);
-            }
-            return loss / std::max(1, n);
-        }
-        
-        if (cfg_.objective == ForeForestConfig::Objective::HuberError) {
-            double loss = 0.0;
-            const double delta = cfg_.huber_delta;
-            for (int i = 0; i < n; ++i) {
-                const double d = std::abs(margin[(size_t)i] - y[i]);
-                if (d <= delta) {
-                    loss += 0.5 * d * d;
-                } else {
-                    loss += delta * (d - 0.5 * delta);
+    // Scalar overload (backward compat)
+    double compute_metric_from_margin_(const std::vector<double> &margin, const double *y, int n) const {
+        int K_ = std::max(cfg_.num_classes - 1, 1);
+        if (K_ <= 1) {
+            // Scalar: old path
+            if (!y || n <= 0 || (int)margin.size() < n) return std::numeric_limits<double>::infinity();
+            if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
+                double loss = 0.0;
+                for (int i = 0; i < n; ++i) {
+                    const double yi = y[i];
+                    const double pi = std::clamp(sigmoid_(margin[(size_t)i]), 1e-12, 1.0 - 1e-12);
+                    loss += -(yi * std::log(pi) + (1.0 - yi) * std::log(1.0 - pi));
                 }
+                return loss / std::max(1, n);
             }
-            return loss / std::max(1, n);
+            if (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) {
+                double loss = 0.0;
+                const double gamma = cfg_.focal_gamma;
+                for (int i = 0; i < n; ++i) {
+                    const double yi = y[i];
+                    const double pi = std::clamp(sigmoid_(margin[(size_t)i]), 1e-12, 1.0 - 1e-12);
+                    const double p_t = yi * pi + (1.0 - yi) * (1.0 - pi);
+                    loss += -std::pow(1.0 - p_t, gamma) * std::log(p_t);
+                }
+                return loss / std::max(1, n);
+            }
+            if (cfg_.objective == ForeForestConfig::Objective::HuberError) {
+                double loss = 0.0;
+                const double delta = cfg_.huber_delta;
+                for (int i = 0; i < n; ++i) {
+                    const double d = std::abs(margin[(size_t)i] - y[i]);
+                    if (d <= delta) {
+                        loss += 0.5 * d * d;
+                    } else {
+                        loss += delta * (d - 0.5 * delta);
+                    }
+                }
+                return loss / std::max(1, n);
+            }
+            if (cfg_.objective == ForeForestConfig::Objective::QuantileError) {
+                double loss = 0.0;
+                const double tau = cfg_.quantile_tau;
+                for (int i = 0; i < n; ++i) {
+                    const double d = margin[(size_t)i] - y[i];
+                    if (d >= 0.0) {
+                        loss += (1.0 - tau) * d;
+                    } else {
+                        loss += tau * (-d);
+                    }
+                }
+                return loss / std::max(1, n);
+            }
+            double mse = 0.0;
+            for (int i = 0; i < n; ++i) {
+                const double d = margin[(size_t)i] - y[i];
+                mse += d * d;
+            }
+            return mse / std::max(1, n);
         }
-
-        double mse = 0.0;
+        
+        // Multiclass: margin has K-1 values per sample
+        if (!y || n <= 0 || static_cast<int>(margin.size()) < n * K_) return std::numeric_limits<double>::infinity();
+        
+        double loss = 0.0;
         for (int i = 0; i < n; ++i) {
-            const double d = margin[(size_t)i] - y[i];
-            mse += d * d;
+            // Compute softmax probabilities
+            double max_f = -std::numeric_limits<double>::infinity();
+            for (int c = 0; c < K_; ++c) {
+                max_f = std::max(max_f, margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)]);
+            }
+            double sum_exp = 0.0;
+            for (int c = 0; c < K_; ++c) {
+                sum_exp += std::exp(margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] - max_f);
+            }
+            sum_exp += 1.0; // implicit Kth class
+            
+            double target = y[i];
+            // Cross-entropy loss for multiclass
+            // For class c, log prob = F_c - log(sum(exp(F_j)) + 1)
+            double log_sum_exp = std::log(sum_exp) + max_f;
+            double log_prob_target;
+            if (static_cast<int>(target) < K_) {
+                log_prob_target = margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(target)] - log_sum_exp;
+            } else {
+                log_prob_target = 0.0 - log_sum_exp; // implicit Kth class
+            }
+            loss -= log_prob_target;
         }
-        return mse / std::max(1, n);
+        return loss / std::max(1, n);
     }
+
+
 
     // ===================== Prediction ===========================
     std::vector<double> predict_from_binned_(const std::vector<uint16_t> &Xb, int N, int /*P*/,
                                              const double *Xraw_for_neural) const {
-        std::vector<double> out(N, 0.0), pred(N);
-        for (size_t t = 0; t < trees_.size(); ++t) {
-            const double wt = tree_weights_[t];
-            predict_tree_on_binned_(trees_[t], Xb, N, P_, Xraw_for_neural, pred);
-            for (int i = 0; i < N; ++i) { out[i] += wt * pred[i]; }
-        }
-
-        if (cfg_.mode == ForeForestConfig::Mode::Bagging && !trees_.empty()) {
-            const double invT = 1.0 / (double)trees_.size();
-            for (double &v : out) v *= invT;
+        int K_ = std::max(cfg_.num_classes - 1, 1);
+        std::vector<double> out(K_ <= 1 ? static_cast<size_t>(N) : static_cast<size_t>(N) * static_cast<size_t>(K_), 0.0);
+        std::vector<double> pred;
+        
+        if (K_ <= 1) {
+            // Scalar: old path
+            std::vector<double> out_scalar(N, 0.0);
+            pred.resize(N);
+            for (size_t t = 0; t < trees_.size(); ++t) {
+                const double wt = tree_weights_[t];
+                predict_tree_on_binned_(trees_[t], Xb, N, P_, Xraw_for_neural, pred);
+                for (int i = 0; i < N; ++i) { out_scalar[static_cast<size_t>(i)] += wt * pred[static_cast<size_t>(i)]; }
+            }
+            if (cfg_.mode == ForeForestConfig::Mode::Bagging && !trees_.empty()) {
+                const double invT = 1.0 / (double)trees_.size();
+                for (double &v : out_scalar) v *= invT;
+            }
+            std::memcpy(out.data(), out_scalar.data(), static_cast<size_t>(N) * sizeof(double));
+        } else {
+            // Multiclass: K-1 trees per round, each predicts one class
+            std::vector<std::vector<double>> class_preds(static_cast<size_t>(K_), std::vector<double>(N, 0.0));
+            for (size_t t = 0; t < trees_.size(); ++t) {
+                const double wt = tree_weights_[t];
+                int tree_class = static_cast<int>(t) % K_;  // round-robin across K-1 classes
+                pred.resize(N);
+                predict_tree_on_binned_(trees_[t], Xb, N, P_, Xraw_for_neural, pred);
+                for (int i = 0; i < N; ++i) {
+                    class_preds[static_cast<size_t>(tree_class)][static_cast<size_t>(i)] += wt * pred[static_cast<size_t>(i)];
+                }
+            }
+            // Flatten: [row0_class0, row0_class1, ..., row1_class0, ...]
+            for (int i = 0; i < N; ++i) {
+                for (int c = 0; c < K_; ++c) {
+                    out[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] = class_preds[static_cast<size_t>(c)][static_cast<size_t>(i)];
+                }
+            }
+            if (cfg_.mode == ForeForestConfig::Mode::Bagging && !trees_.empty()) {
+                const double invT = 1.0 / (double)trees_.size();
+                for (double &v : out) v *= invT;
+            }
         }
         return out;
     }
 
     std::vector<double> finalize_prediction_(std::vector<double> out, bool apply_link) const {
-        if (cfg_.mode == ForeForestConfig::Mode::GBDT || cfg_.mode == ForeForestConfig::Mode::FWBoost) {
-            for (double &v : out) v += base_score_;
+        int K_ = std::max(cfg_.num_classes - 1, 1);
+        if (K_ <= 1) {
+            // Scalar path
+            if (cfg_.mode == ForeForestConfig::Mode::GBDT || cfg_.mode == ForeForestConfig::Mode::FWBoost) {
+                for (double &v : out) v += base_score_;
+                if (apply_link && cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
+                    for (double &v : out) v = sigmoid_(v);
+                }
+            }
+        } else {
+            // Multiclass: K-1 raw margins -> softmax to get class probabilities
+            if (cfg_.mode == ForeForestConfig::Mode::GBDT || cfg_.mode == ForeForestConfig::Mode::FWBoost) {
+                for (size_t i = 0; i < out.size(); ++i) {
+                    out[i] += base_score_;
+                }
+            }
             if (apply_link && cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
+                // Binary: sigmoid on the single class vs rest
                 for (double &v : out) v = sigmoid_(v);
+            } else if (apply_link && K_ >= 2) {
+                // Multiclass softmax: add implicit Kth class as 0, then softmax
+                for (int i = 0; i < static_cast<int>(out.size()); i += K_) {
+                    // Find max for numerical stability
+                    double max_val = out[static_cast<size_t>(i)];
+                    for (int c = 1; c < K_; ++c) {
+                        max_val = std::max(max_val, out[static_cast<size_t>(i + c)]);
+                    }
+                    double sum = 0.0;
+                    for (int c = 0; c < K_; ++c) {
+                        double exp_v = std::exp(out[static_cast<size_t>(i + c)] - max_val);
+                        out[static_cast<size_t>(i + c)] = exp_v;
+                        sum += exp_v;
+                    }
+                    for (int c = 0; c < K_; ++c) {
+                        out[static_cast<size_t>(i + c)] /= sum;
+                    }
+                }
             }
         }
         return out;

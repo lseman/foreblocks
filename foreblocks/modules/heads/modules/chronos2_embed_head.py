@@ -1,3 +1,10 @@
+"""foreblocks.modules.heads.modules.chronos2_embed_head.
+
+This module implements the chronos2 embed head pieces for its package.
+It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
+It exposes classes such as Chronos2EmbedHead.
+"""
+
 from __future__ import annotations
 
 import torch
