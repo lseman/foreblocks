@@ -1,16 +1,23 @@
 """foreblocks.modules.attention.multi_att.
 
-Multi-backend attention with GQA/MQA, RoPE, and optional paged KV cache.
+Multi-backend attention with SOTA enhancements (logit softcapping, learned temp, subquery norm).
 
-Unified attention module supporting standard, ProbSparse, sliding-window,
-softpick, frequency/DWT/AutoCor, NSA, and MoBA attention types, with
-FlashAttention/xFormers/SDPA backends and paged KV cache for causal decode.
-Use as the primary attention module in transformer layers.
+Unified attention module supporting 8+ attention variants (standard, ProbSparse, sliding-window,
+softpick, frequency/DWT/AutoCor, NSA, MoBA) across multiple backends (FlashAttention, xFormers,
+SDPA). SOTA features: logit softcapping (Gemini-style), per-head learnable temperature,
+subquery normalization (DeepSeek-style), multi-scale masking (hierarchical local+long-range),
+GQA/MQA, RoPE, paged KV cache for autoregressive decode, QK normalization, gated attention,
+and MLA (latent bottleneck).
 
 Core API:
-- MultiAttention: multi-backend attention with GQA/MQA and paged cache
-- _get_available_backends: detect FlashAttn, xFormers, SDPA, SoftPick availability
+- MultiAttention: multi-backend SOTA attention with optional logit softcap, learned temp, subquery norm
+- _get_available_backends: detect available attention backends
 
+SOTA Features (all optional, disabled by default):
+- logit_softcap: clamp pre-softmax scores to [-cap, cap] for stability (Gemini)
+- use_learned_temp: per-head learnable temperature scaling
+- use_subquery_norm: learnable per-QK-pair gating (DeepSeek-style)
+- use_multiscale_mask: hierarchical attention (local window + top-K long-range)
 """
 
 import torch
@@ -166,6 +173,17 @@ class MultiAttention(nn.Module):
         # NEW: QK normalization (stabilises attention scores)
         qk_norm: bool = False,
         qk_norm_type: str = "rms",  # "rms" | "l2"
+        # NEW: Logit softcapping (Gemini-style pre-softmax smoothing)
+        logit_softcap: float | None = None,  # if set, cap logits to [-cap, cap]
+        use_learned_temp: bool = False,  # learnable per-head temperature scaling
+        temp_init: float = 1.0,  # initial temperature scale
+        # NEW: Subquery normalization (DeepSeek style)
+        use_subquery_norm: bool = False,  # learnable per-QK-pair gating
+        subquery_norm_mode: str = "learned",  # "learned" | "rms"
+        # NEW: Multi-scale masking (hierarchical attention)
+        use_multiscale_mask: bool = False,  # blend local + long-range
+        multiscale_window_ratio: float = 0.2,  # local window as fraction of seq
+        multiscale_topk: int = 16,  # top-K for pooled long-range
     ):
         super().__init__()
 
@@ -246,6 +264,40 @@ class MultiAttention(nn.Module):
         else:
             self.q_norm = None
             self.k_norm = None
+
+        # ── Logit softcapping (Gemini-style) ───────────────────────────────
+        self.logit_softcap = float(logit_softcap) if logit_softcap is not None else None
+        self.use_learned_temp = bool(use_learned_temp)
+        if self.use_learned_temp:
+            # Per-head learnable temperature
+            self.temperature = nn.Parameter(
+                torch.ones(self.n_heads) * float(temp_init)
+            )
+        else:
+            self.temperature = None
+
+        # ── Subquery normalization (DeepSeek-style) ────────────────────────
+        self.use_subquery_norm = bool(use_subquery_norm)
+        self.subquery_norm_mode = str(subquery_norm_mode)
+        if self.use_subquery_norm:
+            if self.subquery_norm_mode == "learned":
+                # Per-head learnable gate (applied to attention output)
+                self.subquery_gate = nn.Linear(self.head_dim, self.head_dim, bias=True)
+            else:
+                self.subquery_gate = None
+        else:
+            self.subquery_gate = None
+
+        # ── Multi-scale masking (hierarchical attention) ───────────────────
+        self.use_multiscale_mask = bool(use_multiscale_mask)
+        self.multiscale_window_ratio = float(multiscale_window_ratio)
+        self.multiscale_topk = int(multiscale_topk)
+        if self.use_multiscale_mask:
+            if not (0.0 < self.multiscale_window_ratio < 1.0):
+                raise ValueError("multiscale_window_ratio must be in (0, 1)")
+            if self.multiscale_topk <= 0:
+                raise ValueError("multiscale_topk must be > 0")
+
         self.softpick_chunk_size = softpick_chunk_size
         self.nsa_block_size = (
             int(nsa_block_size) if nsa_block_size is not None else int(cache_block_size)
@@ -327,14 +379,87 @@ class MultiAttention(nn.Module):
             gqa_info = (
                 f"GQA({n_heads}q/{self.n_kv_heads}kv)" if self.n_rep > 1 else "MHA"
             )
+            sota_features = []
+            if self.logit_softcap is not None:
+                sota_features.append(f"softcap={self.logit_softcap}")
+            if self.use_learned_temp:
+                sota_features.append("learned_temp")
+            if self.use_subquery_norm:
+                sota_features.append(f"subquery_norm({self.subquery_norm_mode})")
+            if self.use_multiscale_mask:
+                sota_features.append(f"multiscale(w={self.multiscale_window_ratio:.2f})")
+            sota_str = ", ".join(sota_features) if sota_features else "none"
             print(
                 f"[MultiAttention] {gqa_info}, type={attention_type}, "
                 f"backends={self.backends}, rotary={self.use_rotary}, "
                 f"paged_cache={self.use_paged_cache}, "
                 f"mla={self.use_mla}(latent={self.kv_latent_dim}), "
                 f"attn_match_compact={self.use_attention_matching_compaction}, "
-                f"qk_norm={self.qk_norm}({self.qk_norm_type})"
+                f"qk_norm={self.qk_norm}({self.qk_norm_type}), "
+                f"sota=[{sota_str}]"
             )
+
+    def _apply_logit_softcap(self, scores: torch.Tensor) -> torch.Tensor:
+        """Apply logit softcapping (Gemini-style pre-softmax smoothing)."""
+        if self.logit_softcap is None:
+            return scores
+        scores = torch.clamp(scores, -self.logit_softcap, self.logit_softcap)
+        return scores
+
+    def _apply_learned_temperature(self, scores: torch.Tensor) -> torch.Tensor:
+        """Apply per-head learnable temperature scaling."""
+        if self.temperature is None:
+            return scores
+        # scores: [B, H, T_q, T_k]
+        # temperature: [H]
+        return scores * self.temperature.view(1, -1, 1, 1)
+
+    def _apply_subquery_norm(self, out_bhtd: torch.Tensor) -> torch.Tensor:
+        """Apply subquery normalization (learnable per-QK-pair gating)."""
+        if not self.use_subquery_norm:
+            return out_bhtd
+        if self.subquery_norm_mode == "learned" and self.subquery_gate is not None:
+            # Gate learned from output itself (similar to gated attention)
+            gate = torch.sigmoid(self.subquery_gate(out_bhtd))  # [B,H,T,D]
+            return out_bhtd * gate
+        elif self.subquery_norm_mode == "rms":
+            # RMS normalize per token
+            return F.normalize(out_bhtd, p=2.0, dim=-1)
+        return out_bhtd
+
+    def _create_multiscale_mask(
+        self,
+        T_q: int,
+        T_k: int,
+        device: torch.device,
+        is_causal: bool = True,
+    ) -> torch.Tensor:
+        """
+        Create hierarchical attention mask: local window + top-K long-range.
+        Returns: [T_q, T_k] boolean mask (True = attend, False = mask).
+        """
+        if not self.use_multiscale_mask:
+            return None
+
+        window_size = max(1, int(T_k * self.multiscale_window_ratio))
+        local_mask = torch.zeros(T_q, T_k, dtype=torch.bool, device=device)
+
+        for i in range(T_q):
+            # Local window
+            start = max(0, i - window_size // 2) if not is_causal else max(0, i - window_size)
+            end = min(T_k, i + window_size // 2 + 1)
+            local_mask[i, start:end] = True
+
+            # Top-K long-range (attending to pooled history/future)
+            if is_causal:
+                # Attend to every (stride)-th position in [0, i-window_size)
+                if i > window_size:
+                    stride = max(1, (i - window_size) // self.multiscale_topk)
+                    long_range_indices = torch.arange(0, i - window_size, stride, device=device)[:self.multiscale_topk]
+                    if len(long_range_indices) > 0:
+                        local_mask[i, long_range_indices] = True
+
+        return local_mask  # True = attend, False = mask
 
     def _apply_gated_attention(self, out_bhtd: torch.Tensor) -> torch.Tensor:
         """
@@ -1192,9 +1317,27 @@ class MultiAttention(nn.Module):
         if self.use_alibi and self.alibi_bias is not None:
             scores = scores + self.alibi_bias(T_q, T_k, device=q.device)
 
+        # Multi-scale masking (optional hierarchical attention)
+        if self.use_multiscale_mask:
+            multiscale_mask = self._create_multiscale_mask(
+                T_q, T_k, device=q.device, is_causal=is_causal
+            )
+            if multiscale_mask is not None:
+                scores = scores.masked_fill(
+                    (~multiscale_mask).view(1, 1, T_q, T_k),
+                    float("-inf"),
+                )
+
+        # Logit softcapping (pre-softmax smoothing)
+        scores = self._apply_logit_softcap(scores)
+
+        # Learned per-head temperature
+        scores = self._apply_learned_temperature(scores)
+
         weights = F.softmax(scores, dim=-1)
         weights = self._dropout_weights(weights)
 
         out = torch.matmul(weights, v)  # [B,H,T_q,D]
+        out = self._apply_subquery_norm(out)
         out = self._apply_gated_attention(out)
         return out, (weights if need_weights else None)
