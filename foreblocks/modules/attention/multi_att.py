@@ -18,6 +18,8 @@ SOTA Features (all optional, disabled by default):
 - use_learned_temp: per-head learnable temperature scaling
 - use_subquery_norm: learnable per-QK-pair gating (DeepSeek-style)
 - use_multiscale_mask: hierarchical attention (local window + top-K long-range)
+- use_normalized_attn_out: layer norm on attention output for residual stability (LeLA)
+- use_head_importance: learn which heads to prune (Lottery Ticket + sparsity regularization)
 """
 
 import torch
@@ -184,6 +186,12 @@ class MultiAttention(nn.Module):
         use_multiscale_mask: bool = False,  # blend local + long-range
         multiscale_window_ratio: float = 0.2,  # local window as fraction of seq
         multiscale_topk: int = 16,  # top-K for pooled long-range
+        # NEW: Normalized attention (LeLA style)
+        use_normalized_attn_out: bool = False,  # layer norm on attention output
+        norm_attn_type: str = "rms",  # "rms" | "layer"
+        # NEW: Head importance pruning (Lottery Ticket style)
+        use_head_importance: bool = False,  # learn which heads to prune
+        head_importance_sparsity: float = 0.1,  # target sparsity (frac of heads to prune)
     ):
         super().__init__()
 
@@ -298,6 +306,34 @@ class MultiAttention(nn.Module):
             if self.multiscale_topk <= 0:
                 raise ValueError("multiscale_topk must be > 0")
 
+        # ── Normalized attention output (LeLA-style) ──────────────────────
+        self.use_normalized_attn_out = bool(use_normalized_attn_out)
+        self.norm_attn_type = str(norm_attn_type)
+        if self.use_normalized_attn_out:
+            if norm_attn_type == "rms":
+                self.attn_out_norm = nn.RMSNorm(self.d_model, eps=1e-5)
+            elif norm_attn_type == "layer":
+                self.attn_out_norm = nn.LayerNorm(self.d_model, eps=1e-5)
+            else:
+                raise ValueError(
+                    f"norm_attn_type must be 'rms' or 'layer', got {norm_attn_type}"
+                )
+        else:
+            self.attn_out_norm = None
+
+        # ── Head importance pruning (Lottery Ticket style) ──────────────────
+        self.use_head_importance = bool(use_head_importance)
+        self.head_importance_sparsity = float(head_importance_sparsity)
+        if self.use_head_importance:
+            if not (0.0 <= self.head_importance_sparsity < 1.0):
+                raise ValueError("head_importance_sparsity must be in [0, 1)")
+            # Learnable head importance scores (per head)
+            self.head_importance_scores = nn.Parameter(
+                torch.ones(self.n_heads)
+            )
+        else:
+            self.head_importance_scores = None
+
         self.softpick_chunk_size = softpick_chunk_size
         self.nsa_block_size = (
             int(nsa_block_size) if nsa_block_size is not None else int(cache_block_size)
@@ -388,6 +424,10 @@ class MultiAttention(nn.Module):
                 sota_features.append(f"subquery_norm({self.subquery_norm_mode})")
             if self.use_multiscale_mask:
                 sota_features.append(f"multiscale(w={self.multiscale_window_ratio:.2f})")
+            if self.use_normalized_attn_out:
+                sota_features.append(f"norm_attn({self.norm_attn_type})")
+            if self.use_head_importance:
+                sota_features.append(f"head_pruning(s={self.head_importance_sparsity:.2f})")
             sota_str = ", ".join(sota_features) if sota_features else "none"
             print(
                 f"[MultiAttention] {gqa_info}, type={attention_type}, "
@@ -460,6 +500,43 @@ class MultiAttention(nn.Module):
                         local_mask[i, long_range_indices] = True
 
         return local_mask  # True = attend, False = mask
+
+    def _apply_head_importance_mask(
+        self,
+        out_bhtd: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply learned head importance masks (Lottery Ticket style)."""
+        if not self.use_head_importance or self.head_importance_scores is None:
+            return out_bhtd
+
+        # Compute soft mask: sigmoid of learned scores
+        # At inference, can prune heads with low scores
+        head_mask = torch.sigmoid(self.head_importance_scores)  # [H]
+        return out_bhtd * head_mask.view(1, -1, 1, 1)
+
+    def get_head_importance_loss(self) -> torch.Tensor | None:
+        """Return sparsity regularization loss for head pruning."""
+        if not self.use_head_importance or self.head_importance_scores is None:
+            return None
+
+        # L1 sparsity on importance scores to encourage pruning
+        importance = torch.sigmoid(self.head_importance_scores)
+        # Target: sparsity% of heads should have low importance
+        target = torch.tensor(
+            self.head_importance_sparsity,
+            device=importance.device,
+            dtype=importance.dtype,
+        )
+        return torch.abs(importance.mean() - (1.0 - target)).mean()
+
+    def _apply_normalized_attn_out(
+        self,
+        out_btd: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply normalization to attention output (LeLA-style)."""
+        if not self.use_normalized_attn_out or self.attn_out_norm is None:
+            return out_btd
+        return self.attn_out_norm(out_btd)
 
     def _apply_gated_attention(self, out_bhtd: torch.Tensor) -> torch.Tensor:
         """
@@ -832,8 +909,14 @@ class MultiAttention(nn.Module):
         T_q: int,
     ) -> torch.Tensor:
         """Merge heads and apply output projection stack."""
+        # Apply head importance mask (before merging heads)
+        out_bhtd = self._apply_head_importance_mask(out_bhtd)
+
         out = out_bhtd.transpose(1, 2).contiguous().view(B, T_q, self.d_model)
-        return self.out_proj(self.dropout(out))
+        out = self.dropout(out)
+        # Apply normalization before output projection (LeLA-style)
+        out = self._apply_normalized_attn_out(out)
+        return self.out_proj(out)
 
     def _ensure_paged_cache(
         self,

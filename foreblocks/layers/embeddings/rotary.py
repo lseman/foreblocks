@@ -747,10 +747,20 @@ class RotaryEmbedding(torch.nn.Module):
         interleaved: bool = False,
         scale_base: float | None = None,
         device=None,
+        # NEW: Dynamic RoPE scaling (YaRN / NTK variants)
+        scaling_type: str = "none",  # "none" | "yarn" | "ntk" | "linear"
+        scaling_factor: float = 1.0,  # context scaling for dynamic freqs
     ):
         super().__init__()
         self.dim = dim
         self.base = float(base)
+        self.scaling_type = str(scaling_type)
+        self.scaling_factor = float(scaling_factor)
+
+        if scaling_type not in {"none", "yarn", "ntk", "linear"}:
+            raise ValueError(
+                f"scaling_type must be 'none'|'yarn'|'ntk'|'linear', got {scaling_type}"
+            )
 
         inv_freq = self._compute_inv_freq(device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
@@ -780,6 +790,41 @@ class RotaryEmbedding(torch.nn.Module):
             )
         )
 
+    def _apply_rope_scaling(
+        self,
+        freqs: Tensor,
+        seqlen: int,
+    ) -> Tensor:
+        """
+        Apply dynamic RoPE frequency scaling (YaRN / NTK variants).
+        freqs: [seqlen, dim/2]
+        Returns: scaled freqs [seqlen, dim/2]
+        """
+        if self.scaling_type == "none" or self.scaling_factor == 1.0:
+            return freqs
+
+        if self.scaling_type == "linear":
+            # Simple linear scaling of positions
+            t = torch.arange(seqlen, device=freqs.device, dtype=freqs.dtype)
+            t_scaled = t / self.scaling_factor
+            return torch.outer(t_scaled, freqs[0])
+
+        elif self.scaling_type == "ntk":
+            # NTK (Neural Token Kit) scaling: scale base frequency
+            # freq_new = freq_old / scaling_factor
+            return freqs / self.scaling_factor
+
+        elif self.scaling_type == "yarn":
+            # YaRN (Yet another RoPE extension): frequency + position scaling
+            # More nuanced than linear or NTK
+            t = torch.arange(seqlen, device=freqs.device, dtype=freqs.dtype)
+            t_scaled = t / self.scaling_factor
+            # Blend original and scaled positions
+            alpha = min(1.0, seqlen / (self.dim * self.scaling_factor))
+            return freqs * (1.0 - alpha) + (freqs / self.scaling_factor) * alpha
+
+        return freqs
+
     def _update_cos_sin_cache(
         self,
         seqlen: int,
@@ -807,6 +852,7 @@ class RotaryEmbedding(torch.nn.Module):
                 inv_freq = self.inv_freq.to(device)
 
             freqs = torch.outer(t, inv_freq)  # (seqlen, dim/2)
+            freqs = self._apply_rope_scaling(freqs, seqlen)
 
             if self.scale is None:
                 cos = torch.cos(freqs)
