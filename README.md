@@ -1,9 +1,9 @@
 # foreBlocks
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lseman/foreblocks/main/web/logo_dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/lseman/foreblocks/main/web/logo.svg">
-  <img alt="ForeBlocks Logo" src="https://raw.githubusercontent.com/lseman/foreblocks/main/web/logo.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lseman/foreblocks/main/site/landing/logo_dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/lseman/foreblocks/main/site/landing/logo.svg">
+  <img alt="ForeBlocks Logo" src="https://raw.githubusercontent.com/lseman/foreblocks/main/site/landing/logo.svg">
 </picture>
 
 [![PyPI Version](https://img.shields.io/pypi/v/foreblocks.svg)](https://pypi.org/project/foreblocks/)
@@ -98,7 +98,7 @@ Full documentation: [https://foreblocks.laioseman.com/docs/](https://foreblocks.
 
 ```
 docs/           - VitePress source for the documentation site
-web/            - Static landing page assets for the published site
+site/landing/   - Static landing page assets for the published site root
 examples/       - Runnable demos and notebooks
 ```
 
@@ -280,7 +280,7 @@ The most stable first imports are exposed from the top-level `foreblocks` packag
 | `darts` | standalone DARTS NAS package: search space, search/training pipeline, evaluation, and architecture inspection |
 | `foretools` | synthetic time series, BOHB search, feature engineering, decomposition |
 | `examples/` | runnable demos and notebooks |
-| `web/` | static landing page assets for the published site root |
+| `site/landing/` | static landing page assets for the published site root |
 | `docs/` | VitePress source for the documentation site |
 
 ## Documentation map

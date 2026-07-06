@@ -24,7 +24,7 @@ The documentation system is organized as:
 - `docs/architecture/`: internal structure and design pages
 - `docs/reference/`: API and repository reference
 - root-level guide pages in `docs/`: subsystem-focused guides
-- [`web/index.html`](https://github.com/lseman/foreblocks/blob/main/web/index.html): static landing page source for the site root
+- [`site/landing/index.html`](https://github.com/lseman/foreblocks/blob/main/site/landing/index.html): static landing page source for the site root
 - [`docs/.vitepress/config.js`](https://github.com/lseman/foreblocks/blob/main/docs/.vitepress/config.js): navigation and site structure for the `/docs/` site
 
 ## When to update docs

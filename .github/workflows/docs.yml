@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - "docs/**"
-      - "web/**"
+      - "site/landing/**"
       - "apps/webui/**"
       - "package.json"
       - "package-lock.json"
@@ -15,7 +15,7 @@ on:
       - main
     paths:
       - "docs/**"
-      - "web/**"
+      - "site/landing/**"
       - "apps/webui/**"
       - "package.json"
       - "package-lock.json"
@@ -54,20 +54,20 @@ jobs:
       - name: Validate version sync on pull requests
         if: github.event_name == 'pull_request'
         run: |
-          if ! git diff --quiet -- web/version.js; then
-            echo "web/version.js is out of sync with pyproject.toml"
-            git --no-pager diff -- web/version.js
+          if ! git diff --quiet -- site/landing/version.js; then
+            echo "site/landing/version.js is out of sync with pyproject.toml"
+            git --no-pager diff -- site/landing/version.js
             exit 1
           fi
 
-      - name: Commit synced web/version.js on push
+      - name: Commit synced site/landing/version.js on push
         if: github.event_name == 'push'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- web/version.js; then
-            git add web/version.js
-            git commit -m "chore: sync web/version.js with pyproject.toml"
+          if ! git diff --quiet -- site/landing/version.js; then
+            git add site/landing/version.js
+            git commit -m "chore: sync site/landing/version.js with pyproject.toml"
             git push
           fi
 
@@ -95,10 +95,10 @@ jobs:
       - name: Assemble root landing page
         run: |
           mkdir -p site
-          cp web/index.html site/index.html
-          cp web/logo.svg site/logo.svg
-          cp -R web/imgs site/imgs
-          if [ -f web/CNAME ]; then cp web/CNAME site/CNAME; fi
+          cp site/landing/index.html site/index.html
+          cp site/landing/logo.svg site/logo.svg
+          cp -R site/landing/imgs site/imgs
+          if [ -f site/landing/CNAME ]; then cp site/landing/CNAME site/CNAME; fi
           if [ -d apps/webui/dist ]; then cp -a apps/webui/dist site/studio; fi
           touch site/.nojekyll
 

@@ -14,7 +14,7 @@ This page gives a quick path through the repository for contributors and power u
 | --- | --- |
 | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README) | GitHub landing page |
 | [`docs/.vitepress/config.js`](https://github.com/lseman/foreblocks/blob/main/docs/.vitepress/config.js) | Navigation and site structure for the `/docs/` site |
-| `web/` | Static landing page assets for the published site root |
+| `site/landing/` | Static landing page assets for the published site root |
 | `docs/` | VitePress source for the versioned documentation site |
 | `examples/` | Notebooks and runnable examples |
 | `foreblocks/` | Main forecasting library |
