@@ -155,7 +155,9 @@ def parse_onts_jl(path: str | Path) -> dict[str, Any]:
         normalizations.append(f"trimmed recurso_p from {len(recurso_p)} to {T}")
         recurso_p = recurso_p[:T]
     elif len(recurso_p) < T:
-        normalizations.append(f"set tamanho from {T} to recurso_p length {len(recurso_p)}")
+        normalizations.append(
+            f"set tamanho from {T} to recurso_p length {len(recurso_p)}"
+        )
         T = len(recurso_p)
 
     for name in INSTANCE_FIELDS:
@@ -184,7 +186,9 @@ def parse_onts_jl(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def onts_instance_to_json_data(instance: ONTSInstance, *, name: str = "") -> dict[str, Any]:
+def onts_instance_to_json_data(
+    instance: ONTSInstance, *, name: str = ""
+) -> dict[str, Any]:
     """Convert an in-memory instance to JSON-serializable data."""
     data = {
         "format": INSTANCE_FORMAT,
@@ -312,27 +316,32 @@ class ONTSEnv:
     def random_instance(
         *, J: int = 9, T: int = 100, seed: int = 0, device: str = "cpu"
     ) -> ONTSInstance:
-        g = torch.Generator(device="cpu").manual_seed(seed)
-        min_cpu = torch.randint(2, 6, (J,), generator=g)
-        max_cpu = min_cpu + torch.randint(2, 8, (J,), generator=g)
-        win_min = torch.randint(0, max(1, T // 5), (J,), generator=g)
-        win_max = T - torch.randint(0, max(1, T // 5), (J,), generator=g)
+        g = torch.Generator("cpu").manual_seed(seed)
+
+        def _r(op):
+            return op(device="cpu").to(device=device, non_blocking=True)
+
+        min_cpu = _r(lambda **kw: torch.randint(2, 6, (J,), **kw))
+        max_cpu = min_cpu + _r(lambda **kw: torch.randint(2, 8, (J,), **kw))
+        win_min = torch.zeros(J, device=device)
+        win_min[1:] = _r(lambda **kw: torch.randint(0, 2, (J - 1,), **kw))  # most tasks startable at t=0 or t=1
+        win_max = T - _r(lambda **kw: torch.randint(0, max(1, T // 5), (J,), **kw))
         win_max = torch.maximum(win_max, win_min + min_cpu)
-        phase = torch.linspace(0, torch.pi, T)
+        phase = torch.linspace(0, torch.pi, T, device=device)
         solar = 8.0 + 6.0 * torch.sin(phase).clamp(min=0)
-        solar = solar + 1.5 * torch.rand(T, generator=g)
+        solar = solar + _r(lambda **kw: torch.rand(T, **kw))
         return ONTSInstance(
-            priority=torch.randint(1, 10, (J,), generator=g, device=device).float(),
-            uso_p=(0.5 + 2.5 * torch.rand(J, generator=g, device=device)),
-            min_statup=torch.randint(1, 3, (J,), generator=g, device=device),
-            max_statup=torch.randint(3, 6, (J,), generator=g, device=device),
-            min_cpu_time=min_cpu.to(device),
-            max_cpu_time=max_cpu.to(device),
-            min_periodo_job=torch.randint(3, 10, (J,), generator=g, device=device),
-            max_periodo_job=torch.randint(12, 30, (J,), generator=g, device=device),
-            win_min=win_min.to(device),
-            win_max=win_max.to(device),
-            recurso_p=solar.to(device),
+            priority=_r(lambda **kw: torch.randint(1, 10, (J,), **kw)).float(),
+            uso_p=(0.5 + _r(lambda **kw: torch.rand(J, **kw)) * 2.5),
+            min_statup=_r(lambda **kw: torch.randint(1, 3, (J,), **kw)),
+            max_statup=_r(lambda **kw: torch.randint(3, 6, (J,), **kw)),
+            min_cpu_time=min_cpu,
+            max_cpu_time=max_cpu,
+            min_periodo_job=_r(lambda **kw: torch.randint(3, 10, (J,), **kw)),
+            max_periodo_job=_r(lambda **kw: torch.randint(12, 30, (J,), **kw)),
+            win_min=win_min,
+            win_max=win_max,
+            recurso_p=solar,
         )
 
     def reset(self) -> dict[str, torch.Tensor]:
@@ -342,9 +351,7 @@ class ONTSEnv:
         self.active = torch.zeros(B, J, dtype=torch.bool, device=self.dev)
         self.run_len = torch.zeros(B, J, dtype=torch.long, device=self.dev)
         self.starts = torch.zeros(B, J, dtype=torch.long, device=self.dev)
-        self.last_start = torch.full(
-            (B, J), -10_000, dtype=torch.long, device=self.dev
-        )
+        self.last_start = torch.full((B, J), -10_000, dtype=torch.long, device=self.dev)
         self.x = torch.zeros(B, J, T, dtype=torch.bool, device=self.dev)
         self.phi = torch.zeros(B, J, T, dtype=torch.bool, device=self.dev)
         self.power = torch.zeros(B, T, device=self.dev)
@@ -411,7 +418,7 @@ class ONTSEnv:
         ).reshape(B, J)
         feas_start = base_start & energy_start
 
-        forced_start = (self._deadline_start() | self._required_for_min_startups())
+        forced_start = self._deadline_start() | self._required_for_min_startups()
         forced_start = forced_start & feas_start
         candidate = optional_cont | feas_start | forced_start
         return forced_on, must_stop, optional_cont, feas_start, forced_start, candidate
@@ -423,21 +430,25 @@ class ONTSEnv:
         )
         denom_priority = self.priority.max().clamp(min=1.0)
         denom_power = self.recurso_p.max().clamp(min=1.0)
-        stat = torch.stack(
-            [
-                self.priority / denom_priority,
-                self.uso_p / denom_power,
-                self.min_statup.float() / T,
-                self.max_statup.float() / T,
-                self.min_cpu_time.float() / T,
-                self.max_cpu_time.float() / T,
-                self.min_periodo_job.float() / T,
-                self.max_periodo_job.float() / T,
-                self.win_min.float() / T,
-                self.win_max.float() / T,
-            ],
-            -1,
-        ).unsqueeze(0).expand(B, J, -1)
+        stat = (
+            torch.stack(
+                [
+                    self.priority / denom_priority,
+                    self.uso_p / denom_power,
+                    self.min_statup.float() / T,
+                    self.max_statup.float() / T,
+                    self.min_cpu_time.float() / T,
+                    self.max_cpu_time.float() / T,
+                    self.min_periodo_job.float() / T,
+                    self.max_periodo_job.float() / T,
+                    self.win_min.float() / T,
+                    self.win_max.float() / T,
+                ],
+                -1,
+            )
+            .unsqueeze(0)
+            .expand(B, J, -1)
+        )
         last_gap = ((t - self.last_start).float() / T).clamp(min=0.0, max=1.0)
         dyn = torch.stack(
             [
@@ -450,8 +461,9 @@ class ONTSEnv:
                 optional_cont.float(),
                 feas_start.float(),
                 forced_start.float(),
-                (self.run_len.float() / self.max_cpu_time.clamp(min=1).unsqueeze(0))
-                .clamp(max=1.0),
+                (
+                    self.run_len.float() / self.max_cpu_time.clamp(min=1).unsqueeze(0)
+                ).clamp(max=1.0),
             ],
             -1,
         )
@@ -472,9 +484,7 @@ class ONTSEnv:
         )
         nodes = torch.cat([stat, dyn], dim=-1)
         base_usage = (forced_on.float() * self.uso_p.unsqueeze(0)).sum(1)
-        budget = (self.recurso_p[t] + self.max_battery_power - base_usage).clamp(
-            min=0
-        )
+        budget = (self.recurso_p[t] + self.max_battery_power - base_usage).clamp(min=0)
         obs = {
             "nodes": nodes,
             "task_nodes": nodes,
@@ -554,9 +564,7 @@ class ONTSEnv:
             self.max_cpu_time.float() * self.max_statup.float().clamp(min=1)
         ).unsqueeze(0)
         elapsed_work = (
-            self.x[:, :, :t].float().sum(2)
-            if t > 0
-            else torch.zeros(B, J, device=dev)
+            self.x[:, :, :t].float().sum(2) if t > 0 else torch.zeros(B, J, device=dev)
         )
         add_family(
             3,
@@ -739,10 +747,14 @@ class ONTSInstancePoolEnv(ONTSEnv):
     ) -> None:
         self.instance_paths = sorted(Path(instance_dir).glob(pattern))
         if not self.instance_paths:
-            raise ValueError(f"No ONTS instances found in {instance_dir} with {pattern}")
+            raise ValueError(
+                f"No ONTS instances found in {instance_dir} with {pattern}"
+            )
         self._pool_rng = torch.Generator(device="cpu").manual_seed(seed)
         super().__init__(
-            load_onts_instance(self.instance_paths[0], device=kwargs.get("device", "cpu")),
+            load_onts_instance(
+                self.instance_paths[0], device=kwargs.get("device", "cpu")
+            ),
             seed=seed,
             **kwargs,
         )
@@ -753,5 +765,7 @@ class ONTSInstancePoolEnv(ONTSEnv):
                 len(self.instance_paths), (1,), generator=self._pool_rng
             ).item()
         )
-        self._set_instance(load_onts_instance(self.instance_paths[idx], device=self.dev))
+        self._set_instance(
+            load_onts_instance(self.instance_paths[idx], device=self.dev)
+        )
         return super().reset()

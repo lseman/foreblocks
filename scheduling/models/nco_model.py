@@ -245,7 +245,7 @@ class NCOModel(nn.Module):
         obs: Dict[str, Any],
         action: Optional[torch.Tensor] = None,
         action_order: Any = None,
-        temperature: float = 1.0,
+        temperature: float = 10.0,
         k: int = 1,
     ) -> Dict[str, Any]:
         """Single-step action selection (training or inference).
@@ -276,7 +276,7 @@ class NCOModel(nn.Module):
         if action is not None:
             # Replay mode: encode once, use provided actions
             task_emb, ctx = self.encoder.encode(obs)
-            return self._decode_replay(task_emb, ctx, obs, action)
+            return self._decode_replay(task_emb, ctx, obs, action, temperature, action_order)
         else:
             # Autoregressive mode
             task_emb, ctx = self.encoder.encode(obs)
@@ -288,21 +288,31 @@ class NCOModel(nn.Module):
         ctx: torch.Tensor,
         obs: Dict[str, Any],
         action: torch.Tensor,
+        temperature: float = 1.0,
+        action_order: Optional[torch.Tensor] = None,
     ) -> Dict[str, Any]:
         """Replay mode: compute log-probs for provided actions."""
         B = task_emb.shape[0]
         N = task_emb.shape[1]
         dev = task_emb.device
 
-        action_valid: torch.Tensor
-
+        # If action_order provided, use it directly (from autoregressive decoding)
+        if action_order is not None and action_order.dim() > 1:
+            max_steps = action_order.shape[1]
+            action = action_order
+            action_valid = action_order < N  # exclude STOP tokens (N) and padding
         # If action is a binary mask [B, N], convert to a padded index sequence
-        # entirely on-device. Selected tasks are replayed in ascending index
-        # order because a plain mask carries no original sampling order.
-        if torch.is_floating_point(action) and action.dim() == 2 and action.shape[1] == N:
+        elif (
+            torch.is_floating_point(action)
+            and action.dim() == 2
+            and action.shape[1] == N
+        ):
             selected = action > 0.5
             selected_counts = selected.sum(dim=1)
-            max_steps = int(selected_counts.max().item())
+            try:
+                max_steps = int(selected_counts.max().item())
+            except (RuntimeError, ValueError):
+                max_steps = 0
             if max_steps == 0:
                 return {
                     "new_starts": torch.zeros(B, N, device=dev),
@@ -315,10 +325,9 @@ class NCOModel(nn.Module):
             idx = torch.arange(N, device=dev).expand(B, -1)
             sort_keys = torch.where(selected, idx, idx + N)
             action = torch.argsort(sort_keys, dim=1)[:, :max_steps]
-            action_valid = (
-                torch.arange(max_steps, device=dev).unsqueeze(0)
-                < selected_counts.unsqueeze(1)
-            )
+            action_valid = torch.arange(max_steps, device=dev).unsqueeze(
+                0
+            ) < selected_counts.unsqueeze(1)
         else:
             max_steps = action.shape[1] if action.dim() > 1 else 1
             if action.dim() > 1:
@@ -331,8 +340,8 @@ class NCOModel(nn.Module):
         all_entropy = torch.zeros(B, device=dev)
         stops = torch.zeros(B, device=dev)
 
-        # Get initial context from decoder.
-        decoder_ctx = self.decoder.create_context().expand(B, -1)
+        # Get initial context from encoder output (same as autoregressive)
+        decoder_ctx = ctx.clone()
 
         for step in range(max_steps):
             # Replay action for this step
@@ -342,27 +351,44 @@ class NCOModel(nn.Module):
             else:
                 a = action
                 step_valid = action_valid[:, 0]
-            # Ensure a is int64 for gather
+            
+            # Ensure a is int64 for gather (full_logits has N task cols + 1 STOP col)
             a = a.to(torch.long)
-            a = a.clamp(min=0, max=N - 1)
+            a = a.clamp(min=0, max=N)
 
-            # Check if already stopped
+            # Check if already stopped (all tasks taken or no valid actions)
             if not step_valid.any() or taken.all():
                 break
 
-            # Compute logits
+            # Compute logits, normalize same as autoregressive path
             attn_logits, stop_logits = self.decoder.attention_logits(
                 decoder_ctx, task_emb
             )
+            all_logits = torch.cat([attn_logits, stop_logits.unsqueeze(-1)], dim=-1)
+            m = all_logits.mean(dim=-1, keepdim=True)
+            s = all_logits.std(dim=-1, keepdim=True) + 1e-8
+            all_logits_n = (all_logits - m) / s
 
-            # Mask infeasible and already-picked nodes
+            # Mask infeasible and already-picked nodes (task logits only)
             mask = self._make_mask(obs, taken)
-            masked_logits = attn_logits.masked_fill(~mask, -1e9)
+            masked_logits_n = all_logits_n[:, :N].masked_fill(~mask, -1e9)
 
-            # Log-prob of replayed action
-            log_probs = torch.log_softmax(masked_logits, dim=-1)
-            action_logp = log_probs.gather(-1, a.unsqueeze(-1)).squeeze(-1)
+            # Reconstruct full logits with masked tasks + unmasked stop (same as autoregressive)
+            full_logits = torch.cat([masked_logits_n, all_logits_n[:, -1:]], dim=-1)
+
+            # Log-prob of replayed action (over joint dist: tasks + stop, same as autoregressive)
+            all_probs = torch.softmax(full_logits / temperature, dim=-1)
+            action_logp = (
+                torch.gather(all_probs, -1, a.unsqueeze(-1))
+                .squeeze(-1)
+                .log()
+                .clamp(min=-10)
+            )
             action_logp = action_logp.masked_fill(~step_valid, 0.0)
+
+            # Entropy (for consistency with autoregressive path)
+            step_ent = -torch.sum(all_probs * torch.log(all_probs + 1e-10), dim=-1)
+            all_entropy += step_ent
 
             all_logp += action_logp
             stops = stop_logits
@@ -415,8 +441,8 @@ class NCOModel(nn.Module):
         all_entropy = torch.zeros(B, device=dev)
         stops = torch.zeros(B, device=dev)
 
-        # Initial context - expand to batch size
-        decoder_ctx = self.decoder.create_context().expand(B, -1)
+        # Initial decoder context from encoder output
+        decoder_ctx = ctx.clone()
 
         for step in range(N):
             # Compute logits
@@ -426,44 +452,47 @@ class NCOModel(nn.Module):
 
             # Mask infeasible and already-picked
             mask = self._make_mask(obs, taken)
-            masked_logits = attn_logits.masked_fill(~mask, -1e9)
 
-            # STOP probability
-            stop_prob = torch.sigmoid(stop_logits)
+            # Combine task logits and stop logit, normalize before masking
+            all_logits = torch.cat([attn_logits, stop_logits.unsqueeze(-1)], dim=-1)
+            # Zero-mean, unit-var normalization (stable for large logits)
+            m = all_logits.mean(dim=-1, keepdim=True)
+            s = all_logits.std(dim=-1, keepdim=True) + 1e-8
+            all_logits_n = (all_logits - m) / s
 
-            # Pointer probabilities
-            probs = torch.softmax(masked_logits / temperature, dim=-1)
+            # Apply mask to task logits only (STOP is always feasible)
+            masked_logits_n = all_logits_n[:, :N].masked_fill(~mask, -1e9)
+            # Reconstruct full logits with masked tasks + unmasked stop
+            full_logits = torch.cat([masked_logits_n, all_logits_n[:, -1:]], dim=-1)
+            all_probs = torch.softmax(full_logits / temperature, dim=-1)
 
-            # Greedy selection: argmax of masked_logits vs stop
-            best_node = masked_logits.argmax(dim=-1)
-            best_logit = masked_logits.amax(dim=-1)
-            stop_threshold = 0.5
-
-            do_stop = (stop_prob > stop_threshold) | (best_logit < stop_threshold)
-
-            new_starts = torch.where(
-                do_stop,
-                torch.full_like(best_node, -1),
-                best_node,
+            # Sample (temperature > 0) or greedy (temperature <= 0)
+            if temperature <= 0:
+                pick = full_logits.argmax(dim=-1)
+                step_ent = torch.zeros(B, device=dev)
+            else:
+                dist = torch.distributions.Categorical(logits=full_logits / temperature)
+                pick = dist.sample()
+                step_ent = dist.entropy()
+            action_logp = (
+                torch.gather(all_probs, -1, pick.unsqueeze(-1))
+                .squeeze(-1)
+                .log()
+                .clamp(min=-10)
             )
+            do_stop = pick == N
+            best_node = pick.clone()
 
-            # Log-prob for selected action
-            action_probs = probs.gather(-1, best_node.unsqueeze(-1)).squeeze(-1)
-            action_logp = torch.where(
-                do_stop,
-                torch.log(stop_prob + 1e-10),
-                torch.log(action_probs + 1e-10),
-            )
-
-            all_actions[:, step] = new_starts
+            all_actions[:, step] = pick
             all_logp += action_logp
+            all_entropy += step_ent
             stops = stop_logits
 
             # Check STOP
             if do_stop.all():
                 break
 
-            # Update tracking
+            # Update tracking for non-stopping batch elements
             valid = ~do_stop
             if valid.any():
                 taken[valid] = taken[valid] | (
@@ -493,6 +522,7 @@ class NCOModel(nn.Module):
             "entropy": all_entropy,
             "value": self.value_of(task_emb, ctx),
             "stops": stops,
+            "action_order": all_actions,  # sequence of picked task indices
         }
 
     def _self_eval(

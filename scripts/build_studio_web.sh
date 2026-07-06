@@ -3,9 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STUDIO_DIR="$ROOT/web/studio/src"
+STUDIO_DIR="$ROOT/apps/webui/src"
 STUDIO_DIST="$STUDIO_DIR/dist"
-TARGET_DIR="$ROOT/web/studio/dist"
+TARGET_DIR="$ROOT/apps/webui/dist"
 
 if [[ ! -d "$STUDIO_DIR" ]]; then
   echo "❌ Studio directory not found: $STUDIO_DIR"
@@ -37,10 +37,10 @@ if [[ ! -f "$STUDIO_DIST/index.html" ]]; then
   exit 1
 fi
 
-echo "📦 Publishing Studio build to web/studio..."
+echo "📦 Publishing Studio build to apps/webui..."
 rm -rf "$TARGET_DIR"
 mkdir -p "$TARGET_DIR"
 cp -a "$STUDIO_DIST/." "$TARGET_DIR/"
 
-echo "✅ Studio assets compiled and copied to web/studio"
+echo "✅ Studio assets compiled and copied to apps/webui"
 echo "Access the app at /studio/ on the remote server"

@@ -267,7 +267,7 @@ The most stable first imports are exposed from the top-level `foreblocks` packag
 | `foreblocks/evaluation` | `ModelEvaluator`, benchmarking helpers |
 | `foreblocks/ts_handler` | `TimeSeriesHandler`, imputation, filtering, outlier handling |
 | `foreblocks/transformer` | Transformer stack, attention variants (including MoBA), MoE, fused norms, and embeddings |
-| `foreblocks/mltracker` | experiment tracking server, logging, and TUI integration |
+| `mltracker` | experiment tracking server, logging, and TUI integration |
 | `foreblocks/kan` | Kolmogorov-Arnold Network backbone |
 | `foreblocks/mamba` | Original Mamba SSM backbone with MoE and positional encoding |
 | `foreblocks/custom_mamba` | Hybrid Mamba / Mamba-2 style SSM blocks for forecasting |

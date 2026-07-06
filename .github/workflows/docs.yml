@@ -5,9 +5,9 @@ on:
     paths:
       - "docs/**"
       - "web/**"
+      - "apps/webui/**"
       - "package.json"
       - "package-lock.json"
-      - "web/studio/src/**"
       - "build_studio_web.sh"
       - ".github/workflows/docs.yml"
   push:
@@ -16,9 +16,9 @@ on:
     paths:
       - "docs/**"
       - "web/**"
+      - "apps/webui/**"
       - "package.json"
       - "package-lock.json"
-      - "web/studio/src/**"
       - "build_studio_web.sh"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -99,7 +99,7 @@ jobs:
           cp web/logo.svg site/logo.svg
           cp -R web/imgs site/imgs
           if [ -f web/CNAME ]; then cp web/CNAME site/CNAME; fi
-          if [ -d web/studio/dist ]; then cp -a web/studio/dist site/studio; fi
+          if [ -d apps/webui/dist ]; then cp -a apps/webui/dist site/studio; fi
           touch site/.nojekyll
 
       - name: Upload Pages artifact

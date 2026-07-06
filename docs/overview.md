@@ -127,7 +127,7 @@ Stable surfaces, configuration maps, and repository orientation.
 | `foreblocks/ts_handler` | preprocessing, filtering, imputation, window creation |
 | `foreblocks/transformer` | transformer stack, attention variants, MoE, norms, embeddings |
 | `darts` | architecture search configs, search loops, analysis |
-| `foreblocks/mltracker` | experiment tracking and local dashboards |
+| `mltracker` | experiment tracking and local dashboards |
 | `foretools` | synthetic data, BOHB, VMD, exploratory tooling |
 
 ## Recommended reading tracks

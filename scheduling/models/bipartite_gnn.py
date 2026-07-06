@@ -23,7 +23,6 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-
 # ─── Bipartite GNN Encoder ─────────────────────────────────────────────────
 
 
@@ -265,12 +264,17 @@ class BipartiteGNNScheduler(nn.Module):
         d_model: int = 128,
         n_gnn_layers: int = 2,
         edge_dim: int = 1,
+        # LEHD re-encoding
+        reencode_every: int = 0,
     ):
         super().__init__()
         # Project raw node features to d_model
         self.node_proj = nn.Linear(f_node, d_model)
         self.f_node = f_node
         self.d_model = d_model
+
+        # LEHD re-encoding
+        self.reencode_every = reencode_every
 
         # Bipartite GNN encoder
         self.encoder = BipartiteGNN(
@@ -462,6 +466,46 @@ class BipartiteGNNScheduler(nn.Module):
                 context_last[taken_b] = picked_emb
 
                 context = torch.cat([graph_emb, context_first, context_last], dim=-1)
+
+            # LEHD re-encoding: re-run encoder at intervals
+            if (
+                self.reencode_every > 0
+                and step > 0
+                and (step + 1) % self.reencode_every == 0
+            ):
+                updated_obs = {
+                    k: v.clone() if torch.is_tensor(v) else v for k, v in obs.items()
+                }
+                if "mask" in updated_obs:
+                    updated_obs["mask"] = updated_obs["mask"] & (~chosen)
+                h_new = self.node_proj(updated_obs["nodes"])  # [B, N, d]
+                node_emb_new = torch.zeros(B, N, self.d_model, device=dev)
+                if edge_index is not None:
+                    if edge_index.ndim == 2:
+                        ei_ = edge_index.unsqueeze(0).expand(B, -1, -1)
+                    elif edge_index.shape[0] == 1 and B > 1:
+                        ei_ = edge_index.expand(B, -1, -1)
+                    else:
+                        ei_ = edge_index
+                    if edge_features is not None:
+                        if edge_features.ndim == 2:
+                            ef_ = edge_features.unsqueeze(0).expand(B, -1, -1)
+                        elif edge_features.shape[0] == 1 and B > 1:
+                            ef_ = edge_features.expand(B, -1, -1)
+                        else:
+                            ef_ = edge_features
+                    else:
+                        ef_ = None
+                    for b_ in range(B):
+                        ef_b = ef_[b_] if ef_ is not None else None
+                        n_h, _ = self.encoder(
+                            h_new[b_],
+                            ei_[b_],
+                            ef_b,
+                            n_vars,
+                        )
+                        node_emb_new[b_] = n_h
+                var_emb = node_emb_new[:, :n_vars]
 
             alive = alive & (~is_stop)
 

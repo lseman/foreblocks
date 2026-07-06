@@ -30,6 +30,113 @@ from models.nco_model import build_model, register_builtin_models
 from train import PPO
 
 
+@torch.no_grad()
+def evaluate(model, env, *, plot_path: Path | None = None) -> dict:
+    """Run one greedy rollout on `env` (expects B=1) and report feasibility.
+
+    Returns a dict with total return, per-task start counts vs.
+    min/max_statup bounds, and any SoC (energy) violations recorded
+    during the rollout.
+    """
+    model.eval()
+    obs = env.reset()
+    total_r = torch.zeros(env.B, device=env.dev)
+    soc_trace = []
+    power_trace = []
+    x_trace = []
+    while obs is not None:
+        out = model.act(obs, temperature=0.0)
+        nobs, r, done = env.step(out["new_starts"])
+        total_r += r
+        soc_trace.append(env.soc.clone())
+        power_trace.append(env.power[:, env.t - 1].clone())
+        x_trace.append(env.active.clone())
+        obs = nobs if not done else None
+
+    starts = env.starts[0]
+    min_statup = env.min_statup
+    max_statup = env.max_statup
+    unmet = (min_statup - starts).clamp(min=0)
+    over = (starts - max_statup).clamp(min=0)
+    soc_stack = torch.stack(soc_trace, dim=1)[0]  # [T]
+    soc_violation = (soc_stack < env.limite_inferior - 1e-6).any().item()
+
+    feasible = bool((unmet == 0).all() and (over == 0).all() and not soc_violation)
+
+    report = {
+        "return": total_r[0].item(),
+        "feasible": feasible,
+        "unmet_min_startups": unmet.tolist(),
+        "over_max_startups": over.tolist(),
+        "soc_violation": soc_violation,
+    }
+
+    print(f"\n=== Evaluation ({'instance' if plot_path else 'env'}) ===")
+    print(f"Return: {report['return']:.2f}")
+    print(f"Feasible: {report['feasible']}")
+    if any(unmet.tolist()):
+        print(f"  Unmet min startups per task: {unmet.tolist()}")
+    if any(over.tolist()):
+        print(f"  Over max startups per task: {over.tolist()}")
+    if soc_violation:
+        print("  SoC dropped below limite_inferior at some timestep")
+
+    if plot_path is not None:
+        _plot_gantt(
+            env,
+            torch.stack(x_trace, dim=-1)[0],  # [J, T]
+            torch.stack(power_trace, dim=-1)[0],  # [T]
+            soc_stack,
+            plot_path,
+        )
+        print(f"Gantt chart saved to {plot_path}")
+
+    model.train()
+    return report
+
+
+def _plot_gantt(env, x, power, soc, path: Path) -> None:
+    """Plot solar/task power + SoC, and per-task on/off bars, like original.py."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib import pyplot as plt
+
+    T, J = env.T, env.J
+    solar = env.recurso_p.cpu()
+    power = power.cpu()
+    soc = soc.cpu()
+    x = x.cpu()
+
+    fig, (ax_power, *axs) = plt.subplots(
+        1 + J, 1, figsize=(10, 2 + J), gridspec_kw={"height_ratios": [3] + [1] * J}
+    )
+
+    ax_power.plot(solar, label="Solar panel power")
+    ax_power.plot(power, color="gray", label="Task consumption")
+    ax_power.fill_between(range(T), solar, power, color="black", alpha=0.05)
+    ax_power.set_ylabel("Power [W]")
+    ax_power.legend(loc="upper left", fontsize=7)
+    ax_soc = ax_power.twinx()
+    ax_soc.plot(soc * 100, "k", label="SoC [%]")
+    ax_soc.set_ylim(0, 100)
+    ax_soc.legend(loc="upper right", fontsize=7)
+    ax_power.set_xlim(0, T - 1)
+
+    cmap = plt.get_cmap("viridis")
+    for j in range(J):
+        axs[j].fill_between(range(T), x[j].float(), step="post", color=cmap(j / J))
+        axs[j].set_ylim(0, 1)
+        axs[j].set_xlim(0, T - 1)
+        axs[j].set_yticks([])
+        axs[j].set_ylabel(f"Job {j}", rotation=0, ha="right", va="center", fontsize=7)
+    axs[-1].set_xlabel("Time [min]")
+
+    fig.tight_layout()
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train ONTS with NCO framework")
     parser.add_argument(
@@ -96,6 +203,32 @@ def main():
         type=int,
         default=0,
         help="LEHD re-encoding frequency (0 = disabled)",
+    )
+    parser.add_argument(
+        "--eval-instance",
+        type=Path,
+        default=None,
+        help="Instance file (.json/.jl) to evaluate on after training. "
+        "Defaults to --instance, or a file from --instance-dir, or a "
+        "fresh random instance of the same size, if not given",
+    )
+    parser.add_argument(
+        "--outdir",
+        type=Path,
+        default=Path("runs"),
+        help="Directory for auto-generated eval outputs (Gantt chart)",
+    )
+    parser.add_argument(
+        "--plot",
+        type=Path,
+        default=None,
+        help="Path to save a Gantt chart (power/SoC + per-task schedule) for "
+        "the eval rollout. Defaults to <outdir>/gantt.png",
+    )
+    parser.add_argument(
+        "--no-eval",
+        action="store_true",
+        help="Skip automatic post-training evaluation and plot",
     )
     args = parser.parse_args()
 
@@ -198,6 +331,44 @@ def main():
     hist = ppo.update(env, iters=args.iters, log_every=max(1, args.iters // 10))
     if hist:
         print(f"\nFinal return: {hist[-1]:.1f}")
+
+    if not args.no_eval:
+        args.outdir.mkdir(parents=True, exist_ok=True)
+        plot_path = args.plot if args.plot is not None else args.outdir / "gantt.png"
+
+        if args.eval_instance is not None:
+            eval_env = ONTSEnv.from_file(
+                args.eval_instance,
+                B=1,
+                device=dev,
+                graph_observation=args.encoder == "bipartite",
+            )
+        elif args.instance is not None:
+            eval_env = ONTSEnv.from_file(
+                args.instance,
+                B=1,
+                device=dev,
+                graph_observation=args.encoder == "bipartite",
+            )
+        elif args.instance_dir is not None:
+            eval_path = env.instance_paths[0]
+            eval_env = ONTSEnv.from_file(
+                eval_path,
+                B=1,
+                device=dev,
+                graph_observation=args.encoder == "bipartite",
+            )
+        else:
+            eval_env = ONTSEnv(
+                B=1,
+                J=args.tasks,
+                T=args.horizon,
+                device=dev,
+                graph_observation=args.encoder == "bipartite",
+                seed=1,
+            )
+
+        evaluate(model, eval_env, plot_path=plot_path)
 
 
 if __name__ == "__main__":

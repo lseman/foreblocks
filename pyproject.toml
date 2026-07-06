@@ -129,18 +129,18 @@ Homepage = "https://github.com/lseman/foreblocks"
 Repository = "https://github.com/lseman/foreblocks"
 
 [project.scripts]
-mltracker-tui = "foreblocks.mltracker.mltracker_tui:main"
+mltracker-tui = "mltracker.mltracker_tui:main"
 foreblocks-studio = "foreblocks.studio_server:main"
 
 [tool.setuptools]
 include-package-data = false
 
-# Studio frontend assets now live at web/studio/dist (served by foreblocks.studio_server
+# Studio frontend assets now live at apps/webui/dist (served by foreblocks.studio_server
 # from a source checkout). They are no longer bundled as foreblocks package-data, so
 # `foreblocks-studio` requires the repo (not a bare wheel install).
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = [
   "foreblocks",
   "foreblocks.*",
@@ -167,3 +167,7 @@ filter_files = true
 
 [tool.pyrefly]
 project-includes = ["**/*.py*", "**/*.ipynb"]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+extraPaths = ["src"]

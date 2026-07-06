@@ -31,7 +31,6 @@ from typing import Callable, Optional
 import torch
 import torch.nn as nn
 
-
 # ─── Unified Encoder Interface ───────────────────────────────────────────────
 
 
@@ -488,6 +487,12 @@ class ActorCritic(nn.Module):
         f_node: int = 0,
         n_gnn_layers: int = 2,
         edge_dim: int = 1,
+        # LEHD re-encoding
+        reencode_every: int = 0,
+        # Self-eval scoring weights (proxy, value, logp)
+        se_proxy_w: float = 0.7,
+        se_value_w: float = 0.2,
+        se_logp_w: float = 0.1,
         # Shared params
         propagate_device: bool = True,
         scheduler: Optional[object] = None,  # pre-built BipartiteGNNScheduler
@@ -495,6 +500,10 @@ class ActorCritic(nn.Module):
         super().__init__()
         self.encoder_type = encoder_type
         self.propagate_device = propagate_device
+        self.reencode_every = reencode_every
+        self.se_proxy_w = se_proxy_w
+        self.se_value_w = se_value_w
+        self.se_logp_w = se_logp_w
 
         if encoder_type == "transformer":
             self.encoder = UnifiedTransformerEncoder(
@@ -790,6 +799,9 @@ class ActorCritic(nn.Module):
                         n_vars,
                     )
 
+            # LEHD re-encoding: re-run encoder at intervals
+            task_emb = self._apply_reencode(obs, task_emb, chosen, step)
+
             alive = alive & (~is_stop)
 
         return {
@@ -799,6 +811,39 @@ class ActorCritic(nn.Module):
             "value": value,
             "action_order": order_out,
         }
+
+    def _apply_reencode(self, obs, task_emb, taken, step):
+        """LEHD re-encoding: re-run encoder at intervals.
+
+        Re-runs encoder at step intervals to update node embeddings
+        based on evolving solution context.
+
+        Args:
+            obs: Original observation dict
+            task_emb: Current node embeddings [B, N, d_model]
+            taken: Boolean mask of already picked nodes [B, N]
+            step: Current decoding step (0-indexed)
+
+        Returns:
+            Updated node embeddings after re-encoding
+        """
+        if self.reencode_every <= 0:
+            return task_emb
+
+        # Re-encode at steps: reencode_every, 2*reencode_every, ...
+        if step > 0 and (step + 1) % self.reencode_every != 0:
+            return task_emb
+
+        # Create updated obs with taken nodes masked out
+        updated_obs = {
+            k: v.clone() if torch.is_tensor(v) else v for k, v in obs.items()
+        }
+        if "mask" in updated_obs:
+            updated_obs["mask"] = updated_obs["mask"] & (~taken)
+
+        # Re-encode
+        task_emb_new, _ = self.encoder.encode(updated_obs)
+        return task_emb_new
 
     # ── Self-Evaluation ─────────────────────────────────────────────────────
 
@@ -854,7 +899,28 @@ class ActorCritic(nn.Module):
         )
         remaining_all = budget_flat
 
+        # Base observation for LEHD re-encoding
+        base_obs = obs if self.reencode_every > 0 else None
+
         for step in range(max_starts):
+            # LEHD re-encoding at intervals
+            if (
+                self.reencode_every > 0
+                and base_obs is not None
+                and step > 0
+                and (step + 1) % self.reencode_every == 0
+            ):
+                # Re-encode base (B instances), then flatten again
+                if self.encoder_type == "bipartite":
+                    task_tok_new, glob_ctx_new = self.encoder.encode(base_obs)
+                else:
+                    task_tok_new, glob_ctx_new = self.encoder(ts, td, g)
+                task_tok_flat = (
+                    task_tok_new.unsqueeze(0)
+                    .expand(k, B, J, task_tok_new.shape[-1])
+                    .reshape(KB, J, task_tok_new.shape[-1])
+                )
+
             block_starts = is_start_flat & start_used_all.unsqueeze(1)
             cand = (
                 feas_flat
@@ -962,9 +1028,9 @@ class ActorCritic(nn.Module):
         confidence = (val_spread / (val_spread + 1.0)).clamp(max=1.0)
         alpha = confidence.unsqueeze(0)
         score_all = (
-            0.7 * proxy_norm
-            + 0.2 * alpha * val_norm
-            + 0.1 * (1 - alpha) * 0.01 * logp_score
+            self.se_proxy_w * proxy_norm
+            + self.se_value_w * alpha * val_norm
+            + self.se_logp_w * (1 - alpha) * 0.01 * logp_score
         )
 
         best_idx = score_all.argmax(dim=0)

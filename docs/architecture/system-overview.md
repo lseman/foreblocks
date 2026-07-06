@@ -34,7 +34,7 @@ The main `foreblocks` training flow is:
 | `foreblocks/ts_handler` | preprocessing, normalization, filtering, imputation, window creation |
 | `foreblocks/transformer` | transformer stack, attention variants, MoE, norms, embeddings |
 | `darts` | neural architecture search and finalization workflow |
-| `foreblocks/mltracker` | experiment tracking support |
+| `mltracker` | experiment tracking support |
 | `foretools/tsgen` | synthetic data generation |
 
 ## Public API boundary
@@ -59,7 +59,7 @@ foreblocks (main)
 ├── foreblocks/custom_mamba  — Hybrid Mamba SSM blocks
 ├── foreblocks/custom_raven  — Raven recurrent blocks
 ├── foreblocks/kan           — Kolmogorov-Arnold Network
-├── foreblocks/mltracker     — Experiment tracking
+├── mltracker                — Experiment tracking
 └── darts (standalone)       — Neural architecture search
 
 foretools (companion)

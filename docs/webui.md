@@ -6,14 +6,15 @@ editLink: true
 
 
 [[toc]]
+
 # Web UI — Visual Pipeline Editor
 
-The `webui/` directory contains a browser-based node editor for building and running foreblocks forecasting pipelines without writing code. Nodes represent pipeline stages; edges connect outputs to inputs. Execution happens on a local FastAPI backend that streams progress back to the browser via WebSocket.
+The `apps/webui/` directory contains a browser-based node editor for building and running foreblocks forecasting pipelines without writing code. Nodes represent pipeline stages; edges connect outputs to inputs. Execution happens on a local FastAPI backend that streams progress back to the browser via WebSocket.
 
 ## Starting the server
 
 ```bash
-cd webui
+cd apps/webui
 npm install         # first time only
 npm run build       # compile the React frontend into dist/
 python server.py    # starts on http://localhost:8000

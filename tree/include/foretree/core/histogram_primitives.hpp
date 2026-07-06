@@ -3,12 +3,16 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <numeric>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
+
+#include <immintrin.h>
 
 namespace foretree {
 
@@ -130,6 +134,222 @@ public:
         std::fill(hist_c_.begin(), hist_c_.end(), 0);
     }
 
+// ------------------------------------------------------------------
+    // AVX2 SIMD accumulation — processes 4 features × 4 samples at once
+    // Uses gather for existing values + scatter-accumulate for updates.
+    // Processes features in SIMD-wide blocks of 4.
+    // ------------------------------------------------------------------
+    template <bool WITH_COUNTS, typename Gdouble, typename Hdouble>
+    void accumulate_samples_avx2(const uint16_t* codes, const Gdouble* g,
+                                 const Hdouble* h, const int* sample_indices,
+                                 int n_samples, int P) {
+        const double* g_raw = reinterpret_cast<const double*>(g);
+        const double* h_raw = reinterpret_cast<const double*>(h);
+        const size_t  total_bins = hist_g_.size();
+
+        // ==================== contiguous samples path ====================
+        if (!sample_indices) {
+            int i = 0;
+            for (; i + 3 < n_samples; i += 4) {
+                // Load G/H for 4 samples (2 × __m256d = 8 doubles)
+                const __m256d gv0 = _mm256_loadu_pd(g_raw + i);
+                const __m256d gv1 = _mm256_loadu_pd(g_raw + i + 2);
+                const __m256d hv0 = _mm256_loadu_pd(h_raw + i);
+                const __m256d hv1 = _mm256_loadu_pd(h_raw + i + 2);
+
+                // Process features in SIMD blocks of 4
+                for (int j = 0; j + 3 < P; j += 4) {
+                    // Load 16 bin codes (4 rows x 4 features)
+                    const uint16_t* r0 = codes + static_cast<size_t>(i    ) * P + j;
+                    const uint16_t* r1 = codes + static_cast<size_t>(i + 1) * P + j;
+                    const uint16_t* r2 = codes + static_cast<size_t>(i + 2) * P + j;
+                    const uint16_t* r3 = codes + static_cast<size_t>(i + 3) * P + j;
+
+                    __m128i b0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(r0));
+                    __m128i b1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(r1));
+                    __m128i b2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(r2));
+                    __m128i b3 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(r3));
+
+                    // Per-feature: gather existing values, add contribution, scatter
+                    for (int f = 0; f < 4; ++f) {
+                        const int max_b = layout_->bins_for_feature(j + f);
+
+                        // Load 8 bin codes for this feature (4 samples x 2 lanes each)
+                        uint16_t bins[8];
+                        bins[0] = static_cast<uint16_t>(_mm_extract_epi16(b0, 0));
+                        bins[1] = static_cast<uint16_t>(_mm_extract_epi16(b0, 1));
+                        bins[2] = static_cast<uint16_t>(_mm_extract_epi16(b1, 0));
+                        bins[3] = static_cast<uint16_t>(_mm_extract_epi16(b1, 1));
+                        bins[4] = static_cast<uint16_t>(_mm_extract_epi16(b2, 0));
+                        bins[5] = static_cast<uint16_t>(_mm_extract_epi16(b2, 1));
+                        bins[6] = static_cast<uint16_t>(_mm_extract_epi16(b3, 0));
+                        bins[7] = static_cast<uint16_t>(_mm_extract_epi16(b3, 1));
+
+                        // Compute 8 histogram offsets
+                        int offsets[8];
+                        for (int k = 0; k < 8; ++k) {
+                            offsets[k] = bins[k] < static_cast<uint16_t>(max_b)
+                                         ? static_cast<int>(layout_->get_offset(j + f, bins[k]))
+                                         : -1;
+                        }
+
+                        // Low lane: samples 0-1 → offsets[0-3]
+                        __m128i off_low = _mm_set_epi32(
+                            offsets[3], offsets[2], offsets[1], offsets[0]);
+                        __m256d exg = _mm256_i32gather_pd(hist_g_.data(), off_low, 8);
+                        __m256d exh = _mm256_i32gather_pd(hist_h_.data(), off_low, 8);
+                        __m256d nrg = _mm256_add_pd(exg, gv0);
+                        __m256d nrh = _mm256_add_pd(exh, hv0);
+                        _mm256_i32scatter_pd(hist_g_.data(), off_low, nrg, 8);
+                        _mm256_i32scatter_pd(hist_h_.data(), off_low, nrh, 8);
+
+                        // High lane: samples 2-3 → offsets[4-7]
+                        __m128i off_high = _mm_set_epi32(
+                            offsets[7], offsets[6], offsets[5], offsets[4]);
+                        exg = _mm256_i32gather_pd(hist_g_.data(), off_high, 8);
+                        exh = _mm256_i32gather_pd(hist_h_.data(), off_high, 8);
+                        nrg = _mm256_add_pd(exg, gv1);
+                        nrh = _mm256_add_pd(exh, hv1);
+                        _mm256_i32scatter_pd(hist_g_.data(), off_high, nrg, 8);
+                        _mm256_i32scatter_pd(hist_h_.data(), off_high, nrh, 8);
+                    }
+                }
+
+                // Scalar tail for remaining features
+                for (int j = (P / 4) * 4; j < P; ++j) {
+                    for (int r = 0; r < 4; ++r) {
+                        const size_t si = static_cast<size_t>(i + r) * P + j;
+                        const uint16_t bin = codes[si];
+                        const int max_b = layout_->bins_for_feature(j);
+                        if (bin >= static_cast<uint16_t>(max_b)) continue;
+                        const size_t off = layout_->get_offset(j, bin);
+                        if (off >= total_bins) continue;
+                        hist_g_[off] += g_raw[i + r];
+                        hist_h_[off] += h_raw[i + r];
+                        if constexpr (WITH_COUNTS) hist_c_[off] += 1;
+                    }
+                }
+            }
+
+            // Scalar tail for remaining samples
+            for (; i < n_samples; ++i) {
+                const uint16_t* row = codes + static_cast<size_t>(i) * P;
+                const double gi = g_raw[i];
+                const double hi = h_raw[i];
+                for (int j = 0; j < P; ++j) {
+                    const uint16_t bin = row[j];
+                    const int max_b = layout_->bins_for_feature(j);
+                    if (bin >= static_cast<uint16_t>(max_b)) continue;
+                    const size_t off = layout_->get_offset(j, bin);
+                    if (off >= total_bins) continue;
+                    hist_g_[off] += gi;
+                    hist_h_[off] += hi;
+                    if constexpr (WITH_COUNTS) hist_c_[off] += 1;
+                }
+            }
+
+        } else {
+            // ==================== sample_indices path ====================
+            // With arbitrary indices, use simpler per-feature SIMD loop
+            int t = 0;
+            for (; t + 3 < n_samples; t += 4) {
+                int si[4] = {sample_indices[t], sample_indices[t + 1],
+                             sample_indices[t + 2], sample_indices[t + 3]};
+                // Filter valid
+                int valid = 0;
+                double gv[4], hv[4];
+                for (int k = 0; k < 4; ++k) {
+                    if (si[k] >= 0) {
+                        gv[valid] = g_raw[si[k]];
+                        hv[valid] = h_raw[si[k]];
+                        si[valid] = si[k];
+                        valid++;
+                    }
+                }
+                if (valid == 0) continue;
+
+                for (int j = 0; j + 3 < P; j += 4) {
+                    for (int f = 0; f < 4; ++f) {
+                        const int max_b = layout_->bins_for_feature(j + f);
+                        // Load bin codes for valid samples
+                        uint16_t bins[4];
+                        for (int a = 0; a < valid; ++a) {
+                            bins[a] = codes[static_cast<size_t>(si[a]) * P + j + f];
+                        }
+
+                        // Compute offsets
+                        int offsets[4];
+                        for (int a = 0; a < 4; ++a) {
+                            offsets[a] = (a < valid && bins[a] < static_cast<uint16_t>(max_b))
+                                         ? static_cast<int>(layout_->get_offset(j + f, bins[a]))
+                                         : -1;
+                        }
+
+                        // Gather 4 existing values (AVX2 uses __m128i index)
+                        __m128i off = _mm_set_epi32(
+                            offsets[3], offsets[2], offsets[1], offsets[0]);
+                        __m256d exg = _mm256_i32gather_pd(hist_g_.data(), off, 8);
+                        __m256d exh = _mm256_i32gather_pd(hist_h_.data(), off, 8);
+
+                        // Build contribution mask for valid samples
+                        __m256d contrib = _mm256_setzero_pd();
+                        for (int a = 0; a < valid; ++a) {
+                            __m256d val = _mm256_set1_pd(gv[a]);
+                            __m256i mask = _mm256_set1_epi32(1 << a);
+                            contrib = _mm256_add_pd(contrib, _mm256_and_pd(val, _mm256_castsi256_pd(mask)));
+                        }
+
+                        __m256d nrg = _mm256_add_pd(exg, contrib);
+                        __m256d nrh = _mm256_add_pd(exh, contrib);
+                        _mm256_i32scatter_pd(hist_g_.data(), off, nrg, 8);
+                        _mm256_i32scatter_pd(hist_h_.data(), off, nrh, 8);
+
+                        if constexpr (WITH_COUNTS) {
+                            for (int a = 0; a < valid; ++a) {
+                                if (offsets[a] >= 0)
+                                    hist_c_[static_cast<size_t>(offsets[a])]++;
+                            }
+                        }
+                    }
+                }
+
+                // Scalar tail for remaining features
+                for (int a = 0; a < valid; ++a) {
+                    const size_t row = static_cast<size_t>(si[a]) * P;
+                    for (int j = (P / 4) * 4; j < P; ++j) {
+                        const uint16_t bin = codes[row + j];
+                        const int max_b = layout_->bins_for_feature(j);
+                        if (bin >= static_cast<uint16_t>(max_b)) continue;
+                        size_t off = layout_->get_offset(j, bin);
+                        if (off >= total_bins) continue;
+                        hist_g_[off] += gv[a];
+                        hist_h_[off] += hv[a];
+                        if constexpr (WITH_COUNTS) hist_c_[off]++;
+                    }
+                }
+            }
+
+            // Scalar tail for remaining samples
+            for (; t < n_samples; ++t) {
+                const int idx = sample_indices[t];
+                if (idx < 0) continue;
+                const size_t row = static_cast<size_t>(idx) * P;
+                const double gi = g_raw[idx];
+                const double hi = h_raw[idx];
+                for (int j = 0; j < P; ++j) {
+                    const uint16_t bin = codes[row + j];
+                    const int max_b = layout_->bins_for_feature(j);
+                    if (bin >= static_cast<uint16_t>(max_b)) continue;
+                    size_t off = layout_->get_offset(j, bin);
+                    if (off >= total_bins) continue;
+                    hist_g_[off] += gi;
+                    hist_h_[off] += hi;
+                    if constexpr (WITH_COUNTS) hist_c_[off]++;
+                }
+            }
+        }
+    }
+
     template <bool WITH_COUNTS, typename Gdouble, typename Hdouble>
     void accumulate_samples(const uint16_t* codes, const Gdouble* g,
                             const Hdouble* h, const int* sample_indices,
@@ -138,7 +358,16 @@ public:
             return;
 
 #ifdef FF_NO_TBB
-        // Sequential accumulation
+        // Use AVX2 SIMD when available (4× unroll on rows, 4-wide on features)
+        // Falls back to scalar when P < 4 or total_bins < 4.
+#ifdef __AVX2__
+        if (P >= 4 && layout_->total_size() >= 4) {
+            accumulate_samples_avx2<WITH_COUNTS>(codes, g, h, sample_indices,
+                                                 n_samples, P);
+            return;
+        }
+#endif
+        // Sequential accumulation (scalar)
         auto accumulate_one = [&](int i) {
             const uint16_t* row = codes + static_cast<size_t>(i) * P;
             const double gi = static_cast<double>(g[i]);

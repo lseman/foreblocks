@@ -1,0 +1,145 @@
+"""foreblocks.studio_server.
+
+Local HTTP server for foreblocks Studio frontend assets.
+
+Launches a lightweight server to serve the Studio web UI with SPA routing
+fallback, automatic port selection, and browser launch integration. Designed
+for development and local deployment of the foreblocks Studio interface.
+
+Core API:
+- run_server: start the Studio HTTP server
+
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import functools
+import socket
+import sys
+import webbrowser
+from http import HTTPStatus
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+LOCAL_BROWSER_HOSTS = {"127.0.0.1", "localhost"}
+
+
+def _studio_dist_dir() -> Path:
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    dist_dir = repo_root / "apps" / "webui" / "dist"
+    if not dist_dir.exists():
+        raise RuntimeError(
+            "Studio frontend assets were not found at apps/webui/dist. "
+            "Build the Studio assets first (npm run build in apps/webui/src)."
+        )
+    return dist_dir
+
+
+def _is_port_available(host: str, port: int) -> bool:
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _resolve_port(host: str, requested_port: int) -> int:
+    if _is_port_available(host, requested_port):
+        return requested_port
+
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.bind((host, 0))
+        try:
+            return int(sock.getsockname()[1])
+        except (IndexError, ValueError) as exc:
+            raise RuntimeError("Unexpected socket address format") from exc
+
+
+class _StudioHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, directory: str, **kwargs):
+        super().__init__(*args, directory=directory, **kwargs)
+
+    def do_GET(self):
+        requested = self.translate_path(self.path)
+        if Path(requested).exists():
+            return super().do_GET()
+
+        # SPA fallback: serve index.html for application routes.
+        self.path = "/index.html"
+        return super().do_GET()
+
+    def log_message(self, format: str, *args):
+        sys.stdout.write("[foreblocks-studio] " + format % args + "\n")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="foreblocks-studio",
+        description="Serve the bundled foreBlocks Studio frontend.",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind.")
+    parser.add_argument("--port", type=int, default=5176, help="Preferred TCP port.")
+    open_group = parser.add_mutually_exclusive_group()
+    open_group.add_argument(
+        "--open",
+        dest="open_browser",
+        action="store_true",
+        help="Always open the Studio URL in the default browser after the server starts.",
+    )
+    open_group.add_argument(
+        "--no-open",
+        dest="open_browser",
+        action="store_false",
+        help="Do not open the browser automatically.",
+    )
+    parser.set_defaults(open_browser=None)
+    return parser
+
+
+def should_open_browser(host: str, open_browser: bool | None) -> bool:
+    if open_browser is not None:
+        return bool(open_browser)
+    return host in LOCAL_BROWSER_HOSTS
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    dist_dir = _studio_dist_dir()
+    host = str(args.host)
+    try:
+        port = _resolve_port(host, int(args.port))
+    except ValueError as exc:
+        raise SystemExit(f"Invalid port number: {args.port}") from exc
+    handler = functools.partial(_StudioHandler, directory=str(dist_dir))
+    server = ThreadingHTTPServer((host, port), handler)
+    url = f"http://{host}:{port}"
+    open_browser = should_open_browser(host, args.open_browser)
+
+    print(f"foreBlocks Studio serving {dist_dir}")
+    print(f"Open {url}")
+    if open_browser:
+        print("Browser launch policy: auto-open enabled")
+    else:
+        print("Browser launch policy: auto-open disabled")
+
+    if open_browser:
+        webbrowser.open(url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down foreBlocks Studio server.")
+    finally:
+        server.server_close()
+
+    return HTTPStatus.OK
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

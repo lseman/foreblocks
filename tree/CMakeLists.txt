@@ -28,7 +28,7 @@ if(NOT COMMAND CPMAddPackage)
   FetchContent_Declare(
     CPM
     GIT_REPOSITORY https://github.com/cpm-cmake/CPM.cmake.git
-    GIT_TAG v0.42.1
+    GIT_TAG v0.42.3
   )
   FetchContent_MakeAvailable(CPM)
   include(${cpm_SOURCE_DIR}/cmake/CPM.cmake)
@@ -45,12 +45,12 @@ if(TREE_ENABLE_STDEXEC)
     GITHUB_REPOSITORY NVIDIA/stdexec
     GIT_TAG main
     OPTIONS
-      "STDEXEC_BUILD_TESTS OFF"
-      "STDEXEC_BUILD_EXAMPLES OFF"
-      "STDEXEC_BUILD_BENCHMARKS OFF"
-      "STDEXEC_BUILD_DOCS OFF"
-      "BUILD_TESTING OFF"
-      "STDEXEC_ENABLE_CUDA ${FORETREE_EXEC_USE_CUDA}"
+    "STDEXEC_BUILD_TESTS OFF"
+    "STDEXEC_BUILD_EXAMPLES OFF"
+    "STDEXEC_BUILD_BENCHMARKS OFF"
+    "STDEXEC_BUILD_DOCS OFF"
+    "BUILD_TESTING OFF"
+    "STDEXEC_ENABLE_CUDA ${FORETREE_EXEC_USE_CUDA}"
   )
 else()
   message(STATUS "stdexec disabled")
@@ -67,26 +67,26 @@ find_package(Eigen3 CONFIG REQUIRED)
 add_library(foretree_core INTERFACE)
 target_include_directories(foretree_core
   INTERFACE
-    "${TREE_INCLUDE_DIR}"
+  "${TREE_INCLUDE_DIR}"
 )
 target_link_libraries(foretree_core
   INTERFACE
-    fmt::fmt
-    Eigen3::Eigen
+  fmt::fmt
+  Eigen3::Eigen
 )
 
 function(tree_common_setup tgt)
   target_compile_features(${tgt} PRIVATE cxx_std_23)
   target_include_directories(${tgt}
     PRIVATE
-      "${TREE_INCLUDE_DIR}"
-      "${TREE_SRC_DIR}"
+    "${TREE_INCLUDE_DIR}"
+    "${TREE_SRC_DIR}"
   )
   target_link_libraries(${tgt}
     PRIVATE
-      fmt::fmt
-      Eigen3::Eigen
-      Python3::Module
+    fmt::fmt
+    Eigen3::Eigen
+    Python3::Module
   )
 
   if(MSVC)
@@ -108,7 +108,7 @@ function(tree_common_setup tgt)
 endfunction()
 
 if(TREE_BUILD_FORETREE)
-find_package(Python3 3.12 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
+  find_package(Python3 3.14 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
   find_package(pybind11 CONFIG REQUIRED)
   pybind11_add_module(foretree "${TREE_SRC_DIR}/foretree_pybind.cpp")
   tree_common_setup(foretree)
@@ -119,7 +119,7 @@ find_package(Python3 3.12 EXACT COMPONENTS Interpreter Development.Module REQUIR
 endif()
 
 if(TREE_BUILD_FOREFOREST)
-find_package(Python3 3.12 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
+  find_package(Python3 3.14 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
 
   find_package(pybind11 CONFIG REQUIRED)
   pybind11_add_module(foreforest "${TREE_SRC_DIR}/foreforest.cpp")
@@ -128,7 +128,7 @@ find_package(Python3 3.12 EXACT COMPONENTS Interpreter Development.Module REQUIR
 
   if(TREE_ENABLE_STDEXEC)
     target_include_directories(foreforest PRIVATE ${stdexec_SOURCE_DIR}/include)
-        target_link_libraries(foreforest PRIVATE stdexec)
+    target_link_libraries(foreforest PRIVATE stdexec)
     target_compile_definitions(foreforest PRIVATE TREE_ENABLE_STDEXEC=1)
   endif()
 

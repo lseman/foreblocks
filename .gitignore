@@ -12,7 +12,7 @@ typings/
 # Packaging and build artifacts
 /build/
 /dist/
-/foreblocks/studio/dist/
+/src/foreblocks/studio/dist/
 
 # Editors and IDEs
 .vscode/
@@ -47,13 +47,13 @@ timesfm/
 ml-pararnn/
 
 # Project-specific generated directories
-foreblocks/mltracker/mltracker_data/
+src/foreblocks/mltracker/mltracker_data/
 mltracker_data/
-foreblocks/mltracker/dashboard_v2/node_modules/
-webui/artifacts/
-webui/dist/
-webui/server.log
-webui/nodeDefinitions*_debug.json
+src/foreblocks/mltracker/dashboard_v2/node_modules/
+apps/webui/artifacts/
+apps/webui/dist/
+apps/webui/server.log
+apps/webui/nodeDefinitions*_debug.json
 
 # Working and temporary directories
 work/
@@ -88,7 +88,7 @@ estudo_rebeca/
 ariadne.db
 .codex-ariadne-mcp.toml
 .cursor
-webui/nodeDefinitions_debug.json
+apps/webui/nodeDefinitions_debug.json
 
 *.svg
 *.tex

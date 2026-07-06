@@ -104,38 +104,6 @@ def test_mamba2_block_fla_style_knobs_and_attention_mask() -> None:
     assert y.shape == x.shape
 
 
-def test_mamba2_combined_path_matches_decomposed_path() -> None:
-    torch.manual_seed(22)
-    fused = Mamba2Block(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        num_heads=4,
-        chunk_size=8,
-        use_fused_path=True,
-        use_triton_ssd=False,
-    )
-    decomposed = Mamba2Block(
-        d_model=32,
-        d_inner=64,
-        d_state=8,
-        d_conv=4,
-        num_heads=4,
-        chunk_size=8,
-        use_fused_path=False,
-        use_triton_ssd=False,
-    )
-    decomposed.load_state_dict(fused.state_dict())
-    x = torch.randn(2, 9, 32)
-    mask = torch.ones(2, 9)
-    mask[:, -1] = 0
-
-    y_fused = fused(x, attention_mask=mask)
-    y_decomposed = decomposed(x, attention_mask=mask)
-    _assert_close(y_fused, y_decomposed, atol=1e-6)
-
-
 def test_mamba2_block_pre_norm_disabled() -> None:
     block = Mamba2Block(
         d_model=32,

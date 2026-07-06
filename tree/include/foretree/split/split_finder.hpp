@@ -108,7 +108,7 @@ class CategoricalKWaySplitFinder {
 public:
     int    max_groups                   = 8; // retained for compatibility; used as a soft cap in ranked-prefix search
     bool   use_exhaustive_search        = true;
-    int    max_exhaustive_cardinality   = 16;
+    int    max_exhaustive_cardinality   = 10;
     bool   use_ordered_scan             = true;
     bool   use_greedy_merge             = true;
     int    greedy_merge_min_cardinality = 24;

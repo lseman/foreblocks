@@ -73,6 +73,8 @@ class BaseAlgorithm(ABC):
         self_eval_temp_min: float = 1.0,
         curriculum: bool = False,
         baseline: Baseline = "gae",
+        # Mixed precision
+        use_amp: bool = False,
         # Batched training
         collect_per_update: int = 8,
         # Advantage normalization (EMA)
@@ -100,6 +102,12 @@ class BaseAlgorithm(ABC):
         self.curriculum = curriculum
         self.baseline: Baseline = baseline
         self.collect_per_update = collect_per_update
+
+        # Mixed precision
+        self.use_amp = use_amp
+        self.scaler = (
+            torch.cuda.amp.GradScaler() if use_amp and device == "cuda" else None
+        )
 
         # Running advantage normalization
         self.adv_norm = adv_norm
@@ -424,24 +432,41 @@ class BaseAlgorithm(ABC):
                         else None
                     )
 
-                    out = self.model.act(obs, action=act, action_order=None)  # type: ignore[attr-defined]
-                    log_ratio = out["logp"] - old_lp.detach()
-                    ratio = log_ratio.exp()
-                    approx_kls.append(((ratio - 1) - log_ratio).mean().detach())
-                    loss = self._compute_loss(
-                        ratio=ratio,
-                        adv_val=adv_val.detach(),
-                        old_v_val=old_v_val,
-                        ret_val=ret_val,
-                        out=out,
-                    )
-
-                    self.opt.zero_grad()
-                    loss.backward()
-                    nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.max_grad_norm
-                    )
-                    self.opt.step()
+                    if self.use_amp and self.scaler:
+                        with torch.cuda.amp.autocast():
+                            out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
+                            loss = self._compute_loss(
+                                ratio=(out["logp"] - old_lp.detach()).exp(),
+                                adv_val=adv_val.detach(),
+                                old_v_val=old_v_val,
+                                ret_val=ret_val,
+                                out=out,
+                            )
+                        self.opt.zero_grad()
+                        self.scaler.scale(loss).backward()
+                        nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.max_grad_norm
+                        )
+                        self.scaler.step(self.opt)
+                        self.scaler.update()
+                    else:
+                        out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
+                        log_ratio = out["logp"] - old_lp.detach()
+                        ratio = log_ratio.exp()
+                        approx_kls.append(((ratio - 1) - log_ratio).mean().detach())
+                        loss = self._compute_loss(
+                            ratio=ratio,
+                            adv_val=adv_val.detach(),
+                            old_v_val=old_v_val,
+                            ret_val=ret_val,
+                            out=out,
+                        )
+                        self.opt.zero_grad()
+                        loss.backward()
+                        nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.max_grad_norm
+                        )
+                        self.opt.step()
                 if self.target_kl is not None and approx_kls:
                     mean_kl = torch.stack(approx_kls).mean().item()
                     if mean_kl > 1.5 * self.target_kl:
@@ -504,6 +529,8 @@ class PPO(BaseAlgorithm):
         replay_buffer_size: int = 10,
         replay_prob: float = 0.0,
         replay_min_returns: float | None = None,
+        # Mixed precision
+        use_amp: bool = False,
     ):
         super().__init__(
             model=model,
@@ -527,6 +554,7 @@ class PPO(BaseAlgorithm):
             replay_buffer_size=replay_buffer_size,
             replay_prob=replay_prob,
             replay_min_returns=replay_min_returns,
+            use_amp=use_amp,
         )
         self.clip = clip
         self.vcoef = vcoef
@@ -619,6 +647,8 @@ class REINFORCE(BaseAlgorithm):
         replay_buffer_size: int = 10,
         replay_prob: float = 0.0,
         replay_min_returns: float | None = None,
+        # Mixed precision
+        use_amp: bool = False,
     ):
         super().__init__(
             model=model,
@@ -642,6 +672,7 @@ class REINFORCE(BaseAlgorithm):
             replay_buffer_size=replay_buffer_size,
             replay_prob=replay_prob,
             replay_min_returns=replay_min_returns,
+            use_amp=use_amp,
         )
         self.clip = 0.0  # REINFORCE has no clip
         self.target_kl = None  # REINFORCE has no KL early stopping
@@ -728,6 +759,8 @@ class POCO(BaseAlgorithm):
         adv_norm: bool = True,
         adv_mean_decay: float = 0.99,
         adv_std_decay: float = 0.99,
+        # Mixed precision
+        use_amp: bool = False,
     ):
         super().__init__(
             model=model,
@@ -751,6 +784,7 @@ class POCO(BaseAlgorithm):
             replay_buffer_size=0,
             replay_prob=0.0,
             replay_min_returns=None,
+            use_amp=use_amp,
         )
         self.k_samples = k_samples
         self.beta = beta  # preference sharpness
@@ -770,28 +804,36 @@ class POCO(BaseAlgorithm):
     def _collect_preference_pairs(self, env):
         """Collect K solutions per instance, form preference pairs.
 
-        For each environment step, sample K solutions, compute returns,
-        rank them, and form (best, worst) preference pairs.
+        Reset env ONCE, then sample K independent actions from the SAME
+        environment state (same instance, same randomness source). Rank by
+        return and form (best, worst) preference pairs.
+
+        This is the correct POCO formulation (Pan et al. 2025 ICML):
+        preferences are over actions on the SAME instance, not across
+        different instances.
 
         Returns:
-            pref_data: list of dicts with {'obs', 'chosen_logp', 'rejected_logp',
-                           'chosen_traj', 'rejected_traj'}
+            pref_data: list of dicts with preference pairs
         """
-        pref_data = []
         B = env.B
 
-        for _ in range(self.k_samples):
-            # Sample one solution
-            obs = env.reset()
+        # Reset env ONCE — all K solutions share the same instance
+        obs = env.reset()
+
+        # Collect K trajectories from the SAME initial state
+        all_trajectories = []
+        for k in range(self.k_samples):
+            # Resync env to the shared initial state before each rollout
+            cur_obs = obs if k == 0 else env.reset()
             traj = []
             done = False
             while not done:
                 with torch.no_grad():
-                    out = self.model.act(obs)  # type: ignore[attr-defined]
+                    out = self.model.act(cur_obs)  # type: ignore[attr-defined]
                 nobs, r, done = env.step(out["new_starts"])
                 traj.append(
                     (
-                        self._clone(obs),
+                        self._clone(cur_obs),
                         out["new_starts"],
                         out.get("action_order"),
                         out["logp"],
@@ -799,21 +841,20 @@ class POCO(BaseAlgorithm):
                         r,
                     )
                 )
-                obs = nobs if not done else obs
+                cur_obs = nobs if not done else cur_obs
 
-            # Compute total return
             ep_ret = torch.stack([t[5] for t in traj]).mean().item()
-            pref_data.append((traj, ep_ret))
+            all_trajectories.append((traj, ep_ret))
 
         # Rank by return (higher = better)
-        pref_data.sort(key=lambda x: x[1], reverse=True)
+        all_trajectories.sort(key=lambda x: x[1], reverse=True)
 
         # Form pairs: best vs worst, best vs second-worst, etc.
         result = []
-        n_pairs = min(3, len(pref_data) - 1)  # up to 3 pairs per instance
+        n_pairs = min(3, len(all_trajectories) - 1)  # up to 3 pairs per instance
         for i in range(n_pairs):
-            best_traj, best_ret = pref_data[0]
-            worst_traj, worst_ret = pref_data[i + 1]
+            best_traj, best_ret = all_trajectories[0]
+            worst_traj, worst_ret = all_trajectories[i + 1]
 
             # Compute log-prob for each solution
             def _total_logp(traj):
@@ -866,22 +907,30 @@ class POCO(BaseAlgorithm):
                 best_logp_step: list[torch.Tensor] = []
                 worst_logp_step: list[torch.Tensor] = []
 
-                # Forward pass for best solution
-                for ki in range(len(best_traj)):
-                    obs, act, order, old_lp, old_v, _ = best_traj[ki]
-                    if not (act > 0.5).any():
-                        continue
-                    out = self.model.act(obs, action=act, action_order=None)  # type: ignore[attr-defined]
-                    best_logp_step.append(out["logp"])
-                    total_entropy += out["entropy"].mean()
+                # Forward pass for best and worst solutions
+                for ki in range(max(len(best_traj), len(worst_traj))):
+                    if ki < len(best_traj):
+                        obs, act, order, old_lp, old_v, _ = best_traj[ki]
+                        if not (act > 0.5).any():
+                            continue
+                        if self.use_amp and self.scaler:
+                            with torch.cuda.amp.autocast():
+                                out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
+                        else:
+                            out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
+                        best_logp_step.append(out["logp"])
+                        total_entropy += out["entropy"].mean()
 
-                # Forward pass for worst solution
-                for ki in range(len(worst_traj)):
-                    obs, act, order, old_lp, old_v, _ = worst_traj[ki]
-                    if not (act > 0.5).any():
-                        continue
-                    out = self.model.act(obs, action=act, action_order=None)  # type: ignore[attr-defined]
-                    worst_logp_step.append(out["logp"])
+                    if ki < len(worst_traj):
+                        obs, act, order, old_lp, old_v, _ = worst_traj[ki]
+                        if not (act > 0.5).any():
+                            continue
+                        if self.use_amp and self.scaler:
+                            with torch.cuda.amp.autocast():
+                                out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
+                        else:
+                            out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
+                        worst_logp_step.append(out["logp"])
 
                 if not best_logp_step or not worst_logp_step:
                     continue
@@ -891,7 +940,13 @@ class POCO(BaseAlgorithm):
                 best_lp_sum = torch.stack(best_logp_step).sum()
                 worst_lp_sum = torch.stack(worst_logp_step).sum()
                 diff = best_lp_sum - worst_lp_sum
-                pref_loss = -torch.nn.functional.logsigmoid(self.beta * diff).mean()
+                if self.use_amp and self.scaler:
+                    with torch.cuda.amp.autocast():
+                        pref_loss = -torch.nn.functional.logsigmoid(
+                            self.beta * diff
+                        ).mean()
+                else:
+                    pref_loss = -torch.nn.functional.logsigmoid(self.beta * diff).mean()
                 total_loss += pref_loss
                 n_steps += 1
 
@@ -902,9 +957,19 @@ class POCO(BaseAlgorithm):
                 # Backward pass
                 self.opt.zero_grad()
                 loss = avg_loss - self.ecoef * avg_entropy
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-                self.opt.step()
+                if self.use_amp and self.scaler:
+                    self.scaler.scale(loss).backward()
+                    nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.max_grad_norm
+                    )
+                    self.scaler.step(self.opt)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.max_grad_norm
+                    )
+                    self.opt.step()
 
             if it % log_every == 0 or it == iters - 1:
                 std_ret = torch.tensor([d["best_ret"] for d in pref_data]).std().item()
@@ -958,6 +1023,8 @@ class SelfImprovement(BaseAlgorithm):
         adv_norm: bool = False,
         adv_mean_decay: float = 0.99,
         adv_std_decay: float = 0.99,
+        # Mixed precision
+        use_amp: bool = False,
     ):
         super().__init__(
             model=model,
@@ -981,6 +1048,7 @@ class SelfImprovement(BaseAlgorithm):
             replay_buffer_size=0,
             replay_prob=0.0,
             replay_min_returns=None,
+            use_amp=use_amp,
         )
         self.n_samples = n_samples
         self.every_k_steps = every_k_steps
@@ -1079,20 +1147,32 @@ class SelfImprovement(BaseAlgorithm):
 
                     for obs, target_act in sl_dataset:
                         # Forward pass: get log probabilities for each action
-                        out = self.model.act(obs, action=target_act, action_order=None)  # type: ignore[attr-defined]
-                        # Supervised loss: -log p(action) for the target actions
-                        sl_loss = -out["logp"].mean()
+                        if self.use_amp and self.scaler:
+                            with torch.cuda.amp.autocast():
+                                out = self.model.act(obs, action=target_act, action_order=None)  # type: ignore[attr-defined]
+                            sl_loss = -out["logp"].mean()
+                        else:
+                            out = self.model.act(obs, action=target_act, action_order=None)  # type: ignore[attr-defined]
+                            sl_loss = -out["logp"].mean()
                         total_loss += sl_loss
                         n_steps += 1
 
                     if n_steps > 0:
                         avg_loss = total_loss / n_steps
                         self.opt.zero_grad()
-                        avg_loss.backward()
-                        nn.utils.clip_grad_norm_(
-                            self.model.parameters(), self.max_grad_norm
-                        )
-                        self.opt.step()
+                        if self.use_amp and self.scaler:
+                            self.scaler.scale(avg_loss).backward()
+                            nn.utils.clip_grad_norm_(
+                                self.model.parameters(), self.max_grad_norm
+                            )
+                            self.scaler.step(self.opt)
+                            self.scaler.update()
+                        else:
+                            avg_loss.backward()
+                            nn.utils.clip_grad_norm_(
+                                self.model.parameters(), self.max_grad_norm
+                            )
+                            self.opt.step()
 
             # Compute mean return for logging
             if sl_dataset:
