@@ -92,7 +92,7 @@ apps/webui/nodeDefinitions_debug.json
 
 *.svg
 *.tex
-scripts/
+# scripts/  # update_web_version.py needed by CI
 papers_md/
 darts_figures/
 cubinho/

@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = ROOT / "pyproject.toml"
-VERSION_FILE = ROOT / "web" / "version.js"
+VERSION_FILE = ROOT / "site" / "landing" / "version.js"
 
 text = PYPROJECT.read_text(encoding="utf-8")
 match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
