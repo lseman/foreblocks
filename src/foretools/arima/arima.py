@@ -23,6 +23,7 @@ Notes:
 from __future__ import annotations
 
 import concurrent.futures
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -57,14 +58,18 @@ except Exception:
 
 
 # --- JAX autodiff backend (PERF) ---
+os.environ.setdefault("JAX_PLATFORMS", "cpu")
+os.environ.setdefault("JAX_ENABLE_X64", "1")
 try:
     import jax
     import jax.numpy as jnp
     from jax import lax
 
     _HAS_JAX = True
-except Exception:
+    _JAX_IMPORT_ERROR = None
+except Exception as e:
     _HAS_JAX = False
+    _JAX_IMPORT_ERROR = e
     jax = None
     jnp = None
     lax = None
@@ -86,6 +91,14 @@ def _as_1d(y) -> np.ndarray:
     return y
 
 
+def _as_1d_context(y) -> np.ndarray:
+    y = np.asarray(y, dtype=float).reshape(-1)
+    y = y[np.isfinite(y)]
+    if y.size < 2:
+        raise ValueError("Need at least two finite context observations.")
+    return y
+
+
 def _as_2d(X, n: int) -> np.ndarray | None:
     if X is None:
         return None
@@ -98,6 +111,8 @@ def _as_2d(X, n: int) -> np.ndarray | None:
     X = X.copy()
     for col in range(X.shape[1]):
         mask = np.isnan(X[:, col]) | ~np.isfinite(X[:, col])
+        if not mask.any():
+            continue
         if mask.all():
             X[:, col] = 0.0
             continue
@@ -127,6 +142,59 @@ def difference_exog(X: np.ndarray | None, d: int, D: int, s: int) -> np.ndarray 
         out = out[1:] - out[:-1]
     for _ in range(D):
         out = out[s:] - out[:-s]
+    return out
+
+
+def future_difference_exog(
+    X_history: np.ndarray | None,
+    X_future: np.ndarray | None,
+    *,
+    d: int,
+    D: int,
+    s: int,
+) -> np.ndarray | None:
+    if X_future is None:
+        return None
+    Xf = np.asarray(X_future, dtype=float)
+    if Xf.ndim == 1:
+        Xf = Xf.reshape(-1, 1)
+    if X_history is None or (d == 0 and D == 0):
+        return Xf
+    Xh = np.asarray(X_history, dtype=float)
+    if Xh.ndim == 1:
+        Xh = Xh.reshape(-1, 1)
+    combined = np.vstack([Xh, Xf])
+    diffed = difference_exog(combined, d=d, D=D, s=s)
+    if diffed is None or diffed.shape[0] < Xf.shape[0]:
+        raise ValueError("Not enough exog history to difference future exog.")
+    return diffed[-Xf.shape[0] :]
+
+
+def _invert_difference_forecast(
+    y_history: np.ndarray,
+    diff_forecast: np.ndarray,
+    *,
+    d: int,
+    D: int,
+    s: int,
+) -> np.ndarray:
+    """Recursively map forecasts from differenced space back to the input scale."""
+    diff_forecast = np.asarray(diff_forecast, dtype=float).reshape(-1)
+    if diff_forecast.size == 0 or (d == 0 and D == 0):
+        return diff_forecast.copy()
+
+    history = np.asarray(y_history, dtype=float).reshape(-1).copy()
+    out = np.empty(diff_forecast.size, dtype=float)
+    for i, target in enumerate(diff_forecast):
+        with_zero = np.concatenate([history, np.array([0.0], dtype=float)])
+        with_one = np.concatenate([history, np.array([1.0], dtype=float)])
+        base = float(difference(with_zero, d=d, D=D, s=s)[-1])
+        coef = float(difference(with_one, d=d, D=D, s=s)[-1] - base)
+        if not np.isfinite(coef) or abs(coef) < 1e-12:
+            raise ValueError("Cannot invert differenced forecast.")
+        value = (float(target) - base) / coef
+        out[i] = value
+        history = np.concatenate([history, np.array([value], dtype=float)])
     return out
 
 
@@ -547,17 +615,12 @@ if _HAS_JAX:
             return jnp.zeros((0,), dtype=jnp.float64)
 
         kappa = jnp.tanh(raw)
-
-        def step(carry, kk):
-            idx, phi = carry
-            phi_new = phi.at[:idx].set(phi[:idx] - kk * phi[idx - 1 :: -1])
-            phi_new = phi_new.at[idx].set(kk)
-            return (idx + 1, phi_new), None
-
-        init_phi = jnp.zeros((n,), dtype=jnp.float64)
-        init_phi = init_phi.at[0].set(kappa[0])
-        init = (1, init_phi)
-        (final_idx, phi), _ = lax.scan(step, init, kappa[1:])
+        phi = jnp.zeros((n,), dtype=jnp.float64)
+        phi = phi.at[0].set(kappa[0])
+        for idx in range(1, n):
+            prev = phi
+            phi = phi.at[:idx].set(prev[:idx] - kappa[idx] * prev[:idx][::-1])
+            phi = phi.at[idx].set(kappa[idx])
         return phi
 
     def _jax_constrain_invertible(raw: jnp.ndarray) -> jnp.ndarray:
@@ -1109,10 +1172,10 @@ class SarimaxScratch:
             opt_message = ""
             optax_used = False
 
-            optimizer = optax_optimizer
+            optimizer = None if optax_optimizer is False else optax_optimizer
             optax_mod = None
 
-            if optimizer is None:
+            if optimizer is None and optax_optimizer is not False:
                 try:
                     import optax as _optax  # type: ignore
 
@@ -1169,7 +1232,7 @@ class SarimaxScratch:
                     theta0,
                     method=method,
                     jac=True,
-                    options={"maxiter": int(maxiter), "disp": bool(verbose)},
+                    options={"maxiter": int(maxiter)},
                 )
                 theta_opt_np = np.asarray(res.x, dtype=float)
                 best_loss = float(res.fun)
@@ -1219,7 +1282,7 @@ class SarimaxScratch:
                 theta0,
                 method=method,
                 jac=True,
-                options={"maxiter": int(maxiter), "disp": bool(verbose)},
+                options={"maxiter": int(maxiter)},
             )
             theta_opt_np = np.asarray(res.x, dtype=float)
             best_loss = res.fun
@@ -1313,7 +1376,7 @@ class SarimaxScratch:
         if self.fit_ is None:
             raise RuntimeError("Call fit() first.")
         fit = self.fit_
-        y0 = _as_1d(y)
+        y0 = _as_1d_context(y)
         X0 = _as_2d(exog, n=y0.size)
         _, d, _ = fit.spec.order
         _, D, _, s = fit.spec.seasonal_order
@@ -1365,7 +1428,7 @@ class SarimaxScratch:
         if self.fit_ is None:
             raise RuntimeError("Call fit() first.")
         fit = self.fit_
-        y0 = _as_1d(y)
+        y0 = _as_1d_context(y)
         X0 = _as_2d(exog, n=y0.size)
         _, d, _ = fit.spec.order
         _, D, _, s = fit.spec.seasonal_order
@@ -1380,10 +1443,7 @@ class SarimaxScratch:
                 Xf = Xf.reshape(-1, 1)
             if Xf.shape[0] != steps:
                 raise ValueError("exog_future must have shape (steps, k_exog).")
-            if d > 0 or D > 0:
-                raise NotImplementedError(
-                    "Provide exog_future in differenced space when d>0 or D>0."
-                )
+            Xf = future_difference_exog(X0, Xf, d=d, D=D, s=s)
 
         c = float(fit.params["c"][0]) if fit.spec.include_intercept else 0.0
         beta = fit.params["beta"]
@@ -1428,6 +1488,7 @@ class SarimaxScratch:
         for h in range(steps):
             a = T @ a
             mean[h] = det_future[h] + float(Z @ a)
+        mean = _invert_difference_forecast(y0, mean, d=d, D=D, s=s)
 
         if not return_intervals:
             return {"mean": mean}
@@ -1444,8 +1505,10 @@ class SarimaxScratch:
             if h > 0:
                 P_h = T @ P_h @ T.T + RRt
             forecast_var[h] = float(Z @ P_h @ Z) + sigma2
-        lo = mean - z * np.sqrt(forecast_var)
-        hi = mean + z * np.sqrt(forecast_var)
+        diff_se = np.sqrt(forecast_var)
+        diff_mean = difference(np.concatenate([y0, mean]), d=d, D=D, s=s)[-steps:]
+        lo = _invert_difference_forecast(y0, diff_mean - z * diff_se, d=d, D=D, s=s)
+        hi = _invert_difference_forecast(y0, diff_mean + z * diff_se, d=d, D=D, s=s)
         return {"mean": mean, "lo": lo, "hi": hi}
 
 

@@ -108,9 +108,12 @@ def _plot_gantt(env, x, power, soc, path: Path) -> None:
     soc = soc.cpu()
     x = x.cpu()
 
-    fig, (ax_power, *axs) = plt.subplots(
+    fig_axes = plt.subplots(
         1 + J, 1, figsize=(10, 2 + J), gridspec_kw={"height_ratios": [3] + [1] * J}
     )
+    fig = fig_axes[0]
+    axs: list = list(fig_axes[1])  # type: ignore[arg-type]
+    ax_power = axs[0]
 
     ax_power.plot(solar, label="Solar panel power")
     ax_power.plot(power, color="gray", label="Task consumption")
@@ -230,6 +233,12 @@ def main():
         action="store_true",
         help="Skip automatic post-training evaluation and plot",
     )
+    parser.add_argument(
+        "--grad-accum-steps",
+        type=int,
+        default=1,
+        help="Gradient accumulation steps (accumulate grads over N steps before optimizer step)",
+    )
     args = parser.parse_args()
 
     warnings.filterwarnings("ignore", category=UserWarning)
@@ -327,6 +336,7 @@ def main():
         curriculum=args.curriculum,
         epochs=args.epochs,
         collect_per_update=args.collect_per_update,
+        grad_accum_steps=args.grad_accum_steps,
     )
     hist = ppo.update(env, iters=args.iters, log_every=max(1, args.iters // 10))
     if hist:
@@ -351,7 +361,9 @@ def main():
                 graph_observation=args.encoder == "bipartite",
             )
         elif args.instance_dir is not None:
-            eval_path = env.instance_paths[0]
+            # Get first instance from pool env
+            pool_env = env  # type: ignore[assignment]
+            eval_path = pool_env.instance_paths[0]  # type: ignore[attr-defined]
             eval_env = ONTSEnv.from_file(
                 eval_path,
                 B=1,

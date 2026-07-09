@@ -276,7 +276,9 @@ class NCOModel(nn.Module):
         if action is not None:
             # Replay mode: encode once, use provided actions
             task_emb, ctx = self.encoder.encode(obs)
-            return self._decode_replay(task_emb, ctx, obs, action, temperature, action_order)
+            return self._decode_replay(
+                task_emb, ctx, obs, action, temperature, action_order
+            )
         else:
             # Autoregressive mode
             task_emb, ctx = self.encoder.encode(obs)
@@ -351,7 +353,7 @@ class NCOModel(nn.Module):
             else:
                 a = action
                 step_valid = action_valid[:, 0]
-            
+
             # Ensure a is int64 for gather (full_logits has N task cols + 1 STOP col)
             a = a.to(torch.long)
             a = a.clamp(min=0, max=N)

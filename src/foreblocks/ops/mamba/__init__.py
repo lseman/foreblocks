@@ -8,6 +8,7 @@ modules gracefully degrade when Triton is unavailable.
 
 Core API (entry points):
 - mamba2_split_conv1d_scan_combined: full Mamba2 block path
+- fused_mamba2_forward: single-kernel Fused Mamba2 forward (Triton)
 - fused_ssd_forward: three-kernel fused SSD forward (Triton)
 - chunked_ssd_forward: chunked SSM forward with triton/pytorch toggle
 - causal_depthwise_conv1d: causal depthwise conv1d
@@ -24,6 +25,10 @@ from foreblocks.ops.mamba.causal_conv1d import (
     causal_depthwise_conv1d_bwd_triton,
     causal_depthwise_conv1d_reference,
     causal_depthwise_conv1d_triton,
+)
+from foreblocks.ops.mamba.fused_mamba2 import (
+    FUSED_MAMBA2_TRITON_AVAILABLE,
+    fused_mamba2_forward,
 )
 from foreblocks.ops.mamba.fused_dt import (
     FUSED_DT_TRITON_AVAILABLE,
@@ -76,6 +81,7 @@ ROTARY_TRITON_AVAILABLE = False  # rotary Triton kernels not yet implemented
 __all__ = [
     "CAUSAL_CONV1D_TRITON_AVAILABLE",
     "FUSED_DT_TRITON_AVAILABLE",
+    "FUSED_MAMBA2_TRITON_AVAILABLE",
     "FUSED_SSD_TRITON_AVAILABLE",
     "RMS_NORM_TRITON_AVAILABLE",
     "ROTARY_TRITON_AVAILABLE",
@@ -83,6 +89,7 @@ __all__ = [
     "causal_depthwise_conv1d_bwd_triton",
     "causal_depthwise_conv1d_reference",
     "causal_depthwise_conv1d_triton",
+    "fused_mamba2_forward",
     "fused_dt",
     "fused_dt_bwd_fallback",
     "fused_dt_fallback",

@@ -95,6 +95,8 @@ wavelets = [
 # ── Benchmarking against external baselines ──────────────────────────────
 benchmark = [
   "foreblocks[scientific,plotting]",
+  "jax[cpu]>=0.4.30",
+  "optax>=0.2",
   "neuralforecast>=2.0",
   "openpyxl>=3.1",
 ]

@@ -85,6 +85,10 @@ class BaseAlgorithm(ABC):
         replay_buffer_size: int = 10,
         replay_prob: float = 0.0,
         replay_min_returns: float | None = None,
+        # Sampling temperature for act()
+        temperature: float = 1.0,
+        # Gradient accumulation steps (accumulate grads over N steps before optimizer step)
+        grad_accum_steps: int = 1,
     ):
         self.model: Any = model.to(device)
         self.lr = lr
@@ -102,6 +106,8 @@ class BaseAlgorithm(ABC):
         self.curriculum = curriculum
         self.baseline: Baseline = baseline
         self.collect_per_update = collect_per_update
+        self.temperature = temperature
+        self.grad_accum_steps = grad_accum_steps
 
         # Mixed precision
         self.use_amp = use_amp
@@ -186,16 +192,14 @@ class BaseAlgorithm(ABC):
                 else:
                     out = self.model.act(obs)  # type: ignore[attr-defined]
             nobs, r, done = env.step(out["new_starts"])
-            traj.append(
-                (
-                    self._clone(obs),
-                    out["new_starts"],
-                    out.get("action_order"),
-                    out["logp"],
-                    out["value"],
-                    r,
-                )
-            )
+            traj.append((
+                self._clone(obs),
+                out["new_starts"],
+                out.get("action_order"),
+                out["logp"],
+                out["value"],
+                r,
+            ))
             obs = nobs if not done else obs
 
         T = len(traj)
@@ -418,6 +422,7 @@ class BaseAlgorithm(ABC):
                     pg["lr"] = cosine_lr.item()
 
                 approx_kls = []
+                accum_steps = 0
                 for ki in range(total_steps):
                     obs, act, order, old_lp, old_v, _ = combined_trajs[ki]
                     # Skip padding steps (episode already ended)
@@ -442,13 +447,9 @@ class BaseAlgorithm(ABC):
                                 ret_val=ret_val,
                                 out=out,
                             )
-                        self.opt.zero_grad()
+                        # Scale loss for gradient accumulation
+                        loss = loss / self.grad_accum_steps
                         self.scaler.scale(loss).backward()
-                        nn.utils.clip_grad_norm_(
-                            self.model.parameters(), self.max_grad_norm
-                        )
-                        self.scaler.step(self.opt)
-                        self.scaler.update()
                     else:
                         out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
                         log_ratio = out["logp"] - old_lp.detach()
@@ -461,12 +462,28 @@ class BaseAlgorithm(ABC):
                             ret_val=ret_val,
                             out=out,
                         )
-                        self.opt.zero_grad()
+                        # Scale loss for gradient accumulation
+                        loss = loss / self.grad_accum_steps
                         loss.backward()
+
+                    accum_steps += 1
+                    # Optimizer step after accumulation
+                    if accum_steps % self.grad_accum_steps == 0:
+                        (
+                            self.scaler.unscale_(self.opt)
+                            if self.use_amp and self.scaler
+                            else None
+                        )
                         nn.utils.clip_grad_norm_(
                             self.model.parameters(), self.max_grad_norm
                         )
-                        self.opt.step()
+                        if self.use_amp and self.scaler:
+                            self.scaler.step(self.opt)
+                            self.scaler.update()
+                        else:
+                            self.opt.step()
+                        self.opt.zero_grad()
+                        accum_steps = 0
                 if self.target_kl is not None and approx_kls:
                     mean_kl = torch.stack(approx_kls).mean().item()
                     if mean_kl > 1.5 * self.target_kl:
@@ -531,6 +548,10 @@ class PPO(BaseAlgorithm):
         replay_min_returns: float | None = None,
         # Mixed precision
         use_amp: bool = False,
+        # Sampling temperature
+        temperature: float = 1.0,
+        # Gradient accumulation steps
+        grad_accum_steps: int = 1,
     ):
         super().__init__(
             model=model,
@@ -555,6 +576,8 @@ class PPO(BaseAlgorithm):
             replay_prob=replay_prob,
             replay_min_returns=replay_min_returns,
             use_amp=use_amp,
+            temperature=temperature,
+            grad_accum_steps=grad_accum_steps,
         )
         self.clip = clip
         self.vcoef = vcoef
@@ -649,6 +672,10 @@ class REINFORCE(BaseAlgorithm):
         replay_min_returns: float | None = None,
         # Mixed precision
         use_amp: bool = False,
+        # Sampling temperature
+        temperature: float = 1.0,
+        # Gradient accumulation steps
+        grad_accum_steps: int = 1,
     ):
         super().__init__(
             model=model,
@@ -673,6 +700,8 @@ class REINFORCE(BaseAlgorithm):
             replay_prob=replay_prob,
             replay_min_returns=replay_min_returns,
             use_amp=use_amp,
+            temperature=temperature,
+            grad_accum_steps=grad_accum_steps,
         )
         self.clip = 0.0  # REINFORCE has no clip
         self.target_kl = None  # REINFORCE has no KL early stopping
@@ -761,6 +790,10 @@ class POCO(BaseAlgorithm):
         adv_std_decay: float = 0.99,
         # Mixed precision
         use_amp: bool = False,
+        # Sampling temperature
+        temperature: float = 1.0,
+        # Gradient accumulation steps
+        grad_accum_steps: int = 1,
     ):
         super().__init__(
             model=model,
@@ -785,6 +818,8 @@ class POCO(BaseAlgorithm):
             replay_prob=0.0,
             replay_min_returns=None,
             use_amp=use_amp,
+            temperature=temperature,
+            grad_accum_steps=grad_accum_steps,
         )
         self.k_samples = k_samples
         self.beta = beta  # preference sharpness
@@ -831,16 +866,14 @@ class POCO(BaseAlgorithm):
                 with torch.no_grad():
                     out = self.model.act(cur_obs)  # type: ignore[attr-defined]
                 nobs, r, done = env.step(out["new_starts"])
-                traj.append(
-                    (
-                        self._clone(cur_obs),
-                        out["new_starts"],
-                        out.get("action_order"),
-                        out["logp"],
-                        out["value"],
-                        r,
-                    )
-                )
+                traj.append((
+                    self._clone(cur_obs),
+                    out["new_starts"],
+                    out.get("action_order"),
+                    out["logp"],
+                    out["value"],
+                    r,
+                ))
                 cur_obs = nobs if not done else cur_obs
 
             ep_ret = torch.stack([t[5] for t in traj]).mean().item()
@@ -863,16 +896,14 @@ class POCO(BaseAlgorithm):
             best_lp = _total_logp(best_traj)
             worst_lp = _total_logp(worst_traj)
 
-            result.append(
-                {
-                    "best_traj": best_traj,
-                    "worst_traj": worst_traj,
-                    "best_ret": best_ret,
-                    "worst_ret": worst_ret,
-                    "best_lp": best_lp,
-                    "worst_lp": worst_lp,
-                }
-            )
+            result.append({
+                "best_traj": best_traj,
+                "worst_traj": worst_traj,
+                "best_ret": best_ret,
+                "worst_ret": worst_ret,
+                "best_lp": best_lp,
+                "worst_lp": worst_lp,
+            })
 
         return result
 
@@ -915,7 +946,9 @@ class POCO(BaseAlgorithm):
                             continue
                         if self.use_amp and self.scaler:
                             with torch.cuda.amp.autocast():
-                                out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
+                                out = self.model.act(
+                                    obs, action=act, action_order=order
+                                )  # type: ignore[attr-defined]
                         else:
                             out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
                         best_logp_step.append(out["logp"])
@@ -927,7 +960,9 @@ class POCO(BaseAlgorithm):
                             continue
                         if self.use_amp and self.scaler:
                             with torch.cuda.amp.autocast():
-                                out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
+                                out = self.model.act(
+                                    obs, action=act, action_order=order
+                                )  # type: ignore[attr-defined]
                         else:
                             out = self.model.act(obs, action=act, action_order=order)  # type: ignore[attr-defined]
                         worst_logp_step.append(out["logp"])
@@ -1025,6 +1060,10 @@ class SelfImprovement(BaseAlgorithm):
         adv_std_decay: float = 0.99,
         # Mixed precision
         use_amp: bool = False,
+        # Sampling temperature
+        temperature: float = 1.0,
+        # Gradient accumulation steps
+        grad_accum_steps: int = 1,
     ):
         super().__init__(
             model=model,
@@ -1049,6 +1088,8 @@ class SelfImprovement(BaseAlgorithm):
             replay_prob=0.0,
             replay_min_returns=None,
             use_amp=use_amp,
+            temperature=temperature,
+            grad_accum_steps=grad_accum_steps,
         )
         self.n_samples = n_samples
         self.every_k_steps = every_k_steps
@@ -1097,16 +1138,14 @@ class SelfImprovement(BaseAlgorithm):
                     else:
                         out = self.model.act(obs)  # type: ignore[attr-defined]
                 nobs, r, done = env.step(out["new_starts"])
-                traj.append(
-                    (
-                        self._clone(obs),
-                        out["new_starts"],
-                        out.get("action_order"),
-                        out["logp"],
-                        out["value"],
-                        r,
-                    )
-                )
+                traj.append((
+                    self._clone(obs),
+                    out["new_starts"],
+                    out.get("action_order"),
+                    out["logp"],
+                    out["value"],
+                    r,
+                ))
                 obs = nobs if not done else obs
 
             ep_ret = torch.stack([t[5] for t in traj]).mean().item()
@@ -1149,10 +1188,14 @@ class SelfImprovement(BaseAlgorithm):
                         # Forward pass: get log probabilities for each action
                         if self.use_amp and self.scaler:
                             with torch.cuda.amp.autocast():
-                                out = self.model.act(obs, action=target_act, action_order=None)  # type: ignore[attr-defined]
+                                out = self.model.act(
+                                    obs, action=target_act, action_order=None
+                                )  # type: ignore[attr-defined]
                             sl_loss = -out["logp"].mean()
                         else:
-                            out = self.model.act(obs, action=target_act, action_order=None)  # type: ignore[attr-defined]
+                            out = self.model.act(
+                                obs, action=target_act, action_order=None
+                            )  # type: ignore[attr-defined]
                             sl_loss = -out["logp"].mean()
                         total_loss += sl_loss
                         n_steps += 1
