@@ -31,6 +31,7 @@ import inspect
 import json
 import math
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -317,6 +318,7 @@ class BOHB:
 
         converged_info = {"converged": False, "reason": None}
         iteration_count = 0
+        t_start = time.time()
 
         for it in range(self.n_iterations):
             iteration_count += 1
@@ -349,12 +351,17 @@ class BOHB:
         if self.history_export_jsonl:
             self.save_history_jsonl(self.history_export_jsonl)
 
+        elapsed = time.time() - t_start
+        total_evals = len(self.history)
+
         if self.verbose:
             print("\n" + "=" * 70)
             print("Optimization complete")
             print(f"Best loss : {self.best_loss:.6g}")
             print(f"Best cfg  : {self.best_config}")
+            print(f"Evals     : {total_evals}")
             print(f"Rounds    : {iteration_count}/{self.n_iterations}")
+            print(f"Time      : {elapsed:.1f}s")
             if converged_info.get("converged"):
                 print(f"Converged : Yes — {converged_info['reason']}")
             diag = self.tpe.diagnostics()

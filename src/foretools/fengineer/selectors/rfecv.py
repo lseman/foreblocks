@@ -10,6 +10,8 @@ from sklearn.metrics import accuracy_score, mean_squared_error
 from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
 from sklearn.preprocessing import LabelEncoder
 
+from .base import FeatureSelectorABC
+
 
 @dataclass
 class RFECVConfig:
@@ -37,7 +39,7 @@ class RFECVConfig:
     estimator_weights: dict[str, float] | None = None  # Weights for ensemble voting
 
 
-class AdvancedRFECV(BaseEstimator, TransformerMixin):
+class AdvancedRFECV(BaseEstimator, TransformerMixin, FeatureSelectorABC):
     """
     Advanced Recursive Feature Elimination with Cross-Validation.
 
@@ -526,6 +528,23 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
 
         return self
 
+    # ── FeatureSelectorABC interface ────────────────────────────────────
+
+    @property
+    def selection_method(self) -> str:
+        """Return selector method name."""
+        return "rfecv"
+
+    def get_scores(self) -> pd.Series | None:
+        """Return feature importances from the ensemble estimator."""
+        if self.feature_importances_ is None or self._feature_names is None:
+            return None
+        return pd.Series(
+            self.feature_importances_, index=self._feature_names
+        ).sort_values(ascending=False)
+
+    # ── RFECV internals ─────────────────────────────────────────────────
+
     def transform(self, X: pd.DataFrame | np.ndarray) -> pd.DataFrame | np.ndarray:
         """Transform data by selecting only the chosen features."""
         if not self._is_fitted:
@@ -649,10 +668,11 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin):
             "best_n_features": self.n_features_,
             "total_iterations": len(self._cv_results),
             "score_improvement": max(cv_scores) - min(cv_scores) if cv_scores else 0,
-            "feature_reduction_ratio": (n_features_list[0] - self.n_features_)
-            / n_features_list[0]
-            if n_features_list
-            else 0,
+            "feature_reduction_ratio": (
+                (n_features_list[0] - self.n_features_) / n_features_list[0]
+                if n_features_list
+                else 0
+            ),
             "selected_features": self.get_selected_features(),
             "cv_scores_history": cv_scores,
             "n_features_history": n_features_list,

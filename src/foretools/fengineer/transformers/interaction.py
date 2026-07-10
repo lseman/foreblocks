@@ -7,8 +7,7 @@ from sklearn.model_selection import KFold, StratifiedKFold
 
 from foretools.aux.adaptive_mi import AdaptiveMI
 
-from .base import BaseFeatureTransformer
-
+from .aux import BaseFeatureTransformer
 
 # Optional parallelism
 try:
@@ -694,7 +693,7 @@ class InteractionTransformer(BaseFeatureTransformer):
         arr = pd.to_numeric(X[col], errors="coerce").to_numpy(dtype=np.float32)
         return self._clean(self._poly(arr, power))
 
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, X: pd.DataFrame, y: pd.Series | None = None) -> pd.DataFrame:
         if not self.is_fitted:
             return pd.DataFrame(index=X.index)
 

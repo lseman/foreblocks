@@ -11,8 +11,10 @@ from scipy.stats import binomtest
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
+from .base import FeatureSelectorABC
 
-class BorutaSelector(BaseEstimator, TransformerMixin):
+
+class BorutaSelector(BaseEstimator, TransformerMixin, FeatureSelectorABC):
     """
     Full Boruta: All-Relevant Feature Selection.
 
@@ -56,6 +58,7 @@ class BorutaSelector(BaseEstimator, TransformerMixin):
         self.support_: np.ndarray | None = None
         self.ranking_: np.ndarray | None = None
         self._feature_names: list[str] | None = None
+        self._n_features_real: int = 0
         self.is_fitted: bool = False
 
         # Results
@@ -65,10 +68,11 @@ class BorutaSelector(BaseEstimator, TransformerMixin):
         self.importance_history_: list[np.ndarray] = []
 
     def fit(self, X: pd.DataFrame, y: pd.Series) -> "BorutaSelector":
-        # Feature names (guaranteed non-None after this line)
         feature_names: list[str] = X.columns.tolist()
         n_feat = X.shape[1]
         n_features = n_feat
+        self._feature_names = feature_names
+        self._n_features_real = n_features
 
         # Determine task type for default estimator
         if self.estimator is None:
@@ -217,6 +221,22 @@ class BorutaSelector(BaseEstimator, TransformerMixin):
         self.is_fitted = True
 
         return self
+
+    # ── FeatureSelectorABC interface ────────────────────────────────────
+
+    @property
+    def selection_method(self) -> str:
+        """Return selector method name."""
+        return "boruta"
+
+    def get_scores(self) -> pd.Series | None:
+        """Return hit-count scores as a Series (higher = more important)."""
+        if self.hit_counts_ is None or self._feature_names is None:
+            return None
+        n = min(self._n_features_real, len(self._feature_names))
+        return pd.Series(self.hit_counts_[:n], index=self._feature_names[:n])
+
+    # ── Boruta internals ────────────────────────────────────────────────
 
     def _compute_final_p_values(
         self, hit_counts: np.ndarray, n_feat: int

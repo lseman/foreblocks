@@ -24,7 +24,6 @@ from foretools.fengineer.transformers import (
     RandomFourierFeaturesTransformer,
     StatisticalTransformer,
 )
-from foretools.fengineer.transformers.autoencoder import AutoencoderConfig as _AEConfig
 
 
 # Enhanced SOTA Feature Engineer with RFECV integration

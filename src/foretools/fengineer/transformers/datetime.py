@@ -3,7 +3,7 @@ import re
 import numpy as np
 import pandas as pd
 
-from .base import BaseFeatureTransformer
+from .aux import BaseFeatureTransformer
 
 
 class DateTimeTransformer(BaseFeatureTransformer):
@@ -125,7 +125,7 @@ class DateTimeTransformer(BaseFeatureTransformer):
         r = 2.0 * np.pi * (x / period)
         return np.sin(r), np.cos(r)
 
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, X: pd.DataFrame, y: pd.Series | None = None) -> pd.DataFrame:
         if not self.datetime_cols_:
             return pd.DataFrame(index=X.index)
 

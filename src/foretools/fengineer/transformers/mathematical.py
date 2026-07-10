@@ -4,9 +4,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy import stats
+
 from sklearn.preprocessing import PowerTransformer
 
-from .base import BaseFeatureTransformer
+from .aux import BaseFeatureTransformer, safe_kurtosis, safe_skew
 
 
 class MathematicalTransformer(BaseFeatureTransformer):
@@ -58,10 +59,11 @@ class MathematicalTransformer(BaseFeatureTransformer):
     def _normality_score(self, arr: np.ndarray) -> float:
         vals = arr[np.isfinite(arr)]
         if vals.size < 20:
-            # If too small, discourage adding noise: treat as "not improvable"
             return np.inf
-        sk = stats.skew(vals, bias=False)
-        ku = stats.kurtosis(vals, fisher=True, bias=False)
+        sk = safe_skew(vals, bias=False)
+        ku = safe_kurtosis(vals, fisher=True, bias=False)
+        if not np.isfinite(sk) or not np.isfinite(ku):
+            return np.inf
         return float(abs(sk) + 0.5 * abs(ku))
 
     @staticmethod
@@ -275,7 +277,7 @@ class MathematicalTransformer(BaseFeatureTransformer):
     # -------------------------
     # Transform
     # -------------------------
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, X: pd.DataFrame, y: pd.Series | None = None) -> pd.DataFrame:
         if not getattr(self.config, "create_math_features", True):
             return pd.DataFrame(index=X.index)
 

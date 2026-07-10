@@ -7,7 +7,7 @@ from sklearn.feature_selection import chi2, f_regression
 from sklearn.model_selection import GroupKFold, KFold, StratifiedKFold, TimeSeriesSplit
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 
-from .base import BaseFeatureTransformer
+from .aux import BaseFeatureTransformer
 
 
 class CategoricalTransformer(BaseFeatureTransformer):
@@ -25,8 +25,9 @@ class CategoricalTransformer(BaseFeatureTransformer):
         self,
         config,
         strategies: tuple[str, ...] = ("auto",),
-        rare_threshold: None
-        | (float) = None,  # fraction (0..1); falls back to config.rare_threshold
+        rare_threshold: None | (
+            float
+        ) = None,  # fraction (0..1); falls back to config.rare_threshold
         min_count: int = 1,  # absolute count for rare categories
         top_k: int | None = None,  # keep top_k most frequent; others -> OTHER
         hashing_dim: int = 64,

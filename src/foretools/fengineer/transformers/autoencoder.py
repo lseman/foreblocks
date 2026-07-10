@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from .base import BaseFeatureTransformer
+from .aux import BaseFeatureTransformer, AutoencoderConfig
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +315,7 @@ class AutoencoderTransformer(BaseFeatureTransformer):
             model.load_state_dict(best_state)
         self.model = model
 
-    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+    def transform(self, X: pd.DataFrame, y: pd.Series | None = None) -> pd.DataFrame:
         if not self.model or not self.input_cols_:
             return pd.DataFrame(index=X.index)
 

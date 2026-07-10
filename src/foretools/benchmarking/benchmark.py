@@ -11,6 +11,7 @@ Reusable NumPy → NeuralForecast Benchmark
 
 from __future__ import annotations
 
+import pickle
 import time
 import warnings
 from collections.abc import Sequence
@@ -45,7 +46,6 @@ from sklearn.metrics import (
     mean_absolute_percentage_error,
     mean_squared_error,
 )
-
 
 # CD diagram deps (optional)
 try:
@@ -250,7 +250,7 @@ def _plot_cd_diagram(
 @dataclass
 class NPTimeseriesNFBenchmark:
     # Core data
-    time_series_original: np.ndarray  # [T, N]
+    time_series_original: np.ndarray | None = None  # [T, N]
     series_names: list[str] | None = None  # len N (optional)
     start_date: str = "2018-01-01"
     freq: str = "D"
@@ -478,6 +478,151 @@ class NPTimeseriesNFBenchmark:
         self.metrics_normalized = self.metrics_normalized.sort_values("MSE")
         self.metrics_original = self.metrics_original.sort_values("MSE")
         return self.metrics_normalized, self.metrics_original
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Results persistence
+    # ──────────────────────────────────────────────────────────────────────────
+    def save_results(self, path: str) -> None:
+        """Save benchmark results and config to a pickle file.
+
+        Restored via :meth:`load_results`.  Enough state is preserved
+        to plot CD diagrams, generate LaTeX tables, and inspect per-window
+        metrics.
+        """
+        snapshot = {
+            "metrics_normalized": self.metrics_normalized,
+            "metrics_original": self.metrics_original,
+            "_per_window_rmse_norm": self._per_window_rmse_norm,
+            "_per_window_rmse_orig": self._per_window_rmse_orig,
+            "series_names": self.series_names,
+            "normalize": self.normalize,
+            "detrend": self.detrend,
+            "_norm_params": self._norm_params,
+            "_params_df": self._params_df,
+            "_date_index": self._date_index,
+            "_ds_to_tidx": self._ds_to_tidx,
+            "freq": self.freq,
+            "input_size": self.input_size,
+            "horizon": self.horizon,
+            "max_steps": self.max_steps,
+            "data_split": self.data_split,
+        }
+        with open(path, "wb") as f:
+            pickle.dump(snapshot, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    @classmethod
+    def load_results(cls, path: str) -> "NPTimeseriesNFBenchmark":
+        """Reconstruct a benchmark instance from a pickled results file.
+
+        Returns an instance with result fields populated so you can call
+        :meth:`summarize`, :meth:`plot_critical_difference`, and
+        :meth:`latex_table_original` without re-running.
+        """
+        with open(path, "rb") as f:
+            snapshot: dict = pickle.load(f)
+
+        instance = cls.__new__(cls)
+        instance.time_series_original = None  # not stored to save space
+        instance.series_names = snapshot["series_names"]
+        instance.freq = snapshot["freq"]
+        instance.input_size = snapshot["input_size"]
+        instance.horizon = snapshot["horizon"]
+        instance.max_steps = snapshot["max_steps"]
+        instance.data_split = snapshot["data_split"]
+        instance.normalize = snapshot["normalize"]
+        instance.detrend = snapshot["detrend"]
+        instance.start_date = "2018-01-01"  # placeholder; not used by result ops
+        instance.val_size = None
+        instance.early_stop_patience_steps = 0
+
+        instance.metrics_normalized = snapshot["metrics_normalized"]
+        instance.metrics_original = snapshot["metrics_original"]
+        instance._per_window_rmse_norm = snapshot["_per_window_rmse_norm"]
+        instance._per_window_rmse_orig = snapshot["_per_window_rmse_orig"]
+        instance._norm_params = snapshot["_norm_params"]
+        instance._params_df = snapshot["_params_df"]
+        instance._date_index = snapshot["_date_index"]
+        instance._ds_to_tidx = snapshot["_ds_to_tidx"]
+
+        instance._T = 0
+        instance._N = len(instance.series_names) if instance.series_names else 0
+        instance._split_point = 0
+        instance._df_norm_full = None
+        instance._df_orig_full = None
+        instance._train_df = None
+        instance._test_df = None
+
+        return instance
+
+    def to_csv(
+        self,
+        metrics_type: str = "original",
+        path: str | None = None,
+    ) -> str:
+        """Export metrics table to CSV string.
+
+        Args:
+            metrics_type: ``"original"`` or ``"normalized"``.
+            path: If given, write directly to file.  Returns CSV string either way.
+
+        Returns:
+            CSV string.
+        """
+        if metrics_type.lower() == "original":
+            df = self.metrics_original
+        else:
+            df = self.metrics_normalized
+
+        if df is None or df.empty:
+            raise ValueError("Run the benchmark first with .run().")
+
+        csv_str = df.round(6).to_csv()
+        if path:
+            df.round(6).to_csv(path)
+        return csv_str
+
+    def save_and_export(
+        self,
+        pickle_path: str,
+        csv_dir: str = ".",
+    ) -> dict[str, str]:
+        """Save pickle + export CSVs in one call.
+
+        Returns dict of {"results": <pickle_path>, "metrics": <csv_path>,
+        "window_metrics": <csv_path>}.
+        """
+        self.save_results(pickle_path)
+        metrics_csv = f"{csv_dir}/benchmark_metrics.csv"
+        window_csv = f"{csv_dir}/benchmark_window_metrics.csv"
+        self.to_csv("original", metrics_csv)
+        self.to_window_csv("original", window_csv)
+        return {
+            "results": pickle_path,
+            "metrics": metrics_csv,
+            "window_metrics": window_csv,
+        }
+
+    def to_window_csv(
+        self,
+        space: str = "original",
+        path: str | None = None,
+    ) -> str:
+        """Export per-window RMSE matrix to CSV string.
+
+        Rows = cutoff windows, columns = models.
+        """
+        if space.lower() == "original":
+            df = self._per_window_rmse_orig
+        else:
+            df = self._per_window_rmse_norm
+
+        if df is None or df.empty:
+            raise ValueError("Run the benchmark first with .run().")
+
+        csv_str = df.round(6).to_csv()
+        if path:
+            df.round(6).to_csv(path)
+        return csv_str
 
     def plot_critical_difference(
         self,
