@@ -128,6 +128,76 @@ def _spectral_entropy(normalized_power: np.ndarray) -> float:
     return entropy / max(np.log(power.size), 1e-8)
 
 
+def _lempel_ziv_complexity(values: np.ndarray, alphabet_size: int = 8) -> float:
+    """Lempel-Ziv compressibility on quantized signal. Lower = more structured, higher = more chaotic."""
+    if values.size <= 2:
+        return 0.5
+
+    min_v, max_v = np.min(values), np.max(values)
+    if max_v - min_v < 1e-12:
+        return 0.0
+
+    symbols = np.digitize(
+        values, np.linspace(min_v, max_v, alphabet_size + 1)[:-1]
+    ) - 1
+    symbols = np.clip(symbols, 0, alphabet_size - 1)
+
+    seq_str = "".join(map(str, symbols))
+    i = 0
+    complexity = 0
+    seen: set[str] = set()
+
+    while i < len(seq_str):
+        for j in range(i + 1, len(seq_str) + 1):
+            substring = seq_str[i:j]
+            if substring not in seen:
+                seen.add(substring)
+                complexity += 1
+                i = j - 1
+                break
+        else:
+            i = len(seq_str)
+
+    max_possible = len(seq_str) / np.log2(max(len(seq_str), 2))
+    normalized = complexity / max(max_possible, 1e-8)
+    return float(np.clip(normalized, 0.0, 2.0))
+
+
+def _cwt_energy_profile(
+    values: np.ndarray, scales: int = 16
+) -> tuple[np.ndarray, np.ndarray]:
+    """Continuous wavelet transform energy via Morlet wavelet across scales.
+
+    Returns (scale_energies, dominant_scale_index).
+    Detects multi-scale structure: peaky profile = coherent scales; flat = broadband.
+    """
+    if values.size < 16:
+        return np.array([1.0] * scales, dtype=np.float64), np.array(
+            [0], dtype=np.int64
+        )
+
+    centered = (values - values.mean()) / (np.std(values) + 1e-8)
+    scale_list = np.logspace(0, 2, scales, base=2, dtype=np.float64)
+    energies = np.zeros(scales, dtype=np.float64)
+
+    for i, scale in enumerate(scale_list):
+        sigma = scale / (2 * np.pi)
+        t = np.arange(-4 * sigma, 4 * sigma, 1)
+        if len(t) < 2:
+            t = np.array([-1, 0, 1], dtype=np.float64)
+
+        wavelet = np.exp(-0.5 * (t / sigma) ** 2) * np.cos(2 * np.pi * t / scale)
+        wavelet /= np.sqrt(np.sum(wavelet**2))
+
+        conv = np.convolve(centered, wavelet, mode="same")
+        energies[i] = float(np.sqrt(np.mean(conv**2)))
+
+    energies /= np.sum(energies) + 1e-12
+    dominant_idx = np.argmax(energies)
+
+    return energies, np.array([dominant_idx], dtype=np.int64)
+
+
 @dataclass
 class TunerConfig:
     """All tunable thresholds for ModernTransformerTuner heuristics."""
@@ -192,6 +262,11 @@ class TunerConfig:
     # --- Attention mode ---
     series_length_large: int = 768  # series length >= this → prefer linear/hybrid
 
+    # --- Signal complexity (LZ + CWT) ---
+    lz_complexity_threshold: float = 0.55  # LZ >= this → random/chaotic; < this → structured
+    cwt_peakiness_threshold: float = 0.40  # max(cwt_energies) >= this → coherent scales
+    cwt_broadband_threshold: float = 0.25  # max(cwt_energies) <= this → broadband noise
+
 
 class SpectralPeak(BaseModel):
     period: int
@@ -236,6 +311,8 @@ class TransformerTuningReport(BaseModel):
     roughness: float
     forecastability_score: float
     spectral_entropy: float
+    lempel_ziv_complexity: float
+    cwt_peakiness: float
 
     # Multiscale & hierarchical
     multiscale_label: Literal["high", "moderate", "low", "unknown"]
@@ -323,6 +400,8 @@ class ModernTransformerTuner:
                 roughness=0.0,
                 forecastability_score=0.0,
                 spectral_entropy=1.0,
+                lempel_ziv_complexity=1.0,
+                cwt_peakiness=0.0,
                 multiscale_label="unknown",
                 multiscale_score=0,
                 hierarchical_label="unknown",
@@ -413,6 +492,11 @@ class ModernTransformerTuner:
         peak_concentration = sum(p.normalized_power for p in dominant_periods[:3])
         spectral_entropy = _spectral_entropy(normalized_power)
         forecastability_score = round(100.0 * (1.0 - spectral_entropy), 2)
+
+        # Signal complexity metrics (SOTA)
+        lz_complexity = _lempel_ziv_complexity(values)
+        cwt_energies, _ = _cwt_energy_profile(detrended)
+        cwt_peakiness = float(np.max(cwt_energies))
 
         # Patching recommendation (influenced by roughness + dominant period)
         max_patch = max(
@@ -677,7 +761,12 @@ class ModernTransformerTuner:
             heads.append("MultiScaleConvHead")
 
         # Attention mode recommendation (modern defaults favor efficient variants)
-        if n >= self.config.series_length_large and patching_label != "weak":
+        # SOTA: incorporate LZ complexity + CWT peakiness
+        if lz_complexity >= self.config.lz_complexity_threshold:
+            attention_mode = "linear"
+        elif cwt_peakiness >= self.config.cwt_peakiness_threshold:
+            attention_mode = "hybrid" if multiscale_label in {"moderate", "high"} else "standard"
+        elif n >= self.config.series_length_large and patching_label != "weak":
             attention_mode = (
                 "hybrid" if multiscale_label in {"moderate", "high"} else "linear"
             )
@@ -686,10 +775,13 @@ class ModernTransformerTuner:
         else:
             attention_mode = "standard"
 
+        complexity_note = f"Signal complexity: LZ={lz_complexity:.3f} ({'chaotic/random' if lz_complexity >= self.config.lz_complexity_threshold else 'structured'}), CWT_peakiness={cwt_peakiness:.3f} ({'coherent scales' if cwt_peakiness >= self.config.cwt_peakiness_threshold else 'broadband'})."
+
         notes = [
             f"Patch tokenization is {patching_label} (score {patching_score}/100) for {n} observations.",
             f"Recommended starting point: patch_len={rec_patch_len}, stride={rec_stride} ({estimated_num_patches} patches for context={effective_context}).",
             f"Scale energy: short={short * 100:.1f}% (≤8), medium={medium * 100:.1f}% (8–24), long={long_ * 100:.1f}% (>24).",
+            complexity_note,
         ]
         if hierarchical_label in {"moderate", "high"} and hierarchy_periods:
             notes.append(
@@ -738,6 +830,8 @@ class ModernTransformerTuner:
             roughness=round(float(roughness), 3),
             forecastability_score=forecastability_score,
             spectral_entropy=round(spectral_entropy, 4),
+            lempel_ziv_complexity=round(lz_complexity, 4),
+            cwt_peakiness=round(cwt_peakiness, 4),
             multiscale_label=multiscale_label,
             multiscale_score=multiscale_score,
             hierarchical_label=hierarchical_label,
