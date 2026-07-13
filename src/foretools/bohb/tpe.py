@@ -19,6 +19,7 @@ from .batch import (
     ThompsonSamplingSelector,
 )
 from .gamma import GammaStrategy, build_gamma_strategy
+from .gp_surrogate import GPEnsemble, ExpectedImprovement, GPSurrogate, vectorized_ei_score
 from .observation import ObservationStore
 from .param_models import CatModel, FloatModel, IntModel
 from .utils import (
@@ -326,6 +327,17 @@ class TPEConf:
             "trust_region_restart_center": "best",
         }
     )
+    gp_surrogate: dict[str, Any] = field(
+        default_factory=lambda: {
+            "use_gp": False,
+            "gp_ensemble_size": 3,
+            "gp_subsample_frac": 0.8,
+            "gp_kernel": "rbf",
+            "gp_alpha": 1e-6,
+            "gp_ei_xi": 0.0,
+            "gp_min_observations": 5,
+        }
+    )
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_kwargs(self) -> dict[str, Any]:
@@ -336,6 +348,7 @@ class TPEConf:
         out.update(dict(self.constraints))
         out.update(dict(self.batch))
         out.update(dict(self.trust_region))
+        out.update(dict(self.gp_surrogate))
         out.update(dict(self.extra))
         return out
 
@@ -374,6 +387,7 @@ class TPE:
             constraints=dict(cfg.constraints),
             batch=dict(cfg.batch),
             trust_region=dict(cfg.trust_region),
+            gp_surrogate=dict(cfg.gp_surrogate),
             extra=dict(cfg.extra),
         )
         merged.extra.update(overrides)
@@ -499,6 +513,13 @@ class TPE:
             "trust_region_restart_on_min_length", True
         )
         trust_region_restart_center = opts.get("trust_region_restart_center", "best")
+        use_gp = opts.get("use_gp", False)
+        gp_ensemble_size = opts.get("gp_ensemble_size", 3)
+        gp_subsample_frac = opts.get("gp_subsample_frac", 0.8)
+        gp_kernel = opts.get("gp_kernel", "rbf")
+        gp_alpha = opts.get("gp_alpha", 1e-6)
+        gp_ei_xi = opts.get("gp_ei_xi", 0.0)
+        gp_min_observations = opts.get("gp_min_observations", 5)
 
         self.config_space = config_space
         self.gamma = gamma
@@ -763,6 +784,17 @@ class TPE:
             if len(cont_params) >= 2:
                 self.joint_groups["__all_continuous__"] = cont_params
 
+        self.use_gp = bool(use_gp)
+        self.gp_ensemble_size = int(gp_ensemble_size)
+        self.gp_subsample_frac = float(gp_subsample_frac)
+        self.gp_kernel = str(gp_kernel).lower()
+        self.gp_alpha = float(gp_alpha)
+        self.gp_ei_xi = float(gp_ei_xi)
+        self.gp_min_observations = int(gp_min_observations)
+        self.gp_model = None
+        self._gp_encoded_X = None
+        self._gp_encoded_y = None
+
         if self.atpe and self.verbose:
             print("DEBUG: ATPE enabled")
 
@@ -774,6 +806,59 @@ class TPE:
             if p in updated:
                 updated[p] = val
         return updated
+
+    def _encode_config_for_gp(self, config: dict[str, Any]) -> np.ndarray:
+        """Encode config dict into numeric feature vector for GP."""
+        features = []
+        for param in self.param_names:
+            if param not in config:
+                val = 0.5
+            else:
+                info = self.param_info[param]
+                if info.typ == "float":
+                    lo, hi = self._float_bounds_in_model_space(param)
+                    val = (float(config[param]) - lo) / (hi - lo + 1e-12)
+                    val = np.clip(val, 0.0, 1.0)
+                elif info.typ == "int":
+                    lo, hi = info.rng
+                    val = (float(config[param]) - lo) / (hi - lo + 1)
+                    val = np.clip(val, 0.0, 1.0)
+                else:  # choice
+                    choices = list(info.rng)
+                    try:
+                        idx = choices.index(config[param])
+                        val = idx / max(1, len(choices) - 1)
+                    except (ValueError, IndexError):
+                        val = 0.5
+            features.append(float(val))
+        return np.array(features, dtype=float)
+
+    def _fit_gp_model(self) -> None:
+        """Fit GP model from current observations."""
+        if not self.use_gp or len(self.observations) < self.gp_min_observations:
+            self.gp_model = None
+            return
+
+        configs, losses, _ = zip(*self.observations)
+        X = np.array([self._encode_config_for_gp(c) for c in configs], dtype=float)
+        y = np.array(losses, dtype=float)
+
+        if self.gp_ensemble_size > 1:
+            self.gp_model = GPEnsemble(
+                n_models=self.gp_ensemble_size,
+                kernel=self.gp_kernel,
+                alpha=self.gp_alpha,
+                subsample_frac=self.gp_subsample_frac,
+                seed=self.seed,
+            )
+        else:
+            self.gp_model = GPSurrogate(
+                kernel=self.gp_kernel,
+                alpha=self.gp_alpha,
+            )
+        self.gp_model.fit(X, y)
+        self._gp_encoded_X = X
+        self._gp_encoded_y = y
 
     def _generate_candidate(
         self,
@@ -968,6 +1053,7 @@ class TPE:
         # 2. Fit models
         losses = np.array([o[1] for o in self.observations])
         loss_scale = float(np.median(losses)) if losses.size > 0 else 1.0
+        self._fit_gp_model()
         if self.trust_region_enabled and self.trust_region is not None:
             if self._best_config is None and self.observations:
                 best_obs = min(self.observations, key=lambda o: float(o[1]))
@@ -1179,6 +1265,20 @@ class TPE:
                     score_list.append(score_val)
 
         scores = np.array(score_list, dtype=float)
+
+        if self.use_gp and self.gp_model is not None and self.gp_model.is_fitted:
+            ei_scores = vectorized_ei_score(
+                candidates,
+                self._gp_encoded_X,
+                self._gp_encoded_y,
+                self.gp_model,
+                encode_fn=self._encode_config_for_gp,
+                ei_xi=self.gp_ei_xi,
+            )
+            ei_scores = np.maximum(ei_scores, 0.0)
+            ei_norm = np.max(ei_scores) if np.max(ei_scores) > 0 else 1.0
+            ei_scores = ei_scores / (ei_norm + 1e-12)
+            scores = 0.5 * scores + 0.5 * ei_scores
 
         if self.hybrid_local_search and minimize is not None and len(candidates) > 0:
             candidates, scores = self._local_search_candidates(
