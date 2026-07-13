@@ -139,17 +139,21 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
 
           <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
             {workflows.map((workflow) => (
-              <button
+              <div
                 key={workflow.id}
-                type="button"
-                onClick={() => onSelectWorkflow(workflow.id)}
-                className={`group w-full rounded-3xl px-3 py-3 text-left transition ${
+                className={`group relative w-full rounded-3xl transition ${
                   workflow.id === currentWorkflowId
                     ? "bg-cyan-500/12 shadow-[inset_0_0_0_1px_rgba(56,189,248,0.25)]"
                     : "bg-white/[0.03] hover:bg-white/[0.05]"
                 }`}
               >
-                <div className="flex items-start justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={() => onSelectWorkflow(workflow.id)}
+                  className="w-full px-3 py-3 pr-16 text-left"
+                  aria-current={workflow.id === currentWorkflowId ? "page" : undefined}
+                >
+                <div className="flex items-start gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold text-white">
                       {workflow.name}
@@ -158,22 +162,21 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                       {workflow.description || `${workflow.nodes.length} nodes · ${workflow.connections.length} connections`}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteWorkflow(workflow.id);
-                    }}
-                    className="rounded-lg px-2 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 opacity-0 transition group-hover:opacity-100 hover:bg-rose-500/10 hover:text-rose-300"
-                  >
-                    Delete
-                  </button>
                 </div>
                 <div className="mt-3 flex items-center justify-between text-[10px] uppercase tracking-[0.14em] text-slate-500">
                   <span>{workflow.nodes.length} nodes</span>
                   <span>{new Date(workflow.updatedAt).toLocaleDateString()}</span>
                 </div>
-              </button>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDeleteWorkflow(workflow.id)}
+                  className="absolute right-3 top-3 rounded-lg px-2 py-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 opacity-0 transition focus:opacity-100 group-hover:opacity-100 hover:bg-rose-500/10 hover:text-rose-300"
+                  aria-label={`Delete ${workflow.name}`}
+                >
+                  Delete
+                </button>
+              </div>
             ))}
           </div>
         </div>

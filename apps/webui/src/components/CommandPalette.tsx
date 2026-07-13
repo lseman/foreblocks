@@ -13,6 +13,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ onAddNode }) => 
     const [selectedIndex, setSelectedIndex] = useState(0);
     const { nodeTypes, nodeCategories } = useStore();
     const inputRef = useRef<HTMLInputElement>(null);
+    const triggerRef = useRef<HTMLElement | null>(null);
 
     const flatNodes = Object.entries(nodeCategories).flatMap(([category, types]) =>
         types.map(type => ({
@@ -32,6 +33,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ onAddNode }) => 
         const handleKeyDown = (e: KeyboardEvent) => {
             if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
                 e.preventDefault();
+                triggerRef.current = document.activeElement as HTMLElement | null;
                 setIsOpen(prev => !prev);
             }
             if (e.key === 'Escape') {
@@ -49,6 +51,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ onAddNode }) => 
             setTimeout(() => inputRef.current?.focus(), 10);
         } else {
             setQuery('');
+            triggerRef.current?.focus();
         }
     }, [isOpen]);
 
@@ -93,6 +96,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ onAddNode }) => 
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95, y: -20 }}
                         className="fixed top-[20%] left-1/2 -translate-x-1/2 w-full max-w-xl bg-neutral-900 border border-neutral-800 rounded-2xl shadow-2xl z-[101] overflow-hidden"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label="Add a node"
                     >
                         <div className="flex items-center px-4 border-b border-neutral-800">
                             <Search className="w-5 h-5 text-neutral-500" />
@@ -102,6 +108,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ onAddNode }) => 
                                 onChange={e => setQuery(e.target.value)}
                                 onKeyDown={handleKeyDown}
                                 placeholder="Search nodes..."
+                                aria-label="Search available nodes"
+                                aria-controls="node-command-results"
+                                aria-activedescendant={filteredNodes[selectedIndex] ? `node-command-${filteredNodes[selectedIndex].type}` : undefined}
                                 className="w-full h-14 bg-transparent border-none focus:ring-0 text-neutral-100 placeholder:text-neutral-600 text-base px-3"
                             />
                             <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-neutral-800 border border-neutral-700 text-[10px] text-neutral-400 font-mono">
@@ -110,15 +119,19 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ onAddNode }) => 
                             </div>
                         </div>
 
-                        <div className="max-h-[400px] overflow-y-auto p-2 scrollbar-thin scrollbar-thumb-neutral-800">
+                        <div id="node-command-results" role="listbox" aria-label="Available nodes" className="max-h-[400px] overflow-y-auto p-2 scrollbar-thin scrollbar-thumb-neutral-800">
                             {filteredNodes.length > 0 ? (
                                 filteredNodes.map((node, index) => (
-                                    <div
+                                    <button
                                         key={`${node.type}-${index}`}
+                                        id={`node-command-${node.type}`}
+                                        type="button"
+                                        role="option"
+                                        aria-selected={index === selectedIndex}
                                         onClick={() => selectNode(node.type)}
                                         onMouseEnter={() => setSelectedIndex(index)}
                                         className={`
-                      flex items-center justify-between px-3 py-3 rounded-xl cursor-pointer transition-all duration-200
+                      flex w-full items-center justify-between px-3 py-3 rounded-xl cursor-pointer text-left transition-all duration-200
                       ${index === selectedIndex ? 'bg-blue-500/10 border border-blue-500/30' : 'hover:bg-neutral-800 border border-transparent'}
                     `}
                                     >
@@ -137,7 +150,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ onAddNode }) => 
                                                 <ArrowRight size={14} />
                                             </div>
                                         )}
-                                    </div>
+                                    </button>
                                 ))
                             ) : (
                                 <div className="flex flex-col items-center justify-center py-12 text-neutral-500">

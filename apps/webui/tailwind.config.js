@@ -21,20 +21,14 @@ export default {
     'bg-gradient-to-bl',
 
     // ─────────────────────────────────────────────
-    // Color scales (from/to/bg)
-    // ─────────────────────────────────────────────
-    {
-      pattern:
-        /(from|to|via|bg|text|border|ring)-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(50|100|200|300|400|500|600|700|800|900)/,
-    },
-
-    // ─────────────────────────────────────────────
-    // Opacity variants (for modals, overlays, etc.)
-    // ─────────────────────────────────────────────
-    {
-      pattern:
-        /bg-(slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-(700|800|900)\/(10|20|30|40|50|60|70|80|90|95)/,
-    },
+    // Node definition colors are data-driven, so keep only the combinations
+    // actually emitted by nodeDefinitions.js.
+    'from-blue-600',
+    'to-blue-700',
+    'from-green-600',
+    'to-green-700',
+    'from-amber-600',
+    'to-orange-700',
 
     // Explicit fallbacks often used in themes
     'bg-slate-700/60',

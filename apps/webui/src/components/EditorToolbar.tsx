@@ -3,6 +3,7 @@ import {
   Code,
   Download,
   Layout,
+  MoreHorizontal,
   Play,
   Save,
   Sparkles,
@@ -61,8 +62,8 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
   };
 
   return (
-    <header className="flex h-16 items-center justify-between bg-[#0a1018]/84 px-5 shadow-[0_18px_50px_rgba(0,0,0,0.26),inset_0_-1px_0_rgba(255,255,255,0.04)] backdrop-blur-2xl">
-      <div className="flex min-w-0 items-center gap-4">
+    <header className="flex h-16 items-center justify-between gap-3 bg-[#0a1018]/84 px-3 shadow-[0_18px_50px_rgba(0,0,0,0.26),inset_0_-1px_0_rgba(255,255,255,0.04)] backdrop-blur-2xl sm:px-5">
+      <div className="flex min-w-0 items-center gap-3 sm:gap-4">
         <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 via-blue-500 to-indigo-600 shadow-lg shadow-blue-500/20">
           <Sparkles size={18} />
         </div>
@@ -73,7 +74,8 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
           <input
             value={workflowName}
             onChange={(e) => onWorkflowNameChange(e.target.value)}
-            className="mt-1 w-[320px] max-w-full rounded-xl border border-transparent bg-transparent px-0 py-0 text-base font-semibold tracking-tight text-white outline-none transition focus:border-cyan-400/30 focus:bg-white/[0.03] focus:px-3 focus:py-2"
+            aria-label="Workflow name"
+            className="mt-1 w-[150px] max-w-full rounded-xl border border-transparent bg-transparent px-0 py-0 text-sm font-semibold tracking-tight text-white outline-none transition focus:border-cyan-400/30 focus:bg-white/[0.03] focus:px-3 focus:py-2 sm:w-[240px] sm:text-base 2xl:w-[320px]"
           />
         </div>
       </div>
@@ -82,14 +84,14 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
         <button
           type="button"
           onClick={onCreateWorkflow}
-          className="rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08]"
+          className="hidden rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08] xl:block"
         >
           New
         </button>
         <button
           type="button"
           onClick={onSaveWorkflow}
-          className="inline-flex items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08]"
+          className="hidden items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08] xl:inline-flex"
         >
           <Save size={14} />
           Save
@@ -101,7 +103,8 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
             loadTemplate(event.target.value);
             event.target.value = "";
           }}
-          className="rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08]"
+          aria-label="Load workflow template"
+          className="hidden rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08] 2xl:block"
         >
           <option value="" disabled>
             Template
@@ -112,7 +115,7 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
         <button
           type="button"
           onClick={() => autoLayout("LR")}
-          className="inline-flex items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08]"
+          className="hidden items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08] 2xl:inline-flex"
         >
           <Layout size={14} />
           Layout
@@ -120,7 +123,7 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
         <button
           type="button"
           onClick={onViewCode}
-          className="inline-flex items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08]"
+          className="hidden items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08] xl:inline-flex"
         >
           <Code size={14} />
           Code
@@ -128,11 +131,37 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
         <button
           type="button"
           onClick={handleExport}
-          className="inline-flex items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08]"
+          className="hidden items-center gap-2 rounded-xl bg-white/[0.05] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-cyan-500/[0.08] 2xl:inline-flex"
         >
           <Download size={14} />
           Export
         </button>
+        <details className="group relative xl:hidden">
+          <summary
+            className="flex h-10 w-10 cursor-pointer list-none items-center justify-center rounded-xl bg-white/[0.05] text-slate-200 transition hover:bg-cyan-500/[0.08] [&::-webkit-details-marker]:hidden"
+            aria-label="More workflow actions"
+          >
+            <MoreHorizontal size={17} />
+          </summary>
+          <div className="absolute right-0 top-12 z-50 w-48 overflow-hidden rounded-2xl border border-white/10 bg-[#101824]/95 p-2 shadow-2xl backdrop-blur-2xl">
+            {[
+              ["New workflow", onCreateWorkflow],
+              ["Save workflow", onSaveWorkflow],
+              ["Auto layout", () => autoLayout("LR")],
+              ["View code", onViewCode],
+              ["Export JSON", handleExport],
+            ].map(([label, action]) => (
+              <button
+                key={String(label)}
+                type="button"
+                onClick={action as () => void}
+                className="block w-full rounded-xl px-3 py-2 text-left text-xs font-medium text-slate-200 transition hover:bg-white/[0.06]"
+              >
+                {label as string}
+              </button>
+            ))}
+          </div>
+        </details>
         <div className="mx-2 hidden h-8 w-px bg-white/8 lg:block" />
         <div className="hidden items-center gap-3 text-[11px] text-slate-400 lg:flex">
           <span>{nodes.length} nodes</span>
@@ -162,6 +191,7 @@ export const EditorToolbar: React.FC<EditorToolbarProps> = ({
           }}
           className="rounded-xl bg-rose-500/[0.08] p-2.5 text-rose-300 transition hover:bg-rose-500/[0.14]"
           title="Clear canvas"
+          aria-label="Clear canvas"
         >
           <Trash2 size={15} />
         </button>

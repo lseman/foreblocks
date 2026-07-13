@@ -7,8 +7,9 @@ export const getApiBase = (): string => {
   const pick = fromVite || fromWindow;
   if (pick) return pick.replace(/\/+$/, "");
   if (typeof window !== "undefined") {
-    const isLocal = ["localhost", "127.0.0.1"].includes(window.location.hostname);
-    return isLocal ? "http://localhost:8000" : window.location.origin;
+    // Vite proxies backend routes during development. Using the current origin
+    // also works when the UI is opened through a LAN hostname or dev container.
+    return window.location.origin;
   }
   return "http://localhost:8000";
 };
@@ -30,6 +31,11 @@ export async function fetchNodeDefs(): Promise<{ nodes: NodeTypeMap; categories:
     try {
       const res = await fetch(url, { credentials: "omit" });
       if (!res.ok) { lastErr = new Error(`HTTP ${res.status} @ ${url}`); continue; }
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.toLowerCase().includes("application/json")) {
+        lastErr = new Error(`Expected JSON but received ${contentType || "an unknown content type"} @ ${url}`);
+        continue;
+      }
       const data = await res.json();
       return { nodes: data.nodes || {}, categories: data.categories || {} };
     } catch (e) { lastErr = e; }

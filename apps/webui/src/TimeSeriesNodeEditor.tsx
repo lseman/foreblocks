@@ -15,6 +15,7 @@ import {
     type Node as RFNode
 } from "reactflow";
 import "reactflow/dist/style.css";
+import { ArrowRight, Database, LayoutTemplate, PanelLeftOpen } from "lucide-react";
 
 import { ContextMenu } from "./components/ContextMenu";
 import { CodeModal } from "./components/modals/CodeModal";
@@ -26,6 +27,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { PreflightPanel } from "./components/PreflightPanel";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { InspectorSidebar } from "./components/InspectorSidebar";
+import { ConfigPanel } from "./components/ConfigPanel";
 
 import { useStore } from "./store/store";
 import { useExecution } from "./hooks/useExecution";
@@ -83,7 +85,7 @@ const MAX_LEFT_PANEL_WIDTH = 520;
 const MIN_RIGHT_PANEL_WIDTH = 300;
 const MAX_RIGHT_PANEL_WIDTH = 560;
 const MIN_BOTTOM_PANEL_HEIGHT = 180;
-const MAX_BOTTOM_PANEL_HEIGHT = 460;
+const MAX_BOTTOM_PANEL_HEIGHT = 800;
 
 type SidebarSection = "workflows" | "recent" | "library";
 type ResizeTarget = "left" | "right" | "bottom";
@@ -117,6 +119,7 @@ export const TimeSeriesNodeEditor: React.FC = () => {
         selectedNodes,
         setSelectedNodes,
         setShowConfigPanel,
+        showResultsPanel,
     } = useStore();
 
     const { executeWorkflow } = useExecution();
@@ -133,6 +136,9 @@ export const TimeSeriesNodeEditor: React.FC = () => {
     const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
     const [bottomPanelHeight, setBottomPanelHeight] = useState(DEFAULT_BOTTOM_PANEL_HEIGHT);
     const [activeResizeTarget, setActiveResizeTarget] = useState<ResizeTarget | null>(null);
+    const [isCompactLayout, setIsCompactLayout] = useState(() =>
+        typeof window !== "undefined" ? window.innerWidth < 1280 : false,
+    );
     const [contextMenu, setContextMenu] = useState<{
         x: number;
         y: number;
@@ -152,6 +158,7 @@ export const TimeSeriesNodeEditor: React.FC = () => {
     const [autoFitTick, setAutoFitTick] = useState(0);
     const hydratedWorkflowRef = useRef(false);
     const shellRef = useRef<HTMLDivElement | null>(null);
+    const pendingBottomHeightRef = useRef<number | null>(null);
 
     // Load node defs
     useEffect(() => {
@@ -166,6 +173,18 @@ export const TimeSeriesNodeEditor: React.FC = () => {
             cancel = true;
         };
     }, [setNodeDefs]);
+
+    useEffect(() => {
+        const media = window.matchMedia("(max-width: 1279px)");
+        const syncLayout = () => setIsCompactLayout(media.matches);
+        syncLayout();
+        media.addEventListener("change", syncLayout);
+        return () => media.removeEventListener("change", syncLayout);
+    }, []);
+
+    useEffect(() => {
+        if (isCompactLayout) setLeftSidebarCollapsed(true);
+    }, [isCompactLayout]);
 
     useEffect(() => {
         try {
@@ -524,7 +543,10 @@ export const TimeSeriesNodeEditor: React.FC = () => {
         () => toRFNodes(nodes, nodeTypes, executionState, executionResults),
         [nodes, nodeTypes, executionState, executionResults],
     );
-    const rfEdges = useMemo(() => toRFEdges(connections), [connections]);
+    const rfEdges = useMemo(
+        () => toRFEdges(connections, nodes, nodeTypes),
+        [connections, nodes, nodeTypes],
+    );
 
     const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(rfNodes);
     const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(rfEdges);
@@ -546,8 +568,10 @@ export const TimeSeriesNodeEditor: React.FC = () => {
             onNodesChange(changes);
             const moved = new Map<string, { x: number; y: number }>();
             changes.forEach((c: any) => {
-                // Persist all position changes; some drag flows don't emit a final non-dragging event.
-                if (c.type === "position" && c.position)
+                // React Flow owns the hot drag path. Persist only the final
+                // position so canonical store updates do not rebuild every node
+                // on each pointer movement.
+                if (c.type === "position" && c.position && c.dragging !== true)
                     moved.set(c.id, c.position);
             });
             if (moved.size > 0) {
@@ -616,6 +640,18 @@ export const TimeSeriesNodeEditor: React.FC = () => {
             }
         },
         [onNodesChange, updateNodes, isHeadLikeNode, toAbsPos, syncComposerBlocks],
+    );
+
+    const handleNodeDragStop = useCallback(
+        (node: RFNode) => {
+            handleNodesChange([{
+                id: node.id,
+                type: "position",
+                position: { x: node.position.x, y: node.position.y },
+                dragging: false,
+            }]);
+        },
+        [handleNodesChange],
     );
 
     // Connect edges
@@ -846,10 +882,22 @@ export const TimeSeriesNodeEditor: React.FC = () => {
 
             const availableHeight = Math.max(MIN_BOTTOM_PANEL_HEIGHT, viewportHeight - 220);
             const nextBottom = viewportHeight - pointerY;
-            setBottomPanelHeight(clamp(nextBottom, MIN_BOTTOM_PANEL_HEIGHT, Math.min(MAX_BOTTOM_PANEL_HEIGHT, availableHeight)));
+            const nextHeight = clamp(
+                nextBottom,
+                MIN_BOTTOM_PANEL_HEIGHT,
+                Math.min(MAX_BOTTOM_PANEL_HEIGHT, availableHeight),
+            );
+            pendingBottomHeightRef.current = nextHeight;
+            if (shellRef.current) {
+                shellRef.current.style.gridTemplateRows = `minmax(0,1fr) 10px ${nextHeight}px`;
+            }
         };
 
         const stopResize = () => {
+            if (activeResizeTarget === "bottom" && pendingBottomHeightRef.current != null) {
+                setBottomPanelHeight(pendingBottomHeightRef.current);
+                pendingBottomHeightRef.current = null;
+            }
             setActiveResizeTarget(null);
         };
 
@@ -884,9 +932,11 @@ export const TimeSeriesNodeEditor: React.FC = () => {
                     ref={shellRef}
                     className="grid min-h-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.08),transparent_26%),radial-gradient(circle_at_top_right,rgba(59,130,246,0.06),transparent_22%),linear-gradient(180deg,#08101a_0%,#060b12_100%)]"
                     style={{
-                        gridTemplateColumns: `${leftSidebarCollapsed ? 78 : leftPanelWidth}px ${leftSidebarCollapsed ? 0 : 10}px minmax(0,1fr) 10px ${rightPanelWidth}px`,
+                        gridTemplateColumns: isCompactLayout
+                            ? `${leftSidebarCollapsed ? 78 : leftPanelWidth}px ${leftSidebarCollapsed ? 0 : 10}px minmax(0,1fr) 0px 0px`
+                            : `${leftSidebarCollapsed ? 78 : leftPanelWidth}px ${leftSidebarCollapsed ? 0 : 10}px minmax(0,1fr) 10px ${rightPanelWidth}px`,
                         gridTemplateRows: hasBottomPanelContent
-                            ? `minmax(0,1fr) 10px ${bottomPanelHeight}px`
+                            ? `minmax(0,1fr) ${showResultsPanel ? 10 : 0}px ${showResultsPanel ? bottomPanelHeight : 64}px`
                             : "minmax(0,1fr) 0px 0px",
                     }}
                 >
@@ -936,6 +986,7 @@ export const TimeSeriesNodeEditor: React.FC = () => {
                             flowEdges={flowEdges}
                             nodeTypesMap={rfNodeTypes}
                             handleNodesChange={handleNodesChange}
+                            onNodeDragStop={handleNodeDragStop}
                             onEdgesChange={onEdgesChange}
                             onConnect={onConnect}
                             onSelectionChange={onSelectionChange}
@@ -949,6 +1000,54 @@ export const TimeSeriesNodeEditor: React.FC = () => {
                             focusNodeTick={focusNodeTick}
                         />
 
+                        {nodes.length === 0 && (
+                            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center px-6 pt-20">
+                                <div className="pointer-events-auto w-full max-w-2xl rounded-[32px] border border-white/[0.08] bg-[#0c1420]/90 p-6 shadow-[0_30px_100px_rgba(0,0,0,0.48)] backdrop-blur-2xl sm:p-8">
+                                    <div className="inline-flex items-center gap-2 rounded-full bg-cyan-500/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-200">
+                                        Your first forecast
+                                    </div>
+                                    <h2 className="mt-4 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+                                        Start with a working pipeline, then make it yours.
+                                    </h2>
+                                    <p className="mt-3 max-w-xl text-sm leading-6 text-slate-400">
+                                        Choose a proven starting point or open the node library to build from your own data. You can inspect and tune every block before running.
+                                    </p>
+                                    <div className="mt-6 grid gap-3 sm:grid-cols-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => loadTemplate("basic_transformer")}
+                                            className="group rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-500 p-4 text-left text-slate-950 shadow-lg shadow-cyan-500/10 transition hover:from-cyan-300 hover:to-blue-400"
+                                        >
+                                            <LayoutTemplate size={19} />
+                                            <span className="mt-5 flex items-center justify-between text-sm font-bold">
+                                                Use Transformer template
+                                                <ArrowRight size={16} className="transition group-hover:translate-x-1" />
+                                            </span>
+                                            <span className="mt-1 block text-xs text-slate-800/75">A complete encoder-decoder workflow</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setLeftSidebarSection("library");
+                                                setLeftSidebarCollapsed(false);
+                                            }}
+                                            className="group rounded-2xl bg-white/[0.05] p-4 text-left text-white ring-1 ring-white/[0.08] transition hover:bg-white/[0.08]"
+                                        >
+                                            <Database size={19} className="text-cyan-300" />
+                                            <span className="mt-5 flex items-center justify-between text-sm font-bold">
+                                                Build from data
+                                                <PanelLeftOpen size={16} className="text-slate-400 transition group-hover:text-cyan-300" />
+                                            </span>
+                                            <span className="mt-1 block text-xs text-slate-400">Browse data, model, and training blocks</span>
+                                        </button>
+                                    </div>
+                                    <p className="mt-5 text-center text-[11px] text-slate-500">
+                                        Tip: press <kbd className="rounded-md bg-white/[0.06] px-1.5 py-1 text-slate-300">Ctrl P</kbd> anytime to add a node quickly.
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+
                         <ContextMenu
                             ctx={contextMenu}
                             groups={groupsForQuery}
@@ -960,22 +1059,24 @@ export const TimeSeriesNodeEditor: React.FC = () => {
                         />
                     </div>
 
-                    <div
+                    {!isCompactLayout && <div
                         className={`col-start-4 row-start-1 row-span-3 min-h-0 cursor-col-resize bg-transparent transition hover:bg-cyan-400/10 ${activeResizeTarget === "right" ? "bg-cyan-400/16" : ""}`}
                         onMouseDown={() => startResize("right")}
                         title="Resize right panel"
-                    />
+                    />}
 
-                    <div className="col-start-5 row-start-1 row-span-3 min-h-0">
+                    {!isCompactLayout && <div className="col-start-5 row-start-1 row-span-3 min-h-0">
                         <InspectorSidebar workflowName={workflowName} />
-                    </div>
+                    </div>}
 
-                    {hasBottomPanelContent && (
+                    {hasBottomPanelContent && showResultsPanel && (
                         <div
-                            className={`col-start-3 row-start-2 min-h-0 cursor-row-resize bg-transparent transition hover:bg-cyan-400/10 ${activeResizeTarget === "bottom" ? "bg-cyan-400/16" : ""}`}
+                            className={`group col-start-3 row-start-2 min-h-0 cursor-row-resize bg-[#07101a] transition hover:bg-cyan-400/10 ${activeResizeTarget === "bottom" ? "bg-cyan-400/16" : ""}`}
                             onMouseDown={() => startResize("bottom")}
                             title="Resize bottom panel"
-                        />
+                        >
+                            <div className="mx-auto mt-1 h-1 w-12 rounded-full bg-slate-700 transition group-hover:bg-cyan-400/70" />
+                        </div>
                     )}
 
                     {hasBottomPanelContent && (
@@ -987,6 +1088,7 @@ export const TimeSeriesNodeEditor: React.FC = () => {
 
                 <PreflightPanel />
                 <CommandPalette onAddNode={(type) => addNode(type)} />
+                {isCompactLayout && <ConfigPanel variant="overlay" />}
 
                 <CodeModal
                     open={showCodeModal}

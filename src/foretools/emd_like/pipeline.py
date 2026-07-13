@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import inspect
 import math
 import time
@@ -195,13 +196,28 @@ class VMDOptimizer:
             inspect.signature(self.core.decompose_multivariate).parameters
         )
 
-        # cache: (K, alpha_bin) -> (modes_list, freqs_list, cost)
+        # Cache keys include the input and configuration so direct/private use
+        # cannot accidentally reuse a decomposition from another signal.
         self._cache: dict[
-            tuple[int, int], tuple[list[np.ndarray], list[float], float]
+            tuple[Any, ...], tuple[list[np.ndarray], list[float], float]
         ] = {}
         self._cache_mv: dict[
-            tuple[int, int], tuple[list[np.ndarray], list[float], float]
+            tuple[Any, ...], tuple[list[np.ndarray], list[float], float]
         ] = {}
+
+    @staticmethod
+    def _candidate_cache_key(
+        signal: np.ndarray,
+        fs: float,
+        p: VMDParameters,
+        K: int,
+        alpha_bin: int,
+    ) -> tuple[Any, ...]:
+        x = np.ascontiguousarray(signal, dtype=np.float64)
+        digest = hashlib.blake2b(x.view(np.uint8), digest_size=16).digest()
+        # VMDParameters is a dataclass; repr captures all scalar configuration.
+        # Warm-start arrays disable caching before this helper is called.
+        return (x.shape, digest, float(fs), repr(p), int(K), int(alpha_bin))
 
     def _call_core_decompose(
         self,
@@ -696,7 +712,7 @@ class VMDOptimizer:
 
         alpha_b = self._alpha_bin(alpha)
         cacheable_alpha = alpha_b != -1
-        key = (int(K), int(alpha_b))
+        key = self._candidate_cache_key(signal, fs, p, K, alpha_b)
         if allow_cache and cacheable_alpha and key in self._cache:
             cm, cf, cc = self._cache[key]
             raw = None
@@ -784,7 +800,7 @@ class VMDOptimizer:
 
         alpha_b = self._alpha_bin(alpha)
         cacheable_alpha = alpha_b != -1
-        key = (int(K), int(alpha_b))
+        key = self._candidate_cache_key(signals, fs, p, K, alpha_b)
         if allow_cache and cacheable_alpha and key in self._cache_mv:
             cm, cf, cc = self._cache_mv[key]
             return [m.copy() for m in cm], list(cf), float(cc), None
@@ -1559,6 +1575,7 @@ class FastVMD:
 
     def clear_cache(self):
         self.opt._cache.clear()
+        self.opt._cache_mv.clear()
         gc.collect()
 
     def __del__(self):

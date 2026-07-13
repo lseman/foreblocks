@@ -264,10 +264,13 @@ class VMDCore:
         """
         fft_backend, fft_device = self.fftw.resolve_backend(fft_backend, fft_device)
         f = np.asarray(signal, dtype=np.float64)
+        if f.ndim != 1:
+            raise ValueError("VMD expects a one-dimensional signal")
+        if f.size < 2:
+            raise ValueError("VMD requires at least two samples")
+        if not np.all(np.isfinite(f)):
+            raise ValueError("VMD signal must contain only finite values")
         orig_len = int(f.size)
-        if orig_len % 2:
-            f = f[:-1]
-            orig_len -= 1
 
         if window_alpha is not None and window_alpha > 0 and boundary_method != "none":
             raise ValueError(
@@ -681,30 +684,48 @@ class VMDCore:
         """
         # ── Apply VMDOptions if provided ──────────────────────────────────
         if options is not None:
-            boundary_method    = getattr(options, 'boundary_method', boundary_method)
-            use_soft_junction  = getattr(options, 'use_soft_junction', use_soft_junction)
-            window_alpha       = getattr(options, 'window_alpha', window_alpha)
-            fft_backend        = getattr(options, 'fft_backend', fft_backend)
-            fft_device         = getattr(options, 'fft_device', fft_device)
-            enforce_uncorrelated = getattr(options, 'enforce_uncorrelated', enforce_uncorrelated)
-            corr_rho           = getattr(options, 'corr_rho', corr_rho)
-            corr_update_every  = getattr(options, 'corr_update_every', corr_update_every)
-            corr_ema           = getattr(options, 'corr_ema', corr_ema)
-            admm_over_relax    = getattr(options, 'admm_over_relax', admm_over_relax)
-            use_anderson       = getattr(options, 'use_anderson', use_anderson)
-            anderson_m         = getattr(options, 'anderson_m', anderson_m)
-            anderson_beta      = getattr(options, 'anderson_beta', anderson_beta)
-            gram_schmidt_every = getattr(options, 'gram_schmidt_every', gram_schmidt_every)
-            omega_tol          = getattr(options, 'omega_tol', omega_tol)
-            omega_momentum     = getattr(options, 'omega_momentum', omega_momentum)
-            omega_shrinkage    = getattr(options, 'omega_shrinkage', omega_shrinkage)
-            omega_max_step     = getattr(options, 'omega_max_step', omega_max_step)
-            tau                = getattr(options, 'tau', tau)
+            # An option fills a default-valued keyword; an explicit non-default
+            # keyword remains authoritative, as documented by this API.
+            def option_value(name: str, current: Any, default: Any) -> Any:
+                return getattr(options, name, current) if current == default else current
+
+            boundary_method = option_value("boundary_method", boundary_method, "reflect")
+            use_soft_junction = option_value("use_soft_junction", use_soft_junction, False)
+            window_alpha = option_value("window_alpha", window_alpha, None)
+            fft_backend = option_value("fft_backend", fft_backend, "fftw")
+            fft_device = option_value("fft_device", fft_device, "auto")
+            enforce_uncorrelated = option_value("enforce_uncorrelated", enforce_uncorrelated, False)
+            corr_rho = option_value("corr_rho", corr_rho, 0.1)
+            corr_update_every = option_value("corr_update_every", corr_update_every, 20)
+            corr_ema = option_value("corr_ema", corr_ema, 0.9)
+            admm_over_relax = option_value("admm_over_relax", admm_over_relax, 1.6)
+            use_anderson = option_value("use_anderson", use_anderson, False)
+            anderson_m = option_value("anderson_m", anderson_m, 5)
+            anderson_beta = option_value("anderson_beta", anderson_beta, 1.0)
+            gram_schmidt_every = option_value("gram_schmidt_every", gram_schmidt_every, 0)
+            omega_tol = option_value("omega_tol", omega_tol, 1e-8)
+            omega_momentum = option_value("omega_momentum", omega_momentum, 0.0)
+            omega_shrinkage = option_value("omega_shrinkage", omega_shrinkage, 0.0)
+            omega_max_step = option_value("omega_max_step", omega_max_step, 0.0)
+            tau = option_value("tau", tau, 0.0)
+            tol = option_value("tol", tol, 1e-6)
+            max_iter = option_value("max_iter", max_iter, 300)
             if getattr(options, 'if_tracking', False):
                 # VNCMD params are handled by decompose_vncmd; skip here.
                 pass
 
         x = np.asarray(signal, dtype=np.float64)
+
+        if K < 1:
+            raise ValueError("K must be at least 1")
+        if alpha < 0 or not np.isfinite(alpha):
+            raise ValueError("alpha must be finite and non-negative")
+        if max_iter < 1:
+            raise ValueError("max_iter must be at least 1")
+        if tol < 0 or omega_tol < 0:
+            raise ValueError("tol and omega_tol must be non-negative")
+        if corr_update_every < 1:
+            raise ValueError("corr_update_every must be at least 1")
 
         if precomputed_fft is None:
             precomputed_fft = self._prepare_signal(
@@ -732,9 +753,19 @@ class VMDCore:
 
         # ── Initialise state ────────────────────────────────────────────────
         if init == 5 and warm_start_state is not None:
-            omega = warm_start_state["omega"].copy().astype(np.float64)
-            u_hat_prev = warm_start_state["u_hat"].copy().astype(np.complex128)
-            lam = warm_start_state.get("lam", np.zeros(T, dtype=np.complex128)).copy()
+            omega = np.asarray(warm_start_state["omega"], dtype=np.float64).copy()
+            u_hat_prev = np.asarray(
+                warm_start_state["u_hat"], dtype=np.complex128
+            ).copy()
+            lam = np.asarray(
+                warm_start_state.get("lam", np.zeros(T, dtype=np.complex128)),
+                dtype=np.complex128,
+            ).copy()
+            if omega.shape != (K,) or u_hat_prev.shape != (T, K) or lam.shape != (T,):
+                raise ValueError(
+                    "warm_start_state shapes must be omega=(K,), "
+                    "u_hat=(T, K), and lam=(T,)"
+                )
         else:
             u_hat_prev = np.zeros((T, K), dtype=np.complex128)
             lam = np.zeros(T, dtype=np.complex128)
@@ -761,7 +792,11 @@ class VMDCore:
         Gamma = np.zeros((K, K), dtype=np.float64)
         C_ema = None
         over_relax = float(np.clip(float(admm_over_relax), 0.0, 2.0))
-        mixer = AndersonMixer(m=anderson_m) if use_anderson else None
+        mixer = (
+            AndersonMixer(m=anderson_m, beta=anderson_beta)
+            if use_anderson
+            else None
+        )
 
         # ── Main iteration ──────────────────────────────────────────────────
         for n in range(int(max_iter)):
@@ -1357,7 +1392,6 @@ class VMDCore:
             fft_device=fft_device,
         )
         x_work = np.asarray(precomp["fMirr"], dtype=np.float64)
-        T = int(precomp["T"])
         orig_len = int(precomp["orig_len"])
         left_ext = int(precomp["left_ext"])
         right_ext = int(precomp.get("right_ext", 0))

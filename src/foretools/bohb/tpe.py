@@ -19,7 +19,7 @@ from .batch import (
     ThompsonSamplingSelector,
 )
 from .gamma import GammaStrategy, build_gamma_strategy
-from .gp_surrogate import GPEnsemble, ExpectedImprovement, GPSurrogate, vectorized_ei_score
+from .surrogates import GPEnsemble, ExpectedImprovement, GPSurrogate, vectorized_ei_score
 from .observation import ObservationStore
 from .param_models import CatModel, FloatModel, IntModel
 from .utils import (

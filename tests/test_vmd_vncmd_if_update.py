@@ -5,9 +5,13 @@ import types
 import unittest
 
 import numpy as np
+import pytest
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+pytest.importorskip("pyfftw")
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1] / "src"
 
 
 def _ensure_package(name: str, path: pathlib.Path) -> types.ModuleType:

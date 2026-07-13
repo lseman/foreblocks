@@ -6,7 +6,6 @@ import {
     type Edge as RFEdge,
     type Node as RFNode,
 } from "reactflow";
-import { motion } from "framer-motion";
 import type {
     Connection,
     ExecutionResult,
@@ -97,15 +96,34 @@ export function toRFNodes(
     }));
 }
 
-export function toRFEdges(conns: Connection[]): RFEdge[] {
-    return conns.map((c) => ({
+export function toRFEdges(
+    conns: Connection[],
+    nodes: NodeData[],
+    nodeTypes: NodeTypeMap,
+): RFEdge[] {
+    const nodesById = new Map(nodes.map((node) => [node.id, node]));
+
+    return conns.filter((connection) => {
+        const sourceNode = nodesById.get(connection.from);
+        const targetNode = nodesById.get(connection.to);
+        if (!sourceNode || !targetNode) return false;
+
+        const sourceDef = nodeTypes[sourceNode.type];
+        const targetDef = nodeTypes[targetNode.type];
+        if (!sourceDef || !targetDef) return false;
+
+        return (sourceDef.outputs || []).includes(connection.fromPort)
+            && (targetDef.inputs || []).includes(connection.toPort);
+    }).map((c) => ({
         id: c.id,
         source: c.from,
         target: c.to,
         sourceHandle: c.fromPort,
         targetHandle: c.toPort,
         animated: false,
-        type: "bezier",
+        // React Flow's built-in Bezier edge is named "default". Using
+        // "bezier" is interpreted as an unregistered custom edge type.
+        type: "default",
         style: {
             strokeWidth: 2,
             stroke: "#334155", // slate-700
@@ -179,13 +197,10 @@ const TimeseriesRFNodeBase: React.FC<CardProps> = ({ data, selected }) => {
     }, [execState]);
 
     return (
-        <motion.div
-            layout
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
+        <div
             className={`
-                relative rounded-2xl overflow-hidden backdrop-blur-xl transition-all duration-300
-                ${selected ? "ring-2 ring-sky-400 scale-[1.015] shadow-2xl" : "shadow-xl border border-white/5"}
+                relative overflow-hidden rounded-2xl transition-[box-shadow,border-color] duration-200
+                ${selected ? "ring-2 ring-sky-400 shadow-2xl" : "shadow-xl border border-white/5"}
                 ${statusGlow}
             `}
             style={{
@@ -340,7 +355,7 @@ const TimeseriesRFNodeBase: React.FC<CardProps> = ({ data, selected }) => {
                     className="hover:!w-4 hover:!h-4 transition-all"
                 />
             ))}
-        </motion.div>
+        </div>
     );
 };
 

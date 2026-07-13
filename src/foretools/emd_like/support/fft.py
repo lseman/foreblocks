@@ -20,16 +20,36 @@ except Exception:
 
 
 class FFTWManager:
-    def __init__(self, wisdom_file: str = "vmd_fftw_wisdom.dat"):
+    def __init__(
+        self,
+        wisdom_file: str = "vmd_fftw_wisdom.dat",
+        num_threads: int | None = None,
+    ):
         self.wisdom_file = wisdom_file
         self._warned_backend_keys = set()
+        self.num_threads = self._resolve_num_threads(num_threads)
         self._setup_fftw()
         self.load_wisdom()
+
+    @staticmethod
+    def _resolve_num_threads(num_threads: int | None) -> int:
+        if num_threads is None:
+            raw = os.environ.get("FOREBLOCKS_FFT_THREADS", "1")
+            try:
+                num_threads = int(raw)
+            except ValueError:
+                warnings.warn(
+                    "Invalid FOREBLOCKS_FFT_THREADS; using one FFT thread.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+                num_threads = 1
+        return max(1, min(int(num_threads), os.cpu_count() or 1))
 
     def _setup_fftw(self):
         pyfftw.interfaces.cache.enable()
         pyfftw.interfaces.cache.set_keepalive_time(7200)
-        pyfftw.config.NUM_THREADS = max(1, os.cpu_count() or 4)
+        pyfftw.config.NUM_THREADS = self.num_threads
 
     def load_wisdom(self):
         if os.path.exists(self.wisdom_file):
@@ -91,6 +111,13 @@ class FFTWManager:
                 )
                 dev = "cpu"
 
+            if dev == "cuda":
+                self._warn_once(
+                    "fft_backend_cuda_transfer",
+                    "The VMD solver stores state in NumPy, so torch CUDA FFTs "
+                    "include host/device transfers and may be slower than FFTW.",
+                )
+
             return "torch", dev
 
         return "fftw", "cpu"
@@ -124,21 +151,21 @@ class FFTWManager:
         if name == "torch":
             xt = self._to_torch(x, dev)
             return self._to_numpy(torch.fft.fft(xt, dim=axis))
-        return fftw_np.fft(np.asarray(x), axis=axis)
+        return fftw_np.fft(np.asarray(x), axis=axis, threads=self.num_threads)
 
     def ifft(self, x, axis: int = -1, backend: str = "fftw", device: str = "auto"):
         name, dev = self.resolve_backend(backend, device)
         if name == "torch":
             xt = self._to_torch(x, dev)
             return self._to_numpy(torch.fft.ifft(xt, dim=axis))
-        return fftw_np.ifft(np.asarray(x), axis=axis)
+        return fftw_np.ifft(np.asarray(x), axis=axis, threads=self.num_threads)
 
     def rfft(self, x, axis: int = -1, backend: str = "fftw", device: str = "auto"):
         name, dev = self.resolve_backend(backend, device)
         if name == "torch":
             xt = self._to_torch(x, dev)
             return self._to_numpy(torch.fft.rfft(xt, dim=axis))
-        return fftw_np.rfft(np.asarray(x), axis=axis)
+        return fftw_np.rfft(np.asarray(x), axis=axis, threads=self.num_threads)
 
     def fftshift(self, x, axes=None, backend: str = "fftw", device: str = "auto"):
         name, dev = self.resolve_backend(backend, device)

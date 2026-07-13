@@ -12,9 +12,17 @@
 }
 
 @layer base {
+  html,
   body {
     @apply bg-neutral-950 text-white antialiased;
     font-feature-settings: "ss01", "ss02", "cv01", "cv02";
+  }
+
+  button,
+  input,
+  select,
+  summary {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950;
   }
 }
 
@@ -98,4 +106,15 @@
 
 .pulse-node {
   animation: pulse-blue 2s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

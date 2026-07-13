@@ -789,6 +789,7 @@ def load_static_nodes() -> dict:
 
 
 @app.get("/nodes")
+@api.get("/nodes")
 def list_nodes():
     discovered = discover_nodes()
     static_nodes = load_static_nodes()

@@ -95,6 +95,7 @@ export type GraphCanvasProps = React.PropsWithChildren<{
     flowEdges: RFEdge[];
     nodeTypesMap: Record<string, React.FC<any>>;
     handleNodesChange: OnNodesChange;
+    onNodeDragStop: (node: RFNode) => void;
     onEdgesChange: OnEdgesChange;
     onConnect: (c: RFConnection) => void;
     onSelectionChange: (p: { nodes: RFNode[]; edges: RFEdge[] }) => void;
@@ -113,6 +114,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     flowEdges,
     nodeTypesMap,
     handleNodesChange,
+    onNodeDragStop,
     onEdgesChange,
     onConnect,
     onSelectionChange,
@@ -229,6 +231,7 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
                 edges={flowEdges}
                 nodeTypes={nodeTypesMap}
                 onNodesChange={handleNodesChange}
+                onNodeDragStop={(_event, node) => onNodeDragStop(node)}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
                 onSelectionChange={onSelectionChange}

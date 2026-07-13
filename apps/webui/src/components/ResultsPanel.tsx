@@ -114,11 +114,14 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ onShowResultModal })
         initial={{ y: 24, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 24, opacity: 0 }}
-        className="bg-[#09101a]/78 shadow-[0_-18px_40px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-2xl"
+        className="flex h-full min-h-0 flex-col bg-[#09101a]/78 shadow-[0_-18px_40px_rgba(0,0,0,0.24),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-2xl"
       >
-        <div
-          className="flex cursor-pointer items-center justify-between px-5 py-3"
+        <button
+          type="button"
+          className="flex h-16 shrink-0 items-center justify-between px-5 text-left transition hover:bg-white/[0.02]"
           onClick={() => setShowResultsPanel(!showResultsPanel)}
+          aria-expanded={showResultsPanel}
+          aria-controls="execution-trace-content"
         >
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-cyan-500/10 text-cyan-300">
@@ -147,23 +150,25 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ onShowResultModal })
             )}
             {showResultsPanel ? <ChevronDown size={18} className="text-slate-500" /> : <ChevronUp size={18} className="text-slate-500" />}
           </div>
-        </div>
+        </button>
 
         <AnimatePresence initial={false}>
           {showResultsPanel && (
             <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 280, opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              className="overflow-hidden"
+              id="execution-trace-content"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="min-h-0 flex-1 overflow-hidden border-t border-white/[0.04]"
             >
               <div className="flex h-full min-h-0 flex-col">
-                <div className="flex items-center gap-2 px-5 py-3">
+                <div className="flex shrink-0 items-center gap-2 overflow-x-auto px-5 py-3">
                   {tabs.map((tab) => (
                     <button
                       key={tab.id}
                       type="button"
                       onClick={() => setActiveTab(tab.id)}
+                      aria-pressed={activeTab === tab.id}
                       className={`rounded-full px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] transition ${activeTab === tab.id
                           ? "bg-cyan-500/12 text-cyan-300 ring-1 ring-cyan-400/25"
                           : "bg-white/[0.04] text-slate-400 hover:bg-white/[0.06] hover:text-slate-200"
@@ -174,7 +179,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({ onShowResultModal })
                   ))}
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
                   {activeTab === "logs" && (
                     <div className="rounded-3xl bg-black/20 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
                       <div className="space-y-2 font-mono text-[12px] leading-6 text-slate-300">
