@@ -14,8 +14,8 @@ RUN pip install --no-cache-dir \
     "pydantic>=2.0" \
     "python-multipart>=0.0.9"
 
-COPY foreblocks/__init__.py ./foreblocks/__init__.py
-COPY mltracker ./mltracker
+COPY src/foreblocks/__init__.py ./foreblocks/__init__.py
+COPY src/mltracker ./mltracker
 
 RUN mkdir -p /data/mltracker
 

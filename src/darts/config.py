@@ -484,6 +484,4 @@ class DARTSConfig:
         return self.device
 
 
-# Deprecated: misspelled alias kept for backwards compatibility. Use
-# ``MultiFidelitySearchConfig`` in new code.
-MultiFildelitySearchConfig = MultiFidelitySearchConfig
+

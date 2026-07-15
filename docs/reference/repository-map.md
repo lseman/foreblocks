@@ -35,7 +35,7 @@ This page gives a quick path through the repository for contributors and power u
 | `foreblocks/core/` | Core forecasting internals (`model`, `att`, `sampling`, `extend`), plus `training/` (trainer) and `evaluation/` (metrics) |
 | `foreblocks/data/` | Dataset and dataloader helpers |
 | `foreblocks/ts_handler/` | Preprocessing and sequence construction |
-| `mltracker/` | Experiment tracking |
+| `src/mltracker/` | Experiment tracking |
 | `foreblocks/experimental/` | Not-yet-stable components: `attention_kernels/` (formerly `custom_att`, has own `setup.py`) |
 | `foreblocks/third_party/` | Small vendored compatibility helpers; larger external projects should stay outside the wheel |
 
@@ -61,8 +61,8 @@ Conventions:
 - `ops/` is pure compute. If it imports `torch.nn` as an API surface, it belongs in `layers/` or `modules/`.
 - `modules/blocks/` holds research blocks; `models/popular/` holds the named end-to-end models (NBEATS, Informer, …). The `transformer/popular/` and `blocks/popular/` split was merged into `models/popular/`.
 - `sequence/` drops the old `custom_` prefix; `custom_mamba` → `mamba_hybrid` to distinguish it from the original `mamba`.
-- Frontend assets under `foreblocks/studio/` and `mltracker/dashboard_v2/`: package only built `dist` assets; keep `node_modules`, runtime databases, and local tracker artifacts out of git and release archives.
-- `mltracker/mltracker_data/`: prefer `.foreblocks/mltracker_data`, `~/.foreblocks/mltracker_data`, or an explicit user-configured run directory rather than the package tree.
+- Frontend assets under `apps/webui/dist/` and `src/mltracker/dashboard_v2/`: package only built `dist` assets; keep `node_modules`, runtime databases, and local tracker artifacts out of git and release archives.
+- `src/mltracker/mltracker_data/`: prefer `.foreblocks/mltracker_data`, `~/.foreblocks/mltracker_data`, or an explicit user-configured run directory rather than the package tree.
 
 ## `foretools/`
 

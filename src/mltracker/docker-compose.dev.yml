@@ -2,7 +2,7 @@ services:
   api:
     build:
       context: ../..
-      dockerfile: mltracker/Dockerfile.dev-api
+      dockerfile: src/mltracker/Dockerfile.dev-api
     container_name: foreblocks-mltracker-dev-api
     restart: unless-stopped
     environment:
@@ -32,7 +32,7 @@ services:
       VITE_API_PROXY_TARGET: http://api:8000
     ports:
       - "5175:5175"
-    working_dir: /app/mltracker/dashboard_v2
+    working_dir: /app/src/mltracker/dashboard_v2
     volumes:
       - ../..:/app
-    command: sh -c "cd /app/mltracker/dashboard_v2 && npm ci && npm run dev -- --host 0.0.0.0 --port 5175"
+    command: sh -c "cd /app/src/mltracker/dashboard_v2 && npm ci && npm run dev -- --host 0.0.0.0 --port 5175"

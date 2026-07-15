@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STUDIO_DIR="$ROOT/apps/webui/src"
+STUDIO_DIR="$ROOT/apps/webui"
 STUDIO_DIST="$STUDIO_DIR/dist"
 TARGET_DIR="$ROOT/apps/webui/dist"
 
@@ -38,9 +38,14 @@ if [[ ! -f "$STUDIO_DIST/index.html" ]]; then
 fi
 
 echo "📦 Publishing Studio build to apps/webui..."
-rm -rf "$TARGET_DIR"
-mkdir -p "$TARGET_DIR"
-cp -a "$STUDIO_DIST/." "$TARGET_DIR/"
+# Ensure source and target are different to avoid cp self-copy error
+if [[ "$STUDIO_DIST" == "$TARGET_DIR" ]]; then
+  echo "⚠️ STUDIO_DIST and TARGET_DIR are the same, skipping copy"
+else
+  rm -rf "$TARGET_DIR"
+  mkdir -p "$TARGET_DIR"
+  cp -a "$STUDIO_DIST/." "$TARGET_DIR/"
+fi
 
 echo "✅ Studio assets compiled and copied to apps/webui"
 echo "Access the app at /studio/ on the remote server"

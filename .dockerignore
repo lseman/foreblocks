@@ -1,20 +1,23 @@
 # Keep MLTracker image builds small.  The compose file lives in
-# foreblocks/mltracker but uses the repo root as build context so Docker can
+# src/mltracker but uses the repo root as build context so Docker can
 # copy the package root plus mltracker sources.
 *
 
-!foreblocks/
-foreblocks/*
-!foreblocks/__init__.py
-!foreblocks/mltracker/
-!foreblocks/mltracker/**
+!src/
+src/*
+!src/__init__.py
+!src/foreblocks/
+src/foreblocks/*
+!src/foreblocks/__init__.py
+!src/mltracker/
+!src/mltracker/**
 
-foreblocks/mltracker/__pycache__/
-foreblocks/mltracker/**/__pycache__/
-foreblocks/mltracker/mltracker_data/
-foreblocks/mltracker/dashboard_v2/node_modules/
-foreblocks/mltracker/dashboard_v2/dist/
-foreblocks/mltracker/dashboard_v2/*.tsbuildinfo
-foreblocks/mltracker/dashboard_v2/build.log
-foreblocks/mltracker/dashboard_v2/vite.config.d.ts
-foreblocks/mltracker/dashboard_v2/vite.config.js
+src/mltracker/__pycache__/
+src/mltracker/**/__pycache__/
+src/mltracker/mltracker_data/
+src/mltracker/dashboard_v2/node_modules/
+src/mltracker/dashboard_v2/dist/
+src/mltracker/dashboard_v2/*.tsbuildinfo
+src/mltracker/dashboard_v2/build.log
+src/mltracker/dashboard_v2/vite.config.d.ts
+src/mltracker/dashboard_v2/vite.config.js

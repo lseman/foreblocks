@@ -2,13 +2,13 @@ FROM node:20-slim AS dashboard-build
 
 WORKDIR /build/dashboard
 
-COPY mltracker/dashboard_v2/package.json mltracker/dashboard_v2/package-lock.json ./
+COPY src/mltracker/dashboard_v2/package.json src/mltracker/dashboard_v2/package-lock.json ./
 RUN npm ci
 
-COPY mltracker/dashboard_v2/index.html ./
-COPY mltracker/dashboard_v2/tsconfig*.json ./
-COPY mltracker/dashboard_v2/vite.config.ts ./
-COPY mltracker/dashboard_v2/src ./src
+COPY src/mltracker/dashboard_v2/index.html ./
+COPY src/mltracker/dashboard_v2/tsconfig*.json ./
+COPY src/mltracker/dashboard_v2/vite.config.ts ./
+COPY src/mltracker/dashboard_v2/src ./src
 RUN npm run build
 
 
@@ -28,8 +28,8 @@ RUN pip install --no-cache-dir \
     "pydantic>=2.0" \
     "python-multipart>=0.0.9"
 
-COPY foreblocks/__init__.py ./foreblocks/__init__.py
-COPY mltracker ./mltracker
+COPY src/foreblocks/__init__.py ./foreblocks/__init__.py
+COPY src/mltracker ./mltracker
 COPY --from=dashboard-build /build/dashboard/dist ./mltracker/dashboard_v2/dist
 
 RUN mkdir -p /data/mltracker

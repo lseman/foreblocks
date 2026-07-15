@@ -47,9 +47,9 @@ timesfm/
 ml-pararnn/
 
 # Project-specific generated directories
-src/foreblocks/mltracker/mltracker_data/
+src/mltracker/mltracker_data/
 mltracker_data/
-src/foreblocks/mltracker/dashboard_v2/node_modules/
+src/mltracker/dashboard_v2/node_modules/
 apps/webui/artifacts/
 apps/webui/dist/
 apps/webui/server.log
