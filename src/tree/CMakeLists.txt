@@ -7,8 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-option(TREE_BUILD_FORETREE "Build foretree pybind module" OFF)
-option(TREE_BUILD_FOREFOREST "Build foreforest pybind module" OFF)
+option(TREE_BUILD_FORETREE "Build foretree pybind module" ON)
+option(TREE_BUILD_FOREFOREST "Build foreforest pybind module" ON)
 option(TREE_ENABLE_TBB "Enable TBB if available" ON)
 option(TREE_ENABLE_STDEXEC "Enable stdexec include path for foreforest" ON)
 option(FORETREE_EXEC_USE_CUDA "Use nvexec CUDA scheduler for foreforest" OFF)
@@ -143,15 +143,15 @@ if(TREE_BUILD_FORETREE)
     NAME nanobind
     GITHUB_REPOSITORY wjakob/nanobind
     GIT_TAG v2.9.2
-    OPTIONS "NANOBIND_INSTALL OFF" "NB_USE_BUILD_SUPPORT ON"
   )
-  # Link Python development headers to nanobind build
-  if(TARGET nanobind-static)
-    target_link_libraries(nanobind-static PRIVATE Python3::Module)
-  endif()
-  nanobind_add_module(foretree NB_DOMAIN foretree "${TREE_SRC_DIR}/pybind/foretree.cpp")
+  nanobind_add_module(foretree "${TREE_SRC_DIR}/pybind/foretree.cpp")
+  # nanobind-static is created lazily by nanobind_add_module. Its runtime
+  # sources include Python.h directly, so configure it after module creation.
+  target_include_directories(nanobind-static PRIVATE ${Python3_INCLUDE_DIRS})
+  target_link_libraries(nanobind-static PRIVATE Python3::Module)
   tree_common_setup(foretree)
   target_link_libraries(foretree PRIVATE foretree_core)
+  set_target_properties(foretree PROPERTIES OUTPUT_NAME "foretree")
   if(TREE_ENABLE_CUDA_BACKEND)
     target_link_libraries(foretree PRIVATE foretree_cuda)
   endif()
@@ -173,11 +173,9 @@ if(TREE_BUILD_FOREFOREST)
     GIT_TAG v2.9.2
     OPTIONS "NANOBIND_INSTALL OFF" "NB_USE_BUILD_SUPPORT ON"
   )
-  # Link Python development headers to nanobind build
-  if(TARGET nanobind-static)
-    target_link_libraries(nanobind-static PRIVATE Python3::Module)
-  endif()
   nanobind_add_module(foreforest NB_DOMAIN foreforest "${TREE_SRC_DIR}/pybind/foreforest.cpp")
+  target_include_directories(nanobind-static PRIVATE ${Python3_INCLUDE_DIRS})
+  target_link_libraries(nanobind-static PRIVATE Python3::Module)
   tree_common_setup(foreforest)
   target_link_libraries(foreforest PRIVATE foretree_core)
   if(TREE_ENABLE_CUDA_BACKEND)

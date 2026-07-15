@@ -33,7 +33,7 @@ from foreblocks.layers.graph.layers import (
     StochasticDepth,
 )
 from foreblocks.layers.graph.norms import make_norm_pair
-from foreblocks.layers.graph.spatio_temporal import GraphWaveNetBlock
+from foreblocks.layers.graph.spatiotemporal import GraphWaveNetBlock
 
 GraphConvType = Literal["gcn", "sage", "gat", "edge_cond", "graph_wavenet"]
 GraphSource = Literal["latent", "external", "static"]
