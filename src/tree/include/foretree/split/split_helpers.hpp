@@ -170,6 +170,36 @@ using JointHistogramBuilder = bool (*)(void* state, const int* interleaved_pairs
                                        JointHistogramBatch& output);
 
 // ============================================================================
+// Feature Importance Tracking
+// ============================================================================
+struct FeatureImportance {
+    std::vector<double> gain;        // gain per feature
+    std::vector<int> split_count;    // # times feature used in splits
+    std::vector<double> cover;       // sum of Hessian (sample weights) in splits
+    int features = 0;
+
+    explicit FeatureImportance(int P = 0) : features(P) {
+        gain.assign(static_cast<size_t>(P), 0.0);
+        split_count.assign(static_cast<size_t>(P), 0);
+        cover.assign(static_cast<size_t>(P), 0.0);
+    }
+
+    void reset() {
+        std::fill(gain.begin(), gain.end(), 0.0);
+        std::fill(split_count.begin(), split_count.end(), 0);
+        std::fill(cover.begin(), cover.end(), 0.0);
+    }
+
+    void record_split(int feature, double split_gain, double node_hessian) {
+        if (feature >= 0 && feature < features) {
+            gain[static_cast<size_t>(feature)] += split_gain;
+            split_count[static_cast<size_t>(feature)]++;
+            cover[static_cast<size_t>(feature)] += node_hessian;
+        }
+    }
+};
+
+// ============================================================================
 // SplitContext: supports variable bin sizes per feature
 // ============================================================================
 struct SplitContext {
@@ -240,6 +270,30 @@ struct SplitContext {
         for (int feature = 0; feature < P; ++feature)
             function(feature);
     }
+
+#ifdef TREE_ENABLE_STDEXEC
+    // Parallel feature scan via stdexec bulk. Requires executor context.
+    template <class Executor, class Function>
+    void for_each_active_feature_parallel(Executor& exec, Function&& function) const {
+        std::vector<int> features;
+        if (active_features) {
+            for (int f : *active_features) {
+                if (f >= 0 && f < P)
+                    features.push_back(f);
+            }
+        } else {
+            for (int f = 0; f < P; ++f)
+                features.push_back(f);
+        }
+        if (features.empty())
+            return;
+
+        std::vector<typename std::invoke_result_t<Function, int>> results(features.size());
+        exec.bulk(features.size(), [&](int i) {
+            function(features[i]);
+        });
+    }
+#endif
 
     bool is_categorical_feature(int feature) const noexcept {
         if (!feature_types || feature < 0 || feature >= P)

@@ -8,7 +8,45 @@
 
 #include "foretree/split/split_helpers.hpp"
 
+#ifdef TREE_ENABLE_STDEXEC
+#include <exec/static_thread_pool.hpp>
+#include <stdexec/execution.hpp>
+#endif
+
+#ifdef FORETREE_HAS_CUDA
+#include "foretree/gpu/cuda_histogram.hpp"
+#endif
+
 namespace foretree {
+
+#ifdef FORETREE_HAS_CUDA
+// Convert CUDA joint histogram result to JointHistogramBatch format (device_batch).
+// Returns true if conversion succeeded, false if inputs invalid.
+inline bool cuda_joint_histogram_to_batch(const cuda::JointHistogramResult& cuda_result,
+                                          splitx::JointHistogramBatch& batch) noexcept {
+    if (cuda_result.pair_count == 0 || cuda_result.gradients.empty())
+        return false;
+
+    const size_t total_cells = cuda_result.gradients.size();
+    batch.reduced_bins = cuda_result.reduced_bins;
+    batch.gradients.resize(total_cells);
+    batch.hessians.resize(total_cells);
+    batch.counts.resize(total_cells);
+
+    // Copy from float to double for gradients/hessians
+    for (size_t i = 0; i < cuda_result.gradients.size(); ++i) {
+        batch.gradients[i] = static_cast<double>(cuda_result.gradients[i]);
+    }
+    for (size_t i = 0; i < cuda_result.hessians.size(); ++i) {
+        batch.hessians[i] = static_cast<double>(cuda_result.hessians[i]);
+    }
+    // Copy counts (uint32_t to int)
+    for (size_t i = 0; i < cuda_result.counts.size(); ++i) {
+        batch.counts[i] = static_cast<int>(cuda_result.counts[i]);
+    }
+    return true;
+}
+#endif
 
 // ============================================================================
 // 1) Axis (histogram/exact) — uses splitx providers & scanners
@@ -106,6 +144,79 @@ public:
         });
         return best;
     }
+
+#ifdef TREE_ENABLE_STDEXEC
+    // Parallel histogram-backed axis split (requires stdexec context).
+    // Collects per-feature candidates then reduces to global best.
+    splitx::Candidate best_axis_parallel(const splitx::SplitContext& ctx,
+                                         exec::static_thread_pool& executor) const {
+        using namespace splitx;
+        Candidate best;
+        best.kind = SplitKind::Axis;
+        best.gain = NEG_INF;
+        if (!ctx.G || !ctx.H || !ctx.C || ctx.P <= 0)
+            return best;
+
+        const auto& G = *ctx.G;
+        const auto& H = *ctx.H;
+        const auto& C = *ctx.C;
+        const auto* mono_vec = ctx.mono_ptr();
+        const double parent_gain = leaf_obj(ctx.Gp, ctx.Hp, ctx.hyp.lambda_, ctx.hyp.alpha_);
+
+        // Collect feature indices
+        std::vector<int> features;
+        if (ctx.active_features) {
+            for (int f : *ctx.active_features) {
+                if (f >= 0 && f < ctx.P)
+                    features.push_back(f);
+            }
+        } else {
+            for (int f = 0; f < ctx.P; ++f)
+                features.push_back(f);
+        }
+
+        if (features.empty())
+            return best;
+
+        // Per-feature candidates (thread-safe: no write races)
+        std::vector<Candidate> candidates(features.size());
+
+        // Parallel scan
+        auto bulk_op = stdexec::bulk(stdexec::schedule(executor.get_scheduler()),
+                                     stdexec::par,
+                                     static_cast<std::size_t>(features.size()),
+                                     [&](std::size_t i) {
+                                         const int f = features[i];
+                                         const int finite_bins = ctx.get_feature_bins(f);
+                                         if (finite_bins <= 0)
+                                             return;
+
+                                         const int8_t mono = (mono_vec && f < (int)mono_vec->size())
+                                             ? (*mono_vec)[f] : 0;
+
+                                         HistProvider prov(ctx, f, G, H, C);
+                                         double Gm = 0.0, Hm = 0.0;
+                                         int Cm = 0;
+                                         bool has_miss = false;
+                                         prov.missing(Gm, Hm, Cm, has_miss);
+                                         const int totalC = prov.total_count();
+                                         const int steps = prov.steps();
+
+                                         candidates[i] = scan_axis_with_policy(
+                                             ctx, f, prov, steps, mono, ctx.hyp.missing_policy,
+                                             parent_gain, totalC, Gm, Hm, Cm, has_miss);
+                                     });
+        stdexec::sync_wait(std::move(bulk_op));
+
+        // Reduce: find best candidate
+        for (const auto& cand : candidates) {
+            if (cand.thr >= 0 && cand.gain > best.gain)
+                best = cand;
+        }
+
+        return best;
+    }
+#endif
 };
 
 // ============================================================================
