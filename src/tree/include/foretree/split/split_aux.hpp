@@ -385,6 +385,7 @@ inline std::tuple<double, double, bool> best_split_on_projection(
         }
     }
     const int nf = (int)idx.size();
+    const int Cm = N - nf;  // count of missing
     if (nf < 4) return {detail::NEG_INF, 0.0, true};
 
     // sort by z
