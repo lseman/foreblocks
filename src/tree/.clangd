@@ -1,0 +1,44 @@
+CompileFlags:
+    Compiler: clang++
+    Add:
+        - -std=c++23
+        - -I/data/dev/foreblocks/src
+        - -I/data/dev/foreblocks/src/tree/include
+        - -I/data/dev/foreblocks/src/tree/src
+        - -isystem
+        - /usr/include/eigen3
+        - -isystem
+        - /usr/include/python3.14
+        - -isystem
+        - /usr/lib/python3.14/site-packages/pybind11/include
+    Remove:
+        - -W*
+        - -march=*
+        - -mtune=*
+
+Diagnostics:
+    UnusedIncludes: Strict
+    MissingIncludes: Strict
+
+Index:
+    Background: Build
+    StandardLibrary: Yes
+
+InlayHints:
+    Enabled: Yes
+
+---
+If:
+    PathMatch: .*\.(cu|cuh)$
+
+CompileFlags:
+    Compiler: /opt/cuda/bin/nvcc
+    Add:
+        - -xcuda
+        - -std=c++20
+        - --cuda-path=/opt/cuda
+        - --cuda-gpu-arch=sm_89
+        - -I/opt/cuda/include
+        - -I/opt/cuda/targets/x86_64-linux/include
+        - -DFORETREE_HAS_CUDA=1
+

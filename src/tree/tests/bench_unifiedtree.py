@@ -57,16 +57,16 @@ def main() -> int:
     Xb, _ = ghs.prebin_dataset(X)
 
     runs = []
-    for name, kway, oblique in [
+    for name, categorical_partition, oblique in [
         ("axis", False, False),
-        ("kway", True, False),
-        ("kway+oblique", True, True),
+        ("categorical_partition", True, False),
+        ("categorical_partition+oblique", True, True),
     ]:
         cfg = foretree.TreeConfig()
         cfg.max_depth = 6
         cfg.max_leaves = 31
-        cfg.enable_kway_splits = kway
-        cfg.kway_max_groups = 8
+        cfg.enable_categorical_splits = categorical_partition
+        cfg.categorical_max_selected_categories = 8
         cfg.enable_oblique_splits = oblique
         cfg.oblique_k_features = 4
         cfg.oblique_ridge = 1e-3

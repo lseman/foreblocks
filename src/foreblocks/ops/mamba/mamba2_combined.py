@@ -133,6 +133,7 @@ def mamba2_split_conv1d_scan_combined(
         D=Dskip,
         chunk_size=chunk_size,
         use_triton=use_triton_ssd,
+        parallel="tiled",
     ).reshape(u.shape[0], u.shape[1], d_inner)
     # RMSNormGated: rms_norm(y, group_size) * silu(z) — matches official Mamba2
     group_size = d_inner // n_groups if n_groups > 1 else None

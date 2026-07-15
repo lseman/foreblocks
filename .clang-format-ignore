@@ -1,0 +1,6 @@
+**/build/**
+**/build-*/**
+**/.cache/**
+**/_deps/**
+**/third_party/**
+**/vendor/**

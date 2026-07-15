@@ -4,7 +4,15 @@ import torch
 from foreblocks.config import TrainingConfig
 from foreblocks.core.training.trainer import Trainer
 from foreblocks.layers.graph.common import add_self_loops
-from foreblocks.layers.graph.layers import GATConv, GCNConv, JumpKnowledge, SAGEConv
+from foreblocks.layers.graph.layers import (
+    GATConv,
+    GATv2Conv,
+    GCNConv,
+    GINEConv,
+    GINConv,
+    JumpKnowledge,
+    SAGEConv,
+)
 from foreblocks.models import GraphForecastingModel
 
 
@@ -210,6 +218,77 @@ def test_gatv2_forward_shape() -> None:
 
     out = layer(x, adj=adj)
     assert out.shape == (2, 3, 4, 8)
+
+
+def test_gatv2_sparse_matches_dense_weighted() -> None:
+    torch.manual_seed(5)
+    x = torch.randn(2, 3, 4, 8)
+    edge_index = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 0]])
+    edge_weight = torch.tensor([0.5, 1.2, 0.8, 1.5])
+    adj = _dense_adj_from_edge_index(edge_index, 4, edge_weight)
+    layer = GATv2Conv(8, 8, heads=2, dropout=0.0)
+    layer.eval()
+
+    torch.testing.assert_close(
+        layer(x, adj=adj),
+        layer(x, edge_index=edge_index, edge_weight=edge_weight),
+        atol=1e-6,
+        rtol=1e-6,
+    )
+
+
+def test_gin_sparse_matches_dense_weighted() -> None:
+    torch.manual_seed(6)
+    x = torch.randn(2, 2, 4, 5)
+    edge_index = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 0]])
+    edge_weight = torch.tensor([0.5, 1.2, 0.8, 1.5])
+    adj = _dense_adj_from_edge_index(edge_index, 4, edge_weight)
+    layer = GINConv(
+        5,
+        7,
+        train_eps=True,
+        activation="none",
+        dropout=0.0,
+        use_graph_norm=False,
+        norm_strategy="none",
+    )
+    layer.eval()
+
+    torch.testing.assert_close(
+        layer(x, adj=adj),
+        layer(x, edge_index=edge_index, edge_weight=edge_weight),
+        atol=1e-6,
+        rtol=1e-6,
+    )
+
+
+def test_gine_sparse_matches_dense_vector_edge_features() -> None:
+    torch.manual_seed(7)
+    batch, steps, nodes, features, edge_dim = 2, 2, 4, 5, 3
+    x = torch.randn(batch, steps, nodes, features)
+    edge_index = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 0]])
+    edge_attr = torch.randn(edge_index.size(1), edge_dim)
+    adj = _dense_adj_from_edge_index(edge_index, nodes)
+    dense_edge_attr = torch.zeros(nodes, nodes, edge_dim)
+    src, dst = edge_index
+    dense_edge_attr[dst, src] = edge_attr
+    layer = GINEConv(
+        features,
+        7,
+        edge_dim=edge_dim,
+        activation="none",
+        dropout=0.0,
+        use_graph_norm=False,
+        norm_strategy="none",
+    )
+    layer.eval()
+
+    torch.testing.assert_close(
+        layer(x, adj=adj, edge_attr=dense_edge_attr),
+        layer(x, edge_index=edge_index, edge_attr=edge_attr),
+        atol=1e-6,
+        rtol=1e-6,
+    )
 
 
 def test_gat_sparse_matches_dense_weighted() -> None:

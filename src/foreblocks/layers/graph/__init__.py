@@ -2,12 +2,12 @@
 
 Graph neural network layers and spatio-temporal architectures.
 
-Provides GCN, GAT, SAGE, EdgeCondGCN, MTGNN, TGGC, and GraphWaveNet
+Provides GCN, GAT/GATv2, GIN/GINE, SAGE, EdgeCondGCN, MTGNN, TGGC, and GraphWaveNet
 graph convolution layers with spatio-temporal modeling. Includes latent
 graph correlation learners and adaptive edge sparsification.
 
 Core API:
-- GCNConv, GATConv, SAGEConv: standard GNN convolutions
+- GCNConv, GATConv, GATv2Conv, GINConv, GINEConv, SAGEConv: GNN convolutions
 - MTGNNBlock, MTGNNGraphConstructor: MTGNN spatio-temporal blocks
 - TGGCBlock, TGGCModern: temporal spectral graph convolutions
 - LatentCorrelationLearner: learnable latent graph structure
@@ -22,27 +22,31 @@ from foreblocks.layers.graph.latent import (
 from foreblocks.layers.graph.layers import (
     EdgeCondGCN,
     GATConv,
+    GATv2Conv,
     GCNConv,
+    GINConv,
+    GINEConv,
     JumpKnowledge,
     MessagePassing,
     SAGEConv,
     StochasticDepth,
 )
-from foreblocks.layers.graph.mtgnn import (
+from foreblocks.layers.graph.norms import GraphNorm
+from foreblocks.layers.graph.spatiotemporal import (
+    BackwardDiffusionConv,
+    ComplexLinearModes,
+    DiffusionConv,
+    FineTemporalSpectralFilter,
+    GraphGegenbauerConv,
+    GraphWaveNetBlock,
+    GraphWaveNetTemporalConv,
+    LatentCorrelationLayer,
     MTGNNBlock,
     MTGNNDilatedInception,
     MTGNNGraphConstructor,
     MTGNNMixProp,
     MTGNNProp,
     MTGNNTemporalGatedUnit,
-)
-from foreblocks.layers.graph.norms import GraphNorm
-from foreblocks.layers.graph.spatio_temporal import GraphWaveNetBlock
-from foreblocks.layers.graph.tggc import (
-    ComplexLinearModes,
-    FineTemporalSpectralFilter,
-    GraphGegenbauerConv,
-    LatentCorrelationLayer,
     MovingAverage,
     SeriesDecomposition,
     TemporalSpectralFilter,
@@ -56,13 +60,19 @@ from foreblocks.layers.graph.tggc import (
 
 __all__ = [
     "AdaptiveEdgeSparsifier",
+    "BackwardDiffusionConv",
     "ComplexLinearModes",
     "CorrelationConfig",
+    "DiffusionConv",
     "EdgeCondGCN",
     "FineTemporalSpectralFilter",
     "GATConv",
+    "GATv2Conv",
     "GCNConv",
+    "GINConv",
+    "GINEConv",
     "GraphWaveNetBlock",
+    "GraphWaveNetTemporalConv",
     "GraphGegenbauerConv",
     "GraphNorm",
     "JumpKnowledge",

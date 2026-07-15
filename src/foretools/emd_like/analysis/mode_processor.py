@@ -1,20 +1,62 @@
 from __future__ import annotations
 
 import numpy as np
-import pyfftw.interfaces.numpy_fft as fftw_np
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - torch is an optional backend
+    torch = None
 
 from ..emd import EMDVariants
 
 
 class ModeProcessor:
     @staticmethod
-    def dominant_frequency(sig: np.ndarray, fs: float) -> float:
+    def _rfft(
+        x: np.ndarray,
+        *,
+        axis: int = -1,
+        backend: str = "numpy",
+        device: str = "auto",
+    ) -> np.ndarray:
+        """Run an optimized real FFT and return a NumPy array.
+
+        NumPy uses pocketfft on CPU. The torch backend uses torch.fft (cuFFT
+        for CUDA tensors) and is useful when sufficiently large batches
+        amortize host/device transfers.
+        """
+        name = backend.lower()
+        if name not in ("numpy", "torch", "auto"):
+            raise ValueError("backend must be one of {'numpy', 'torch', 'auto'}")
+        use_torch = name == "torch" or (
+            name == "auto" and torch is not None and isinstance(x, torch.Tensor)
+        )
+        if not use_torch:
+            return np.fft.rfft(np.asarray(x), axis=axis)
+        if torch is None:
+            raise RuntimeError("torch FFT backend requested but PyTorch is unavailable")
+        if device == "auto":
+            target = x.device if isinstance(x, torch.Tensor) else torch.device("cpu")
+        else:
+            target = torch.device(device)
+        tensor = torch.as_tensor(x, device=target, dtype=torch.float64)
+        result = torch.fft.rfft(tensor, dim=axis)
+        return result.detach().cpu().numpy()
+
+    @staticmethod
+    def dominant_frequency(
+        sig: np.ndarray,
+        fs: float,
+        *,
+        backend: str = "numpy",
+        device: str = "auto",
+    ) -> float:
         x = np.asarray(sig, dtype=np.float64)
         N = x.size
         if N < 8 or np.allclose(x, 0, atol=1e-12):
             return 0.0
-        freqs = fftw_np.rfftfreq(N, d=1 / fs)
-        spec = np.abs(fftw_np.rfft(x))
+        freqs = np.fft.rfftfreq(N, d=1 / fs)
+        spec = np.abs(ModeProcessor._rfft(x, backend=backend, device=device))
         spec = spec.copy()
         if spec.size:
             spec[0] = 0.0
@@ -61,6 +103,9 @@ class ModeProcessor:
         signal: np.ndarray,
         fs: float,
         weights: dict[str, float] | None = None,
+        *,
+        fft_backend: str = "numpy",
+        fft_device: str = "auto",
     ) -> float:
         """
         Composite cost for a set of candidate modes.
@@ -92,7 +137,19 @@ class ModeProcessor:
         recon = np.sum(modes, axis=0)
         residual_energy = np.sum((x - recon) ** 2) / total_energy
 
-        dom_freqs = [ModeProcessor.dominant_frequency(m, fs) for m in modes]
+        mode_matrix = np.stack([np.asarray(m, dtype=np.float64) for m in modes])
+        spectra = np.abs(
+            ModeProcessor._rfft(
+                mode_matrix,
+                axis=-1,
+                backend=fft_backend,
+                device=fft_device,
+            )
+        )
+        dominant_spectra = spectra.copy()
+        dominant_spectra[:, 0] = 0.0
+        frequency_bins = np.fft.rfftfreq(mode_matrix.shape[-1], d=1 / fs)
+        dom_freqs = frequency_bins[np.argmax(dominant_spectra, axis=-1)].tolist()
         if len(dom_freqs) > 1:
             gaps = np.diff(np.sort(dom_freqs))
             overlap_penalty = float(np.mean(np.exp(-gaps / (np.median(gaps) + 1e-12))))
@@ -101,13 +158,11 @@ class ModeProcessor:
 
         oi = EMDVariants.compute_orthogonality_index(modes)
 
-        entropy_vals = []
-        for m in modes:
-            spec = np.abs(fftw_np.rfft(m)) + 1e-12
-            p = spec / np.sum(spec)
-            H = -np.sum(p * np.log(p + 1e-12))
-            Hn = H / np.log(p.size + 1e-12)
-            entropy_vals.append(Hn)
+        spectra = spectra + 1e-12
+        probabilities = spectra / np.sum(spectra, axis=-1, keepdims=True)
+        entropy_vals = -np.sum(
+            probabilities * np.log(probabilities + 1e-12), axis=-1
+        ) / np.log(probabilities.shape[-1] + 1e-12)
 
         avg_entropy = float(np.mean(entropy_vals))
         return float(
@@ -118,8 +173,15 @@ class ModeProcessor:
         )
 
     @staticmethod
-    def entropy(mode: np.ndarray) -> float:
+    def entropy(
+        mode: np.ndarray,
+        *,
+        backend: str = "numpy",
+        device: str = "auto",
+    ) -> float:
         x = np.asarray(mode, dtype=np.float64)
-        spec = np.abs(fftw_np.rfft(x)) + 1e-12
+        spec = np.abs(
+            ModeProcessor._rfft(x, backend=backend, device=device)
+        ) + 1e-12
         p = spec / (np.sum(spec) + 1e-12)
         return float(-np.sum(p * np.log(p + 1e-12)))

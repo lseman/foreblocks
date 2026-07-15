@@ -184,7 +184,7 @@ def _build_bwd(
                     if is_causal:
                         for i, j in T.Parallel(block_M, block_N):
                             qkT[i, j] = T.if_then_else(
-                                by * block_M + i <= k * block_N + j, qkT[i, j], 0
+                                by * block_M + i >= k * block_N + j, qkT[i, j], 0
                             )
                     T.copy(dO[bz, bx, k * block_N : (k + 1) * block_N, :], do)
                     T.clear(dsT)

@@ -9,7 +9,7 @@ It exposes functions such as ref, run.
 import math
 
 import torch
-from foreblocks.experimental.attention_kernels.custom_att import (
+from foreblocks.experimental.attention_kernels import (
     flash_attn_backward_backend,
     flash_attn_func,
 )

@@ -19,9 +19,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
 
 import torch
+
+try:
+    from triton.testing import do_bench
+
+    TRITON_BENCH_AVAILABLE = True
+except Exception:
+    TRITON_BENCH_AVAILABLE = False
 
 
 def _sync() -> None:
@@ -29,14 +35,30 @@ def _sync() -> None:
 
 
 def measure(f, *args, warmup_iters=10, iters=50, **kwargs):
+    """Benchmark function timing with warmup and repetition."""
+    if TRITON_BENCH_AVAILABLE:
+        try:
+            # do_bench expects a no-args callable
+            wrapped = lambda: f(*args, **kwargs)
+            return do_bench(wrapped, warmup=warmup_iters, rep=iters, return_mode='mean')
+        except Exception:
+            pass
+
+    # Fallback to cuda event timing
+    _sync()
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+
     for _ in range(warmup_iters):
         f(*args, **kwargs)
     _sync()
-    start = time.perf_counter()
+
+    start.record()
     for _ in range(iters):
         f(*args, **kwargs)
+    end.record()
     _sync()
-    return (time.perf_counter() - start) / iters * 1000
+    return start.elapsed_time(end) / iters
 
 
 def speedup(torch_ms: float | None, triton_ms: float | None) -> float | None:
@@ -51,6 +73,17 @@ def speedup_str(value: float | None) -> str:
 
 def ms_str(value: float | None) -> str:
     return "N/A" if value is None else f"{value:.3f}ms"
+
+
+def gb_s_str(value: float | None) -> str:
+    return "N/A" if value is None else f"{value:.1f}GB/s"
+
+
+def calc_bandwidth_gb_s(n_bytes: float, time_ms: float | None) -> float | None:
+    """Calculate effective memory bandwidth in GB/s."""
+    if time_ms is None or time_ms <= 0:
+        return None
+    return (n_bytes / (1024**3)) / (time_ms / 1000.0)
 
 
 def max_abs_err(lhs: torch.Tensor, rhs: torch.Tensor) -> float:
@@ -73,16 +106,25 @@ def make_ssd_args(B, T, H, P, N, chunk_size=64, device="cuda"):
 def bench_dt_prep(use_triton=True, iters=50):
     from foreblocks.ops.mamba.triton_ops import dt_prep_fallback, dt_prep_triton
 
-    configs = [(2, 256, 512), (2, 1024, 2048), (2, 4096, 4096)]
+    configs = [
+        (2, 256, 512),
+        (2, 1024, 2048),
+        (2, 4096, 4096),
+        (1, 8192, 2048),
+        (1, 16384, 4096),
+    ]
     results = {}
     for B, T, D in configs:
-        dt_raw = torch.randn(B, T, D, device="cuda")
-        bias = torch.randn(D, device="cuda")
+        dt_raw = torch.randn(B, T, D, dtype=torch.float32, device="cuda")
+        bias = torch.randn(D, dtype=torch.float32, device="cuda")
         fn = dt_prep_triton if use_triton else dt_prep_fallback
         t = measure(fn, dt_raw, bias, iters=iters)
-        results[f"B{B}_T{T}_D{D}"] = round(t, 4)
+        n_bytes = B * T * D * 4 + D * 4  # dt_raw (float32) + bias (float32)
+        bw = calc_bandwidth_gb_s(n_bytes, t)
+        key = f"B{B}_T{T}_D{D}"
+        results[key] = {"time_ms": round(t, 4), "bandwidth_gb_s": round(bw, 2) if bw else None}
         print(
-            f"  dt_prep{'_triton' if use_triton else '_fallback'} B={B} T={T} D={D}: {t:.4f} ms"
+            f"  dt_prep{'_triton' if use_triton else '_fallback'} B={B} T={T} D={D}: {t:.3f}ms {gb_s_str(bw)}"
         )
     return results
 
@@ -90,18 +132,26 @@ def bench_dt_prep(use_triton=True, iters=50):
 def bench_fused_dt(use_triton=True, iters=50):
     from foreblocks.ops.mamba.fused_dt import fused_dt_fallback, fused_dt_triton
 
-    configs = [(2, 1024, 16, 8), (2, 4096, 64, 8), (2, 4096, 64, 32)]
+    configs = [
+        (2, 1024, 16, 8),
+        (2, 4096, 64, 8),
+        (2, 4096, 64, 32),
+        (1, 8192, 128, 16),
+        (1, 16384, 256, 32),
+    ]
     results = {}
     for B, T, R, H in configs:
-        dt_hidden = torch.randn(B, T, R, device="cuda")
-        weight = torch.randn(H, R, device="cuda")
-        bias = torch.randn(H, device="cuda")
+        dt_hidden = torch.randn(B, T, R, dtype=torch.float32, device="cuda")
+        weight = torch.randn(H, R, dtype=torch.float32, device="cuda")
+        bias = torch.randn(H, dtype=torch.float32, device="cuda")
         fn = fused_dt_triton if use_triton else fused_dt_fallback
         t = measure(fn, dt_hidden, weight, bias, iters=iters)
-        results[f"B{B}_T{T}_R{R}_H{H}"] = round(t, 4)
+        n_bytes = B * T * R * 4 + H * R * 4 + H * 4  # dt_hidden + weight + bias
+        bw = calc_bandwidth_gb_s(n_bytes, t)
+        key = f"B{B}_T{T}_R{R}_H{H}"
+        results[key] = {"time_ms": round(t, 4), "bandwidth_gb_s": round(bw, 2) if bw else None}
         print(
-            f"  fused_dt{'_triton' if use_triton else '_fallback'} "
-            f"B={B} T={T} R={R} H={H}: {t:.4f} ms"
+            f"  fused_dt{'_triton' if use_triton else '_fallback'} B={B} T={T} R={R} H={H}: {t:.3f}ms {gb_s_str(bw)}"
         )
     return results
 
@@ -109,18 +159,26 @@ def bench_fused_dt(use_triton=True, iters=50):
 def bench_fused_out(use_triton=True, iters=50):
     from foreblocks.ops.mamba.triton_ops import fused_out_fallback, fused_out_triton
 
-    configs = [(2, 256, 512), (2, 1024, 2048), (2, 4096, 4096)]
+    configs = [
+        (2, 256, 512),
+        (2, 1024, 2048),
+        (2, 4096, 4096),
+        (1, 8192, 2048),
+        (1, 16384, 4096),
+    ]
     results = {}
     for B, T, D in configs:
-        y = torch.randn(B, T, D, device="cuda")
-        z = torch.randn(B, T, D, device="cuda")
-        res = torch.randn(B, T, D, device="cuda")
-        w = torch.randn(D, device="cuda")
+        y = torch.randn(B, T, D, dtype=torch.float32, device="cuda")
+        z = torch.randn(B, T, D, dtype=torch.float32, device="cuda")
+        w = torch.randn(D, dtype=torch.float32, device="cuda")
         fn = fused_out_triton if use_triton else fused_out_fallback
-        t = measure(fn, y, z, res, w, iters=iters)
-        results[f"B{B}_T{T}_D{D}"] = round(t, 4)
+        t = measure(fn, y, z, w, iters=iters)
+        n_bytes = B * T * D * 4 * 2 + D * 4  # y + z + w
+        bw = calc_bandwidth_gb_s(n_bytes, t)
+        key = f"B{B}_T{T}_D{D}"
+        results[key] = {"time_ms": round(t, 4), "bandwidth_gb_s": round(bw, 2) if bw else None}
         print(
-            f"  fused_out{'_triton' if use_triton else '_fallback'} B={B} T={T} D={D}: {t:.4f} ms"
+            f"  fused_out{'_triton' if use_triton else '_fallback'} B={B} T={T} D={D}: {t:.3f}ms {gb_s_str(bw)}"
         )
     return results
 
@@ -137,6 +195,12 @@ def bench_ssd_forward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=50):
     for T in Ts:
         u, dt, A, Bp, Cp, D = make_ssd_args(B, T, H, P, N, chunk_size)
         n_chunks = (T + chunk_size - 1) // chunk_size
+
+        # Input/output bytes for SSD forward: u(BTHP), dt(BTH), A(H), Bp(BTHN), Cp(BTHN), D(HP)
+        # output: out(BTHP)
+        n_bytes_in = B * T * H * (P + 1 + N + N) + H + H * P
+        n_bytes_out = B * T * H * P
+        n_bytes_total = n_bytes_in + n_bytes_out
 
         try:
             t_torch = measure(torch_fwd, u, dt, A, Bp, Cp, D, chunk_size, iters=iters)
@@ -186,12 +250,15 @@ def bench_ssd_forward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=50):
         ratio = speedup(t_torch, t_triton)
         parallel_ratio = speedup(t_torch, t_parallel)
         tiled_ratio = speedup(t_torch, t_tiled)
+        bw_triton = calc_bandwidth_gb_s(n_bytes_total, t_triton)
+        bw_torch = calc_bandwidth_gb_s(n_bytes_total, t_torch)
+
         print(
             f"  SSD fwd B={B} T={T} chunks={n_chunks}: "
             f"torch={ms_str(t_torch)} triton={ms_str(t_triton)} "
             f"parallel_direct={ms_str(t_parallel)} parallel_tiled={ms_str(t_tiled)} "
             f"speedup={speedup_str(ratio)} direct_speedup={speedup_str(parallel_ratio)} "
-            f"tiled_speedup={speedup_str(tiled_ratio)}"
+            f"tiled_speedup={speedup_str(tiled_ratio)} bw_triton={gb_s_str(bw_triton)} bw_torch={gb_s_str(bw_torch)}"
         )
 
         results[str(T)] = {
@@ -203,6 +270,8 @@ def bench_ssd_forward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=50):
             "speedup": round(ratio, 4) if ratio else None,
             "parallel_speedup": round(parallel_ratio, 4) if parallel_ratio else None,
             "tiled_speedup": round(tiled_ratio, 4) if tiled_ratio else None,
+            "bandwidth_triton_gb_s": round(bw_triton, 2) if bw_triton else None,
+            "bandwidth_torch_gb_s": round(bw_torch, 2) if bw_torch else None,
         }
     return results
 
@@ -220,6 +289,12 @@ def bench_ssd_backward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=20):
         out = torch_fwd(u, dt, A, Bp, Cp, D, chunk_size)
         gy = torch.randn_like(out)
         n_chunks = (T + chunk_size - 1) // chunk_size
+
+        # SSD bwd input/output bytes: gy(BTHP) + u(BTHP) + dt(BTH) + A(H) + Bp(BTHN) + Cp(BTHN) + D(HP)
+        # gradients: du, ddt, dBp, dCp, dD
+        n_bytes_in = B * T * H * (P + P + 1 + N + N) + H + H * P
+        n_bytes_out = B * T * H * (P + 1 + N + N) + H * P  # du, ddt, dBp, dCp, dD
+        n_bytes_total = n_bytes_in + n_bytes_out
 
         try:
             t_torch = measure(
@@ -259,14 +334,21 @@ def bench_ssd_backward_sweep(Ts, B=2, H=8, P=16, N=8, chunk_size=64, iters=20):
             print(f"  SSD bwd B={B} T={T} (triton): ERROR {e}")
 
         ratio = speedup(t_torch, t_triton)
+        bw_triton = calc_bandwidth_gb_s(n_bytes_total, t_triton)
+        bw_torch = calc_bandwidth_gb_s(n_bytes_total, t_torch)
         print(
             f"  SSD raw bwd B={B} T={T} chunks={n_chunks}: "
-            f"torch={t_torch:.3f}ms triton={t_triton:.3f}ms speedup={speedup_str(ratio)}"
+            f"torch={t_torch:.3f}ms triton={t_triton:.3f}ms speedup={speedup_str(ratio)} "
+            f"bw_triton={gb_s_str(bw_triton)} bw_torch={gb_s_str(bw_torch)}"
         )
 
         results[str(T)] = {
             "chunks": n_chunks,
             "torch_ms": round(t_torch, 4) if t_torch else None,
+            "triton_ms": round(t_triton, 4) if t_triton else None,
+            "speedup": round(ratio, 4) if ratio else None,
+            "bandwidth_triton_gb_s": round(bw_triton, 2) if bw_triton else None,
+            "bandwidth_torch_gb_s": round(bw_torch, 2) if bw_torch else None,
             "triton_ms": round(t_triton, 4) if t_triton else None,
             "speedup": round(ratio, 4) if ratio else None,
         }
@@ -289,17 +371,17 @@ def bench_full_mamba2(
     device = "cuda"
     d_inner = num_heads * head_dim  # total capacity
     conv_dim = d_inner + 2 * n_groups * d_state  # conv output = u + B + C
-    projected = torch.randn(B, T, d_inner + conv_dim + dt_rank, device=device)
-    residual_inner = torch.randn(B, T, d_inner, device=device)
-    conv_weight = torch.randn(conv_dim, 3, device=device)
-    conv_bias = torch.randn(conv_dim, device=device)
-    dt_proj_weight = torch.randn(num_heads, dt_rank, device=device)
-    dt_bias = torch.randn(num_heads, device=device)
-    A_log = torch.randn(num_heads, device=device)
-    Dskip = torch.randn(num_heads, head_dim, device=device)
-    norm_weight = torch.randn(d_inner, device=device)
-    out_proj_weight = torch.randn(d_inner, d_inner, device=device)
-    out_proj_bias = torch.randn(d_inner, device=device)
+    projected = torch.randn(B, T, d_inner + conv_dim + dt_rank, dtype=torch.float32, device=device)
+    residual_inner = torch.randn(B, T, d_inner, dtype=torch.float32, device=device)
+    conv_weight = torch.randn(conv_dim, 3, dtype=torch.float32, device=device)
+    conv_bias = torch.randn(conv_dim, dtype=torch.float32, device=device)
+    dt_proj_weight = torch.randn(num_heads, dt_rank, dtype=torch.float32, device=device)
+    dt_bias = torch.randn(num_heads, dtype=torch.float32, device=device)
+    A_log = torch.randn(num_heads, dtype=torch.float32, device=device)
+    Dskip = torch.randn(num_heads, head_dim, dtype=torch.float32, device=device)
+    norm_weight = torch.randn(d_inner, dtype=torch.float32, device=device)
+    out_proj_weight = torch.randn(d_inner, d_inner, dtype=torch.float32, device=device)
+    out_proj_bias = torch.randn(d_inner, dtype=torch.float32, device=device)
 
     args = dict(
         conv_weight=conv_weight,
@@ -323,6 +405,11 @@ def bench_full_mamba2(
         norm_eps=1e-6,
     )
 
+    # Full Mamba2 input/output bytes
+    n_bytes_in = B * T * (d_inner + conv_dim + dt_rank + d_inner)
+    n_bytes_out = B * T * d_inner
+    n_bytes_total = n_bytes_in + n_bytes_out
+
     t_triton = measure(
         mamba2_split_conv1d_scan_combined,
         projected,
@@ -340,14 +427,18 @@ def bench_full_mamba2(
         **args,
     )
     ratio = speedup(t_torch, t_triton)
+    bw_triton = calc_bandwidth_gb_s(n_bytes_total, t_triton)
+    bw_torch = calc_bandwidth_gb_s(n_bytes_total, t_torch)
     print(
-        f"  Full Mamba2 B={B} T={T}: triton_ssd={t_triton:.3f}ms "
-        f"torch_ssd={t_torch:.3f}ms speedup={speedup_str(ratio)}"
+        f"  Full Mamba2 B={B} T={T}: triton_ssd={t_triton:.3f}ms torch_ssd={t_torch:.3f}ms "
+        f"speedup={speedup_str(ratio)} bw_triton={gb_s_str(bw_triton)} bw_torch={gb_s_str(bw_torch)}"
     )
     return {
         "triton_ssd_ms": round(t_triton, 4),
         "torch_ssd_ms": round(t_torch, 4),
         "speedup": round(ratio, 4) if ratio else None,
+        "bandwidth_triton_gb_s": round(bw_triton, 2) if bw_triton else None,
+        "bandwidth_torch_gb_s": round(bw_torch, 2) if bw_torch else None,
     }
 
 
@@ -413,10 +504,9 @@ def check_correctness():
 
     y = torch.randn(B, T, H, device="cuda")
     z = torch.randn(B, T, H, device="cuda")
-    res = torch.randn(B, T, H, device="cuda")
     w = torch.randn(H, device="cuda")
     fo_err = max_abs_err(
-        fused_out_triton(y, z, res, w), fused_out_fallback(y, z, res, w)
+        fused_out_triton(y, z, w), fused_out_fallback(y, z, w)
     )
 
     Bf, Tf, heads, head_dim, groups, d_state, dt_rank = 2, 256, 8, 64, 4, 16, 16

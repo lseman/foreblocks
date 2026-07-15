@@ -9,7 +9,6 @@ Designed for high-throughput sequence modeling with optional fused Triton paths.
 Core API:
 - Mamba2Block: Mamba2-style SSM block with diagonal A and chunked scan
 - Mamba3Block: Mamba3-style SSM block with blockwise rotary on B/C
-- FeedForward: SwiGLU feed-forward block
 - CausalDepthwiseConv1d: causal depthwise 1-D convolution
 - RMSNorm, RMSNormWeightOnly: RMS normalization helpers
 - TRITON_AVAILABLE, CHUNKED_SSD_TRITON_AVAILABLE, ...: Triton kernel availability flags
@@ -43,7 +42,6 @@ from foreblocks.ops.mamba import (  # rotary_apply, rotary_apply_fallback stubs 
     rms_norm_fallback,
 )
 from foreblocks.sequence.mamba.conv import CausalDepthwiseConv1d
-from foreblocks.sequence.mamba.feedforward import FeedForward
 from foreblocks.sequence.mamba.mamba2 import Mamba2Block
 from foreblocks.sequence.mamba.mamba3 import Mamba3Block
 from foreblocks.sequence.mamba.norms import RMSNorm, RMSNormWeightOnly
@@ -93,7 +91,6 @@ __all__ = [
     "RMS_NORM_TRITON_AVAILABLE",
     "ROTARY_TRITON_AVAILABLE",
     "CausalDepthwiseConv1d",
-    "FeedForward",
     "causal_depthwise_conv1d",
     "causal_depthwise_conv1d_bwd_triton",
     "causal_depthwise_conv1d_reference",

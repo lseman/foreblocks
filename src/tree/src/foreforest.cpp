@@ -1,15 +1,24 @@
 // foreforest_pybind.cpp
+#include <pybind11/attr.h>
+#include <pybind11/cast.h>
+#include <pybind11/detail/common.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
+#include <pybind11/pytypes.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>   // std::memcpy
 #include <stdexcept> // std::invalid_argument
 #include <string>
 #include <vector>
 
-#include "../include/foretree/ensemble.hpp"
+#include "foretree/core/histogram_primitives.hpp"
+#include "foretree/ensemble/forest.hpp"
+#include "foretree/split/split_engine.hpp"
+#include "foretree/split/split_finder.hpp"
+#include "foretree/tree/tree_types.hpp"
 
 namespace py = pybind11;
 
@@ -18,32 +27,36 @@ using foretree::ForeForestConfig;
 using foretree::HistogramConfig;
 using foretree::InteractionSeededConfig;
 using foretree::ObliqueMode;
+using foretree::PairInteractionConfig;
 using foretree::TreeConfig;
 
 using CDoubleArray = py::array_t<double, py::array::c_style | py::array::forcecast>;
-using CByteArray   = py::array_t<uint8_t, py::array::c_style | py::array::forcecast>;
+using CByteArray = py::array_t<uint8_t, py::array::c_style | py::array::forcecast>;
 
 // ---- Small helpers ----------------------------------------------------------
 // Accept base py::array to avoid template-flag mismatches (c_style/forcecast).
-static inline void ensure_2d(const py::array &a, const char *name) {
-    if (a.ndim() != 2) throw std::invalid_argument(std::string(name) + ": expected 2D array");
+static inline void ensure_2d(const py::array& a, const char* name) {
+    if (a.ndim() != 2)
+        throw std::invalid_argument(std::string(name) + ": expected 2D array");
 }
-static inline void ensure_1d(const py::array &a, const char *name) {
-    if (a.ndim() != 1) throw std::invalid_argument(std::string(name) + ": expected 1D array");
+static inline void ensure_1d(const py::array& a, const char* name) {
+    if (a.ndim() != 1)
+        throw std::invalid_argument(std::string(name) + ": expected 1D array");
 }
 
 struct RawMatrixView {
-    const double  *Xraw = nullptr;
-    const uint8_t *mask = nullptr;
+    const double* Xraw = nullptr;
+    const uint8_t* mask = nullptr;
 };
 
-static inline RawMatrixView parse_raw_matrix_view(const CDoubleArray &Xraw, const py::object &miss_mask,
-                                                  CByteArray &mask_buf) {
+static inline RawMatrixView parse_raw_matrix_view(const CDoubleArray& Xraw, const py::object& miss_mask,
+                                                  CByteArray& mask_buf) {
     ensure_2d(Xraw, "Xraw");
     RawMatrixView view{};
     view.Xraw = Xraw.data();
 
-    if (miss_mask.is_none()) return view;
+    if (miss_mask.is_none())
+        return view;
 
     mask_buf = miss_mask.cast<CByteArray>();
     ensure_2d(mask_buf, "miss_mask");
@@ -103,10 +116,11 @@ PYBIND11_MODULE(foreforest, m) {
         .def_readwrite("colsample_bylevel_percent", &TreeConfig::colsample_bylevel_percent)
         .def_readwrite("colsample_bynode_percent", &TreeConfig::colsample_bynode_percent)
         .def_readwrite("use_sibling_subtract", &TreeConfig::use_sibling_subtract)
+        .def_readwrite("cuda_min_histogram_work", &TreeConfig::cuda_min_histogram_work)
         .def_readwrite("monotone_constraints", &TreeConfig::monotone_constraints)
         .def_readwrite("exact_cutover", &TreeConfig::exact_cutover)
-        .def_readwrite("enable_kway_splits", &TreeConfig::enable_kway_splits)
-        .def_readwrite("kway_max_groups", &TreeConfig::kway_max_groups)
+        .def_readwrite("enable_categorical_splits", &TreeConfig::enable_categorical_splits)
+        .def_readwrite("categorical_max_selected_categories", &TreeConfig::categorical_max_selected_categories)
         .def_readwrite("enable_oblique_splits", &TreeConfig::enable_oblique_splits)
         .def_readwrite("oblique_mode", &TreeConfig::oblique_mode)
         .def_readwrite("oblique_k_features", &TreeConfig::oblique_k_features)
@@ -115,6 +129,9 @@ PYBIND11_MODULE(foreforest, m) {
         .def_readwrite("oblique_ridge", &TreeConfig::oblique_ridge)
         .def_readwrite("axis_vs_oblique_guard", &TreeConfig::axis_vs_oblique_guard)
         .def_readwrite("interaction_seeded_oblique", &TreeConfig::interaction_seeded_oblique)
+        .def_readwrite("enable_pair_interaction_splits", &TreeConfig::enable_pair_interaction_splits)
+        .def_readwrite("pair_interaction", &TreeConfig::pair_interaction)
+        .def_readwrite("interaction_constraints", &TreeConfig::interaction_constraints)
         .def_readwrite("subsample_bytree", &TreeConfig::subsample_bytree)
         .def_readwrite("subsample_bylevel", &TreeConfig::subsample_bylevel)
         .def_readwrite("subsample_bynode", &TreeConfig::subsample_bynode)
@@ -156,6 +173,14 @@ PYBIND11_MODULE(foreforest, m) {
         .def_readwrite("axis_guard_factor", &InteractionSeededConfig::axis_guard_factor)
         .def_readwrite("use_axis_guard", &InteractionSeededConfig::use_axis_guard);
 
+    py::class_<PairInteractionConfig>(m, "PairInteractionConfig")
+        .def(py::init<>())
+        .def_readwrite("max_features", &PairInteractionConfig::max_features)
+        .def_readwrite("interaction_bins", &PairInteractionConfig::interaction_bins)
+        .def_readwrite("min_node_rows", &PairInteractionConfig::min_node_rows)
+        .def_readwrite("complexity_penalty", &PairInteractionConfig::complexity_penalty)
+        .def_readwrite("axis_guard_factor", &PairInteractionConfig::axis_guard_factor);
+
     // GOSS nested struct + member on TreeConfig
     py::class_<TreeConfig::GOSS>(m, "GOSS")
         .def(py::init<>())
@@ -178,9 +203,11 @@ PYBIND11_MODULE(foreforest, m) {
     py::class_<ForeForestConfig> pyFFCfg(m, "ForeForestConfig");
     pyFFCfg.def(py::init<>())
         .def_readwrite("mode", &ForeForestConfig::mode)
+        .def_readwrite("device", &ForeForestConfig::device)
         .def_readwrite("objective", &ForeForestConfig::objective)
         .def_readwrite("n_estimators", &ForeForestConfig::n_estimators)
         .def_readwrite("learning_rate", &ForeForestConfig::learning_rate)
+        .def_readwrite("track_train_metric", &ForeForestConfig::track_train_metric)
         .def_readwrite("rng_seed", &ForeForestConfig::rng_seed)
         .def_readwrite("focal_gamma", &ForeForestConfig::focal_gamma)
         .def_readwrite("huber_delta", &ForeForestConfig::huber_delta)
@@ -191,7 +218,8 @@ PYBIND11_MODULE(foreforest, m) {
         .def_readwrite("custom_class_weights", &ForeForestConfig::custom_class_weights)
         .def_readwrite("colsample_bytree", &ForeForestConfig::colsample_bytree)
         .def_readwrite("colsample_bynode", &ForeForestConfig::colsample_bynode)
-        // .def_readwrite("use_raw_matrix_for_exact", &ForeForestConfig::use_raw_matrix_for_exact)
+        // .def_readwrite("use_raw_matrix_for_exact",
+        // &ForeForestConfig::use_raw_matrix_for_exact)
         .def_readwrite("hist_cfg", &ForeForestConfig::hist_cfg)
         .def_readwrite("tree_cfg", &ForeForestConfig::tree_cfg)
         .def_readwrite("rf_row_subsample", &ForeForestConfig::rf_row_subsample)
@@ -201,6 +229,13 @@ PYBIND11_MODULE(foreforest, m) {
         .def_readwrite("efb_sparse_threshold", &ForeForestConfig::efb_sparse_threshold)
         .def_readwrite("efb_min_nonzero", &ForeForestConfig::efb_min_nonzero)
         .def_readwrite("efb_max_conflict_rate", &ForeForestConfig::efb_max_conflict_rate)
+        .def_readwrite("ordered_categorical_enabled", &ForeForestConfig::ordered_categorical_enabled)
+        .def_readwrite("categorical_features", &ForeForestConfig::categorical_features)
+        .def_readwrite("ordered_categorical_permutations", &ForeForestConfig::ordered_categorical_permutations)
+        .def_readwrite("ordered_categorical_prior", &ForeForestConfig::ordered_categorical_prior)
+        .def_readwrite("ordered_categorical_prior_weight", &ForeForestConfig::ordered_categorical_prior_weight)
+        .def_readwrite("ordered_boosting_enabled", &ForeForestConfig::ordered_boosting_enabled)
+        .def_readwrite("ordered_boosting_min_prefix", &ForeForestConfig::ordered_boosting_min_prefix)
         .def_readwrite("gbdt_row_subsample", &ForeForestConfig::gbdt_row_subsample)
         .def_readwrite("gbdt_use_subsample", &ForeForestConfig::gbdt_use_subsample)
         .def_readwrite("fw_use_subsample", &ForeForestConfig::fw_use_subsample)
@@ -222,6 +257,11 @@ PYBIND11_MODULE(foreforest, m) {
         .value("GBDT", ForeForestConfig::Mode::GBDT)
         .value("FWBoost", ForeForestConfig::Mode::FWBoost);
 
+    py::enum_<ForeForestConfig::Device>(m, "Device")
+        .value("CPU", ForeForestConfig::Device::CPU)
+        .value("CUDA", ForeForestConfig::Device::CUDA)
+        .value("Auto", ForeForestConfig::Device::Auto);
+
     py::enum_<ForeForestConfig::Objective>(m, "Objective")
         .value("SquaredError", ForeForestConfig::Objective::SquaredError)
         .value("BinaryLogloss", ForeForestConfig::Objective::BinaryLogloss)
@@ -241,7 +281,7 @@ PYBIND11_MODULE(foreforest, m) {
         // set_raw_matrix: float64 (N x P) + optional uint8 mask (N x P)
         .def(
             "set_raw_matrix",
-            [](ForeForest &self, CDoubleArray Xraw, py::object miss_mask /* None or array_t<uint8> */) {
+            [](ForeForest& self, CDoubleArray Xraw, py::object miss_mask /* None or array_t<uint8> */) {
                 CByteArray mask;
                 const auto raw = parse_raw_matrix_view(Xraw, miss_mask, mask);
                 // ForeForest stores/uses the raw pointer & its own
@@ -255,7 +295,7 @@ PYBIND11_MODULE(foreforest, m) {
 
         .def(
             "set_raw_for_neural",
-            [](ForeForest &self, CDoubleArray Xraw, py::object miss_mask /* None or array_t<uint8> */) {
+            [](ForeForest& self, CDoubleArray Xraw, py::object miss_mask /* None or array_t<uint8> */) {
                 CByteArray mask;
                 const auto raw = parse_raw_matrix_view(Xraw, miss_mask, mask);
                 // Store pointers for neural leaves
@@ -269,16 +309,18 @@ PYBIND11_MODULE(foreforest, m) {
         // fit_complete: X float64 (N x P), y float64 (N) for scalar targets
         .def(
             "fit_complete",
-            [](ForeForest &self, CDoubleArray X, CDoubleArray y, py::object X_valid, py::object y_valid) {
+            [](ForeForest& self, CDoubleArray X, CDoubleArray y, py::object X_valid, py::object y_valid) {
                 ensure_2d(X, "X");
                 ensure_1d(y, "y");
                 const py::ssize_t N = X.shape(0);
                 const py::ssize_t P = X.shape(1);
-                if (y.shape(0) != N) throw std::invalid_argument("y length must equal X.shape[0]");
+                if (y.shape(0) != N)
+                    throw std::invalid_argument("y length must equal X.shape[0]");
                 const bool has_X_valid = !X_valid.is_none();
                 const bool has_y_valid = !y_valid.is_none();
                 if (has_X_valid != has_y_valid)
-                    throw std::invalid_argument("X_valid and y_valid must be both provided or both None");
+                    throw std::invalid_argument("X_valid and y_valid must be both provided or both "
+                                                "None");
                 if (!has_X_valid) {
                     self.fit_complete(X.data(), static_cast<int>(N), static_cast<int>(P), y.data());
                     return;
@@ -290,24 +332,27 @@ PYBIND11_MODULE(foreforest, m) {
                 ensure_1d(yv, "y_valid");
                 const py::ssize_t Nv = Xv.shape(0);
                 const py::ssize_t Pv = Xv.shape(1);
-                if (Pv != P) throw std::invalid_argument("X_valid.shape[1] must equal X.shape[1]");
-                if (yv.shape(0) != Nv) throw std::invalid_argument("y_valid length must equal X_valid.shape[0]");
+                if (Pv != P)
+                    throw std::invalid_argument("X_valid.shape[1] must equal X.shape[1]");
+                if (yv.shape(0) != Nv)
+                    throw std::invalid_argument("y_valid length must equal X_valid.shape[0]");
 
                 self.fit_complete(X.data(), static_cast<int>(N), static_cast<int>(P), y.data(), Xv.data(),
                                   static_cast<int>(Nv), static_cast<int>(Pv), yv.data());
             },
             py::arg("X"), py::arg("y"), py::arg("X_valid") = py::none(), py::arg("y_valid") = py::none(),
-            "Fit a scalar-output forest. `y` and optional `y_valid` must be 1-D arrays of length N.")
+            "Fit a scalar-output forest. `y` and optional `y_valid` must be "
+            "1-D arrays of length N.")
 
         // predict: X float64 (N x P) -> float64 (N) or (N, K)
         .def(
             "predict",
-            [](const ForeForest &self, py::array_t<double, py::array::c_style | py::array::forcecast> X) {
+            [](const ForeForest& self, py::array_t<double, py::array::c_style | py::array::forcecast> X) {
                 ensure_2d(X, "X");
-                const py::ssize_t   N   = X.shape(0);
-                const py::ssize_t   P   = X.shape(1);
+                const py::ssize_t N = X.shape(0);
+                const py::ssize_t P = X.shape(1);
                 std::vector<double> out = self.predict(X.data(), static_cast<int>(N), static_cast<int>(P));
-                int K = std::max(self.cfg_.num_classes - 1, 1);
+                int K = std::max(self.num_classes() - 1, 1);
                 if (K <= 1) {
                     py::array_t<double> arr({N});
                     if (!out.empty()) {
@@ -316,7 +361,7 @@ PYBIND11_MODULE(foreforest, m) {
                     return arr;
                 } else {
                     // Multiclass: return N x K matrix
-                    py::array_t<double> arr({N, K});
+                    py::array_t<double> arr({N, static_cast<py::ssize_t>(K)});
                     if (!out.empty()) {
                         std::memcpy(arr.mutable_data(), out.data(), sizeof(double) * out.size());
                     }
@@ -324,14 +369,15 @@ PYBIND11_MODULE(foreforest, m) {
                 }
             },
             py::arg("X"),
-            "Predict. Returns (N,) for scalar, (N,) for binary, (N, K) for multiclass.")
+            "Predict. Returns (N,) for scalar, (N,) for binary, (N, K) for "
+            "multiclass.")
 
         .def(
             "predict_margin",
-            [](const ForeForest &self, py::array_t<double, py::array::c_style | py::array::forcecast> X) {
+            [](const ForeForest& self, py::array_t<double, py::array::c_style | py::array::forcecast> X) {
                 ensure_2d(X, "X");
-                const py::ssize_t   N   = X.shape(0);
-                const py::ssize_t   P   = X.shape(1);
+                const py::ssize_t N = X.shape(0);
+                const py::ssize_t P = X.shape(1);
                 std::vector<double> out = self.predict_margin(X.data(), static_cast<int>(N), static_cast<int>(P));
                 py::array_t<double> arr({N});
                 if (!out.empty()) {
@@ -341,16 +387,17 @@ PYBIND11_MODULE(foreforest, m) {
             },
             py::arg("X"),
             "Predict raw scalar margins, one per row. "
-            "Forest prediction uses raw `X`, so neural-leaf inference is applied automatically when enabled.")
+            "Forest prediction uses raw `X`, so neural-leaf inference is "
+            "applied automatically when enabled.")
 
         .def(
             "predict_contrib",
-            [](const ForeForest &self, py::array_t<double, py::array::c_style | py::array::forcecast> X) {
+            [](const ForeForest& self, py::array_t<double, py::array::c_style | py::array::forcecast> X) {
                 ensure_2d(X, "X");
                 const py::ssize_t N = X.shape(0);
                 const py::ssize_t P = X.shape(1);
                 std::vector<double> out = self.predict_contrib(X.data(), static_cast<int>(N), static_cast<int>(P));
-                int K = std::max(self.cfg_.num_classes - 1, 1);
+                int K = std::max(self.num_classes() - 1, 1);
                 if (K <= 1) {
                     py::array_t<double> arr({N, P + 1});
                     if (!out.empty()) {
@@ -359,7 +406,7 @@ PYBIND11_MODULE(foreforest, m) {
                     return arr;
                 } else {
                     // Multiclass: N x K x (P+1)
-                    py::array_t<double> arr({N, K * (P + 1)});
+                    py::array_t<double> arr({N, static_cast<py::ssize_t>(K) * (P + 1)});
                     if (!out.empty()) {
                         std::memcpy(arr.mutable_data(), out.data(), sizeof(double) * out.size());
                     }
@@ -367,41 +414,47 @@ PYBIND11_MODULE(foreforest, m) {
                 }
             },
             py::arg("X"),
-            "Predict TreeSHAP contributions. Returns (N, P+1) for scalar/binary, (N, K*(P+1)) for multiclass.")
+            "Predict TreeSHAP contributions. Returns (N, P+1) for "
+            "scalar/binary, (N, K*(P+1)) for multiclass.")
 
         .def("feature_importance_gain",
-             [](const ForeForest &self) {
+             [](const ForeForest& self) {
                  std::vector<double> v = self.feature_importance_gain();
                  py::array_t<double> arr({static_cast<py::ssize_t>(v.size())});
-                 if (!v.empty()) std::memcpy(arr.mutable_data(), v.data(), sizeof(double) * v.size());
+                 if (!v.empty())
+                     std::memcpy(arr.mutable_data(), v.data(), sizeof(double) * v.size());
                  return arr;
              })
         .def("feature_importance_cover",
-             [](const ForeForest &self) {
+             [](const ForeForest& self) {
                  std::vector<double> v = self.feature_importance_cover();
                  py::array_t<double> arr({static_cast<py::ssize_t>(v.size())});
-                 if (!v.empty()) std::memcpy(arr.mutable_data(), v.data(), sizeof(double) * v.size());
+                 if (!v.empty())
+                     std::memcpy(arr.mutable_data(), v.data(), sizeof(double) * v.size());
                  return arr;
              })
         .def("feature_importance_frequency",
-             [](const ForeForest &self) {
+             [](const ForeForest& self) {
                  std::vector<int> v = self.feature_importance_frequency();
                  py::array_t<int> arr({static_cast<py::ssize_t>(v.size())});
-                 if (!v.empty()) std::memcpy(arr.mutable_data(), v.data(), sizeof(int) * v.size());
+                 if (!v.empty())
+                     std::memcpy(arr.mutable_data(), v.data(), sizeof(int) * v.size());
                  return arr;
              })
         .def("train_metric_history",
-             [](const ForeForest &self) {
-                 const std::vector<double> &v = self.train_metric_history();
-                 py::array_t<double>        arr({static_cast<py::ssize_t>(v.size())});
-                 if (!v.empty()) std::memcpy(arr.mutable_data(), v.data(), sizeof(double) * v.size());
+             [](const ForeForest& self) {
+                 const std::vector<double>& v = self.train_metric_history();
+                 py::array_t<double> arr({static_cast<py::ssize_t>(v.size())});
+                 if (!v.empty())
+                     std::memcpy(arr.mutable_data(), v.data(), sizeof(double) * v.size());
                  return arr;
              })
         .def("valid_metric_history",
-             [](const ForeForest &self) {
-                 const std::vector<double> &v = self.valid_metric_history();
-                 py::array_t<double>        arr({static_cast<py::ssize_t>(v.size())});
-                 if (!v.empty()) std::memcpy(arr.mutable_data(), v.data(), sizeof(double) * v.size());
+             [](const ForeForest& self) {
+                 const std::vector<double>& v = self.valid_metric_history();
+                 py::array_t<double> arr({static_cast<py::ssize_t>(v.size())});
+                 if (!v.empty())
+                     std::memcpy(arr.mutable_data(), v.data(), sizeof(double) * v.size());
                  return arr;
              })
         .def("best_iteration", &ForeForest::best_iteration)

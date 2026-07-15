@@ -3,7 +3,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include <cstring>  // memcpy
+#include <cstring> // memcpy
 
 // headers (updated paths)
 #include "../include/foretree/core.hpp"
@@ -18,24 +18,25 @@ using foretree::GradientHistogramSystem;
 using foretree::HistogramConfig;
 using foretree::InteractionSeededConfig;
 using foretree::ObliqueMode;
+using foretree::PairInteractionConfig;
 using foretree::TreeConfig;
 using foretree::UnifiedTree;
 
 template <typename T>
-static std::vector<T> arr_to_vec_1d(
-    const py::array_t<T, py::array::c_style | py::array::forcecast>& a) {
+static std::vector<T> arr_to_vec_1d(const py::array_t<T, py::array::c_style | py::array::forcecast>& a) {
     auto buf = a.request();
-    if (buf.ndim != 1) throw std::invalid_argument("Expected a 1D array");
+    if (buf.ndim != 1)
+        throw std::invalid_argument("Expected a 1D array");
     const T* ptr = static_cast<const T*>(buf.ptr);
     return std::vector<T>(ptr, ptr + buf.shape[0]);
 }
 
 template <typename T>
-static std::vector<T> arr_to_vec_any(
-    const py::array_t<T, py::array::c_style | py::array::forcecast>& a) {
+static std::vector<T> arr_to_vec_any(const py::array_t<T, py::array::c_style | py::array::forcecast>& a) {
     auto buf = a.request();
     size_t n = 1;
-    for (auto s : buf.shape) n *= static_cast<size_t>(s);
+    for (auto s : buf.shape)
+        n *= static_cast<size_t>(s);
     const T* ptr = static_cast<const T*>(buf.ptr);
     return std::vector<T>(ptr, ptr + n);
 }
@@ -53,15 +54,13 @@ PYBIND11_MODULE(foretree, m) {
         .def_readwrite("missing_bin_id", &EdgeSet::missing_bin_id)
         // New fields (read-only from Python for safety)
         .def_readonly("finite_bins_per_feat", &EdgeSet::finite_bins_per_feat)
-        .def_readonly("missing_bin_id_per_feat",
-                      &EdgeSet::missing_bin_id_per_feat);
+        .def_readonly("missing_bin_id_per_feat", &EdgeSet::missing_bin_id_per_feat);
 
     py::class_<DataBinner>(m, "DataBinner")
         .def(py::init<int>(), py::arg("P"))
         .def(
             "register_edges",
-            [](DataBinner& db, const std::string& mode,
-               const std::vector<std::vector<double>>& edges_per_feat) {
+            [](DataBinner& db, const std::string& mode, const std::vector<std::vector<double>>& edges_per_feat) {
                 EdgeSet es;
                 es.edges_per_feat = edges_per_feat;
                 // The new fields will be automatically computed in
@@ -70,43 +69,35 @@ PYBIND11_MODULE(foretree, m) {
             },
             py::arg("mode"), py::arg("edges_per_feat"))
         .def("register_edges",
-             static_cast<void (DataBinner::*)(const std::string&, EdgeSet)>(
-                 &DataBinner::register_edges),
+             static_cast<void (DataBinner::*)(const std::string&, EdgeSet)>(&DataBinner::register_edges),
              py::arg("mode"), py::arg("edgeset"))
-        .def("set_node_override", &DataBinner::set_node_override,
-             py::arg("mode"), py::arg("node_id"), py::arg("feat"),
+        .def("set_node_override", &DataBinner::set_node_override, py::arg("mode"), py::arg("node_id"), py::arg("feat"),
              py::arg("edges"))
         .def(
             "prebin",
-            [](const DataBinner& db, py::array_t<double> X,
+            [](const DataBinner& db, py::array_t<double, py::array::c_style | py::array::forcecast> X,
                const std::string& mode, int node_id) {
                 py::buffer_info buf = X.request();
                 if (buf.ndim != 2) {
-                    throw std::runtime_error(
-                        "Input array must be 2-dimensional");
+                    throw std::runtime_error("Input array must be 2-dimensional");
                 }
                 int N = static_cast<int>(buf.shape[0]);
                 int P = static_cast<int>(buf.shape[1]);
 
-                auto result = db.prebin(static_cast<const double*>(buf.ptr), N,
-                                        P, mode, node_id);
+                auto result = db.prebin(static_cast<const double*>(buf.ptr), N, P, mode, node_id);
 
-                // Convert to numpy array
-                auto codes_array = py::array_t<uint16_t>(
-                    {N, P},                                    // shape
-                    {sizeof(uint16_t) * P, sizeof(uint16_t)},  // strides
-                    result.first->data()                       // data pointer
-                );
+                // The vector in result is temporary. Return Python-owned
+                // storage rather than a dangling view into that vector.
+                auto codes_array = py::array_t<uint16_t>({N, P});
+                std::memcpy(codes_array.mutable_data(), result.first->data(), result.first->size() * sizeof(uint16_t));
 
                 return py::make_tuple(codes_array, result.second);
             },
-            py::arg("X"), py::arg("mode"), py::arg("node_id") = -1,
-            "Returns tuple of (codes_array, missing_bin_id)")
+            py::arg("X"), py::arg("mode"), py::arg("node_id") = -1, "Returns tuple of (codes_array, missing_bin_id)")
         .def(
             "prebin_into",
-            [](const DataBinner& db, py::array_t<double> X,
-               const std::string& mode, py::array_t<uint16_t> out_codes,
-               int node_id) {
+            [](const DataBinner& db, py::array_t<double, py::array::c_style | py::array::forcecast> X,
+               const std::string& mode, py::array_t<uint16_t, py::array::c_style> out_codes, int node_id) {
                 py::buffer_info X_buf = X.request();
                 py::buffer_info out_buf = out_codes.request();
 
@@ -116,47 +107,37 @@ PYBIND11_MODULE(foretree, m) {
 
                 int N = static_cast<int>(X_buf.shape[0]);
                 int P = static_cast<int>(X_buf.shape[1]);
+                if (out_buf.shape[0] != X_buf.shape[0] || out_buf.shape[1] != X_buf.shape[1]) {
+                    throw std::runtime_error("out_codes shape must match input X");
+                }
 
-                return db.prebin_into(
-                    static_cast<const double*>(X_buf.ptr), N, P, mode,
-                    static_cast<uint16_t*>(out_buf.ptr), node_id);
+                return db.prebin_into(static_cast<const double*>(X_buf.ptr), N, P, mode,
+                                      static_cast<uint16_t*>(out_buf.ptr), node_id);
             },
-            py::arg("X"), py::arg("mode"), py::arg("out_codes"),
-            py::arg("node_id") = -1)
+            py::arg("X"), py::arg("mode"), py::arg("out_codes"), py::arg("node_id") = -1)
 
         // Existing query methods (backward compatible)
-        .def("finite_bins",
-             static_cast<int (DataBinner::*)(const std::string&) const>(
-                 &DataBinner::finite_bins),
+        .def("finite_bins", static_cast<int (DataBinner::*)(const std::string&) const>(&DataBinner::finite_bins),
              py::arg("mode"))
-        .def("missing_bin_id",
-             static_cast<int (DataBinner::*)(const std::string&) const>(
-                 &DataBinner::missing_bin_id),
+        .def("missing_bin_id", static_cast<int (DataBinner::*)(const std::string&) const>(&DataBinner::missing_bin_id),
              py::arg("mode"))
-        .def("total_bins",
-             static_cast<int (DataBinner::*)(const std::string&) const>(
-                 &DataBinner::total_bins),
+        .def("total_bins", static_cast<int (DataBinner::*)(const std::string&) const>(&DataBinner::total_bins),
              py::arg("mode"))
 
         // New per-feature query methods
-        .def("finite_bins",
-             static_cast<int (DataBinner::*)(const std::string&, int) const>(
-                 &DataBinner::finite_bins),
+        .def("finite_bins", static_cast<int (DataBinner::*)(const std::string&, int) const>(&DataBinner::finite_bins),
              py::arg("mode"), py::arg("feat"))
         .def("missing_bin_id",
-             static_cast<int (DataBinner::*)(const std::string&, int) const>(
-                 &DataBinner::missing_bin_id),
+             static_cast<int (DataBinner::*)(const std::string&, int) const>(&DataBinner::missing_bin_id),
              py::arg("mode"), py::arg("feat"))
-        .def("total_bins",
-             static_cast<int (DataBinner::*)(const std::string&, int) const>(
-                 &DataBinner::total_bins),
+        .def("total_bins", static_cast<int (DataBinner::*)(const std::string&, int) const>(&DataBinner::total_bins),
              py::arg("mode"), py::arg("feat"))
 
         // New bulk per-feature query methods
-        .def("finite_bins_per_feat", &DataBinner::finite_bins_per_feat,
-             py::arg("mode"), py::return_value_policy::reference_internal)
-        .def("missing_bin_ids_per_feat", &DataBinner::missing_bin_ids_per_feat,
-             py::arg("mode"), py::return_value_policy::reference_internal)
+        .def("finite_bins_per_feat", &DataBinner::finite_bins_per_feat, py::arg("mode"),
+             py::return_value_policy::reference_internal)
+        .def("missing_bin_ids_per_feat", &DataBinner::missing_bin_ids_per_feat, py::arg("mode"),
+             py::return_value_policy::reference_internal)
 
         .def("P", &DataBinner::P);
 
@@ -174,14 +155,10 @@ PYBIND11_MODULE(foretree, m) {
         .def_readwrite("min_bins", &HistogramConfig::min_bins)
         .def_readwrite("target_bins", &HistogramConfig::target_bins)
         .def_readwrite("adaptive_binning", &HistogramConfig::adaptive_binning)
-        .def_readwrite("importance_threshold",
-                       &HistogramConfig::importance_threshold)
-        .def_readwrite("complexity_threshold",
-                       &HistogramConfig::complexity_threshold)
-        .def_readwrite("use_feature_importance",
-                       &HistogramConfig::use_feature_importance)
-        .def_readwrite("feature_importance_weights",
-                       &HistogramConfig::feature_importance_weights)
+        .def_readwrite("importance_threshold", &HistogramConfig::importance_threshold)
+        .def_readwrite("complexity_threshold", &HistogramConfig::complexity_threshold)
+        .def_readwrite("use_feature_importance", &HistogramConfig::use_feature_importance)
+        .def_readwrite("feature_importance_weights", &HistogramConfig::feature_importance_weights)
         // Other fields
         .def_readwrite("subsample_ratio", &HistogramConfig::subsample_ratio)
         .def_readwrite("min_sketch_size", &HistogramConfig::min_sketch_size)
@@ -216,14 +193,11 @@ PYBIND11_MODULE(foretree, m) {
         .def_readwrite("stats", &FeatureBins::stats)
         .def("n_bins", &FeatureBins::n_bins);
 
-    py::class_<GradientHistogramSystem,
-               std::shared_ptr<GradientHistogramSystem>>(
-        m, "GradientHistogramSystem")
+    py::class_<GradientHistogramSystem, std::shared_ptr<GradientHistogramSystem>>(m, "GradientHistogramSystem")
         .def(py::init<HistogramConfig>(), py::arg("config"))
         .def(
             "fit_bins",
-            [](GradientHistogramSystem& ghs, py::array_t<double> X,
-               py::array_t<double> g, py::array_t<double> h) {
+            [](GradientHistogramSystem& ghs, py::array_t<double> X, py::array_t<double> g, py::array_t<double> h) {
                 py::buffer_info X_buf = X.request();
                 py::buffer_info g_buf = g.request();
                 py::buffer_info h_buf = h.request();
@@ -239,12 +213,10 @@ PYBIND11_MODULE(foretree, m) {
                 int P = static_cast<int>(X_buf.shape[1]);
 
                 if (g_buf.shape[0] != N || h_buf.shape[0] != N) {
-                    throw std::runtime_error(
-                        "g and h must have same length as X rows");
+                    throw std::runtime_error("g and h must have same length as X rows");
                 }
 
-                ghs.fit_bins(static_cast<const double*>(X_buf.ptr), N, P,
-                             static_cast<const double*>(g_buf.ptr),
+                ghs.fit_bins(static_cast<const double*>(X_buf.ptr), N, P, static_cast<const double*>(g_buf.ptr),
                              static_cast<const double*>(h_buf.ptr));
             },
             py::arg("X"), py::arg("g"), py::arg("h"))
@@ -258,14 +230,12 @@ PYBIND11_MODULE(foretree, m) {
                 int N = static_cast<int>(buf.shape[0]);
                 int P = static_cast<int>(buf.shape[1]);
 
-                auto result = ghs.prebin_dataset(
-                    static_cast<const double*>(buf.ptr), N, P);
+                auto result = ghs.prebin_dataset(static_cast<const double*>(buf.ptr), N, P);
 
                 // Convert to numpy array
-                auto codes_array = py::array_t<uint16_t>(
-                    {N, P},                                    // shape
-                    {sizeof(uint16_t) * P, sizeof(uint16_t)},  // strides
-                    result.first->data()                       // data pointer
+                auto codes_array = py::array_t<uint16_t>({N, P},                                   // shape
+                                                         {sizeof(uint16_t) * P, sizeof(uint16_t)}, // strides
+                                                         result.first->data()                      // data pointer
                 );
 
                 return py::make_tuple(codes_array, result.second);
@@ -281,14 +251,12 @@ PYBIND11_MODULE(foretree, m) {
                 int N = static_cast<int>(buf.shape[0]);
                 int P = static_cast<int>(buf.shape[1]);
 
-                auto result = ghs.prebin_matrix(
-                    static_cast<const double*>(buf.ptr), N, P);
+                auto result = ghs.prebin_matrix(static_cast<const double*>(buf.ptr), N, P);
 
                 // Convert to numpy array
-                auto codes_array = py::array_t<uint16_t>(
-                    {N, P},                                    // shape
-                    {sizeof(uint16_t) * P, sizeof(uint16_t)},  // strides
-                    result.first->data()                       // data pointer
+                auto codes_array = py::array_t<uint16_t>({N, P},                                   // shape
+                                                         {sizeof(uint16_t) * P, sizeof(uint16_t)}, // strides
+                                                         result.first->data()                      // data pointer
                 );
 
                 return py::make_tuple(codes_array, result.second);
@@ -296,8 +264,8 @@ PYBIND11_MODULE(foretree, m) {
             py::arg("X"), "Returns tuple of (codes_array, missing_bin_id)")
         .def(
             "build_histograms_fast",
-            [](const GradientHistogramSystem& ghs, py::array_t<float> g,
-               py::array_t<float> h, py::array_t<int> sample_indices) {
+            [](const GradientHistogramSystem& ghs, py::array_t<float> g, py::array_t<float> h,
+               py::array_t<int> sample_indices) {
                 py::buffer_info g_buf = g.request();
                 py::buffer_info h_buf = h.request();
 
@@ -310,26 +278,22 @@ PYBIND11_MODULE(foretree, m) {
                 if (sample_indices.size() > 0) {
                     py::buffer_info idx_buf = sample_indices.request();
                     if (idx_buf.ndim != 1) {
-                        throw std::runtime_error(
-                            "sample_indices must be 1-dimensional");
+                        throw std::runtime_error("sample_indices must be 1-dimensional");
                     }
                     indices_ptr = static_cast<const int*>(idx_buf.ptr);
                     n_sub = static_cast<int>(idx_buf.shape[0]);
                 }
 
-                auto result = ghs.build_histograms_fast(
-                    static_cast<const float*>(g_buf.ptr),
-                    static_cast<const float*>(h_buf.ptr), indices_ptr, n_sub);
+                auto result = ghs.build_histograms_fast(static_cast<const float*>(g_buf.ptr),
+                                                        static_cast<const float*>(h_buf.ptr), indices_ptr, n_sub);
 
                 return py::make_tuple(result.first, result.second);
             },
-            py::arg("g"), py::arg("h"),
-            py::arg("sample_indices") = py::array_t<int>(),
-            "Returns tuple of (Hg, Hh)")
+            py::arg("g"), py::arg("h"), py::arg("sample_indices") = py::array_t<int>(), "Returns tuple of (Hg, Hh)")
         .def(
             "build_histograms_fast_with_counts",
-            [](const GradientHistogramSystem& ghs, py::array_t<float> g,
-               py::array_t<float> h, py::array_t<int> sample_indices) {
+            [](const GradientHistogramSystem& ghs, py::array_t<float> g, py::array_t<float> h,
+               py::array_t<int> sample_indices) {
                 py::buffer_info g_buf = g.request();
                 py::buffer_info h_buf = h.request();
 
@@ -342,64 +306,48 @@ PYBIND11_MODULE(foretree, m) {
                 if (sample_indices.size() > 0) {
                     py::buffer_info idx_buf = sample_indices.request();
                     if (idx_buf.ndim != 1) {
-                        throw std::runtime_error(
-                            "sample_indices must be 1-dimensional");
+                        throw std::runtime_error("sample_indices must be 1-dimensional");
                     }
                     indices_ptr = static_cast<const int*>(idx_buf.ptr);
                     n_sub = static_cast<int>(idx_buf.shape[0]);
                 }
 
                 auto result = ghs.build_histograms_fast_with_counts(
-                    static_cast<const float*>(g_buf.ptr),
-                    static_cast<const float*>(h_buf.ptr), indices_ptr, n_sub);
+                    static_cast<const float*>(g_buf.ptr), static_cast<const float*>(h_buf.ptr), indices_ptr, n_sub);
 
-                return py::make_tuple(std::get<0>(result), std::get<1>(result),
-                                      std::get<2>(result));
+                return py::make_tuple(std::get<0>(result), std::get<1>(result), std::get<2>(result));
             },
-            py::arg("g"), py::arg("h"),
-            py::arg("sample_indices") = py::array_t<int>(),
-            "Returns tuple of (Hg, Hh, C)")
+            py::arg("g"), py::arg("h"), py::arg("sample_indices") = py::array_t<int>(), "Returns tuple of (Hg, Hh, C)")
         .def(
             "extract_feature_histogram",
-            [](const GradientHistogramSystem& ghs,
-               const std::vector<double>& Hg, const std::vector<double>& Hh,
+            [](const GradientHistogramSystem& ghs, const std::vector<double>& Hg, const std::vector<double>& Hh,
                const std::vector<int>& C, int feature) {
                 auto result = ghs.extract_feature_histogram(Hg, Hh, C, feature);
-                return py::make_tuple(std::get<0>(result), std::get<1>(result),
-                                      std::get<2>(result));
+                return py::make_tuple(std::get<0>(result), std::get<1>(result), std::get<2>(result));
             },
             py::arg("Hg"), py::arg("Hh"), py::arg("C"), py::arg("feature"),
             "Returns tuple of (feat_Hg, feat_Hh, feat_C)")
-        .def("get_feature_offsets",
-             &GradientHistogramSystem::get_feature_offsets)
-        .def("get_bin_allocation_summary",
-             &GradientHistogramSystem::get_bin_allocation_summary)
+        .def("get_feature_offsets", &GradientHistogramSystem::get_feature_offsets)
+        .def("get_bin_allocation_summary", &GradientHistogramSystem::get_bin_allocation_summary)
 
         // Accessors with explicit casting for overloaded methods
         .def("P", &GradientHistogramSystem::P)
         .def("N", &GradientHistogramSystem::N)
         .def("missing_bin_id",
-             static_cast<int (GradientHistogramSystem::*)() const>(
-                 &GradientHistogramSystem::missing_bin_id))
+             static_cast<int (GradientHistogramSystem::*)() const>(&GradientHistogramSystem::missing_bin_id))
         .def("finite_bins",
-             static_cast<int (GradientHistogramSystem::*)() const>(
-                 &GradientHistogramSystem::finite_bins))
-        .def("total_bins",
-             static_cast<int (GradientHistogramSystem::*)() const>(
-                 &GradientHistogramSystem::total_bins))
+             static_cast<int (GradientHistogramSystem::*)() const>(&GradientHistogramSystem::finite_bins))
+        .def("total_bins", static_cast<int (GradientHistogramSystem::*)() const>(&GradientHistogramSystem::total_bins))
 
         // Per-feature accessors
         .def("finite_bins",
-             static_cast<int (GradientHistogramSystem::*)(int) const>(
-                 &GradientHistogramSystem::finite_bins),
+             static_cast<int (GradientHistogramSystem::*)(int) const>(&GradientHistogramSystem::finite_bins),
              py::arg("feature"))
         .def("total_bins",
-             static_cast<int (GradientHistogramSystem::*)(int) const>(
-                 &GradientHistogramSystem::total_bins),
+             static_cast<int (GradientHistogramSystem::*)(int) const>(&GradientHistogramSystem::total_bins),
              py::arg("feature"))
         .def("missing_bin_id",
-             static_cast<int (GradientHistogramSystem::*)(int) const>(
-                 &GradientHistogramSystem::missing_bin_id),
+             static_cast<int (GradientHistogramSystem::*)(int) const>(&GradientHistogramSystem::missing_bin_id),
              py::arg("feature"))
 
         // Vector accessors
@@ -407,30 +355,27 @@ PYBIND11_MODULE(foretree, m) {
         .def("all_total_bins", &GradientHistogramSystem::all_total_bins)
 
         // Feature analysis results
-        .def("feature_stats", &GradientHistogramSystem::feature_stats,
-             py::arg("feature"), py::return_value_policy::reference_internal)
-        .def("feature_bins", &GradientHistogramSystem::feature_bins,
-             py::arg("feature"), py::return_value_policy::reference_internal)
+        .def("feature_stats", &GradientHistogramSystem::feature_stats, py::arg("feature"),
+             py::return_value_policy::reference_internal)
+        .def("feature_bins", &GradientHistogramSystem::feature_bins, py::arg("feature"),
+             py::return_value_policy::reference_internal)
 
         // Internal access
-        .def("binner", &GradientHistogramSystem::binner,
-             py::return_value_policy::reference_internal)
+        .def("binner", &GradientHistogramSystem::binner, py::return_value_policy::reference_internal)
         .def(
             "codes_view",
             [](const GradientHistogramSystem& ghs) {
                 auto codes_ptr = ghs.codes_view();
                 if (!codes_ptr) {
-                    throw std::runtime_error(
-                        "No codes available. Call prebin_dataset first.");
+                    throw std::runtime_error("No codes available. Call prebin_dataset first.");
                 }
 
                 // Convert to numpy array (N x P shape)
                 int N = ghs.N();
                 int P = ghs.P();
-                auto codes_array = py::array_t<uint16_t>(
-                    {N, P},                                    // shape
-                    {sizeof(uint16_t) * P, sizeof(uint16_t)},  // strides
-                    codes_ptr->data()                          // data pointer
+                auto codes_array = py::array_t<uint16_t>({N, P},                                   // shape
+                                                         {sizeof(uint16_t) * P, sizeof(uint16_t)}, // strides
+                                                         codes_ptr->data()                         // data pointer
                 );
 
                 return codes_array;
@@ -471,6 +416,14 @@ PYBIND11_MODULE(foretree, m) {
         .def_readwrite("axis_guard_factor", &InteractionSeededConfig::axis_guard_factor)
         .def_readwrite("use_axis_guard", &InteractionSeededConfig::use_axis_guard);
 
+    py::class_<PairInteractionConfig>(m, "PairInteractionConfig")
+        .def(py::init<>())
+        .def_readwrite("max_features", &PairInteractionConfig::max_features)
+        .def_readwrite("interaction_bins", &PairInteractionConfig::interaction_bins)
+        .def_readwrite("min_node_rows", &PairInteractionConfig::min_node_rows)
+        .def_readwrite("complexity_penalty", &PairInteractionConfig::complexity_penalty)
+        .def_readwrite("axis_guard_factor", &PairInteractionConfig::axis_guard_factor);
+
     // Nested GOSS struct
     py::class_<TreeConfig::GOSS>(m, "GOSS")
         .def(py::init<>())
@@ -501,23 +454,17 @@ PYBIND11_MODULE(foretree, m) {
         .def_readwrite("leaf_depth_penalty", &TreeConfig::leaf_depth_penalty)
         .def_readwrite("leaf_hess_boost", &TreeConfig::leaf_hess_boost)
         .def_readwrite("feature_bagging_k", &TreeConfig::feature_bagging_k)
-        .def_readwrite("feature_bagging_with_replacement",
-                       &TreeConfig::feature_bagging_with_replacement)
-        .def_readwrite("colsample_bytree_percent",
-                       &TreeConfig::colsample_bytree_percent)
-        .def_readwrite("colsample_bylevel_percent",
-                       &TreeConfig::colsample_bylevel_percent)
-        .def_readwrite("colsample_bynode_percent",
-                       &TreeConfig::colsample_bynode_percent)
-        .def_readwrite("use_sibling_subtract",
-                       &TreeConfig::use_sibling_subtract)
+        .def_readwrite("feature_bagging_with_replacement", &TreeConfig::feature_bagging_with_replacement)
+        .def_readwrite("colsample_bytree_percent", &TreeConfig::colsample_bytree_percent)
+        .def_readwrite("colsample_bylevel_percent", &TreeConfig::colsample_bylevel_percent)
+        .def_readwrite("colsample_bynode_percent", &TreeConfig::colsample_bynode_percent)
+        .def_readwrite("use_sibling_subtract", &TreeConfig::use_sibling_subtract)
         .def_readwrite("missing_policy", &TreeConfig::missing_policy)
-        .def_readwrite("monotone_constraints",
-                       &TreeConfig::monotone_constraints)
+        .def_readwrite("monotone_constraints", &TreeConfig::monotone_constraints)
         .def_readwrite("split_mode", &TreeConfig::split_mode)
         .def_readwrite("exact_cutover", &TreeConfig::exact_cutover)
-        .def_readwrite("enable_kway_splits", &TreeConfig::enable_kway_splits)
-        .def_readwrite("kway_max_groups", &TreeConfig::kway_max_groups)
+        .def_readwrite("enable_categorical_splits", &TreeConfig::enable_categorical_splits)
+        .def_readwrite("categorical_max_selected_categories", &TreeConfig::categorical_max_selected_categories)
         .def_readwrite("enable_oblique_splits", &TreeConfig::enable_oblique_splits)
         .def_readwrite("oblique_mode", &TreeConfig::oblique_mode)
         .def_readwrite("oblique_k_features", &TreeConfig::oblique_k_features)
@@ -526,6 +473,9 @@ PYBIND11_MODULE(foretree, m) {
         .def_readwrite("oblique_ridge", &TreeConfig::oblique_ridge)
         .def_readwrite("axis_vs_oblique_guard", &TreeConfig::axis_vs_oblique_guard)
         .def_readwrite("interaction_seeded_oblique", &TreeConfig::interaction_seeded_oblique)
+        .def_readwrite("enable_pair_interaction_splits", &TreeConfig::enable_pair_interaction_splits)
+        .def_readwrite("pair_interaction", &TreeConfig::pair_interaction)
+        .def_readwrite("interaction_constraints", &TreeConfig::interaction_constraints)
         .def_readwrite("goss", &TreeConfig::goss)
         .def_readwrite("num_classes", &TreeConfig::num_classes);
 
@@ -533,8 +483,7 @@ PYBIND11_MODULE(foretree, m) {
     py::class_<UnifiedTree>(m, "UnifiedTree", py::dynamic_attr())
         .def(py::init<>())
         // Attach a GradientHistogramSystem; keep_alive so GHS outlives the tree
-        .def(py::init([](const TreeConfig& cfg,
-                         std::shared_ptr<GradientHistogramSystem> ghs) {
+        .def(py::init([](const TreeConfig& cfg, std::shared_ptr<GradientHistogramSystem> ghs) {
                  return new UnifiedTree(cfg, ghs.get());
              }),
              py::arg("config"), py::arg("ghs"), py::keep_alive<1, 2>())
@@ -542,14 +491,11 @@ PYBIND11_MODULE(foretree, m) {
         // --- raw matrix (for Exact/Hybrid) ---
         .def(
             "set_raw_matrix",
-            [](UnifiedTree& self,
-               const py::array_t<double, py::array::c_style |
-                                             py::array::forcecast>& Xraw,
+            [](UnifiedTree& self, const py::array_t<double, py::array::c_style | py::array::forcecast>& Xraw,
                py::object mask /* None or uint8 array */) {
                 auto xb = Xraw.request();
                 if (xb.ndim != 2)
-                    throw std::invalid_argument(
-                        "Xraw must be 2D float64 (N, P)");
+                    throw std::invalid_argument("Xraw must be 2D float64 (N, P)");
                 const double* Xptr = static_cast<const double*>(xb.ptr);
 
                 const uint8_t* mptr = nullptr;
@@ -558,12 +504,9 @@ PYBIND11_MODULE(foretree, m) {
                     mask_arr = mask.cast<py::array_t<uint8_t>>();
                     auto mb = mask_arr.request();
                     if (mb.ndim != 2)
-                        throw std::invalid_argument(
-                            "mask must be 2D uint8 (N, P)");
-                    if (mb.shape[0] != xb.shape[0] ||
-                        mb.shape[1] != xb.shape[1])
-                        throw std::invalid_argument(
-                            "mask shape must match Xraw");
+                        throw std::invalid_argument("mask must be 2D uint8 (N, P)");
+                    if (mb.shape[0] != xb.shape[0] || mb.shape[1] != xb.shape[1])
+                        throw std::invalid_argument("mask shape must match Xraw");
                     mptr = static_cast<const uint8_t*>(mb.ptr);
                 }
 
@@ -573,20 +516,17 @@ PYBIND11_MODULE(foretree, m) {
                 // (pybind: get Python handle for 'self' and store refs)
                 py::object self_obj = py::cast(&self);
                 self_obj.attr("_Xraw_ref") = Xraw;
-                if (!mask.is_none()) self_obj.attr("_Xmask_ref") = mask_arr;
+                if (!mask.is_none())
+                    self_obj.attr("_Xmask_ref") = mask_arr;
             },
             py::arg("Xraw"), py::arg("mask") = py::none())
 
         // --- training / inference ---
         .def(
             "fit_binned",
-            [](UnifiedTree& self,
-               const py::array_t<uint16_t,
-                                 py::array::c_style | py::array::forcecast>& Xb,
-               const py::array_t<double,
-                                 py::array::c_style | py::array::forcecast>& g,
-               const py::array_t<double, py::array::c_style |
-                                             py::array::forcecast>& h) {
+            [](UnifiedTree& self, const py::array_t<uint16_t, py::array::c_style | py::array::forcecast>& Xb,
+               const py::array_t<double, py::array::c_style | py::array::forcecast>& g,
+               const py::array_t<double, py::array::c_style | py::array::forcecast>& h) {
                 auto xb = Xb.request();
                 if (xb.ndim != 2)
                     throw std::invalid_argument("Xb must be 2D (N, P)");
@@ -597,8 +537,7 @@ PYBIND11_MODULE(foretree, m) {
                 std::vector<double> gv = arr_to_vec_1d<double>(g);
                 std::vector<double> hv = arr_to_vec_1d<double>(h);
                 if ((int)gv.size() != N || (int)hv.size() != N)
-                    throw std::invalid_argument(
-                        "g and h must have length N = Xb.shape[0]");
+                    throw std::invalid_argument("g and h must have length N = Xb.shape[0]");
 
                 self.fit(Xv, N, P, gv, hv);
             },
@@ -607,9 +546,7 @@ PYBIND11_MODULE(foretree, m) {
 
         .def(
             "predict_binned",
-            [](const UnifiedTree& self,
-               const py::array_t<uint16_t, py::array::c_style |
-                                               py::array::forcecast>& Xb,
+            [](const UnifiedTree& self, const py::array_t<uint16_t, py::array::c_style | py::array::forcecast>& Xb,
                py::object Xraw_opt) {
                 auto xb = Xb.request();
                 if (xb.ndim != 2)
@@ -623,7 +560,7 @@ PYBIND11_MODULE(foretree, m) {
                     pred = self.predict(Xv, N, P);
                 } else {
                     auto Xraw = Xraw_opt.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
-                    auto xr   = Xraw.request();
+                    auto xr = Xraw.request();
                     if (xr.ndim != 2)
                         throw std::invalid_argument("Xraw must be 2D (N, P)");
                     if (xr.shape[0] != xb.shape[0] || xr.shape[1] != xb.shape[1])
@@ -653,9 +590,7 @@ PYBIND11_MODULE(foretree, m) {
 
         .def(
             "predict_contrib_binned",
-            [](const UnifiedTree& self,
-               const py::array_t<uint16_t, py::array::c_style |
-                                               py::array::forcecast>& Xb,
+            [](const UnifiedTree& self, const py::array_t<uint16_t, py::array::c_style | py::array::forcecast>& Xb,
                py::object Xraw_opt) {
                 auto xb = Xb.request();
                 if (xb.ndim != 2)
@@ -669,7 +604,7 @@ PYBIND11_MODULE(foretree, m) {
                     contrib = self.predict_contrib(Xv, N, P);
                 } else {
                     auto Xraw = Xraw_opt.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
-                    auto xr   = Xraw.request();
+                    auto xr = Xraw.request();
                     if (xr.ndim != 2)
                         throw std::invalid_argument("Xraw must be 2D (N, P)");
                     if (xr.shape[0] != xb.shape[0] || xr.shape[1] != xb.shape[1])
@@ -702,18 +637,9 @@ PYBIND11_MODULE(foretree, m) {
         .def_property_readonly("depth", &UnifiedTree::depth)
 
         // --- feature importance (method returning a Python list) ---
-        .def("feature_importance_gain",
-             [](const UnifiedTree& self) {
-                 return self.feature_importance_gain();
-             })
-        .def("feature_importance_cover",
-             [](const UnifiedTree& self) {
-                 return self.feature_importance_cover();
-             })
+        .def("feature_importance_gain", [](const UnifiedTree& self) { return self.feature_importance_gain(); })
+        .def("feature_importance_cover", [](const UnifiedTree& self) { return self.feature_importance_cover(); })
         .def("feature_importance_frequency",
-             [](const UnifiedTree& self) {
-                 return self.feature_importance_frequency();
-             })
-        .def("post_prune_ccp", &UnifiedTree::post_prune_ccp,
-             py::arg("ccp_alpha"));
+             [](const UnifiedTree& self) { return self.feature_importance_frequency(); })
+        .def("post_prune_ccp", &UnifiedTree::post_prune_ccp, py::arg("ccp_alpha"));
 }

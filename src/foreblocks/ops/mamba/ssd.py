@@ -2699,7 +2699,7 @@ class _ChunkedSSDFn(torch.autograd.Function):
         D,
         chunk_size: int,
         use_triton: bool,
-        use_parallel: bool,
+        use_parallel: bool | str,
         adt=None,
         seq_idx=None,
         initial_states=None,
@@ -2710,7 +2710,7 @@ class _ChunkedSSDFn(torch.autograd.Function):
         if use_triton:
             if use_parallel == "direct":
                 fwd = chunked_ssd_forward_triton_parallel
-            elif use_parallel:
+            elif use_parallel == "tiled" or use_parallel is True:
                 fwd = chunked_ssd_forward_triton_tiled
             else:
                 fwd = chunked_ssd_forward_triton
@@ -2786,7 +2786,7 @@ def chunked_ssd_forward(
     use_triton: bool = False,
     adt: torch.Tensor | None = None,
     trap: torch.Tensor | None = None,
-    parallel: bool | str = False,
+    parallel: bool | str = "tiled",
     seq_idx: torch.Tensor | None = None,
     initial_states: torch.Tensor | None = None,
     dfinal_states: torch.Tensor | None = None,

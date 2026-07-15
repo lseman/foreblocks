@@ -3,7 +3,7 @@
 
 Runs regression and binary classification checks with:
 - ForeForest axis baseline
-- ForeForest "modern" config (k-way + oblique + GOSS + DART)
+- ForeForest "modern" config (categorical partition + oblique + GOSS + DART)
 - sklearn histogram GBDT baselines
 - optional xgboost/lightgbm/catboost if installed
 """
@@ -141,9 +141,9 @@ def _build_tree_cfg(tree_overrides: dict[str, Any]) -> Any:
     cfg.growth = foreforest.Growth.LeafWise
     cfg.split_mode = foreforest.SplitMode.Histogram
     cfg.exact_cutover = 2048
-    cfg.enable_kway_splits = False
+    cfg.enable_categorical_splits = False
     cfg.enable_oblique_splits = False
-    cfg.kway_max_groups = 8
+    cfg.categorical_max_selected_categories = 8
     cfg.oblique_k_features = 4
     cfg.oblique_ridge = 1e-3
     cfg.axis_vs_oblique_guard = 1.02
@@ -651,7 +651,7 @@ def main() -> None:
     )
     reg_rows.append(
         run_foreforest_regression(
-            "foreforest_kway_oblique_goss",
+            "foreforest_categorical_oblique_goss",
             Xr_tr,
             yr_tr,
             Xr_va,
@@ -659,8 +659,8 @@ def main() -> None:
             Xr_te,
             yr_te,
             tree_overrides={
-                "enable_kway_splits": True,
-                "kway_max_groups": 8,
+                "enable_categorical_splits": True,
+                "categorical_max_selected_categories": 8,
                 "enable_oblique_splits": True,
                 "oblique_k_features": 4,
                 "axis_vs_oblique_guard": 1.01,
@@ -682,8 +682,8 @@ def main() -> None:
             Xr_te,
             yr_te,
             tree_overrides={
-                "enable_kway_splits": True,
-                "kway_max_groups": 8,
+                "enable_categorical_splits": True,
+                "categorical_max_selected_categories": 8,
                 "enable_oblique_splits": True,
                 "oblique_k_features": 4,
                 "axis_vs_oblique_guard": 1.01,
@@ -810,7 +810,7 @@ def main() -> None:
     )
     bin_rows.append(
         run_foreforest_binary(
-            "foreforest_kway_oblique_goss_bin",
+            "foreforest_categorical_oblique_goss_bin",
             Xb_tr,
             yb_tr,
             Xb_va,
@@ -818,8 +818,8 @@ def main() -> None:
             Xb_te,
             yb_te,
             tree_overrides={
-                "enable_kway_splits": True,
-                "kway_max_groups": 8,
+                "enable_categorical_splits": True,
+                "categorical_max_selected_categories": 8,
                 "enable_oblique_splits": True,
                 "oblique_k_features": 4,
                 "axis_vs_oblique_guard": 1.01,
@@ -841,8 +841,8 @@ def main() -> None:
             Xb_te,
             yb_te,
             tree_overrides={
-                "enable_kway_splits": True,
-                "kway_max_groups": 8,
+                "enable_categorical_splits": True,
+                "categorical_max_selected_categories": 8,
                 "enable_oblique_splits": True,
                 "oblique_k_features": 4,
                 "axis_vs_oblique_guard": 1.01,

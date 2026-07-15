@@ -8,9 +8,6 @@ import numpy as np
 import pytest
 
 
-pytest.importorskip("pyfftw")
-
-
 ROOT = pathlib.Path(__file__).resolve().parents[1] / "src"
 
 

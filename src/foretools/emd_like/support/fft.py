@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import os
-import pickle
 import warnings
 
 import numpy as np
-import pyfftw
-import pyfftw.interfaces.numpy_fft as fftw_np
 
 
 # Optional torch refinement
@@ -28,8 +25,6 @@ class FFTWManager:
         self.wisdom_file = wisdom_file
         self._warned_backend_keys = set()
         self.num_threads = self._resolve_num_threads(num_threads)
-        self._setup_fftw()
-        self.load_wisdom()
 
     @staticmethod
     def _resolve_num_threads(num_threads: int | None) -> int:
@@ -46,25 +41,11 @@ class FFTWManager:
                 num_threads = 1
         return max(1, min(int(num_threads), os.cpu_count() or 1))
 
-    def _setup_fftw(self):
-        pyfftw.interfaces.cache.enable()
-        pyfftw.interfaces.cache.set_keepalive_time(7200)
-        pyfftw.config.NUM_THREADS = self.num_threads
-
     def load_wisdom(self):
-        if os.path.exists(self.wisdom_file):
-            try:
-                with open(self.wisdom_file, "rb") as f:
-                    pyfftw.import_wisdom(pickle.load(f))
-            except Exception:
-                pass
+        """Compatibility no-op retained for callers of the former FFTW backend."""
 
     def save_wisdom(self):
-        try:
-            with open(self.wisdom_file, "wb") as f:
-                pickle.dump(pyfftw.export_wisdom(), f)
-        except Exception:
-            pass
+        """Compatibility no-op retained for callers of the former FFTW backend."""
 
     def _warn_once(self, key: str, message: str) -> None:
         if key in self._warned_backend_keys:
@@ -78,21 +59,23 @@ class FFTWManager:
         name = str(backend).lower()
         dev = str(device).lower()
 
-        if name not in ("fftw", "torch"):
+        if name == "fftw":
+            name = "numpy"
+        if name not in ("numpy", "torch"):
             self._warn_once(
                 f"fft_backend_invalid:{name}",
-                f"Unknown fft_backend={backend!r}; falling back to 'fftw'.",
+                f"Unknown fft_backend={backend!r}; falling back to 'numpy'.",
             )
-            return "fftw", "cpu"
+            return "numpy", "cpu"
 
         if name == "torch":
             if not TORCH_AVAILABLE or torch is None:
                 self._warn_once(
                     "fft_backend_torch_missing",
                     "fft_backend='torch' requested but PyTorch is unavailable; "
-                    "falling back to 'fftw'.",
+                    "falling back to 'numpy'.",
                 )
-                return "fftw", "cpu"
+                return "numpy", "cpu"
 
             if dev == "auto":
                 dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -115,12 +98,12 @@ class FFTWManager:
                 self._warn_once(
                     "fft_backend_cuda_transfer",
                     "The VMD solver stores state in NumPy, so torch CUDA FFTs "
-                    "include host/device transfers and may be slower than FFTW.",
+                    "include host/device transfers and may be slower than the CPU backend.",
                 )
 
             return "torch", dev
 
-        return "fftw", "cpu"
+        return "numpy", "cpu"
 
     @staticmethod
     def _numpy_axes(axes, ndim: int):
@@ -151,21 +134,21 @@ class FFTWManager:
         if name == "torch":
             xt = self._to_torch(x, dev)
             return self._to_numpy(torch.fft.fft(xt, dim=axis))
-        return fftw_np.fft(np.asarray(x), axis=axis, threads=self.num_threads)
+        return np.fft.fft(np.asarray(x), axis=axis)
 
     def ifft(self, x, axis: int = -1, backend: str = "fftw", device: str = "auto"):
         name, dev = self.resolve_backend(backend, device)
         if name == "torch":
             xt = self._to_torch(x, dev)
             return self._to_numpy(torch.fft.ifft(xt, dim=axis))
-        return fftw_np.ifft(np.asarray(x), axis=axis, threads=self.num_threads)
+        return np.fft.ifft(np.asarray(x), axis=axis)
 
     def rfft(self, x, axis: int = -1, backend: str = "fftw", device: str = "auto"):
         name, dev = self.resolve_backend(backend, device)
         if name == "torch":
             xt = self._to_torch(x, dev)
             return self._to_numpy(torch.fft.rfft(xt, dim=axis))
-        return fftw_np.rfft(np.asarray(x), axis=axis, threads=self.num_threads)
+        return np.fft.rfft(np.asarray(x), axis=axis)
 
     def fftshift(self, x, axes=None, backend: str = "fftw", device: str = "auto"):
         name, dev = self.resolve_backend(backend, device)
@@ -173,7 +156,7 @@ class FFTWManager:
             xt = self._to_torch(x, dev)
             dims = self._numpy_axes(axes, xt.ndim)
             return self._to_numpy(torch.fft.fftshift(xt, dim=dims))
-        return fftw_np.fftshift(np.asarray(x), axes=axes)
+        return np.fft.fftshift(np.asarray(x), axes=axes)
 
     def ifftshift(self, x, axes=None, backend: str = "fftw", device: str = "auto"):
         name, dev = self.resolve_backend(backend, device)
@@ -181,7 +164,7 @@ class FFTWManager:
             xt = self._to_torch(x, dev)
             dims = self._numpy_axes(axes, xt.ndim)
             return self._to_numpy(torch.fft.ifftshift(xt, dim=dims))
-        return fftw_np.ifftshift(np.asarray(x), axes=axes)
+        return np.fft.ifftshift(np.asarray(x), axes=axes)
 
     def fftfreq(
         self, n: int, d: float = 1.0, backend: str = "fftw", device: str = "auto"
@@ -201,4 +184,4 @@ class FFTWManager:
             return self._to_numpy(
                 torch.fft.rfftfreq(int(n), d=float(d), device=dev, dtype=torch.float64)
             )
-        return fftw_np.rfftfreq(int(n), d=float(d))
+        return np.fft.rfftfreq(int(n), d=float(d))

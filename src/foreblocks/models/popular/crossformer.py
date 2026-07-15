@@ -1,5 +1,3 @@
-# crossformer.py
-
 """CrossFormer-style time series forecasting head.
 
 Cross-scale attention architecture that processes temporal and channel dimensions

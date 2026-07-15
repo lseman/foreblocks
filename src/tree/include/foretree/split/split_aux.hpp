@@ -1,20 +1,19 @@
 #pragma once
 
-#include "foretree/split/split_helpers.hpp"
-
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <numeric>
-#include <utility>
+#include <tuple>
 #include <vector>
+
+#include "foretree/split/split_helpers.hpp"
 
 namespace foretree::splitaux {
 
-using SplitHyper   = ::foretree::SplitHyper;
+using SplitHyper = ::foretree::SplitHyper;
 using SplitContext = ::foretree::splitx::SplitContext;
 
 #define x_from_code_variable splitaux_x_from_code_variable
@@ -24,7 +23,7 @@ using SplitContext = ::foretree::splitx::SplitContext;
 // ============================================================================
 namespace detail {
 constexpr double NEG_INF = -1.0 * std::numeric_limits<double>::infinity();
-constexpr double EPS     = 1e-12;
+constexpr double EPS = 1e-12;
 
 inline double soft(double g, double alpha) {
     if (alpha <= 0.0) return g;
@@ -39,36 +38,46 @@ inline bool pass_monotone_guard(int8_t mono, double wL, double wR) {
     return mono > 0 ? (wL <= wR) : (wL >= wR);
 }
 
-inline double weight_from_GRH(double G, double H, const SplitHyper &hyp) {
+inline double weight_from_GRH(double G, double H, const SplitHyper& hyp) {
     const double denom = H + hyp.lambda_;
     if (!(denom > 0.0)) return 0.0;
     return -soft(G, hyp.alpha_) / denom;
 }
-} // namespace detail
+}  // namespace detail
 
 // ============================================================================
 // Helper function for variable bin centers in oblique splitting
 // ============================================================================
-inline double x_from_code_variable(int f, uint16_t code, const SplitContext &ctx) {
+inline double x_from_code_variable(int f, uint16_t code,
+                                   const SplitContext& ctx) {
     if (ctx.variable_bins) {
         const int finite_bins = ctx.get_feature_bins(f);
-        const int miss_id     = ctx.get_missing_bin_id(f);
+        const int miss_id = ctx.get_missing_bin_id(f);
 
-        if (code == static_cast<uint16_t>(miss_id)) { return std::numeric_limits<double>::quiet_NaN(); }
-        if (code >= static_cast<uint16_t>(finite_bins)) { return std::numeric_limits<double>::quiet_NaN(); }
+        if (code == static_cast<uint16_t>(miss_id)) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        if (code >= static_cast<uint16_t>(finite_bins)) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
 
-        const size_t center_offset = ctx.feature_offsets[f] + static_cast<size_t>(code);
+        const size_t center_offset =
+            ctx.feature_offsets[f] + static_cast<size_t>(code);
         return ctx.bin_centers[center_offset];
     } else {
-        if (code == static_cast<uint16_t>(ctx.B - 1)) { return std::numeric_limits<double>::quiet_NaN(); }
-        return ctx.bin_centers[static_cast<size_t>(f) * static_cast<size_t>(ctx.B) + static_cast<size_t>(code)];
+        if (code == static_cast<uint16_t>(ctx.B - 1)) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        return ctx
+            .bin_centers[static_cast<size_t>(f) * static_cast<size_t>(ctx.B) +
+                         static_cast<size_t>(code)];
     }
 }
 
 // ============================================================================
 // Tiny linear-algebra helpers for oblique (Cholesky SPD)
 // ============================================================================
-inline bool cholesky_spd(std::vector<double> &A, int n) {
+inline bool cholesky_spd(std::vector<double>& A, int n) {
     // A is row-major, overwritten with lower-tri L
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j <= i; ++j) {
@@ -81,13 +90,14 @@ inline bool cholesky_spd(std::vector<double> &A, int n) {
                 A[i * n + j] = sum / A[j * n + j];
             }
         }
-        for (int j = i + 1; j < n; ++j) A[i * n + j] = 0.0; // zero upper
+        for (int j = i + 1; j < n; ++j) A[i * n + j] = 0.0;  // zero upper
     }
     return true;
 }
 
-inline void chol_solve_inplace(const std::vector<double> &L, int n, const std::vector<double> &b,
-                               std::vector<double> &x) {
+inline void chol_solve_inplace(const std::vector<double>& L, int n,
+                               const std::vector<double>& b,
+                               std::vector<double>& x) {
     x = b;
     // forward: L y = b
     for (int i = 0; i < n; ++i) {
@@ -105,8 +115,11 @@ inline void chol_solve_inplace(const std::vector<double> &L, int n, const std::v
 
 // Build normal equations (X^T diag(h) X + (ridge+λ)I) w = - X^T g
 // XS is a list of column pointers for selected features
-inline void build_normal_eq_cols(const std::vector<const double *> &XS, const double *g, const double *h, int N,
-                                 double ridge_plus_lambda, std::vector<double> &A, std::vector<double> &b) {
+inline void build_normal_eq_cols(const std::vector<const double*>& XS,
+                                 const double* g, const double* h, int N,
+                                 double ridge_plus_lambda,
+                                 std::vector<double>& A,
+                                 std::vector<double>& b) {
     const int k = (int)XS.size();
     A.assign((size_t)k * (size_t)k, 0.0);
     b.assign((size_t)k, 0.0);
@@ -129,13 +142,16 @@ inline void build_normal_eq_cols(const std::vector<const double *> &XS, const do
             const double hrx = hi * xir;
             for (int c = r; c < k; ++c) {
                 const double xic = XS[c][i];
-                if (std::isfinite(xic)) A[(size_t)r * (size_t)k + (size_t)c] += hrx * xic;
+                if (std::isfinite(xic))
+                    A[(size_t)r * (size_t)k + (size_t)c] += hrx * xic;
             }
         }
     }
     // symmetrize + ridge
     for (int r = 0; r < k; ++r) {
-        for (int c = r + 1; c < k; ++c) A[(size_t)c * (size_t)k + (size_t)r] = A[(size_t)r * (size_t)k + (size_t)c];
+        for (int c = r + 1; c < k; ++c)
+            A[(size_t)c * (size_t)k + (size_t)r] =
+                A[(size_t)r * (size_t)k + (size_t)c];
         A[(size_t)r * (size_t)k + (size_t)r] += ridge_plus_lambda;
     }
 }
@@ -143,9 +159,10 @@ inline void build_normal_eq_cols(const std::vector<const double *> &XS, const do
 // ============================================================================
 // UPDATED: Build normal equations from binned matrix using variable bin centers
 // ============================================================================
-inline void build_normal_eq_from_codes(const std::vector<int> &S, const uint16_t *Xb, const int *rows, int nrows, int P,
-                                       const SplitContext &ctx, const double *g, const double *h,
-                                       double ridge_plus_lambda, std::vector<double> &A, std::vector<double> &b) {
+inline void build_normal_eq_from_codes(
+    const std::vector<int>& S, QuantizedCodesView Xb, const int* rows,
+    int nrows, int P, const SplitContext& ctx, const double* g, const double* h,
+    double ridge_plus_lambda, std::vector<double>& A, std::vector<double>& b) {
     const int k = (int)S.size();
     A.assign((size_t)k * (size_t)k, 0.0);
     b.assign((size_t)k, 0.0);
@@ -153,12 +170,12 @@ inline void build_normal_eq_from_codes(const std::vector<int> &S, const uint16_t
 
     // b = - X^T g  and A = X^T diag(h) X (upper)
     for (int rr = 0; rr < nrows; ++rr) {
-        const int i    = rows[rr];
-        bool      miss = false;
+        const int i = rows[rr];
+        bool miss = false;
         for (int c = 0; c < k; ++c) {
-            const int      f     = S[c];
-            const uint16_t code  = Xb[(size_t)i * (size_t)P + (size_t)f];
-            const double   x_val = x_from_code_variable(f, code, ctx);
+            const int f = S[c];
+            const uint16_t code = Xb[(size_t)i * (size_t)P + (size_t)f];
+            const double x_val = x_from_code_variable(f, code, ctx);
             if (!std::isfinite(x_val)) {
                 miss = true;
                 break;
@@ -173,12 +190,15 @@ inline void build_normal_eq_from_codes(const std::vector<int> &S, const uint16_t
         const double hi = (double)h[i];
         for (int r = 0; r < k; ++r) {
             const double hrx = hi * xi[(size_t)r];
-            for (int c = r; c < k; ++c) A[(size_t)r * (size_t)k + (size_t)c] += hrx * xi[(size_t)c];
+            for (int c = r; c < k; ++c)
+                A[(size_t)r * (size_t)k + (size_t)c] += hrx * xi[(size_t)c];
         }
     }
     // symmetrize + ridge
     for (int r = 0; r < k; ++r) {
-        for (int c = r + 1; c < k; ++c) A[(size_t)c * (size_t)k + (size_t)r] = A[(size_t)r * (size_t)k + (size_t)c];
+        for (int c = r + 1; c < k; ++c)
+            A[(size_t)c * (size_t)k + (size_t)r] =
+                A[(size_t)r * (size_t)k + (size_t)c];
         A[(size_t)r * (size_t)k + (size_t)r] += ridge_plus_lambda;
     }
 }
@@ -186,10 +206,9 @@ inline void build_normal_eq_from_codes(const std::vector<int> &S, const uint16_t
 // ============================================================================
 // Best split along projection z = w^T x with missing-policy search
 // ============================================================================
-inline std::tuple<double, double, bool> best_split_on_projection(const std::vector<double> &z, const double *g,
-                                                                 const double *h, int N,
-                                                                 const std::vector<uint8_t> &miss_mask,
-                                                                 const SplitHyper           &hyp) {
+inline std::tuple<double, double, bool> best_split_on_projection(
+    const std::vector<double>& z, const double* g, const double* h, int N,
+    const std::vector<uint8_t>& miss_mask, const SplitHyper& hyp) {
     // Collect finite indices & missing aggregates
     std::vector<int> idx;
     idx.reserve(N);
@@ -206,22 +225,23 @@ inline std::tuple<double, double, bool> best_split_on_projection(const std::vect
     if (nf < 4) return {detail::NEG_INF, 0.0, true};
 
     // sort by z
-    std::sort(idx.begin(), idx.end(), [&](int i, int j) { return z[i] < z[j]; });
+    std::sort(idx.begin(), idx.end(),
+              [&](int i, int j) { return z[i] < z[j]; });
 
     // prefix on sorted finite
     std::vector<double> pg(nf), ph(nf);
     for (int k = 0; k < nf; ++k) {
         const int i = idx[k];
-        pg[k]       = (double)g[i] + (k ? pg[k - 1] : 0.0);
-        ph[k]       = (double)h[i] + (k ? ph[k - 1] : 0.0);
+        pg[k] = (double)g[i] + (k ? pg[k - 1] : 0.0);
+        ph[k] = (double)h[i] + (k ? ph[k - 1] : 0.0);
     }
 
-    const double gtot   = pg[nf - 1] + gm;
-    const double htot   = ph[nf - 1] + hm;
+    const double gtot = pg[nf - 1] + gm;
+    const double htot = ph[nf - 1] + hm;
     const double parent = splitx::leaf_obj(gtot, htot, hyp.lambda_, hyp.alpha_);
 
     double best_gain = detail::NEG_INF, best_thr = 0.0;
-    bool   best_mleft = true;
+    bool best_mleft = true;
 
     for (int k = 1; k < nf; ++k) {
         const int iL = idx[k - 1], iR = idx[k];
@@ -238,12 +258,13 @@ inline std::tuple<double, double, bool> best_split_on_projection(const std::vect
         {
             const double HL = hlb + hm, HR = hrb;
             const double GL = glb + gm, GR = grb;
-            const int    nL   = k + Cm;
-            const int    nR   = nf - k;
-            const double gain = splitx::split_gain_from_parent(parent, GL, HL, GR, HR, nL, nR, hyp);
+            const int nL = k + Cm;
+            const int nR = nf - k;
+            const double gain = splitx::split_gain_from_parent(
+                parent, GL, HL, GR, HR, nL, nR, hyp);
             if (gain > best_gain) {
-                best_gain  = gain;
-                best_thr   = thr;
+                best_gain = gain;
+                best_thr = thr;
                 best_mleft = true;
             }
         }
@@ -251,12 +272,13 @@ inline std::tuple<double, double, bool> best_split_on_projection(const std::vect
         {
             const double HL = hlb, HR = hrb + hm;
             const double GL = glb, GR = grb + gm;
-            const int    nL   = k;
-            const int    nR   = (nf - k) + Cm;
-            const double gain = splitx::split_gain_from_parent(parent, GL, HL, GR, HR, nL, nR, hyp);
+            const int nL = k;
+            const int nR = (nf - k) + Cm;
+            const double gain = splitx::split_gain_from_parent(
+                parent, GL, HL, GR, HR, nL, nR, hyp);
             if (gain > best_gain) {
-                best_gain  = gain;
-                best_thr   = thr;
+                best_gain = gain;
+                best_thr = thr;
                 best_mleft = false;
             }
         }
@@ -267,13 +289,14 @@ inline std::tuple<double, double, bool> best_split_on_projection(const std::vect
 // ============================================================================
 // UPDATED: Build 1-D histogram on z = w^T x using variable bin centers
 // ============================================================================
-inline void build_projection_hist_from_codes(const std::vector<int> &S, const std::vector<double> &w,
-                                             const uint16_t *Xb, const int *rows, int nrows, int P,
-                                             const SplitContext &ctx, const double *g, const double *h,
-                                             std::vector<double> &Gz, std::vector<double> &Hz, std::vector<int> &Cz,
-                                             double &Gm, double &Hm, int &Cm, double &zmin, double &zmax) {
-    Gm = Hm      = 0.0;
-    Cm           = 0;
+inline void build_projection_hist_from_codes(
+    const std::vector<int>& S, const std::vector<double>& w,
+    QuantizedCodesView Xb, const int* rows, int nrows, int P,
+    const SplitContext& ctx, const double* g, const double* h,
+    std::vector<double>& Gz, std::vector<double>& Hz, std::vector<int>& Cz,
+    double& Gm, double& Hm, int& Cm, double& zmin, double& zmax) {
+    Gm = Hm = 0.0;
+    Cm = 0;
     const int Bz = (ctx.Bz > 0) ? ctx.Bz : 256;
 
     if (nrows <= 0 || S.empty()) {
@@ -286,19 +309,19 @@ inline void build_projection_hist_from_codes(const std::vector<int> &S, const st
     }
 
     // pass 1: compute z, find zmin/zmax
-    std::vector<double>  zbuf((size_t)nrows, 0.0);
+    std::vector<double> zbuf((size_t)nrows, 0.0);
     std::vector<uint8_t> finite((size_t)nrows, 1u);
     zmin = std::numeric_limits<double>::infinity();
     zmax = -std::numeric_limits<double>::infinity();
 
     for (int rr = 0; rr < nrows; ++rr) {
-        const int i    = rows[rr];
-        bool      miss = false;
-        double    acc  = 0.0;
+        const int i = rows[rr];
+        bool miss = false;
+        double acc = 0.0;
         for (size_t j = 0; j < S.size(); ++j) {
-            const int      f     = S[j];
-            const uint16_t code  = Xb[(size_t)i * (size_t)P + (size_t)f];
-            const double   x_val = x_from_code_variable(f, code, ctx);
+            const int f = S[j];
+            const uint16_t code = Xb[(size_t)i * (size_t)P + (size_t)f];
+            const double x_val = x_from_code_variable(f, code, ctx);
             if (!std::isfinite(x_val)) {
                 miss = true;
                 break;
@@ -312,8 +335,8 @@ inline void build_projection_hist_from_codes(const std::vector<int> &S, const st
             ++Cm;
         } else {
             zbuf[(size_t)rr] = acc;
-            zmin             = std::min(zmin, acc);
-            zmax             = std::max(zmax, acc);
+            zmin = std::min(zmin, acc);
+            zmax = std::max(zmax, acc);
         }
     }
 
@@ -332,9 +355,9 @@ inline void build_projection_hist_from_codes(const std::vector<int> &S, const st
 
     for (int rr = 0; rr < nrows; ++rr) {
         if (!finite[(size_t)rr]) continue;
-        const int    i  = rows[rr];
-        const double z  = zbuf[(size_t)rr];
-        int          bz = (int)std::floor((z - zmin) * invw);
+        const int i = rows[rr];
+        const double z = zbuf[(size_t)rr];
+        int bz = (int)std::floor((z - zmin) * invw);
         if (bz < 0)
             bz = 0;
         else if (bz >= Bz)
@@ -350,9 +373,10 @@ namespace detail {
 inline bool is_fin(double x) { return std::isfinite(x); }
 
 // variance of a column ignoring NaNs; returns {count, mean, var}
-inline std::tuple<int, double, double> col_var_ignore_nan(const double *x, int n) {
-    int    cnt = 0;
-    double sx  = 0.0;
+inline std::tuple<int, double, double> col_var_ignore_nan(const double* x,
+                                                          int n) {
+    int cnt = 0;
+    double sx = 0.0;
     for (int i = 0; i < n; ++i) {
         const double xi = x[i];
         if (is_fin(xi)) {
@@ -361,8 +385,8 @@ inline std::tuple<int, double, double> col_var_ignore_nan(const double *x, int n
         }
     }
     if (cnt < 2) return {cnt, 0.0, 0.0};
-    const double mx  = sx / (double)cnt;
-    double       sxx = 0.0;
+    const double mx = sx / (double)cnt;
+    double sxx = 0.0;
     for (int i = 0; i < n; ++i) {
         const double xi = x[i];
         if (!is_fin(xi)) continue;
@@ -374,7 +398,9 @@ inline std::tuple<int, double, double> col_var_ignore_nan(const double *x, int n
 }
 
 // |corr(x,g)| per column, ignoring NaNs in x
-inline std::vector<double> abs_corr_cols_ignore_nan(const double *const *Xcols, int N, int P, const double *g) {
+inline std::vector<double> abs_corr_cols_ignore_nan(const double* const* Xcols,
+                                                    int N, int P,
+                                                    const double* g) {
     std::vector<double> out((size_t)P, 0.0);
 
     // global mean of g
@@ -383,12 +409,12 @@ inline std::vector<double> abs_corr_cols_ignore_nan(const double *const *Xcols, 
     const double mg = (N > 0 ? sg / (double)N : 0.0);
 
     // first pass: counts and means
-    std::vector<int>    cnt((size_t)P, 0);
+    std::vector<int> cnt((size_t)P, 0);
     std::vector<double> sx((size_t)P, 0.0);
     for (int j = 0; j < P; ++j) {
-        const double *x = Xcols[j];
-        int           c = 0;
-        double        s = 0.0;
+        const double* x = Xcols[j];
+        int c = 0;
+        double s = 0.0;
         for (int i = 0; i < N; ++i) {
             const double xi = x[i];
             if (is_fin(xi)) {
@@ -397,7 +423,7 @@ inline std::vector<double> abs_corr_cols_ignore_nan(const double *const *Xcols, 
             }
         }
         cnt[(size_t)j] = c;
-        sx[(size_t)j]  = s;
+        sx[(size_t)j] = s;
     }
 
     // second pass: corr components
@@ -407,9 +433,9 @@ inline std::vector<double> abs_corr_cols_ignore_nan(const double *const *Xcols, 
             out[(size_t)j] = 0.0;
             continue;
         }
-        const double *x   = Xcols[j];
-        const double  mx  = sx[(size_t)j] / (double)c;
-        double        sxx = 0.0, sgg = 0.0, sxg = 0.0;
+        const double* x = Xcols[j];
+        const double mx = sx[(size_t)j] / (double)c;
+        double sxx = 0.0, sgg = 0.0, sxg = 0.0;
         for (int i = 0; i < N; ++i) {
             const double xi = x[i];
             if (!is_fin(xi)) continue;
@@ -420,21 +446,22 @@ inline std::vector<double> abs_corr_cols_ignore_nan(const double *const *Xcols, 
             sxg += dx * dg;
         }
         const double denom = std::sqrt(sxx * sgg) + 1e-12;
-        out[(size_t)j]     = (denom < 1e-12 ? 0.0 : std::abs(sxg / denom));
+        out[(size_t)j] = (denom < 1e-12 ? 0.0 : std::abs(sxg / denom));
     }
     return out;
 }
 
 // Build 2x2 normal equations (interaction-seeded)
-inline void build_2x2_Ab(const double *x1, const double *x2, const double *g, const double *h, int N,
-                         double ridge_plus_lambda, double &A00, double &A01, double &A11, double &b0, double &b1,
-                         int &n_finite_rows) {
+inline void build_2x2_Ab(const double* x1, const double* x2, const double* g,
+                         const double* h, int N, double ridge_plus_lambda,
+                         double& A00, double& A01, double& A11, double& b0,
+                         double& b1, int& n_finite_rows) {
     A00 = A01 = A11 = 0.0;
-    b0 = b1       = 0.0;
+    b0 = b1 = 0.0;
     n_finite_rows = 0;
     for (int i = 0; i < N; ++i) {
         const double xi = x1[i], yi = x2[i];
-        if (!is_fin(xi) && !is_fin(yi)) continue; // both missing => skip
+        if (!is_fin(xi) && !is_fin(yi)) continue;  // both missing => skip
         const double gi = (double)g[i], hi = (double)h[i];
         if (is_fin(xi)) {
             b0 -= xi * gi;
@@ -454,24 +481,25 @@ inline void build_2x2_Ab(const double *x1, const double *x2, const double *g, co
 }
 
 // Solve 2x2 system
-inline bool solve_2x2(double A00, double A01, double A11, double b0, double b1, double &w0, double &w1) {
+inline bool solve_2x2(double A00, double A01, double A11, double b0, double b1,
+                      double& w0, double& w1) {
     const double det = A00 * A11 - A01 * A01;
     if (!(std::abs(det) > 1e-18)) return false;
     const double inv = 1.0 / det;
-    w0               = (A11 * b0 - A01 * b1) * inv;
-    w1               = (-A01 * b0 + A00 * b1) * inv;
+    w0 = (A11 * b0 - A01 * b1) * inv;
+    w1 = (-A01 * b0 + A00 * b1) * inv;
     return std::isfinite(w0) && std::isfinite(w1);
 }
 
 // Best split along z with missing→left/right (interaction path)
-inline std::tuple<double, double, bool> best_split_on_projection(const std::vector<double>  &z,
-                                                                 const std::vector<uint8_t> &miss, const double *g,
-                                                                 const double *h, int N, const SplitHyper &hyp) {
+inline std::tuple<double, double, bool> best_split_on_projection(
+    const std::vector<double>& z, const std::vector<uint8_t>& miss,
+    const double* g, const double* h, int N, const SplitHyper& hyp) {
     // Collect finite slice and missing aggregates
     std::vector<int> idx;
     idx.reserve((size_t)N);
     double gm = 0.0, hm = 0.0;
-    int    Cm = 0;
+    int Cm = 0;
     for (int i = 0; i < N; ++i) {
         if (miss[(size_t)i]) {
             gm += (double)g[i];
@@ -484,27 +512,28 @@ inline std::tuple<double, double, bool> best_split_on_projection(const std::vect
     if (nf < 4) return {-1.0, 0.0, true};
 
     // sort by z (finite only)
-    std::sort(idx.begin(), idx.end(), [&](int a, int b) { return z[(size_t)a] < z[(size_t)b]; });
+    std::sort(idx.begin(), idx.end(),
+              [&](int a, int b) { return z[(size_t)a] < z[(size_t)b]; });
 
     // prefix sums on sorted finite
     std::vector<double> pg((size_t)nf), ph((size_t)nf);
     for (int k = 0; k < nf; ++k) {
-        const int i   = idx[(size_t)k];
+        const int i = idx[(size_t)k];
         pg[(size_t)k] = (double)g[i] + (k ? pg[(size_t)k - 1] : 0.0);
         ph[(size_t)k] = (double)h[i] + (k ? ph[(size_t)k - 1] : 0.0);
     }
 
-    const double gtot   = pg[(size_t)nf - 1] + gm;
-    const double htot   = ph[(size_t)nf - 1] + hm;
+    const double gtot = pg[(size_t)nf - 1] + gm;
+    const double htot = ph[(size_t)nf - 1] + hm;
     const double parent = splitx::leaf_obj(gtot, htot, hyp.lambda_, hyp.alpha_);
 
     double best_gain = -1.0, best_thr = 0.0;
-    bool   best_mleft = true;
+    bool best_mleft = true;
 
     for (int k = 1; k < nf; ++k) {
-        const int    il = idx[(size_t)k - 1], ir = idx[(size_t)k];
+        const int il = idx[(size_t)k - 1], ir = idx[(size_t)k];
         const double zl = z[(size_t)il], zr = z[(size_t)ir];
-        if (!(zr > zl + 1e-15)) continue; // tie
+        if (!(zr > zl + 1e-15)) continue;  // tie
 
         const double thr = 0.5 * (zl + zr);
         const double glb = pg[(size_t)k - 1], hlb = ph[(size_t)k - 1];
@@ -514,31 +543,32 @@ inline std::tuple<double, double, bool> best_split_on_projection(const std::vect
         auto eval_dir = [&](bool miss_left) {
             const double HL = hlb + (miss_left ? hm : 0.0);
             const double HR = hrb + (miss_left ? 0.0 : hm);
-            const int    nL = k + (miss_left ? Cm : 0);
-            const int    nR = (nf + Cm) - nL;
+            const int nL = k + (miss_left ? Cm : 0);
+            const int nR = (nf + Cm) - nL;
             const double GL = glb + (miss_left ? gm : 0.0);
             const double GR = grb + (miss_left ? 0.0 : gm);
-            return splitx::split_gain_from_parent(parent, GL, HL, GR, HR, nL, nR, hyp);
+            return splitx::split_gain_from_parent(parent, GL, HL, GR, HR, nL,
+                                                  nR, hyp);
         };
 
         const double gL = eval_dir(true);
         const double gR = eval_dir(false);
         if (gL > best_gain) {
-            best_gain  = gL;
-            best_thr   = thr;
+            best_gain = gL;
+            best_thr = thr;
             best_mleft = true;
         }
         if (gR > best_gain) {
-            best_gain  = gR;
-            best_thr   = thr;
+            best_gain = gR;
+            best_thr = thr;
             best_mleft = false;
         }
     }
     return {best_gain, best_thr, best_mleft};
 }
 
-} // namespace detail
+}  // namespace detail
 
 #undef x_from_code_variable
 
-} // namespace foretree::splitaux
+}  // namespace foretree::splitaux

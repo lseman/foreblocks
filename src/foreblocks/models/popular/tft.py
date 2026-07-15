@@ -1,5 +1,3 @@
-# tft.py
-
 """Temporal Fusion Transformer components.
 
 Full TFT implementation with variable selection networks, Gated Residual Networks
@@ -114,9 +112,9 @@ class VariableSelectionNetwork(nn.Module):
         self.name = name
 
         # Per-variable encoders map each var feature to d_model
-        self.var_encoders = nn.ModuleList(
-            [nn.Linear(d_in_per_var, d_model) for _ in range(num_vars)]
-        )
+        self.var_encoders = nn.ModuleList([
+            nn.Linear(d_in_per_var, d_model) for _ in range(num_vars)
+        ])
 
         # Gating: compute weights over variables
         # Aggregator input is concatenated encodings [B, T, num_vars * d_model]

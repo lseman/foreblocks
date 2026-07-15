@@ -6,7 +6,6 @@ from foreblocks.sequence.mamba import (
     CHUNKED_SSD_TRITON_AVAILABLE,
     RMS_NORM_TRITON_AVAILABLE,
     ROTARY_TRITON_AVAILABLE,
-    FeedForward,
     Mamba2Block,
     chunked_ssd_forward,
     chunked_ssd_forward_reference,
@@ -224,12 +223,6 @@ def test_rms_norm_matches_fallback_on_cuda() -> None:
     y_ref.backward(grad)
     _assert_close(dx_fast, x.grad, atol=1e-6)
     _assert_close(dw_fast, weight.grad, atol=1e-6)
-
-
-def test_feedforward_block_forward() -> None:
-    ff = FeedForward(d_model=32, expansion=8 / 3, dropout=0.0)
-    x = torch.randn(2, 10, 32)
-    assert ff(x).shape == x.shape
 
 
 def test_chunked_ssd_flag_is_boolean() -> None:

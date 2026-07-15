@@ -1,32 +1,28 @@
 #pragma once
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <limits>
-#include <memory>
 #include <numeric>
-#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <tuple>
 #include <utility>
 #include <vector>
 
 #if defined(TREE_ENABLE_STDEXEC)
-#include <exec/static_thread_pool.hpp>
-#include <stdexec/execution.hpp>
-#ifdef FORETREE_EXEC_USE_CUDA
-#include <nvexec/stream_context.cuh>
-#endif
+#    include <exec/static_thread_pool.hpp>
+#    include <stdexec/execution.hpp>
+#    ifdef FORETREE_EXEC_USE_CUDA
+#        include <nvexec/stream_context.cuh>
+#    endif
 #endif
 
 #include "foretree/core/gradient_hist_system.hpp"
+#include "foretree/core/ordered_categorical.hpp"
 #include "foretree/tree/unified_tree.hpp"
 
 namespace foretree {
@@ -38,19 +34,23 @@ namespace execx {
 
 #if defined(TREE_ENABLE_STDEXEC)
 struct Context {
-#ifdef FORETREE_EXEC_USE_CUDA
+#    ifdef FORETREE_EXEC_USE_CUDA
     nvexec::stream_context cuda_ctx;
-    auto                   scheduler() { return cuda_ctx.get_scheduler(); }
-#else
+    auto scheduler() {
+        return cuda_ctx.get_scheduler();
+    }
+#    else
     exec::static_thread_pool pool;
     explicit Context(unsigned threads = std::thread::hardware_concurrency()) : pool(threads ? threads : 1) {}
-    auto scheduler() { return pool.get_scheduler(); }
-#endif
+    auto scheduler() {
+        return pool.get_scheduler();
+    }
+#    endif
 };
 
-template <class F>
-inline void bulk(Context &ctx, int n, F &&fn) {
-    if (n <= 0) return;
+template <class F> inline void bulk(Context& ctx, int n, F&& fn) {
+    if (n <= 0)
+        return;
     if (n == 1) {
         fn(0);
         return;
@@ -63,8 +63,7 @@ inline void bulk(Context &ctx, int n, F &&fn) {
 
     stdexec::sync_wait(std::move(snd));
 }
-template <class F>
-inline void bulk_iota(Context &ctx, int n, F &&fn) {
+template <class F> inline void bulk_iota(Context& ctx, int n, F&& fn) {
     bulk(ctx, n, std::forward<F>(fn));
 }
 #else
@@ -73,14 +72,14 @@ struct Context {
     unsigned threads_ = 1U;
 };
 
-template <class F>
-inline void bulk(Context &, int n, F &&fn) {
-    if (n <= 0) return;
-    for (int i = 0; i < n; ++i) fn(i);
+template <class F> inline void bulk(Context&, int n, F&& fn) {
+    if (n <= 0)
+        return;
+    for (int i = 0; i < n; ++i)
+        fn(i);
 }
 
-template <class F>
-inline void bulk_iota(Context &ctx, int n, F &&fn) {
+template <class F> inline void bulk_iota(Context& ctx, int n, F&& fn) {
     bulk(ctx, n, std::forward<F>(fn));
 }
 #endif
@@ -91,61 +90,81 @@ inline void bulk_iota(Context &ctx, int n, F &&fn) {
 // ForeForest Configuration
 // ============================================================================
 struct ForeForestConfig {
-    enum class Mode { Bagging, GBDT, FWBoost } mode                = Mode::Bagging;
-    enum class Objective { SquaredError, BinaryLogloss, BinaryFocalLoss, HuberError, QuantileError } objective = Objective::SquaredError;
-    double quantile_tau = 0.5;  // Quantile regression level (0-1)
-    int    num_classes    = 1;  // >1 => multiclass C-1 output
-    double scale_pos_weight = 1.0;  // Weight for positive class in binary
-    ClassWeight class_weight = ClassWeight::None;  // Class balancing strategy
-    std::vector<double> custom_class_weights;  // Manual per-class weights (size = num_classes)
+    enum class Mode { Bagging, GBDT, FWBoost } mode = Mode::Bagging;
+    enum class Device { CPU, CUDA, Auto } device = Device::CPU;
+    enum class Objective {
+        SquaredError,
+        BinaryLogloss,
+        BinaryFocalLoss,
+        HuberError,
+        QuantileError
+    } objective = Objective::SquaredError;
+    double quantile_tau = 0.5;                    // Quantile regression level (0-1)
+    int num_classes = 1;                          // >1 => multiclass C-1 output
+    double scale_pos_weight = 1.0;                // Weight for positive class in binary
+    ClassWeight class_weight = ClassWeight::None; // Class balancing strategy
+    std::vector<double> custom_class_weights;     // Manual per-class weights (size = num_classes)
 
-    int      n_estimators  = 100;
-    double   learning_rate = 0.1;
-    uint64_t rng_seed      = 123456789ULL;
+    int n_estimators = 100;
+    double learning_rate = 0.1;
+    uint64_t rng_seed = 123456789ULL;
 
-    double focal_gamma = 2.0;    // For BinaryFocalLoss
-    double huber_delta = 1.0;    // For HuberError
+    double focal_gamma = 2.0; // For BinaryFocalLoss
+    double huber_delta = 1.0; // For HuberError
 
-    HistogramConfig  hist_cfg{};
-    TreeConfig       tree_cfg{};
+    HistogramConfig hist_cfg{};
+    TreeConfig tree_cfg{};
     NeuralLeafConfig neural_cfg{};
 
     double colsample_bytree = 1.0;
     double colsample_bynode = 1.0;
 
     // Bagging
-    double rf_row_subsample   = 1.0;
-    bool   rf_bootstrap       = true;
-    bool   rf_bootstrap_dedup = false;
-    bool   rf_parallel        = true;
+    double rf_row_subsample = 1.0;
+    bool rf_bootstrap = true;
+    bool rf_bootstrap_dedup = false;
+    bool rf_parallel = true;
 
     // Exclusive Feature Bundling (EFB) for sparse/high-cardinality inputs
-    bool   efb_enabled          = false;
+    bool efb_enabled = false;
     double efb_sparse_threshold = 0.2;
-    int    efb_min_nonzero      = 10;
+    int efb_min_nonzero = 10;
     double efb_max_conflict_rate = 0.0; // Allowed conflict rate for EFB
 
+    // Leakage-resistant ordered target statistics for categorical columns.
+    bool ordered_categorical_enabled = false;
+    std::vector<int> categorical_features;
+    int ordered_categorical_permutations = 1;
+    double ordered_categorical_prior = 0.0;
+    double ordered_categorical_prior_weight = 1.0;
+
+    // Permutation-prefix boosting. Each boosting round grows the eligible
+    // prefix until the complete training set participates.
+    bool ordered_boosting_enabled = false;
+    double ordered_boosting_min_prefix = 0.2;
+
     // Boosting
-    double gbdt_row_subsample       = 1.0;
-    bool   gbdt_use_subsample       = false;
-    bool   early_stopping_enabled   = false;
-    int    early_stopping_rounds    = 20;
+    double gbdt_row_subsample = 1.0;
+    bool gbdt_use_subsample = false;
+    bool early_stopping_enabled = false;
+    int early_stopping_rounds = 20;
     double early_stopping_min_delta = 0.0;
+    bool track_train_metric = false;
 
     // Frank-Wolfe / LPBoost-inspired boosting
-    bool   fw_use_subsample      = true;
-    double fw_row_subsample      = 0.8;
-    double fw_nu                 = 0.05;
-    int    fw_line_search_points = 12;
-    double fw_alpha_max          = 3.0;
-    double fw_alpha_tol          = 1e-8;
+    bool fw_use_subsample = true;
+    double fw_row_subsample = 0.8;
+    double fw_nu = 0.05;
+    int fw_line_search_points = 12;
+    double fw_alpha_max = 3.0;
+    double fw_alpha_tol = 1e-8;
 
     // DART
-    bool   dart_enabled      = true;
-    double dart_drop_rate    = 0.1;
-    int    dart_max_drop     = 3;
-    bool   dart_normalize    = true;
-    bool   dart_one_drop_min = true;
+    bool dart_enabled = true;
+    double dart_drop_rate = 0.1;
+    int dart_max_drop = 3;
+    bool dart_normalize = true;
+    bool dart_one_drop_min = true;
 
     int threads = 0;
 };
@@ -157,6 +176,8 @@ class ForeForest {
 public:
     explicit ForeForest(ForeForestConfig cfg)
         : cfg_(std::move(cfg)), rng_(cfg_.rng_seed), ghs_(std::make_unique<GradientHistogramSystem>(cfg_.hist_cfg)),
+          executor_(std::make_shared<ParallelExecutor>(static_cast<unsigned>(
+              cfg_.threads > 0 ? cfg_.threads : static_cast<int>(std::thread::hardware_concurrency())))),
 #ifndef FORETREE_EXEC_USE_CUDA
           ctx_((unsigned)(cfg_.threads > 0 ? cfg_.threads : (int)std::thread::hardware_concurrency()))
 #else
@@ -167,52 +188,94 @@ public:
     }
 
     // Set raw matrix for exact splits (optional, different from neural matrix)
-    void set_raw_matrix(const double *Xraw, const uint8_t *Xmiss_or_null) {
-        Xraw_exact_  = Xraw;
+    void set_raw_matrix(const double* Xraw, const uint8_t* Xmiss_or_null) {
+        Xraw_exact_ = Xraw;
         Xmiss_exact_ = Xmiss_or_null;
     }
 
     // Set raw matrix for neural leaves (typically the same as training data)
-    void set_raw_for_neural(const double *Xraw, const uint8_t *Xmiss) {
-        Xraw_neural_  = Xraw;
+    void set_raw_for_neural(const double* Xraw, const uint8_t* Xmiss) {
+        Xraw_neural_ = Xraw;
         Xmiss_neural_ = Xmiss;
     }
 
-    void fit_complete(const double *X, int N, int P, const double *y) {
+    int num_classes() const {
+        return cfg_.num_classes;
+    }
+
+    void fit_complete(const double* X, int N, int P, const double* y) {
         fit_complete(X, N, P, y, nullptr, 0, 0, nullptr);
     }
 
-    void fit_complete(const double *X, int N, int P, const double *y, const double *X_valid, int N_valid, int P_valid,
-                      const double *y_valid) {
-        if (!X || !y) throw std::invalid_argument("ForeForest: null X or y");
-        if (N <= 0 || P <= 0) throw std::invalid_argument("ForeForest: invalid N or P");
+    void fit_complete(const double* X, int N, int P, const double* y, const double* X_valid, int N_valid, int P_valid,
+                      const double* y_valid) {
+        if (!X || !y)
+            throw std::invalid_argument("ForeForest: null X or y");
+        if (N <= 0 || P <= 0)
+            throw std::invalid_argument("ForeForest: invalid N or P");
         const bool has_valid = (X_valid != nullptr || y_valid != nullptr || N_valid > 0 || P_valid > 0);
         if (has_valid) {
-            if (!X_valid || !y_valid) throw std::invalid_argument("ForeForest: validation X/y must both be provided");
-            if (N_valid <= 0 || P_valid <= 0) throw std::invalid_argument("ForeForest: invalid validation N/P");
-            if (P_valid != P) throw std::invalid_argument("ForeForest: validation P mismatch");
+            if (!X_valid || !y_valid)
+                throw std::invalid_argument("ForeForest: validation X/y must both be provided");
+            if (N_valid <= 0 || P_valid <= 0)
+                throw std::invalid_argument("ForeForest: invalid validation N/P");
+            if (P_valid != P)
+                throw std::invalid_argument("ForeForest: validation P mismatch");
         }
 
-        N_          = N;
+        N_ = N;
         original_P_ = P;
 
-        reset_efb_state_();
-        maybe_build_efb_plan_(X, N, P);
+        ordered_categorical_encoder_.reset();
+        ordered_categorical_active_ = false;
+        std::vector<double> X_fit_ordered;
+        std::vector<double> X_valid_ordered;
+        const double* X_preprocessed = X;
+        const double* X_valid_preprocessed = X_valid;
+        int P_preprocessed = P;
+        if (cfg_.ordered_categorical_enabled) {
+            OrderedCategoricalConfig categorical_config;
+            categorical_config.enabled = true;
+            categorical_config.features = cfg_.categorical_features;
+            categorical_config.permutations = cfg_.ordered_categorical_permutations;
+            categorical_config.prior = cfg_.ordered_categorical_prior;
+            categorical_config.prior_weight = cfg_.ordered_categorical_prior_weight;
+            categorical_config.seed = cfg_.rng_seed;
+            X_fit_ordered = ordered_categorical_encoder_.fit_transform(X, N, P, y, std::move(categorical_config));
+            P_preprocessed = ordered_categorical_encoder_.output_feature_count();
+            X_preprocessed = X_fit_ordered.data();
+            ordered_categorical_active_ = true;
+            if (has_valid) {
+                X_valid_ordered = ordered_categorical_encoder_.transform(X_valid, N_valid, P_valid);
+                X_valid_preprocessed = X_valid_ordered.data();
+            }
+        }
 
-        int                 P_eff       = P;
-        const double       *X_fit       = X;
-        const double       *X_valid_fit = X_valid;
-        int                 P_valid_eff = P_valid;
+        reset_efb_state_();
+        ordered_boosting_order_.clear();
+        if (cfg_.ordered_boosting_enabled) {
+            ordered_boosting_order_.resize(static_cast<size_t>(N));
+            std::iota(ordered_boosting_order_.begin(), ordered_boosting_order_.end(), 0);
+            std::mt19937_64 ordered_generator(cfg_.rng_seed ^ 0xD1B54A32D192ED03ULL);
+            std::shuffle(ordered_boosting_order_.begin(), ordered_boosting_order_.end(), ordered_generator);
+        }
+        efb_input_dim_ = P_preprocessed;
+        maybe_build_efb_plan_(X_preprocessed, N, P_preprocessed);
+
+        int P_eff = P_preprocessed;
+        const double* X_fit = X_preprocessed;
+        const double* X_valid_fit = X_valid_preprocessed;
+        int P_valid_eff = has_valid ? P_preprocessed : 0;
         std::vector<double> X_fit_efb;
         std::vector<double> X_valid_efb;
 
         if (efb_active_) {
-            X_fit_efb = transform_with_efb_(X, N, P);
-            P_eff     = efb_output_dim_();
-            X_fit     = X_fit_efb.data();
+            X_fit_efb = transform_with_efb_(X_preprocessed, N, P_preprocessed);
+            P_eff = efb_output_dim_();
+            X_fit = X_fit_efb.data();
 
             if (has_valid) {
-                X_valid_efb = transform_with_efb_(X_valid, N_valid, P_valid);
+                X_valid_efb = transform_with_efb_(X_valid_preprocessed, N_valid, P_preprocessed);
                 X_valid_fit = X_valid_efb.data();
                 P_valid_eff = P_eff;
             }
@@ -230,14 +293,22 @@ public:
         compute_grad_hess_(y, N, base_score_, init_g, init_h);
         ghs_->fit_bins(X_fit, N, P_eff, init_g.data(), init_h.data());
 
-        // Pre-bin dataset
-        auto pr  = ghs_->prebin_dataset(X_fit, N, P_eff);
-        codes_   = pr.first;
-        miss_id_ = pr.second;
-        std::shared_ptr<std::vector<uint16_t>> valid_codes;
+        // Pre-bin once into the narrowest representation and retain that
+        // representation throughout tree growth and inference.
+        compact_codes_ = ghs_->prebin_dataset_compact(X_fit, N, P_eff);
+        miss_id_ = ghs_->binner()->missing_bin_id("hist");
+#ifdef FORETREE_HAS_CUDA
+        const bool request_cuda = cfg_.device == ForeForestConfig::Device::CUDA ||
+                                  (cfg_.device == ForeForestConfig::Device::Auto && cuda::is_available());
+        cuda_histogram_engine_.reset();
+        if (request_cuda && !cuda::is_available())
+            throw std::runtime_error("ForeForest: no CUDA device is available");
+        if (request_cuda)
+            cuda_histogram_engine_ = std::make_unique<cuda::CudaHistogramEngine>(*compact_codes_);
+#endif
+        QuantizedDatasetPtr valid_codes;
         if (has_valid) {
-            auto pv     = ghs_->prebin_matrix(X_valid_fit, N_valid, P_valid_eff);
-            valid_codes = pv.first;
+            valid_codes = ghs_->prebin_matrix_compact(X_valid_fit, N_valid, P_valid_eff);
         }
 
         // Gradient buffers
@@ -248,8 +319,8 @@ public:
         train_metric_history_.clear();
         valid_metric_history_.clear();
         best_iteration_ = 0;
-        best_score_     = std::numeric_limits<double>::infinity();
-        early_stopped_  = false;
+        best_score_ = std::numeric_limits<double>::infinity();
+        early_stopped_ = false;
         trees_.reserve(cfg_.n_estimators);
         tree_weights_.reserve(cfg_.n_estimators);
         train_metric_history_.reserve(cfg_.n_estimators);
@@ -261,7 +332,7 @@ public:
                 auto valid_margin = predict_from_binned_(*valid_codes, N_valid, P_eff, X_valid_fit);
                 valid_metric_history_.push_back(compute_metric_from_margin_(valid_margin, y_valid, N_valid));
                 best_iteration_ = size();
-                best_score_     = valid_metric_history_.back();
+                best_score_ = valid_metric_history_.back();
             } else {
                 best_iteration_ = size();
             }
@@ -272,73 +343,86 @@ public:
         }
     }
 
-    void fit_complete(const std::vector<double> &X, int N, int P, const std::vector<double> &y) {
-        if ((int)X.size() != N * P) throw std::invalid_argument("ForeForest: X.size != N*P");
-        if ((int)y.size() != N) throw std::invalid_argument("ForeForest: y.size != N");
+    void fit_complete(const std::vector<double>& X, int N, int P, const std::vector<double>& y) {
+        if ((int)X.size() != N * P)
+            throw std::invalid_argument("ForeForest: X.size != N*P");
+        if ((int)y.size() != N)
+            throw std::invalid_argument("ForeForest: y.size != N");
         fit_complete(X.data(), N, P, y.data());
     }
 
-    void fit_complete(const std::vector<double> &X, int N, int P, const std::vector<double> &y,
-                      const std::vector<double> &X_valid, int N_valid, int P_valid,
-                      const std::vector<double> &y_valid) {
-        if ((int)X.size() != N * P) throw std::invalid_argument("ForeForest: X.size != N*P");
-        if ((int)y.size() != N) throw std::invalid_argument("ForeForest: y.size != N");
+    void fit_complete(const std::vector<double>& X, int N, int P, const std::vector<double>& y,
+                      const std::vector<double>& X_valid, int N_valid, int P_valid,
+                      const std::vector<double>& y_valid) {
+        if ((int)X.size() != N * P)
+            throw std::invalid_argument("ForeForest: X.size != N*P");
+        if ((int)y.size() != N)
+            throw std::invalid_argument("ForeForest: y.size != N");
         if ((int)X_valid.size() != N_valid * P_valid)
             throw std::invalid_argument("ForeForest: X_valid.size != N_valid*P_valid");
-        if ((int)y_valid.size() != N_valid) throw std::invalid_argument("ForeForest: y_valid.size != N_valid");
+        if ((int)y_valid.size() != N_valid)
+            throw std::invalid_argument("ForeForest: y_valid.size != N_valid");
         fit_complete(X.data(), N, P, y.data(), X_valid.data(), N_valid, P_valid, y_valid.data());
     }
 
-    std::vector<double> predict(const double *X, int N, int P) const {
-        if (!ghs_->binner()) throw std::runtime_error("ForeForest: model not fitted");
-        if (efb_active_) {
+    std::vector<double> predict(const double* X, int N, int P) const {
+        if (!ghs_->binner())
+            throw std::runtime_error("ForeForest: model not fitted");
+        if (efb_active_ || ordered_categorical_active_) {
             if (P != original_P_)
                 throw std::invalid_argument("ForeForest: P mismatch (expected original feature count)");
-            std::vector<double> X_eff = transform_with_efb_(X, N, P);
-            auto                pr    = ghs_->prebin_matrix(X_eff.data(), N, P_);
-            auto                out   = predict_from_binned_(*pr.first, N, P_, X_eff.data());
+            std::vector<double> X_eff = transform_input_(X, N, P);
+            auto codes = ghs_->binner()->prebin_compact(X_eff.data(), N, P_, "hist", -1);
+            auto out = predict_from_binned_(*codes, N, P_, X_eff.data());
             return finalize_prediction_(std::move(out), /*apply_link=*/true);
         }
-        if (P != P_) throw std::invalid_argument("ForeForest: P mismatch");
+        if (P != P_)
+            throw std::invalid_argument("ForeForest: P mismatch");
 
-        auto pr  = ghs_->prebin_matrix(X, N, P);
-        auto out = predict_from_binned_(*pr.first, N, P, X); // Pass X for neural leaves
+        auto codes = ghs_->binner()->prebin_compact(X, N, P, "hist", -1);
+        auto out = predict_from_binned_(*codes, N, P, X); // Pass X for neural leaves
         return finalize_prediction_(std::move(out), /*apply_link=*/true);
     }
 
-    std::vector<double> predict(const std::vector<double> &X, int N, int P) const { return predict(X.data(), N, P); }
+    std::vector<double> predict(const std::vector<double>& X, int N, int P) const {
+        return predict(X.data(), N, P);
+    }
 
-    std::vector<double> predict_margin(const double *X, int N, int P) const {
-        if (!ghs_->binner()) throw std::runtime_error("ForeForest: model not fitted");
-        if (efb_active_) {
+    std::vector<double> predict_margin(const double* X, int N, int P) const {
+        if (!ghs_->binner())
+            throw std::runtime_error("ForeForest: model not fitted");
+        if (efb_active_ || ordered_categorical_active_) {
             if (P != original_P_)
                 throw std::invalid_argument("ForeForest: P mismatch (expected original feature count)");
-            std::vector<double> X_eff = transform_with_efb_(X, N, P);
-            auto                pr    = ghs_->prebin_matrix(X_eff.data(), N, P_);
-            auto                out   = predict_from_binned_(*pr.first, N, P_, X_eff.data());
+            std::vector<double> X_eff = transform_input_(X, N, P);
+            auto codes = ghs_->binner()->prebin_compact(X_eff.data(), N, P_, "hist", -1);
+            auto out = predict_from_binned_(*codes, N, P_, X_eff.data());
             return finalize_prediction_(std::move(out), /*apply_link=*/false);
         }
-        if (P != P_) throw std::invalid_argument("ForeForest: P mismatch");
+        if (P != P_)
+            throw std::invalid_argument("ForeForest: P mismatch");
 
-        auto pr  = ghs_->prebin_matrix(X, N, P);
-        auto out = predict_from_binned_(*pr.first, N, P, X);
+        auto codes = ghs_->binner()->prebin_compact(X, N, P, "hist", -1);
+        auto out = predict_from_binned_(*codes, N, P, X);
         return finalize_prediction_(std::move(out), /*apply_link=*/false);
     }
 
-    std::vector<double> predict_margin(const std::vector<double> &X, int N, int P) const {
+    std::vector<double> predict_margin(const std::vector<double>& X, int N, int P) const {
         return predict_margin(X.data(), N, P);
     }
 
-    std::vector<double> predict_contrib(const double *X, int N, int P) const {
-        if (!ghs_->binner()) throw std::runtime_error("ForeForest: model not fitted");
-        if (efb_active_) {
-            throw std::runtime_error("ForeForest: TreeSHAP is not supported when EFB is enabled");
+    std::vector<double> predict_contrib(const double* X, int N, int P) const {
+        if (!ghs_->binner())
+            throw std::runtime_error("ForeForest: model not fitted");
+        if (efb_active_ || ordered_categorical_active_) {
+            throw std::runtime_error("ForeForest: TreeSHAP is not supported with transformed categorical/EFB features");
         }
-        if (P != P_) throw std::invalid_argument("ForeForest: P mismatch");
+        if (P != P_)
+            throw std::invalid_argument("ForeForest: P mismatch");
 
         auto pr = ghs_->prebin_matrix(X, N, P);
         int K_ = std::max(cfg_.num_classes - 1, 1);
-        
+
         if (K_ <= 1) {
             // Scalar path: P+1 contributions
             std::vector<double> out(static_cast<size_t>(N) * static_cast<size_t>(P + 1), 0.0);
@@ -347,12 +431,14 @@ public:
             for (size_t t = 0; t < trees_.size(); ++t) {
                 const double wt = tree_weights_[t];
                 contrib = trees_[t].predict_contrib(*pr.first, N, P, X);
-                for (size_t i = 0; i < out.size(); ++i) out[i] += wt * contrib[i];
+                for (size_t i = 0; i < out.size(); ++i)
+                    out[i] += wt * contrib[i];
             }
 
             if (cfg_.mode == ForeForestConfig::Mode::Bagging && !trees_.empty()) {
                 const double invT = 1.0 / static_cast<double>(trees_.size());
-                for (double &v : out) v *= invT;
+                for (double& v : out)
+                    v *= invT;
             } else if (cfg_.mode == ForeForestConfig::Mode::GBDT || cfg_.mode == ForeForestConfig::Mode::FWBoost) {
                 for (int i = 0; i < N; ++i) {
                     out[static_cast<size_t>(i) * static_cast<size_t>(P + 1) + static_cast<size_t>(P)] += base_score_;
@@ -361,36 +447,37 @@ public:
 
             return out;
         }
-        
+
         // Multiclass: K*(P+1) per sample
         std::vector<double> out(static_cast<size_t>(N) * static_cast<size_t>(K_) * static_cast<size_t>(P + 1), 0.0);
         std::vector<double> contrib;
 
         for (size_t t = 0; t < trees_.size(); ++t) {
             const double wt = tree_weights_[t];
-            int tree_class = static_cast<int>(t) % K_;  // round-robin
+            int tree_class = static_cast<int>(t) % K_; // round-robin
             contrib = trees_[t].predict_contrib(*pr.first, N, P, X);
             // Accumulate into class tree_class's SHAP block
             for (int i = 0; i < N; ++i) {
                 for (int j = 0; j <= P; ++j) {
-                    size_t out_idx = static_cast<size_t>(i) * static_cast<size_t>(K_) * static_cast<size_t>(P + 1)
-                                   + static_cast<size_t>(tree_class) * static_cast<size_t>(P + 1)
-                                   + static_cast<size_t>(j);
-                    out[out_idx] += wt * contrib[static_cast<size_t>(i) * static_cast<size_t>(P + 1) + static_cast<size_t>(j)];
+                    size_t out_idx = static_cast<size_t>(i) * static_cast<size_t>(K_) * static_cast<size_t>(P + 1) +
+                                     static_cast<size_t>(tree_class) * static_cast<size_t>(P + 1) +
+                                     static_cast<size_t>(j);
+                    out[out_idx] +=
+                        wt * contrib[static_cast<size_t>(i) * static_cast<size_t>(P + 1) + static_cast<size_t>(j)];
                 }
             }
         }
 
         if (cfg_.mode == ForeForestConfig::Mode::Bagging && !trees_.empty()) {
             const double invT = 1.0 / static_cast<double>(trees_.size());
-            for (double &v : out) v *= invT;
+            for (double& v : out)
+                v *= invT;
         } else if (cfg_.mode == ForeForestConfig::Mode::GBDT || cfg_.mode == ForeForestConfig::Mode::FWBoost) {
             // Add base_score to bias (last element) of each class
             for (int i = 0; i < N; ++i) {
                 for (int c = 0; c < K_; ++c) {
-                    size_t bias_idx = static_cast<size_t>(i) * static_cast<size_t>(K_) * static_cast<size_t>(P + 1)
-                                    + static_cast<size_t>(c) * static_cast<size_t>(P + 1)
-                                    + static_cast<size_t>(P);
+                    size_t bias_idx = static_cast<size_t>(i) * static_cast<size_t>(K_) * static_cast<size_t>(P + 1) +
+                                      static_cast<size_t>(c) * static_cast<size_t>(P + 1) + static_cast<size_t>(P);
                     out[bias_idx] += base_score_;
                 }
             }
@@ -399,7 +486,7 @@ public:
         return out;
     }
 
-    std::vector<double> predict_contrib(const std::vector<double> &X, int N, int P) const {
+    std::vector<double> predict_contrib(const std::vector<double>& X, int N, int P) const {
         return predict_contrib(X.data(), N, P);
     }
 
@@ -407,20 +494,23 @@ public:
         std::vector<double> agg(P_, 0.0);
         for (size_t t = 0; t < trees_.size(); ++t) {
             const double wt = tree_weights_[t];
-            const auto  &g  = trees_[t].feature_importance_gain();
-            const int    m  = std::min<int>(P_, (int)g.size());
-            for (int j = 0; j < m; ++j) agg[j] += wt * g[j];
+            const auto& g = trees_[t].feature_importance_gain();
+            const int m = std::min<int>(P_, (int)g.size());
+            for (int j = 0; j < m; ++j)
+                agg[j] += wt * g[j];
         }
         return agg;
     }
-    // Cover: sum of hessian (weight) at nodes using each feature, weighted by tree weight
+    // Cover: sum of hessian (weight) at nodes using each feature, weighted by
+    // tree weight
     std::vector<double> feature_importance_cover() const {
         std::vector<double> agg(P_, 0.0);
         for (size_t t = 0; t < trees_.size(); ++t) {
             const double wt = tree_weights_[t];
-            const auto  &c  = trees_[t].feature_importance_cover();
-            const int    m  = std::min<int>(P_, (int)c.size());
-            for (int j = 0; j < m; ++j) agg[j] += wt * c[j];
+            const auto& c = trees_[t].feature_importance_cover();
+            const int m = std::min<int>(P_, (int)c.size());
+            for (int j = 0; j < m; ++j)
+                agg[j] += wt * c[j];
         }
         return agg;
     }
@@ -429,68 +519,103 @@ public:
         std::vector<int> agg(P_, 0);
         for (size_t t = 0; t < trees_.size(); ++t) {
             const double wt = tree_weights_[t];
-            const auto  &f  = trees_[t].feature_importance_frequency();
-            const int    m  = std::min<int>(P_, (int)f.size());
-            for (int j = 0; j < m; ++j) agg[j] += static_cast<int>(wt * f[j]);
+            const auto& f = trees_[t].feature_importance_frequency();
+            const int m = std::min<int>(P_, (int)f.size());
+            for (int j = 0; j < m; ++j)
+                agg[j] += static_cast<int>(wt * f[j]);
         }
         return agg;
     }
 
-    int                        size() const { return (int)trees_.size(); }
-    const std::vector<double> &train_metric_history() const { return train_metric_history_; }
-    const std::vector<double> &valid_metric_history() const { return valid_metric_history_; }
-    int                        best_iteration() const { return best_iteration_; }
-    double                     best_score() const { return best_score_; }
-    bool                       early_stopped() const { return early_stopped_; }
-    std::string                eval_metric_name() const {
-        if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) return "logloss";
-        if (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) return "focal_loss";
-        if (cfg_.objective == ForeForestConfig::Objective::HuberError) return "huber_loss";
-        if (cfg_.objective == ForeForestConfig::Objective::QuantileError) return "quantile_loss";
+    int size() const {
+        return (int)trees_.size();
+    }
+    const std::vector<double>& train_metric_history() const {
+        return train_metric_history_;
+    }
+    const std::vector<double>& valid_metric_history() const {
+        return valid_metric_history_;
+    }
+    int best_iteration() const {
+        return best_iteration_;
+    }
+    double best_score() const {
+        return best_score_;
+    }
+    bool early_stopped() const {
+        return early_stopped_;
+    }
+    std::string eval_metric_name() const {
+        if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss)
+            return "logloss";
+        if (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss)
+            return "focal_loss";
+        if (cfg_.objective == ForeForestConfig::Objective::HuberError)
+            return "huber_loss";
+        if (cfg_.objective == ForeForestConfig::Objective::QuantileError)
+            return "quantile_loss";
         return "mse";
     }
 
     void clear() {
         trees_.clear();
         tree_weights_.clear();
-        codes_.reset();
+        compact_codes_.reset();
+#ifdef FORETREE_HAS_CUDA
+        cuda_histogram_engine_.reset();
+#endif
         train_metric_history_.clear();
         valid_metric_history_.clear();
         best_iteration_ = 0;
-        best_score_     = std::numeric_limits<double>::infinity();
-        early_stopped_  = false;
+        best_score_ = std::numeric_limits<double>::infinity();
+        early_stopped_ = false;
         N_ = P_ = original_P_ = 0;
-        base_score_           = 0.0;
-        Xraw_exact_           = nullptr;
-        Xmiss_exact_          = nullptr;
-        Xraw_neural_          = nullptr;
-        Xmiss_neural_         = nullptr;
+        base_score_ = 0.0;
+        Xraw_exact_ = nullptr;
+        Xmiss_exact_ = nullptr;
+        Xraw_neural_ = nullptr;
+        Xmiss_neural_ = nullptr;
         reset_efb_state_();
+        ordered_categorical_encoder_.reset();
+        ordered_categorical_active_ = false;
+        ordered_boosting_order_.clear();
         ghs_ = std::make_unique<GradientHistogramSystem>(cfg_.hist_cfg);
     }
 
 private:
     void validate_config_() {
+#ifndef FORETREE_HAS_CUDA
+        if (cfg_.device == ForeForestConfig::Device::CUDA) {
+            throw std::invalid_argument("ForeForest: CUDA requested but TREE_ENABLE_CUDA_BACKEND is "
+                                        "disabled");
+        }
+#endif
         cfg_.dart_drop_rate = std::clamp(cfg_.dart_drop_rate, 0.0, 1.0);
-        cfg_.dart_max_drop  = std::max(0, cfg_.dart_max_drop);
+        cfg_.dart_max_drop = std::max(0, cfg_.dart_max_drop);
 
-        if (cfg_.dart_enabled && cfg_.dart_max_drop == 0 && cfg_.dart_one_drop_min) { cfg_.dart_max_drop = 1; }
+        if (cfg_.dart_enabled && cfg_.dart_max_drop == 0 && cfg_.dart_one_drop_min) {
+            cfg_.dart_max_drop = 1;
+        }
 
-        cfg_.colsample_bytree         = std::clamp(cfg_.colsample_bytree, 0.0, 1.0);
-        cfg_.colsample_bynode         = std::clamp(cfg_.colsample_bynode, 0.0, 1.0);
-        cfg_.rf_row_subsample         = std::clamp(cfg_.rf_row_subsample, 0.0, 1.0);
-        cfg_.gbdt_row_subsample       = std::clamp(cfg_.gbdt_row_subsample, 0.0, 1.0);
-        cfg_.fw_row_subsample         = std::clamp(cfg_.fw_row_subsample, 0.0, 1.0);
-        cfg_.fw_nu                    = std::max(0.0, cfg_.fw_nu);
-        cfg_.fw_line_search_points    = std::max(2, cfg_.fw_line_search_points);
-        cfg_.fw_alpha_max             = std::max(0.0, cfg_.fw_alpha_max);
-        cfg_.fw_alpha_tol             = std::max(0.0, cfg_.fw_alpha_tol);
-        cfg_.early_stopping_rounds    = std::max(1, cfg_.early_stopping_rounds);
+        cfg_.colsample_bytree = std::clamp(cfg_.colsample_bytree, 0.0, 1.0);
+        cfg_.colsample_bynode = std::clamp(cfg_.colsample_bynode, 0.0, 1.0);
+        cfg_.rf_row_subsample = std::clamp(cfg_.rf_row_subsample, 0.0, 1.0);
+        cfg_.gbdt_row_subsample = std::clamp(cfg_.gbdt_row_subsample, 0.0, 1.0);
+        cfg_.fw_row_subsample = std::clamp(cfg_.fw_row_subsample, 0.0, 1.0);
+        cfg_.fw_nu = std::max(0.0, cfg_.fw_nu);
+        cfg_.fw_line_search_points = std::max(2, cfg_.fw_line_search_points);
+        cfg_.fw_alpha_max = std::max(0.0, cfg_.fw_alpha_max);
+        cfg_.fw_alpha_tol = std::max(0.0, cfg_.fw_alpha_tol);
+        cfg_.early_stopping_rounds = std::max(1, cfg_.early_stopping_rounds);
         cfg_.early_stopping_min_delta = std::max(0.0, cfg_.early_stopping_min_delta);
-        cfg_.efb_sparse_threshold     = std::clamp(cfg_.efb_sparse_threshold, 0.0, 1.0);
-        cfg_.efb_min_nonzero          = std::max(1, cfg_.efb_min_nonzero);
-        cfg_.efb_max_conflict_rate    = std::clamp(cfg_.efb_max_conflict_rate, 0.0, 1.0);
-        bool is_binary = (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss || cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss);
+        cfg_.efb_sparse_threshold = std::clamp(cfg_.efb_sparse_threshold, 0.0, 1.0);
+        cfg_.efb_min_nonzero = std::max(1, cfg_.efb_min_nonzero);
+        cfg_.efb_max_conflict_rate = std::clamp(cfg_.efb_max_conflict_rate, 0.0, 1.0);
+        cfg_.ordered_categorical_permutations = std::max(1, cfg_.ordered_categorical_permutations);
+        cfg_.ordered_categorical_prior_weight = std::max(1e-12, cfg_.ordered_categorical_prior_weight);
+        cfg_.ordered_boosting_min_prefix = std::clamp(cfg_.ordered_boosting_min_prefix, 0.01, 1.0);
+        bool is_binary = (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss ||
+                          cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss);
         if (is_binary && cfg_.mode != ForeForestConfig::Mode::GBDT) {
             throw std::invalid_argument("ForeForest: Binary objectives require GBDT mode");
         }
@@ -499,38 +624,58 @@ private:
         }
         if (cfg_.mode == ForeForestConfig::Mode::FWBoost &&
             cfg_.objective != ForeForestConfig::Objective::SquaredError) {
-            throw std::invalid_argument("ForeForest: FWBoost currently supports SquaredError objective only");
+            throw std::invalid_argument("ForeForest: FWBoost currently supports SquaredError objective "
+                                        "only");
         }
         if (cfg_.objective == ForeForestConfig::Objective::QuantileError && cfg_.mode != ForeForestConfig::Mode::GBDT) {
             throw std::invalid_argument("ForeForest: QuantileError requires GBDT mode");
         }
-        if (cfg_.quantile_tau <= 0.0 || cfg_.quantile_tau >= 1.0) throw std::invalid_argument("ForeForest: quantile_tau must be in (0, 1)");
+        if (cfg_.quantile_tau <= 0.0 || cfg_.quantile_tau >= 1.0)
+            throw std::invalid_argument("ForeForest: quantile_tau must be in (0, 1)");
         if (cfg_.efb_enabled && cfg_.tree_cfg.split_mode != TreeConfig::SplitMode::Histogram) {
             throw std::invalid_argument("ForeForest: EFB currently supports histogram split mode only");
         }
         if (cfg_.efb_enabled && cfg_.tree_cfg.neural_leaf.enabled) {
             throw std::invalid_argument("ForeForest: EFB is not compatible with neural leaf mode");
         }
+        if (cfg_.ordered_categorical_enabled && cfg_.categorical_features.empty()) {
+            throw std::invalid_argument("ForeForest: ordered categorical encoding requires categorical_features");
+        }
+        if (cfg_.ordered_categorical_enabled && cfg_.tree_cfg.split_mode != TreeConfig::SplitMode::Histogram) {
+            throw std::invalid_argument("ForeForest: ordered categorical encoding currently requires histogram splits");
+        }
+        if (cfg_.ordered_categorical_enabled && cfg_.tree_cfg.neural_leaf.enabled) {
+            throw std::invalid_argument("ForeForest: ordered categorical encoding is incompatible with neural leaves");
+        }
+        if (cfg_.ordered_boosting_enabled && cfg_.mode != ForeForestConfig::Mode::GBDT) {
+            throw std::invalid_argument("ForeForest: ordered boosting requires GBDT mode");
+        }
     }
 
-    static inline bool efb_nonzero_(double v) { return std::isfinite(v) && std::abs(v) > 1e-15; }
+    static inline bool efb_nonzero_(double v) {
+        return std::isfinite(v) && std::abs(v) > 1e-15;
+    }
 
-    int efb_output_dim_() const { return (int)efb_passthrough_features_.size() + (int)efb_bundles_.size(); }
+    int efb_output_dim_() const {
+        return (int)efb_passthrough_features_.size() + (int)efb_bundles_.size();
+    }
 
     void reset_efb_state_() {
         efb_active_ = false;
+        efb_input_dim_ = 0;
         efb_passthrough_features_.clear();
         efb_bundles_.clear();
         efb_bundle_offsets_.clear();
     }
 
-    void maybe_build_efb_plan_(const double *X, int N, int P) {
-        if (!cfg_.efb_enabled || !X || N <= 0 || P <= 0) return;
+    void maybe_build_efb_plan_(const double* X, int N, int P) {
+        if (!cfg_.efb_enabled || !X || N <= 0 || P <= 0)
+            return;
 
         struct Candidate {
-            int              feature = -1;
+            int feature = -1;
             std::vector<int> active_rows;
-            double           max_val = 0.0;
+            double max_val = 0.0;
         };
 
         std::vector<Candidate> candidates;
@@ -550,30 +695,35 @@ private:
                 }
                 if (efb_nonzero_(v)) {
                     active.push_back(i);
-                    if (v > f_max) f_max = v;
+                    if (v > f_max)
+                        f_max = v;
                 }
             }
-            if (has_nan) continue;
+            if (has_nan)
+                continue;
 
             const int nnz = (int)active.size();
-            if (nnz < cfg_.efb_min_nonzero) continue;
+            if (nnz < cfg_.efb_min_nonzero)
+                continue;
 
             const double density = (double)nnz / (double)N;
-            if (density > cfg_.efb_sparse_threshold) continue;
+            if (density > cfg_.efb_sparse_threshold)
+                continue;
 
             candidates.push_back(Candidate{j, std::move(active), f_max});
         }
 
-        if (candidates.size() < 2) return;
+        if (candidates.size() < 2)
+            return;
 
         std::sort(candidates.begin(), candidates.end(),
-                  [](const Candidate &a, const Candidate &b) { return a.active_rows.size() > b.active_rows.size(); });
+                  [](const Candidate& a, const Candidate& b) { return a.active_rows.size() > b.active_rows.size(); });
 
         struct BundleState {
-            std::vector<int>     features;
+            std::vector<int> features;
             std::vector<uint8_t> occupied;
-            std::vector<double>  offsets;
-            double               current_offset = 0.0;
+            std::vector<double> offsets;
+            double current_offset = 0.0;
         };
 
         std::vector<BundleState> bundles;
@@ -581,14 +731,15 @@ private:
 
         const int max_allowed_conflicts = (int)std::floor(cfg_.efb_max_conflict_rate * N);
 
-        for (const auto &cand : candidates) {
+        for (const auto& cand : candidates) {
             int placed = -1;
             for (int b = 0; b < (int)bundles.size(); ++b) {
                 int conflicts = 0;
                 for (int r : cand.active_rows) {
                     if (bundles[(size_t)b].occupied[(size_t)r]) {
                         conflicts++;
-                        if (conflicts > max_allowed_conflicts) break;
+                        if (conflicts > max_allowed_conflicts)
+                            break;
                     }
                 }
                 if (conflicts <= max_allowed_conflicts) {
@@ -604,45 +755,53 @@ private:
                 placed = (int)bundles.size() - 1;
             }
 
-            auto &dst = bundles[(size_t)placed];
+            auto& dst = bundles[(size_t)placed];
             dst.features.push_back(cand.feature);
             dst.offsets.push_back(dst.current_offset);
-            
+
             // Advance the offset by the max value of this feature
             // (add a small epsilon to strictly separate feature value spaces)
             double shift_amount = std::max(0.0, cand.max_val);
             dst.current_offset += shift_amount + 1e-4;
 
-            for (int r : cand.active_rows) dst.occupied[(size_t)r] = (uint8_t)1;
+            for (int r : cand.active_rows)
+                dst.occupied[(size_t)r] = (uint8_t)1;
         }
 
         std::vector<uint8_t> is_bundled((size_t)P, (uint8_t)0);
         efb_bundles_.clear();
         efb_bundle_offsets_.clear();
-        
-        for (auto &b : bundles) {
-            if (b.features.size() < 2) continue;
+
+        for (auto& b : bundles) {
+            if (b.features.size() < 2)
+                continue;
             efb_bundles_.push_back(std::move(b.features));
             efb_bundle_offsets_.push_back(std::move(b.offsets));
-            for (int f : efb_bundles_.back()) is_bundled[(size_t)f] = (uint8_t)1;
+            for (int f : efb_bundles_.back())
+                is_bundled[(size_t)f] = (uint8_t)1;
         }
 
-        if (efb_bundles_.empty()) return;
+        if (efb_bundles_.empty())
+            return;
 
         efb_passthrough_features_.clear();
         efb_passthrough_features_.reserve((size_t)P);
         for (int j = 0; j < P; ++j) {
-            if (!is_bundled[(size_t)j]) efb_passthrough_features_.push_back(j);
+            if (!is_bundled[(size_t)j])
+                efb_passthrough_features_.push_back(j);
         }
 
         efb_active_ = true;
     }
 
-    std::vector<double> transform_with_efb_(const double *X, int N, int P) const {
-        if (!efb_active_) { return std::vector<double>(X, X + (size_t)N * (size_t)P); }
-        if (P != original_P_) throw std::invalid_argument("ForeForest: EFB transform P mismatch");
+    std::vector<double> transform_with_efb_(const double* X, int N, int P) const {
+        if (!efb_active_) {
+            return std::vector<double>(X, X + (size_t)N * (size_t)P);
+        }
+        if (P != efb_input_dim_)
+            throw std::invalid_argument("ForeForest: EFB transform P mismatch");
 
-        const int           Pout = efb_output_dim_();
+        const int Pout = efb_output_dim_();
         std::vector<double> Xt((size_t)N * (size_t)Pout, 0.0);
 
         for (int outj = 0; outj < (int)efb_passthrough_features_.size(); ++outj) {
@@ -658,22 +817,42 @@ private:
             for (size_t fi = 0; fi < efb_bundles_[(size_t)b].size(); ++fi) {
                 const int srcj = efb_bundles_[(size_t)b][fi];
                 const double offset = efb_bundle_offsets_[(size_t)b][fi];
-                
+
                 for (int i = 0; i < N; ++i) {
                     const double v = X[(size_t)i * (size_t)P + (size_t)srcj];
                     // Only apply offset if the feature is active for this row
-                    if (std::isnan(v) || !efb_nonzero_(v)) continue;
-                    
-                    // Note: If there is a "conflict" (two bundled features active simultaneously), 
-                    // this simply sums them. The offsets ensure that their value spaces are disjoint,
-                    // but the sum of two disjoint spaces might land in a weird intermediate bin.
-                    // A small conflict rate (e.g. 0.01%) means this noise is mostly ignored during tree construction.
+                    if (std::isnan(v) || !efb_nonzero_(v))
+                        continue;
+
+                    // Note: If there is a "conflict" (two bundled features
+                    // active simultaneously), this simply sums them. The
+                    // offsets ensure that their value spaces are disjoint, but
+                    // the sum of two disjoint spaces might land in a weird
+                    // intermediate bin. A small conflict rate (e.g. 0.01%)
+                    // means this noise is mostly ignored during tree
+                    // construction.
                     Xt[(size_t)i * (size_t)Pout + (size_t)outj] += (v + offset);
                 }
             }
         }
 
         return Xt;
+    }
+
+    std::vector<double> transform_input_(const double* X, int N, int P) const {
+        if (P != original_P_)
+            throw std::invalid_argument("ForeForest: input feature count mismatch");
+        std::vector<double> ordered;
+        const double* current = X;
+        int current_features = P;
+        if (ordered_categorical_active_) {
+            ordered = ordered_categorical_encoder_.transform(X, N, P);
+            current = ordered.data();
+            current_features = ordered_categorical_encoder_.output_feature_count();
+        }
+        if (efb_active_)
+            return transform_with_efb_(current, N, current_features);
+        return std::vector<double>(current, current + static_cast<size_t>(N) * static_cast<size_t>(current_features));
     }
 
     static inline double sigmoid_(double x) {
@@ -686,12 +865,12 @@ private:
     }
 
     // Compute per-sample weights based on class_weight setting
-    std::vector<double> compute_sample_weights_(const double *y, int n) const {
+    std::vector<double> compute_sample_weights_(const double* y, int n) const {
         std::vector<double> w((size_t)n, 1.0);
         int K_ = std::max(cfg_.num_classes - 1, 1);
-        bool is_binary = (K_ <= 1) || (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) 
-                        || (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss);
-        
+        bool is_binary = (K_ <= 1) || (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) ||
+                         (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss);
+
         if (cfg_.class_weight == ClassWeight::None) {
             // Only apply scale_pos_weight if set
             if (cfg_.scale_pos_weight != 1.0 && is_binary) {
@@ -701,18 +880,21 @@ private:
             }
             return w;
         }
-        
+
         if (cfg_.class_weight == ClassWeight::Balanced || cfg_.class_weight == ClassWeight::Auto) {
             if (is_binary) {
                 // Compute n_pos, n_neg
                 int n_pos = 0, n_neg = 0;
                 for (int i = 0; i < n; ++i) {
-                    if (y[i] >= 0.5) n_pos++; else n_neg++;
+                    if (y[i] >= 0.5)
+                        n_pos++;
+                    else
+                        n_neg++;
                 }
                 int total = n_pos + n_neg;
                 if (total > 0 && n_pos > 0 && n_neg > 0) {
-                    double w_pos = static_cast<double>(total) / (2.0 * n_pos);   // lighter weight for majority
-                    double w_neg = static_cast<double>(total) / (2.0 * n_neg);   // heavier weight for minority
+                    double w_pos = static_cast<double>(total) / (2.0 * n_pos); // lighter weight for majority
+                    double w_neg = static_cast<double>(total) / (2.0 * n_neg); // heavier weight for minority
                     for (int i = 0; i < n; ++i) {
                         w[static_cast<size_t>(i)] = (y[i] >= 0.5) ? w_pos : w_neg;
                     }
@@ -722,21 +904,29 @@ private:
                 std::vector<int> class_counts((size_t)K_, 0);
                 for (int i = 0; i < n; ++i) {
                     int c = static_cast<int>(y[i]);
-                    if (c >= 0 && c < K_) class_counts[static_cast<size_t>(c)]++;
+                    if (c >= 0 && c < K_)
+                        class_counts[static_cast<size_t>(c)]++;
                 }
                 for (int i = 0; i < n; ++i) {
                     int c = static_cast<int>(y[i]);
                     if (c >= 0 && c < K_ && class_counts[static_cast<size_t>(c)] > 0) {
-                        w[static_cast<size_t>(i)] = static_cast<double>(n) / (static_cast<double>(K_) * static_cast<double>(class_counts[static_cast<size_t>(c)]));
+                        w[static_cast<size_t>(i)] =
+                            static_cast<double>(n) /
+                            (static_cast<double>(K_) * static_cast<double>(class_counts[static_cast<size_t>(c)]));
                     }
                 }
             }
         } else if (cfg_.class_weight == ClassWeight::Balanced && cfg_.scale_pos_weight != 1.0 && is_binary) {
-            // Combine: use balanced weighting but scale_pos_weight overrides positive class
+            // Combine: use balanced weighting but scale_pos_weight overrides
+            // positive class
             int n_pos = 0, n_neg = 0;
-            for (int i = 0; i < n; ++i) { if (y[i] >= 0.5) n_pos++; else n_neg++; }
+            for (int i = 0; i < n; ++i) {
+                if (y[i] >= 0.5)
+                    n_pos++;
+                else
+                    n_neg++;
+            }
             int total = n_pos + n_neg;
-            double w_pos = static_cast<double>(total) / (2.0 * n_pos);
             double w_neg = static_cast<double>(total) / (2.0 * n_neg);
             for (int i = 0; i < n; ++i) {
                 w[static_cast<size_t>(i)] = (y[i] >= 0.5) ? cfg_.scale_pos_weight : w_neg;
@@ -753,31 +943,34 @@ private:
         return w;
     }
 
-    double compute_base_score_(const double *y, int n) const {
-        if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss || cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) {
+    double compute_base_score_(const double* y, int n) const {
+        if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss ||
+            cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) {
             double p = std::accumulate(y, y + n, 0.0) / std::max(1, n);
-            p        = std::clamp(p, 1e-12, 1.0 - 1e-12);
+            p = std::clamp(p, 1e-12, 1.0 - 1e-12);
             return std::log(p / (1.0 - p));
         }
         if (cfg_.objective == ForeForestConfig::Objective::HuberError) {
-            // A simple approximation for Huber base score is the median. We'll use mean for simplicity unless we want to sort.
+            // A simple approximation for Huber base score is the median. We'll
+            // use mean for simplicity unless we want to sort.
             return std::accumulate(y, y + n, 0.0) / std::max(1, n);
         }
         return std::accumulate(y, y + n, 0.0) / std::max(1, n);
     }
 
-    void compute_grad_hess_(const double *y, int n, const std::vector<double> &F_ref, std::vector<double> &g,
-                            std::vector<double> &h) const {
-        if ((int)F_ref.size() != n) throw std::invalid_argument("ForeForest: F_ref size mismatch");
+    void compute_grad_hess_(const double* y, int n, const std::vector<double>& F_ref, std::vector<double>& g,
+                            std::vector<double>& h) const {
+        if ((int)F_ref.size() != n)
+            throw std::invalid_argument("ForeForest: F_ref size mismatch");
         if ((int)g.size() != n || (int)h.size() != n)
             throw std::invalid_argument("ForeForest: gradient/hessian buffer size mismatch");
 
         // Compute per-sample weights
         std::vector<double> sw = compute_sample_weights_(y, n);
-        
+
         // Check if any weighting is needed
         bool needs_weight = std::any_of(sw.begin(), sw.end(), [](double w) { return w != 1.0; });
-        
+
         if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
             execx::bulk_iota(ctx_, n, [&](int i) {
                 const double p = sigmoid_(F_ref[i]);
@@ -792,7 +985,7 @@ private:
             });
             return;
         }
-        
+
         if (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) {
             const double gamma = cfg_.focal_gamma;
             execx::bulk_iota(ctx_, n, [&](int i) {
@@ -800,10 +993,11 @@ private:
                 const double p = sigmoid_(F_ref[i]);
                 const double p_t = yi * p + (1.0 - yi) * (1.0 - p); // Probability of true class
                 const double mod = std::pow(1.0 - p_t, gamma);      // Modulation factor
-                
+
                 // Gradient of Focal Loss wrt log-odds F_ref
                 // This is a simplified derivation for standard focal loss.
-                double gw = mod * (p - yi) - gamma * std::pow(1.0 - p_t, gamma - 1.0) * p * (1.0 - p) * (yi * (1.0 - p) - (1.0 - yi) * p) * std::log(std::max(1e-12, p_t));
+                double gw = mod * (p - yi) - gamma * std::pow(1.0 - p_t, gamma - 1.0) * p * (1.0 - p) *
+                                                 (yi * (1.0 - p) - (1.0 - yi) * p) * std::log(std::max(1e-12, p_t));
                 double hw = std::max(1e-5, mod * p * (1.0 - p));
                 if (needs_weight) {
                     gw *= sw[static_cast<size_t>(i)];
@@ -814,7 +1008,7 @@ private:
             });
             return;
         }
-        
+
         if (cfg_.objective == ForeForestConfig::Objective::HuberError) {
             const double delta = cfg_.huber_delta;
             execx::bulk_iota(ctx_, n, [&](int i) {
@@ -836,7 +1030,7 @@ private:
             });
             return;
         }
-        
+
         if (cfg_.objective == ForeForestConfig::Objective::QuantileError) {
             const double tau = cfg_.quantile_tau;
             execx::bulk_iota(ctx_, n, [&](int i) {
@@ -865,16 +1059,16 @@ private:
         });
     }
 
-    void compute_grad_hess_(const double *y, int n, double scalar_F, std::vector<double> &g,
-                            std::vector<double> &h) const {
+    void compute_grad_hess_(const double* y, int n, double scalar_F, std::vector<double>& g,
+                            std::vector<double>& h) const {
         std::vector<double> F((size_t)n, scalar_F);
         compute_grad_hess_(y, n, F, g, h);
     }
 
     // Multiclass: compute gradients for one class c (one-vs-rest)
-    void compute_grad_hess_multiclass_(const double *y, int n, const std::vector<double> &F_all,
-                                       int class_c, std::vector<double> &g, std::vector<double> &h,
-                                       std::vector<double> &prob_c_out) const {
+    void compute_grad_hess_multiclass_(const double* y, int n, const std::vector<double>& F_all, int class_c,
+                                       std::vector<double>& g, std::vector<double>& h,
+                                       std::vector<double>& prob_c_out) const {
         int K_ = std::max(cfg_.num_classes - 1, 1);
         if (K_ <= 1) {
             compute_grad_hess_(y, n, F_all.empty() ? 0.0 : F_all[0], g, h);
@@ -883,8 +1077,9 @@ private:
         // Compute sample weights
         std::vector<double> sw = compute_sample_weights_(y, n);
         bool needs_weight = std::any_of(sw.begin(), sw.end(), [](double w) { return w != 1.0; });
-        
-        // For multiclass: softmax over K-1 explicit classes + implicit Kth class
+
+        // For multiclass: softmax over K-1 explicit classes + implicit Kth
+        // class
         g.assign(static_cast<size_t>(n), 0.0);
         h.assign(static_cast<size_t>(n), 0.0);
         prob_c_out.assign(static_cast<size_t>(n), 0.0);
@@ -893,17 +1088,20 @@ private:
             // Compute softmax: exp(F_c) / (sum exp(F_j) + 1) for Kth class
             double max_f = -std::numeric_limits<double>::infinity();
             for (int c = 0; c < K_; ++c) {
-                max_f = std::max(max_f, F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)]);
+                max_f =
+                    std::max(max_f, F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)]);
             }
             double sum_exp = 0.0;
             for (int c = 0; c < K_; ++c) {
-                sum_exp += std::exp(F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] - max_f);
+                sum_exp +=
+                    std::exp(F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] - max_f);
             }
             sum_exp += 1.0; // implicit Kth class
             double log_sum_exp = std::log(sum_exp) + max_f;
-            double p_c = std::exp(F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(class_c)] - log_sum_exp);
+            double p_c = std::exp(
+                F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(class_c)] - log_sum_exp);
             prob_c_out[static_cast<size_t>(i)] = p_c;
-            
+
             // Target: 1 if y == class_c, 0 otherwise (for one-vs-rest)
             double target = (static_cast<int>(y[i]) == class_c) ? 1.0 : 0.0;
             double gw = p_c - target;
@@ -918,56 +1116,78 @@ private:
     }
 
     TreeConfig make_tree_cfg_() const {
-        TreeConfig tc               = cfg_.tree_cfg;
+        TreeConfig tc = cfg_.tree_cfg;
         tc.colsample_bytree_percent = std::clamp((int)std::round(100.0 * cfg_.colsample_bytree), 1, 100);
         tc.colsample_bynode_percent = std::clamp((int)std::round(100.0 * cfg_.colsample_bynode), 1, 100);
-        if (tc.goss.enabled && !tc.goss.scale_hessian) { tc.goss.scale_hessian = true; }
+        if (tc.goss.enabled && !tc.goss.scale_hessian) {
+            tc.goss.scale_hessian = true;
+        }
         return tc;
     }
 
-    UnifiedTree build_tree_(const std::vector<double> &g, const std::vector<double> &h, const std::vector<int> &rows,
+    UnifiedTree build_tree_(const std::vector<double>& g, const std::vector<double>& h, const std::vector<int>& rows,
                             uint64_t tree_seed) {
+#ifdef FORETREE_HAS_CUDA
+        std::unique_lock<std::mutex> cuda_lock(cuda_training_mutex_, std::defer_lock);
+        if (cuda_histogram_engine_)
+            cuda_lock.lock();
+#endif
         TreeConfig tc = make_tree_cfg_();
-        tc.rng_seed   = tree_seed;
+        tc.rng_seed = tree_seed;
 
-        UnifiedTree T(tc, ghs_.get());
+        UnifiedTree T(tc, ghs_.get(), executor_);
 
-        // Set matrices: exact splits use Xraw_exact_, neural leaves use Xraw_neural_
-        if (Xraw_exact_) { T.set_raw_matrix(Xraw_exact_, Xmiss_exact_); }
+        // Set matrices: exact splits use Xraw_exact_, neural leaves use
+        // Xraw_neural_
+        if (Xraw_exact_) {
+            T.set_raw_matrix(Xraw_exact_, Xmiss_exact_);
+        }
         T.set_raw_for_neural(Xraw_neural_, Xmiss_neural_);
         T.set_neural_leaf_config(cfg_.neural_cfg);
+#ifdef FORETREE_HAS_CUDA
+        if (cuda_histogram_engine_ && tc.split_mode == TreeConfig::SplitMode::Histogram && !tc.neural_leaf.enabled) {
+            std::vector<float> gradients(g.begin(), g.end());
+            std::vector<float> hessians(h.begin(), h.end());
+            cuda_histogram_engine_->set_gradients(gradients, hessians);
+            T.set_cuda_histogram_engine(cuda_histogram_engine_.get());
+        }
+#endif
 
-        T.fit_with_row_ids(*codes_, N_, P_, g, h, rows);
+        T.fit_with_row_ids(*compact_codes_, g, h, rows);
         return T;
     }
 
     // ===================== Bagging ===========================
-    void train_bagging_(std::vector<double> &g, std::vector<double> &h, const double *y) {
+    void train_bagging_(std::vector<double>& g, std::vector<double>& h, const double* y) {
         execx::bulk_iota(ctx_, N_, [&](int i) {
             g[i] = -y[i];
             h[i] = 1.0;
         });
 
-        const int                     M = cfg_.n_estimators;
+        const int M = cfg_.n_estimators;
         std::vector<std::vector<int>> boot_rows(M);
-        std::vector<std::mt19937_64>  rngs(M);
+        std::vector<std::mt19937_64> rngs(M);
 
-        for (int t = 0; t < M; ++t) { rngs[t] = std::mt19937_64(cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (t + 1)); }
+        for (int t = 0; t < M; ++t) {
+            rngs[t] = std::mt19937_64(cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (t + 1));
+        }
 
         auto gen_sample = [&](int t) {
-            auto                              &rows = boot_rows[t];
-            auto                              &rng  = rngs[t];
+            auto& rows = boot_rows[t];
+            auto& rng = rngs[t];
             std::uniform_int_distribution<int> J(0, N_ - 1);
 
             const int k = std::max(1, (int)std::round(cfg_.rf_row_subsample * N_));
 
             if (cfg_.rf_bootstrap) {
                 rows.resize(k);
-                for (int i = 0; i < k; ++i) rows[i] = J(rng);
+                for (int i = 0; i < k; ++i)
+                    rows[i] = J(rng);
                 if (cfg_.rf_bootstrap_dedup) {
                     std::sort(rows.begin(), rows.end());
                     rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
-                    if (rows.empty()) rows.push_back(J(rng));
+                    if (rows.empty())
+                        rows.push_back(J(rng));
                 }
             } else {
                 std::vector<int> all(N_);
@@ -980,7 +1200,8 @@ private:
         if (cfg_.rf_parallel) {
             execx::bulk_iota(ctx_, M, gen_sample);
         } else {
-            for (int t = 0; t < M; ++t) gen_sample(t);
+            for (int t = 0; t < M; ++t)
+                gen_sample(t);
         }
 
         trees_.resize(M);
@@ -988,32 +1209,49 @@ private:
 
         auto build_one = [&](int t) {
             uint64_t seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (t + 1);
-            trees_[t]     = build_tree_(g, h, boot_rows[t], seed);
+            trees_[t] = build_tree_(g, h, boot_rows[t], seed);
         };
 
         if (cfg_.rf_parallel) {
             execx::bulk_iota(ctx_, M, build_one);
         } else {
-            for (int t = 0; t < M; ++t) build_one(t);
+            for (int t = 0; t < M; ++t)
+                build_one(t);
         }
     }
 
     // ===================== Boosting with DART ===========================
-    void train_gbdt_(std::vector<double> &g, std::vector<double> &h, const double *y) {
+    void finalize_best_iteration_(bool has_valid) {
+        if (has_valid && best_iteration_ == 0 && !valid_metric_history_.empty()) {
+            best_iteration_ = static_cast<int>(trees_.size());
+            best_score_ = valid_metric_history_.back();
+        }
+        if (!has_valid || !cfg_.early_stopping_enabled || best_iteration_ <= 0 ||
+            best_iteration_ >= static_cast<int>(trees_.size()))
+            return;
+
+        trees_.resize(static_cast<size_t>(best_iteration_));
+        tree_weights_.resize(static_cast<size_t>(best_iteration_));
+        if (static_cast<int>(train_metric_history_.size()) > best_iteration_)
+            train_metric_history_.resize(static_cast<size_t>(best_iteration_));
+        if (static_cast<int>(valid_metric_history_.size()) > best_iteration_)
+            valid_metric_history_.resize(static_cast<size_t>(best_iteration_));
+    }
+
+    void train_gbdt_(std::vector<double>& g, std::vector<double>& h, const double* y) {
         train_gbdt_(g, h, y, nullptr, 0, nullptr, nullptr);
     }
 
-    void train_gbdt_(std::vector<double> &g, std::vector<double> &h, const double *y,
-                     const std::vector<uint16_t> *Xb_valid, int N_valid, const double *y_valid,
-                     const double *Xraw_valid) {
-        const int           M = cfg_.n_estimators;
+    void train_gbdt_(std::vector<double>& g, std::vector<double>& h, const double* y, const QuantizedDataset* Xb_valid,
+                     int N_valid, const double* y_valid, const double* Xraw_valid) {
+        const int M = cfg_.n_estimators;
         int K_ = std::max(cfg_.num_classes - 1, 1);
-        
+
         if (K_ <= 1) {
             // Scalar path
             std::vector<double> F(N_, base_score_);
             std::vector<double> pred_buffer(N_);
-            const bool          has_valid = (Xb_valid && y_valid && N_valid > 0);
+            const bool has_valid = (Xb_valid && y_valid && N_valid > 0);
             std::vector<double> F_valid;
             std::vector<double> pred_valid_buffer;
             if (has_valid) {
@@ -1023,41 +1261,47 @@ private:
             int rounds_without_improve = 0;
 
             for (int m = 0; m < M; ++m) {
-                std::vector<int>    dropped = select_dropout_trees_();
-                std::vector<double> Fbase   = compute_base_prediction_(F, dropped, pred_buffer);
+                std::vector<int> dropped = select_dropout_trees_();
+                std::vector<double> Fbase = compute_base_prediction_(F, dropped, pred_buffer);
 
-                const auto &F_ref = dropped.empty() ? F : Fbase;
+                const auto& F_ref = dropped.empty() ? F : Fbase;
                 compute_grad_hess_(y, N_, F_ref, g, h);
 
-                std::vector<int> rows = sample_rows_for_gbdt_();
-                uint64_t         seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (m + 1);
-                UnifiedTree      T    = build_tree_(g, h, rows, seed);
+                std::vector<int> rows = sample_rows_for_gbdt_(m, M);
+                uint64_t seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (m + 1);
+                UnifiedTree T = build_tree_(g, h, rows, seed);
 
                 double wt_new = cfg_.learning_rate;
                 if (cfg_.dart_enabled && cfg_.dart_normalize && !dropped.empty()) {
-                    wt_new = apply_dart_normalization_(dropped, F, pred_buffer, has_valid ? &F_valid : nullptr, Xb_valid,
-                                                       N_valid, Xraw_valid, has_valid ? &pred_valid_buffer : nullptr);
+                    wt_new =
+                        apply_dart_normalization_(dropped, F, pred_buffer, has_valid ? &F_valid : nullptr, Xb_valid,
+                                                  N_valid, Xraw_valid, has_valid ? &pred_valid_buffer : nullptr);
                 }
 
                 trees_.push_back(std::move(T));
                 tree_weights_.push_back(wt_new);
 
-                predict_tree_on_binned_(trees_.back(), *codes_, N_, P_, Xraw_neural_, pred_buffer);
-                for (int i = 0; i < N_; ++i) { F[i] += wt_new * pred_buffer[i]; }
+                predict_tree_on_binned_(trees_.back(), *compact_codes_, N_, P_, Xraw_neural_, pred_buffer);
+                for (int i = 0; i < N_; ++i) {
+                    F[i] += wt_new * pred_buffer[i];
+                }
 
-                train_metric_history_.push_back(compute_metric_from_margin_(F, y, N_));
+                if (cfg_.track_train_metric)
+                    train_metric_history_.push_back(compute_metric_from_margin_(F, y, N_));
 
                 if (has_valid) {
                     predict_tree_on_binned_(trees_.back(), *Xb_valid, N_valid, P_, Xraw_valid, pred_valid_buffer);
-                    for (int i = 0; i < N_valid; ++i) { F_valid[(size_t)i] += wt_new * pred_valid_buffer[(size_t)i]; }
+                    for (int i = 0; i < N_valid; ++i) {
+                        F_valid[(size_t)i] += wt_new * pred_valid_buffer[(size_t)i];
+                    }
 
                     const double valid_metric = compute_metric_from_margin_(F_valid, y_valid, N_valid);
                     valid_metric_history_.push_back(valid_metric);
 
                     const bool improved = (valid_metric + cfg_.early_stopping_min_delta) < best_score_;
                     if (improved) {
-                        best_score_            = valid_metric;
-                        best_iteration_        = (int)trees_.size();
+                        best_score_ = valid_metric;
+                        best_iteration_ = (int)trees_.size();
                         rounds_without_improve = 0;
                     } else if (cfg_.early_stopping_enabled) {
                         ++rounds_without_improve;
@@ -1070,15 +1314,16 @@ private:
                     best_iteration_ = (int)trees_.size();
                 }
             }
+            finalize_best_iteration_(has_valid);
             return;
         }
-        
+
         // Multiclass: K-1 trees per round
         int rounds = K_ > 1 ? M / K_ : M;
         std::vector<double> F_all(static_cast<size_t>(N_) * static_cast<size_t>(K_), base_score_);
         std::vector<double> pred_buffer(N_);
         std::vector<double> prob_c(N_);
-        const bool          has_valid = (Xb_valid && y_valid && N_valid > 0);
+        const bool has_valid = (Xb_valid && y_valid && N_valid > 0);
         std::vector<double> F_valid;
         std::vector<double> pred_valid_buffer;
         if (has_valid) {
@@ -1092,36 +1337,41 @@ private:
                 // Compute gradients for class c (one-vs-all)
                 compute_grad_hess_multiclass_(y, N_, F_all, c, g, h, prob_c);
 
-                std::vector<int> rows = sample_rows_for_gbdt_();
-                uint64_t         seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * ((r * K_ + c) + 1);
-                
-                // Build tree with K=1 (scalar output) but multiclass-aware config
+                std::vector<int> rows = sample_rows_for_gbdt_(r, rounds);
+                uint64_t seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * ((r * K_ + c) + 1);
+
+                // Build tree with K=1 (scalar output) but multiclass-aware
+                // config
                 TreeConfig tc = make_tree_cfg_();
                 tc.num_classes = 1;
                 tc.rng_seed = seed;
-                UnifiedTree T(tc, ghs_.get());
-                if (Xraw_exact_) { T.set_raw_matrix(Xraw_exact_, Xmiss_exact_); }
+                UnifiedTree T(tc, ghs_.get(), executor_);
+                if (Xraw_exact_) {
+                    T.set_raw_matrix(Xraw_exact_, Xmiss_exact_);
+                }
                 T.set_raw_for_neural(Xraw_neural_, Xmiss_neural_);
                 T.set_neural_leaf_config(cfg_.neural_cfg);
-                T.fit_with_row_ids(*codes_, N_, P_, g, h, rows);
+                T.fit_with_row_ids(*compact_codes_, g, h, rows);
 
                 trees_.push_back(std::move(T));
                 tree_weights_.push_back(cfg_.learning_rate);
 
                 // Update F for this class
-                predict_tree_on_binned_(trees_.back(), *codes_, N_, P_, Xraw_neural_, pred_buffer);
+                predict_tree_on_binned_(trees_.back(), *compact_codes_, N_, P_, Xraw_neural_, pred_buffer);
                 for (int i = 0; i < N_; ++i) {
-                    F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] += cfg_.learning_rate * pred_buffer[i];
+                    F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] +=
+                        cfg_.learning_rate * pred_buffer[i];
                 }
             }
 
-            train_metric_history_.push_back(compute_metric_from_margin_(F_all, y, N_));
+            if (cfg_.track_train_metric)
+                train_metric_history_.push_back(compute_metric_from_margin_(F_all, y, N_));
 
             if (has_valid) {
                 const bool improved = false; // Simplified: no early stopping for multiclass yet
                 if (improved) {
-                    best_score_            = valid_metric_history_.back();
-                    best_iteration_        = (int)trees_.size();
+                    best_score_ = valid_metric_history_.back();
+                    best_iteration_ = (int)trees_.size();
                     rounds_without_improve = 0;
                 } else if (cfg_.early_stopping_enabled) {
                     ++rounds_without_improve;
@@ -1135,28 +1385,19 @@ private:
             }
         }
 
-        if (has_valid && best_iteration_ == 0 && !valid_metric_history_.empty()) {
-            best_iteration_ = (int)trees_.size();
-            best_score_     = valid_metric_history_.back();
-        }
-
-        if (has_valid && cfg_.early_stopping_enabled && best_iteration_ > 0 && best_iteration_ < (int)trees_.size()) {
-            trees_.resize((size_t)best_iteration_);
-            tree_weights_.resize((size_t)best_iteration_);
-            if ((int)train_metric_history_.size() > best_iteration_)
-                train_metric_history_.resize((size_t)best_iteration_);
-            if ((int)valid_metric_history_.size() > best_iteration_)
-                valid_metric_history_.resize((size_t)best_iteration_);
-        }
+        finalize_best_iteration_(has_valid);
     }
 
     std::vector<int> select_dropout_trees_() {
         std::vector<int> dropped;
-        if (!cfg_.dart_enabled || trees_.empty()) return dropped;
+        if (!cfg_.dart_enabled || trees_.empty())
+            return dropped;
 
         std::uniform_real_distribution<double> U(0.0, 1.0);
         for (size_t t = 0; t < trees_.size(); ++t) {
-            if (U(rng_) < cfg_.dart_drop_rate) { dropped.push_back((int)t); }
+            if (U(rng_) < cfg_.dart_drop_rate) {
+                dropped.push_back((int)t);
+            }
         }
 
         if ((int)dropped.size() > cfg_.dart_max_drop) {
@@ -1172,27 +1413,48 @@ private:
         return dropped;
     }
 
-    std::vector<double> compute_base_prediction_(const std::vector<double> &F, const std::vector<int> &dropped,
-                                                 std::vector<double> &pred_buffer) const {
-        if (dropped.empty()) return F;
+    std::vector<double> compute_base_prediction_(const std::vector<double>& F, const std::vector<int>& dropped,
+                                                 std::vector<double>& pred_buffer) const {
+        if (dropped.empty())
+            return F;
 
         std::vector<double> Fbase = F;
         for (int t : dropped) {
-            predict_tree_on_binned_(trees_[t], *codes_, N_, P_, Xraw_neural_, pred_buffer);
+            predict_tree_on_binned_(trees_[t], *compact_codes_, N_, P_, Xraw_neural_, pred_buffer);
             const double wt = tree_weights_[t];
-            execx::bulk_iota(ctx_, N_, [&](int i) {
-                Fbase[i] -= wt * pred_buffer[i];
-            });
+            execx::bulk_iota(ctx_, N_, [&](int i) { Fbase[i] -= wt * pred_buffer[i]; });
         }
         return Fbase;
     }
 
-    std::vector<int> sample_rows_for_gbdt_() {
+    std::vector<int> sample_rows_for_gbdt_(int iteration, int iterations) {
         std::vector<int> rows;
+        if (cfg_.ordered_boosting_enabled) {
+            const double progress =
+                iterations <= 1 ? 1.0 : static_cast<double>(iteration) / static_cast<double>(iterations - 1);
+            const double fraction =
+                cfg_.ordered_boosting_min_prefix + (1.0 - cfg_.ordered_boosting_min_prefix) * progress;
+            const int minimum_prefix = std::min(N_, std::max(1, cfg_.tree_cfg.min_samples_split));
+            const int prefix = std::clamp(static_cast<int>(std::ceil(fraction * N_)), minimum_prefix, N_);
+            rows.assign(ordered_boosting_order_.begin(), ordered_boosting_order_.begin() + prefix);
+            if (!cfg_.gbdt_use_subsample || cfg_.gbdt_row_subsample >= 1.0)
+                return rows;
+            std::vector<int> sampled;
+            sampled.reserve(rows.size());
+            std::uniform_real_distribution<double> uniform(0.0, 1.0);
+            for (int row : rows)
+                if (uniform(rng_) < cfg_.gbdt_row_subsample)
+                    sampled.push_back(row);
+            if (sampled.empty())
+                sampled.push_back(rows.front());
+            return sampled;
+        }
         if (cfg_.gbdt_use_subsample && cfg_.gbdt_row_subsample < 1.0) {
             std::uniform_real_distribution<double> U(0.0, 1.0);
             for (int i = 0; i < N_; ++i) {
-                if (U(rng_) < cfg_.gbdt_row_subsample) { rows.push_back(i); }
+                if (U(rng_) < cfg_.gbdt_row_subsample) {
+                    rows.push_back(i);
+                }
             }
             if (rows.empty()) {
                 std::uniform_int_distribution<int> D(0, N_ - 1);
@@ -1210,7 +1472,9 @@ private:
         if (cfg_.fw_use_subsample && cfg_.fw_row_subsample < 1.0) {
             std::uniform_real_distribution<double> U(0.0, 1.0);
             for (int i = 0; i < N_; ++i) {
-                if (U(rng_) < cfg_.fw_row_subsample) { rows.push_back(i); }
+                if (U(rng_) < cfg_.fw_row_subsample) {
+                    rows.push_back(i);
+                }
             }
             if (rows.empty()) {
                 std::uniform_int_distribution<int> D(0, N_ - 1);
@@ -1223,18 +1487,19 @@ private:
         return rows;
     }
 
-    double fw_line_search_alpha_(const std::vector<double> &F, const std::vector<double> &h_pred, const double *y,
+    double fw_line_search_alpha_(const std::vector<double>& F, const std::vector<double>& h_pred, const double* y,
                                  int n) const {
-        if (!y || n <= 0 || (int)F.size() < n || (int)h_pred.size() < n) return 0.0;
+        if (!y || n <= 0 || (int)F.size() < n || (int)h_pred.size() < n)
+            return 0.0;
 
-        const int    points    = std::max(2, cfg_.fw_line_search_points);
+        const int points = std::max(2, cfg_.fw_line_search_points);
         const double alpha_max = std::max(0.0, cfg_.fw_alpha_max);
-        double       best_a    = 0.0;
-        double       best_obj  = std::numeric_limits<double>::infinity();
+        double best_a = 0.0;
+        double best_obj = std::numeric_limits<double>::infinity();
 
         for (int k = 0; k < points; ++k) {
-            const double a   = (points <= 1) ? 0.0 : (alpha_max * (double)k / (double)(points - 1));
-            double       mse = 0.0;
+            const double a = (points <= 1) ? 0.0 : (alpha_max * (double)k / (double)(points - 1));
+            double mse = 0.0;
             for (int i = 0; i < n; ++i) {
                 const double d = (F[(size_t)i] + a * h_pred[(size_t)i]) - y[i];
                 mse += d * d;
@@ -1243,23 +1508,23 @@ private:
             const double obj = mse + cfg_.fw_nu * std::abs(a);
             if (obj < best_obj) {
                 best_obj = obj;
-                best_a   = a;
+                best_a = a;
             }
         }
         return best_a;
     }
 
-    void train_fwboost_(std::vector<double> &g, std::vector<double> &h, const double *y) {
+    void train_fwboost_(std::vector<double>& g, std::vector<double>& h, const double* y) {
         train_fwboost_(g, h, y, nullptr, 0, nullptr, nullptr);
     }
 
-    void train_fwboost_(std::vector<double> &g, std::vector<double> &h, const double *y,
-                        const std::vector<uint16_t> *Xb_valid, int N_valid, const double *y_valid,
-                        const double *Xraw_valid) {
-        const int           M = cfg_.n_estimators;
+    void train_fwboost_(std::vector<double>& g, std::vector<double>& h, const double* y,
+                        const QuantizedDataset* Xb_valid, int N_valid, const double* y_valid,
+                        const double* Xraw_valid) {
+        const int M = cfg_.n_estimators;
         std::vector<double> F(N_, base_score_);
         std::vector<double> pred_buffer(N_);
-        const bool          has_valid = (Xb_valid && y_valid && N_valid > 0);
+        const bool has_valid = (Xb_valid && y_valid && N_valid > 0);
         std::vector<double> F_valid;
         std::vector<double> pred_valid_buffer;
         if (has_valid) {
@@ -1272,10 +1537,10 @@ private:
             compute_grad_hess_(y, N_, F, g, h);
 
             std::vector<int> rows = sample_rows_for_fw_();
-            uint64_t         seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (m + 1);
-            UnifiedTree      T    = build_tree_(g, h, rows, seed);
+            uint64_t seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (m + 1);
+            UnifiedTree T = build_tree_(g, h, rows, seed);
 
-            predict_tree_on_binned_(T, *codes_, N_, P_, Xraw_neural_, pred_buffer);
+            predict_tree_on_binned_(T, *compact_codes_, N_, P_, Xraw_neural_, pred_buffer);
 
             const double alpha = fw_line_search_alpha_(F, pred_buffer, y, N_);
             if (alpha <= cfg_.fw_alpha_tol) {
@@ -1287,21 +1552,26 @@ private:
             trees_.push_back(std::move(T));
             tree_weights_.push_back(wt_new);
 
-            for (int i = 0; i < N_; ++i) { F[i] += wt_new * pred_buffer[(size_t)i]; }
+            for (int i = 0; i < N_; ++i) {
+                F[i] += wt_new * pred_buffer[(size_t)i];
+            }
 
-            train_metric_history_.push_back(compute_metric_from_margin_(F, y, N_));
+            if (cfg_.track_train_metric)
+                train_metric_history_.push_back(compute_metric_from_margin_(F, y, N_));
 
             if (has_valid) {
                 predict_tree_on_binned_(trees_.back(), *Xb_valid, N_valid, P_, Xraw_valid, pred_valid_buffer);
-                for (int i = 0; i < N_valid; ++i) { F_valid[(size_t)i] += wt_new * pred_valid_buffer[(size_t)i]; }
+                for (int i = 0; i < N_valid; ++i) {
+                    F_valid[(size_t)i] += wt_new * pred_valid_buffer[(size_t)i];
+                }
 
                 const double valid_metric = compute_metric_from_margin_(F_valid, y_valid, N_valid);
                 valid_metric_history_.push_back(valid_metric);
 
                 const bool improved = (valid_metric + cfg_.early_stopping_min_delta) < best_score_;
                 if (improved) {
-                    best_score_            = valid_metric;
-                    best_iteration_        = (int)trees_.size();
+                    best_score_ = valid_metric;
+                    best_iteration_ = (int)trees_.size();
                     rounds_without_improve = 0;
                 } else if (cfg_.early_stopping_enabled) {
                     ++rounds_without_improve;
@@ -1317,7 +1587,7 @@ private:
 
         if (has_valid && best_iteration_ == 0 && !valid_metric_history_.empty()) {
             best_iteration_ = (int)trees_.size();
-            best_score_     = valid_metric_history_.back();
+            best_score_ = valid_metric_history_.back();
         }
 
         if (has_valid && cfg_.early_stopping_enabled && best_iteration_ > 0 && best_iteration_ < (int)trees_.size()) {
@@ -1330,27 +1600,31 @@ private:
         }
     }
 
-    double apply_dart_normalization_(const std::vector<int> &dropped, std::vector<double> &F,
-                                     std::vector<double> &pred_buffer, std::vector<double> *F_valid = nullptr,
-                                     const std::vector<uint16_t> *Xb_valid = nullptr, int N_valid = 0,
-                                     const double        *Xraw_valid        = nullptr,
-                                     std::vector<double> *pred_valid_buffer = nullptr) {
-        const int    k              = (int)dropped.size();
-        const double dropped_scale  = double(k) / double(k + 1);
+    double apply_dart_normalization_(const std::vector<int>& dropped, std::vector<double>& F,
+                                     std::vector<double>& pred_buffer, std::vector<double>* F_valid = nullptr,
+                                     const QuantizedDataset* Xb_valid = nullptr, int N_valid = 0,
+                                     const double* Xraw_valid = nullptr,
+                                     std::vector<double>* pred_valid_buffer = nullptr) {
+        const int k = (int)dropped.size();
+        const double dropped_scale = double(k) / double(k + 1);
         const double new_tree_scale = 1.0 / double(k + 1);
-        const bool   use_valid      = (F_valid && Xb_valid && N_valid > 0 && pred_valid_buffer);
+        const bool use_valid = (F_valid && Xb_valid && N_valid > 0 && pred_valid_buffer);
 
         for (int t : dropped) {
-            predict_tree_on_binned_(trees_[t], *codes_, N_, P_, Xraw_neural_, pred_buffer);
+            predict_tree_on_binned_(trees_[t], *compact_codes_, N_, P_, Xraw_neural_, pred_buffer);
 
             const double old_w = tree_weights_[t];
             const double new_w = old_w * dropped_scale;
             const double delta = new_w - old_w;
 
-            for (int i = 0; i < N_; ++i) { F[i] += delta * pred_buffer[i]; }
+            for (int i = 0; i < N_; ++i) {
+                F[i] += delta * pred_buffer[i];
+            }
             if (use_valid) {
                 predict_tree_on_binned_(trees_[t], *Xb_valid, N_valid, P_, Xraw_valid, *pred_valid_buffer);
-                for (int i = 0; i < N_valid; ++i) { (*F_valid)[(size_t)i] += delta * (*pred_valid_buffer)[(size_t)i]; }
+                for (int i = 0; i < N_valid; ++i) {
+                    (*F_valid)[(size_t)i] += delta * (*pred_valid_buffer)[(size_t)i];
+                }
             }
 
             tree_weights_[t] = new_w;
@@ -1360,11 +1634,12 @@ private:
     }
 
     // Scalar overload (backward compat)
-    double compute_metric_from_margin_(const std::vector<double> &margin, const double *y, int n) const {
+    double compute_metric_from_margin_(const std::vector<double>& margin, const double* y, int n) const {
         int K_ = std::max(cfg_.num_classes - 1, 1);
         if (K_ <= 1) {
             // Scalar: old path
-            if (!y || n <= 0 || (int)margin.size() < n) return std::numeric_limits<double>::infinity();
+            if (!y || n <= 0 || (int)margin.size() < n)
+                return std::numeric_limits<double>::infinity();
             if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
                 double loss = 0.0;
                 for (int i = 0; i < n; ++i) {
@@ -1418,30 +1693,35 @@ private:
             }
             return mse / std::max(1, n);
         }
-        
+
         // Multiclass: margin has K-1 values per sample
-        if (!y || n <= 0 || static_cast<int>(margin.size()) < n * K_) return std::numeric_limits<double>::infinity();
-        
+        if (!y || n <= 0 || static_cast<int>(margin.size()) < n * K_)
+            return std::numeric_limits<double>::infinity();
+
         double loss = 0.0;
         for (int i = 0; i < n; ++i) {
             // Compute softmax probabilities
             double max_f = -std::numeric_limits<double>::infinity();
             for (int c = 0; c < K_; ++c) {
-                max_f = std::max(max_f, margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)]);
+                max_f =
+                    std::max(max_f, margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)]);
             }
             double sum_exp = 0.0;
             for (int c = 0; c < K_; ++c) {
-                sum_exp += std::exp(margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] - max_f);
+                sum_exp +=
+                    std::exp(margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] - max_f);
             }
             sum_exp += 1.0; // implicit Kth class
-            
+
             double target = y[i];
             // Cross-entropy loss for multiclass
             // For class c, log prob = F_c - log(sum(exp(F_j)) + 1)
             double log_sum_exp = std::log(sum_exp) + max_f;
             double log_prob_target;
             if (static_cast<int>(target) < K_) {
-                log_prob_target = margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(target)] - log_sum_exp;
+                log_prob_target =
+                    margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(target)] -
+                    log_sum_exp;
             } else {
                 log_prob_target = 0.0 - log_sum_exp; // implicit Kth class
             }
@@ -1450,52 +1730,32 @@ private:
         return loss / std::max(1, n);
     }
 
-
-
     // ===================== Prediction ===========================
-    std::vector<double> predict_from_binned_(const std::vector<uint16_t> &Xb, int N, int /*P*/,
-                                             const double *Xraw_for_neural) const {
+    std::vector<double> predict_from_binned_(const QuantizedDataset& Xb, int N, int /*P*/,
+                                             const double* Xraw_for_neural) const {
         int K_ = std::max(cfg_.num_classes - 1, 1);
-        std::vector<double> out(K_ <= 1 ? static_cast<size_t>(N) : static_cast<size_t>(N) * static_cast<size_t>(K_), 0.0);
-        std::vector<double> pred;
-        
-        if (K_ <= 1) {
-            // Scalar: old path
-            std::vector<double> out_scalar(N, 0.0);
-            pred.resize(N);
-            for (size_t t = 0; t < trees_.size(); ++t) {
-                const double wt = tree_weights_[t];
-                predict_tree_on_binned_(trees_[t], Xb, N, P_, Xraw_for_neural, pred);
-                for (int i = 0; i < N; ++i) { out_scalar[static_cast<size_t>(i)] += wt * pred[static_cast<size_t>(i)]; }
-            }
-            if (cfg_.mode == ForeForestConfig::Mode::Bagging && !trees_.empty()) {
-                const double invT = 1.0 / (double)trees_.size();
-                for (double &v : out_scalar) v *= invT;
-            }
-            std::memcpy(out.data(), out_scalar.data(), static_cast<size_t>(N) * sizeof(double));
-        } else {
-            // Multiclass: K-1 trees per round, each predicts one class
-            std::vector<std::vector<double>> class_preds(static_cast<size_t>(K_), std::vector<double>(N, 0.0));
-            for (size_t t = 0; t < trees_.size(); ++t) {
-                const double wt = tree_weights_[t];
-                int tree_class = static_cast<int>(t) % K_;  // round-robin across K-1 classes
-                pred.resize(N);
-                predict_tree_on_binned_(trees_[t], Xb, N, P_, Xraw_for_neural, pred);
-                for (int i = 0; i < N; ++i) {
-                    class_preds[static_cast<size_t>(tree_class)][static_cast<size_t>(i)] += wt * pred[static_cast<size_t>(i)];
+        std::vector<double> out(static_cast<size_t>(N) * static_cast<size_t>(K_), 0.0);
+        if (trees_.empty() || N == 0)
+            return out;
+
+        const double bagging_scale =
+            cfg_.mode == ForeForestConfig::Mode::Bagging ? 1.0 / static_cast<double>(trees_.size()) : 1.0;
+        constexpr int rows_per_batch = 256;
+        Xb.visit_codes([&](auto codes) {
+            using Code = typename decltype(codes)::value_type;
+            executor_->parallel_for(0, N, rows_per_batch, [&](int row_begin, int row_end) {
+                for (int row = row_begin; row < row_end; ++row) {
+                    const Code* row_binned = codes.data() + static_cast<size_t>(row) * static_cast<size_t>(P_);
+                    double* row_output = out.data() + static_cast<size_t>(row) * static_cast<size_t>(K_);
+                    for (size_t tree_index = 0; tree_index < trees_.size(); ++tree_index) {
+                        const int tree_class = K_ <= 1 ? 0 : static_cast<int>(tree_index % static_cast<size_t>(K_));
+                        row_output[tree_class] +=
+                            bagging_scale * tree_weights_[tree_index] *
+                            trees_[tree_index].predict_one_binned_typed(row_binned, row, Xraw_for_neural);
+                    }
                 }
-            }
-            // Flatten: [row0_class0, row0_class1, ..., row1_class0, ...]
-            for (int i = 0; i < N; ++i) {
-                for (int c = 0; c < K_; ++c) {
-                    out[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] = class_preds[static_cast<size_t>(c)][static_cast<size_t>(i)];
-                }
-            }
-            if (cfg_.mode == ForeForestConfig::Mode::Bagging && !trees_.empty()) {
-                const double invT = 1.0 / (double)trees_.size();
-                for (double &v : out) v *= invT;
-            }
-        }
+            });
+        });
         return out;
     }
 
@@ -1504,9 +1764,11 @@ private:
         if (K_ <= 1) {
             // Scalar path
             if (cfg_.mode == ForeForestConfig::Mode::GBDT || cfg_.mode == ForeForestConfig::Mode::FWBoost) {
-                for (double &v : out) v += base_score_;
+                for (double& v : out)
+                    v += base_score_;
                 if (apply_link && cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
-                    for (double &v : out) v = sigmoid_(v);
+                    for (double& v : out)
+                        v = sigmoid_(v);
                 }
             }
         } else {
@@ -1518,7 +1780,8 @@ private:
             }
             if (apply_link && cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
                 // Binary: sigmoid on the single class vs rest
-                for (double &v : out) v = sigmoid_(v);
+                for (double& v : out)
+                    v = sigmoid_(v);
             } else if (apply_link && K_ >= 2) {
                 // Multiclass softmax: add implicit Kth class as 0, then softmax
                 for (int i = 0; i < static_cast<int>(out.size()); i += K_) {
@@ -1542,42 +1805,53 @@ private:
         return out;
     }
 
-    static void predict_tree_on_binned_(const UnifiedTree &T, const std::vector<uint16_t> &Xb, int N, int P,
-                                        const double *Xraw_for_neural, std::vector<double> &dst) {
-        auto v = T.predict(Xb, N, P, Xraw_for_neural);
+    static void predict_tree_on_binned_(const UnifiedTree& T, const QuantizedDataset& Xb, int N, int P,
+                                        const double* Xraw_for_neural, std::vector<double>& dst) {
+        (void)N;
+        (void)P;
+        auto v = T.predict(Xb, Xraw_for_neural);
         dst.assign(v.begin(), v.end());
     }
 
 private:
     ForeForestConfig cfg_;
-    std::mt19937_64  rng_;
+    std::mt19937_64 rng_;
 
     std::unique_ptr<GradientHistogramSystem> ghs_;
-    std::shared_ptr<std::vector<uint16_t>>   codes_;
-    int                                      miss_id_ = -1;
+    std::shared_ptr<ParallelExecutor> executor_;
+    QuantizedDatasetPtr compact_codes_;
+#ifdef FORETREE_HAS_CUDA
+    std::unique_ptr<cuda::CudaHistogramEngine> cuda_histogram_engine_;
+    std::mutex cuda_training_mutex_;
+#endif
+    int miss_id_ = -1;
 
     // Separate raw matrices for different purposes
-    const double  *Xraw_exact_   = nullptr; // For exact splits (optional, user-provided)
-    const uint8_t *Xmiss_exact_  = nullptr;
-    const double  *Xraw_neural_  = nullptr; // For neural leaves (typically training data)
-    const uint8_t *Xmiss_neural_ = nullptr;
+    const double* Xraw_exact_ = nullptr; // For exact splits (optional, user-provided)
+    const uint8_t* Xmiss_exact_ = nullptr;
+    const double* Xraw_neural_ = nullptr; // For neural leaves (typically training data)
+    const uint8_t* Xmiss_neural_ = nullptr;
 
     std::vector<UnifiedTree> trees_;
-    std::vector<double>      tree_weights_;
-    std::vector<double>      train_metric_history_;
-    std::vector<double>      valid_metric_history_;
-    int                      best_iteration_ = 0;
-    double                   best_score_     = std::numeric_limits<double>::infinity();
-    bool                     early_stopped_  = false;
+    std::vector<double> tree_weights_;
+    std::vector<double> train_metric_history_;
+    std::vector<double> valid_metric_history_;
+    int best_iteration_ = 0;
+    double best_score_ = std::numeric_limits<double>::infinity();
+    bool early_stopped_ = false;
 
-    int    N_ = 0, P_ = 0;
-    int    original_P_ = 0;
+    int N_ = 0, P_ = 0;
+    int original_P_ = 0;
     double base_score_ = 0.0;
 
-    bool                          efb_active_ = false;
-    std::vector<int>              efb_passthrough_features_;
+    bool efb_active_ = false;
+    int efb_input_dim_ = 0;
+    std::vector<int> efb_passthrough_features_;
     std::vector<std::vector<int>> efb_bundles_;
     std::vector<std::vector<double>> efb_bundle_offsets_;
+    OrderedCategoricalEncoder ordered_categorical_encoder_;
+    bool ordered_categorical_active_ = false;
+    std::vector<int> ordered_boosting_order_;
 
     mutable execx::Context ctx_;
 };

@@ -67,7 +67,6 @@ if TRITON_AVAILABLE:
         out_ptr,
         M,
         D,
-        eps,
         GROUP_SIZE: tl.constexpr,
         BLOCK_G: tl.constexpr,
     ):
@@ -90,7 +89,7 @@ if TRITON_AVAILABLE:
         w = tl.load(w_ptr + col, mask=mask, other=1.0).to(tl.float32)
 
         mean_sq = tl.sum(y * y, axis=0) / GROUP_SIZE
-        inv_rms = tl.rsqrt(mean_sq + eps)
+        inv_rms = tl.rsqrt(mean_sq + 1e-5)
         y_normed = y * inv_rms * w
 
         sig = 1.0 / (1.0 + tl.exp(-z))
@@ -156,7 +155,6 @@ if TRITON_AVAILABLE:
         dw_partial_ptr,  # [n_row_blocks, D] fp32
         M,
         D,
-        eps,
         GROUP_SIZE: tl.constexpr,
         BLOCK_G: tl.constexpr,
         ROWS_PER_PROGRAM: tl.constexpr,
@@ -191,7 +189,7 @@ if TRITON_AVAILABLE:
             z = tl.load(z_ptr + row_off, mask=mask, other=0.0).to(tl.float32)
 
             mean_sq = tl.sum(y * y, axis=0) / GROUP_SIZE
-            inv_rms = tl.rsqrt(mean_sq + eps)
+            inv_rms = tl.rsqrt(mean_sq + 1e-5)
             x_hat = y * inv_rms
 
             sig = tl.sigmoid(z)
@@ -425,7 +423,6 @@ def fused_out_bwd_triton(
         dw_partial,
         M,
         D,
-        eps,
         GROUP_SIZE=gs,
         BLOCK_G=BLOCK_G,
         ROWS_PER_PROGRAM=rows_per_program,
@@ -558,7 +555,6 @@ def fused_out_triton(
         out,
         M,
         D,
-        eps,
         GROUP_SIZE=gs,
         BLOCK_G=BLOCK_G,
     )

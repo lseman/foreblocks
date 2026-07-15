@@ -12,6 +12,7 @@ option(TREE_BUILD_FOREFOREST "Build foreforest pybind module" ON)
 option(TREE_ENABLE_TBB "Enable TBB if available" ON)
 option(TREE_ENABLE_STDEXEC "Enable stdexec include path for foreforest" ON)
 option(FORETREE_EXEC_USE_CUDA "Use nvexec CUDA scheduler for foreforest" OFF)
+option(TREE_ENABLE_CUDA_BACKEND "Build native CUDA histogram backend" OFF)
 set(TREE_STDEXEC_INCLUDE_DIR "" CACHE PATH "Path to stdexec include directory")
 
 # Paths to local tree module sources
@@ -64,6 +65,31 @@ endif()
 find_package(fmt CONFIG REQUIRED)
 find_package(Eigen3 CONFIG REQUIRED)
 
+if(TREE_ENABLE_CUDA_BACKEND)
+  enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  add_library(foretree_cuda STATIC "${TREE_SRC_DIR}/cuda_histogram.cu")
+  target_include_directories(foretree_cuda PUBLIC "${TREE_INCLUDE_DIR}")
+  target_link_libraries(foretree_cuda PUBLIC CUDA::cudart)
+  target_compile_features(foretree_cuda PUBLIC cxx_std_20)
+  set_target_properties(foretree_cuda PROPERTIES
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+    POSITION_INDEPENDENT_CODE ON
+  )
+  target_compile_definitions(foretree_cuda PUBLIC FORETREE_HAS_CUDA=1)
+
+  enable_testing()
+  add_executable(test_cuda_histogram "${TREE_ROOT_DIR}/tests/test_cuda_histogram.cu")
+  target_include_directories(test_cuda_histogram PRIVATE "${TREE_INCLUDE_DIR}")
+  target_link_libraries(test_cuda_histogram PRIVATE foretree_cuda)
+  set_target_properties(test_cuda_histogram PROPERTIES
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+  )
+  add_test(NAME cuda_histogram COMMAND test_cuda_histogram)
+endif()
+
 add_library(foretree_core INTERFACE)
 target_include_directories(foretree_core
   INTERFACE
@@ -108,23 +134,29 @@ function(tree_common_setup tgt)
 endfunction()
 
 if(TREE_BUILD_FORETREE)
-  find_package(Python3 3.14 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
+  find_package(Python3 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
   find_package(pybind11 CONFIG REQUIRED)
   pybind11_add_module(foretree "${TREE_SRC_DIR}/foretree_pybind.cpp")
   tree_common_setup(foretree)
   target_link_libraries(foretree PRIVATE foretree_core)
+  if(TREE_ENABLE_CUDA_BACKEND)
+    target_link_libraries(foretree PRIVATE foretree_cuda)
+  endif()
   if(TREE_ENABLE_STDEXEC)
     target_include_directories(foretree PRIVATE ${stdexec_SOURCE_DIR}/include)
   endif()
 endif()
 
 if(TREE_BUILD_FOREFOREST)
-  find_package(Python3 3.14 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
+  find_package(Python3 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
 
   find_package(pybind11 CONFIG REQUIRED)
   pybind11_add_module(foreforest "${TREE_SRC_DIR}/foreforest.cpp")
   tree_common_setup(foreforest)
   target_link_libraries(foreforest PRIVATE foretree_core)
+  if(TREE_ENABLE_CUDA_BACKEND)
+    target_link_libraries(foreforest PRIVATE foretree_cuda)
+  endif()
 
   if(TREE_ENABLE_STDEXEC)
     target_include_directories(foreforest PRIVATE ${stdexec_SOURCE_DIR}/include)
@@ -148,3 +180,4 @@ message(STATUS "TREE_BUILD_FOREFOREST : ${TREE_BUILD_FOREFOREST}")
 message(STATUS "TREE_ENABLE_TBB       : ${TREE_ENABLE_TBB}")
 message(STATUS "TREE_ENABLE_STDEXEC   : ${TREE_ENABLE_STDEXEC}")
 message(STATUS "FORETREE_EXEC_USE_CUDA: ${FORETREE_EXEC_USE_CUDA}")
+message(STATUS "TREE_ENABLE_CUDA_BACKEND: ${TREE_ENABLE_CUDA_BACKEND}")

@@ -18,7 +18,7 @@ import time
 
 import torch
 import torch.nn.functional as F
-from foreblocks.experimental.attention_kernels.custom_att import (
+from foreblocks.experimental.attention_kernels import (
     flash_attn_backward_backend,
     flash_attn_func,
 )

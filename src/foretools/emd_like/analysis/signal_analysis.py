@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import numpy as np
-import pyfftw.interfaces.numpy_fft as fftw_np
 import scipy.stats
 
 from ..config import VMDParameters
@@ -12,7 +11,7 @@ class SignalAnalyzer:
     def estimate_snr(signal: np.ndarray, fs: float) -> float:
         """Improved SNR: uses lower percentile of log-spectrum for noise floor."""
         s = np.asarray(signal, dtype=np.float64)
-        spec = np.abs(fftw_np.rfft(s)) + 1e-12
+        spec = np.abs(np.fft.rfft(s)) + 1e-12
         spec_db = 20 * np.log10(spec)
 
         # Take ~bottom 40% as noise-dominated region (conservative)
@@ -30,8 +29,8 @@ class SignalAnalyzer:
         s = np.asarray(signal, dtype=np.float64)
         if s.size < 8:
             return 0.0
-        spec = np.abs(fftw_np.rfft(s))
-        freqs = fftw_np.rfftfreq(s.size, d=1 / fs)
+        spec = np.abs(np.fft.rfft(s))
+        freqs = np.fft.rfftfreq(s.size, d=1 / fs)
         if spec.size == 0:
             return 0.0
         spec = spec.copy()
@@ -55,8 +54,8 @@ class SignalAnalyzer:
                 alpha_max=4000,
             )
 
-        spec = np.abs(fftw_np.rfft(s)) + 1e-12
-        freqs = fftw_np.rfftfreq(N, d=1 / fs)
+        spec = np.abs(np.fft.rfft(s)) + 1e-12
+        freqs = np.fft.rfftfreq(N, d=1 / fs)
         spec_norm = spec / (np.sum(spec) + 1e-12)
         spectral_entropy = -np.sum(spec_norm * np.log(spec_norm + 1e-12))
 

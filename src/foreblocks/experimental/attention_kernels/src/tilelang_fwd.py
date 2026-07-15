@@ -110,18 +110,21 @@ def _build_fwd(
                     # Load K tile
                     T.copy(K[bz, by, k * block_N : (k + 1) * block_N, :], K_shared)
 
-                    # Causal / OOB mask (fill acc_s before GEMM)
+                    # Initialize acc_s and apply causal / OOB mask before GEMM
                     if is_causal:
                         for i, j in T.Parallel(block_M, block_N):
                             acc_s[i, j] = T.if_then_else(
                                 bx * block_M + i >= k * block_N + j,
                                 0,
-                                -T.infinity(acc_s.dtype),
+                                T.cast(-1e30, accum_dtype),
                             )
                     else:
+                        T.fill(acc_s, 0)
                         for i, j in T.Parallel(block_M, block_N):
                             acc_s[i, j] = T.if_then_else(
-                                k * block_N + j >= seq_len, -T.infinity(acc_s.dtype), 0
+                                k * block_N + j >= seq_len,
+                                T.cast(-1e30, accum_dtype),
+                                0,
                             )
 
                     # Q @ K^T → acc_s  (FullRow: each warp gets a full row)
@@ -138,7 +141,7 @@ def _build_fwd(
 
                     # ---- Online softmax ----
                     T.copy(scores_max, scores_max_prev)
-                    T.fill(scores_max, -T.infinity(accum_dtype))
+                    T.fill(scores_max, T.cast(-1e30, accum_dtype))
                     T.reduce_max(acc_s, scores_max, dim=1, clear=False)
                     for i in T.Parallel(block_M):
                         scores_max[i] = T.max(scores_max[i], scores_max_prev[i])
@@ -195,8 +198,13 @@ def _build_fwd(
 
 
 def _select_config(n_ctx, d_head, causal):
-    """Select block/tile sizes.  From the official examples."""
-    return 64, 64, 1, 128  # block_M, block_N, num_stages, threads
+    """Select block/tile sizes. Optimized for Ada (RTX 4090)."""
+    if d_head <= 32:
+        return 128, 128, 2, 128
+    if d_head == 64:
+        return 128, 64, 2, 128
+    # D>=96: num_stages=1 to avoid shared memory pressure
+    return 64, 64, 1, 128
 
 
 # ---------------------------------------------------------------------------

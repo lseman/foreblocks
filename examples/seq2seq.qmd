@@ -1,0 +1,476 @@
+---
+title: Informer-Like
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .qmd
+      format_name: quarto
+      format_version: '1.0'
+      jupytext_version: 1.19.1
+  kernelspec:
+    display_name: .venv
+    language: python
+    name: python3
+---
+
+```{python}
+import sys
+import os
+
+# Get the current working directory of the notebook
+notebook_dir = os.getcwd()
+
+# Add the parent directory to sys.path
+parent_dir = os.path.abspath(os.path.join(notebook_dir, ".."))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+```
+
+
+
+```{python}
+import torch
+import torch.nn as nn
+import matplotlib.pyplot as plt
+import numpy as np
+
+from foreblocks import ForecastingModel
+from foreblocks import TransformerEncoder, TransformerDecoder, AttentionLayer
+from foreblocks import Trainer
+
+
+
+# Parameters
+input_size = 1
+hidden_size = 64
+num_layers = 1
+output_size = 1
+target_len = 10
+seq_len = 50
+total_len = 1000  # Total synthetic time series length
+
+model_params = {
+    "input_processor_output_size": 1,
+    "hidden_size": 128,
+    "nhead": 8,
+    "num_encoder_layers": 1,
+    "num_decoder_layers": 1,
+    "dropout": 0.1,
+    "dim_feedforward": 2048,
+    "seq_len": 50,
+    "target_len": 10,
+    "total_len": 1000,
+    "input_size": 1,
+    "output_size": 1,
+}
+
+# from foreblocks.layers.embeddings import RoPEPositionalEncoding
+
+# 1. Create encoder and decoder
+# 1. Create encoder and decoder
+encoder = TransformerEncoder(
+    input_size=model_params.get("input_processor_output_size", 1),
+    nhead=model_params.get("nhead", 4),
+    num_layers=model_params.get("num_encoder_layers", 1),
+    dropout=model_params.get("dropout", 0.1),
+    dim_feedforward=model_params.get("dim_feedforward", 2048),
+    att_type="standard",
+    use_moe=False,
+    custom_norm="rms",
+    # ---- mHC ----
+    use_mhc=False,
+    mhc_n_streams=4,
+    mhc_sinkhorn_iters=20,
+    # mhc_temperature=1.0,
+    mhc_collapse="first",  # or "mean"
+    pos_encoding_type='rope'
+)
+
+decoder = TransformerDecoder(
+    input_size=model_params.get("input_processor_output_size", 1),
+    output_size=output_size,
+    nhead=model_params.get("nhead", 4),
+    num_layers=model_params.get("num_decoder_layers", 1),
+    dropout=model_params.get("dropout", 0.1),
+    dim_feedforward=model_params.get("dim_feedforward", 2048),
+    informer_like=True,
+    att_type="standard",
+    custom_norm="rms",
+    use_moe=False,
+    label_len=target_len // 2,
+
+    # ---- mHC ----
+    use_mhc=False,
+    mhc_n_streams=4,
+    mhc_sinkhorn_iters=20,
+    # mhc_temperature=1.0,
+    mhc_collapse="first",
+    pos_encoding_type='rope'
+)
+
+
+total_epochs = 30  # Total number of epochs for training
+
+
+def scheduled_sampling_fn(epoch):
+    # Use a linear decay from 1.0 to 0.0 over the epochs
+    tf_ratio = max(0.0, 0.95 - (epoch / total_epochs))
+
+    return tf_ratio
+
+from foreblocks.modules.heads.head_helper import HeadSpec, HeadComposer
+from foreblocks.modules.heads.modules.revin_head import RevINHead
+from foreblocks.modules.heads.modules.decomposition_head import DecompositionBlock
+from foreblocks.modules.heads.modules.multiscale_conv_head import MultiScaleConvHead
+# specs = [
+#     HeadSpec(head=RevINHead(feature_dim=input_size), name="revin", combine="invert"),
+#     # Use hidden_dim=input_size to keep encoder input size unchanged (=1 here)
+#     HeadSpec(head=DecompositionBlock(kernel_size=25, feature_dim=input_size, hidden_dim=input_size),
+#              name="decomp", combine="add"),
+#     HeadSpec(head=MultiScaleConvHead(feature_dim=input_size),
+#               name="msconv", combine="none"),
+# ]
+# composer = HeadComposer(specs, output_dim=output_size)
+# print(composer.summary())
+parallel_specs = [
+    HeadSpec(
+        head=MultiScaleConvHead(feature_dim=input_size),
+        name="msconv",
+        combine="none",
+        alpha_mode="gate",
+        lora_rank=8,
+        alpha_mix_style="lora",
+    ),
+]
+
+serial_specs = [
+    HeadSpec(head=RevINHead(feature_dim=input_size), name="revin", combine="invert", alpha_mode="gate"),
+    HeadSpec(
+        head=DecompositionBlock(kernel_size=25, feature_dim=input_size, hidden_dim=input_size),
+        name="decomp",
+        combine="add",
+        alpha_mode="soft",
+    ),
+]
+
+composer = HeadComposer(
+    parallel_specs=parallel_specs,
+    serial_specs=serial_specs,
+    composer_mode="hybrid",
+    parallel_combine="lora_mix",   # or "moe_routing"
+    output_dim=output_size,
+    enable_nas=True,
+)
+
+model = ForecastingModel(
+    encoder=encoder,
+    decoder=decoder,
+    target_len=target_len,
+    input_preprocessor=None,
+    output_postprocessor=None,
+    output_block=None,
+    # attention_module=attention_module,
+    forecasting_strategy="seq2seq",
+    model_type="informer-like",  # Use Informer-like architecture
+    scheduled_sampling_fn=scheduled_sampling_fn,
+    output_size=output_size,
+)
+
+model = model.cuda() if torch.cuda.is_available() else model.cpu()
+
+trainer = Trainer(
+    model,
+    optimizer=torch.optim.Adam(model.parameters(), lr=0.001),
+    criterion=nn.MSELoss(),
+)
+
+# 2. Generate synthetic time series
+time_series = np.sin(np.linspace(0, 30 * np.pi, total_len)) + 0.1 * np.random.randn(
+    total_len
+)
+time_series = torch.tensor(time_series, dtype=torch.float32).unsqueeze(
+    -1
+)  # Shape: [T, 1]
+
+
+# 3. Prepare sliding windows for training
+def create_sliding_windows(series, input_len, output_len):
+    X, Y = [], []
+    for i in range(len(series) - input_len - output_len):
+        X.append(series[i : i + input_len])
+        Y.append(series[i + input_len : i + input_len + output_len])
+    return torch.stack(X), torch.stack(Y)
+
+
+X, Y = create_sliding_windows(time_series, seq_len, target_len)
+train_size = int(0.8 * len(X))
+X_train, Y_train = X[:train_size], Y[:train_size]
+print("X_train shape:", X_train.shape)
+print("Y_train shape:", Y_train.shape)
+X_val, Y_val = X[train_size:], Y[train_size:]
+
+
+
+# create DataLoader
+from torch.utils.data import DataLoader, TensorDataset
+
+train_dataset = TensorDataset(X_train, Y_train)
+train_loader = DataLoader(train_dataset, batch_size=128, shuffle=True)
+data = trainer.train(train_loader, epochs=total_epochs)
+trainer.plot_prediction(X_val, Y_val, full_series=time_series, offset=train_size)
+metrics = trainer.metrics(X_val, Y_val)
+print(metrics)
+```
+
+```{python}
+import torch
+import torch.nn as nn
+import numpy as np
+from torch.utils.data import DataLoader, TensorDataset
+
+from foreblocks import Trainer
+from foreblocks.models.popular.oryx import OryxTransformer
+
+# Synthetic sequence training example for Oryx.
+torch.manual_seed(0)
+np.random.seed(0)
+
+seq_len = 50
+pred_len = 10
+batch_size = 64
+num_epochs = 80
+
+class OryxForecastModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.input_proj = nn.Linear(1, 16)
+        self.oryx = OryxTransformer(
+            num_layers=2,
+            d_model=16,
+            n_heads=4,
+            d_ff=64,
+            dropout=0.1,
+            attention_type="standard",
+            linear_mode="gdn",
+            use_short_conv=True,
+            conv_kernel=3,
+            gate=True,
+            norm_type="rms",
+        )
+        self.output_proj = nn.Sequential(
+            nn.Linear(16, 64),
+            nn.SiLU(),
+            nn.Linear(64, 1),
+        )
+
+    def forward(self, X, y=None, time_feat=None, epoch=None, meta=None):
+        x = self.input_proj(X)
+        out, _ = self.oryx(x, mode="gdn")
+        out = out[:, -pred_len :, :]
+        return self.output_proj(out)
+
+
+model = OryxForecastModel()
+trainer = Trainer(
+    model,
+    optimizer=torch.optim.Adam(model.parameters(), lr=1e-3),
+    criterion=nn.MSELoss(),
+)
+
+# Generate a synthetic sinusoidal series.
+total_len = 1000
+series = torch.sin(torch.linspace(0, 30 * torch.pi, total_len)).unsqueeze(-1)
+series += 0.05 * torch.randn_like(series)
+series = (series - series.mean()) / series.std()
+
+# Build windows where the model predicts the next pred_len steps from the previous seq_len values.
+X = []
+Y = []
+for i in range(total_len - seq_len - pred_len + 1):
+    X.append(series[i : i + seq_len])
+    Y.append(series[i + seq_len : i + seq_len + pred_len])
+X = torch.stack(X)
+Y = torch.stack(Y)
+
+train_size = int(0.8 * len(X))
+X_train, Y_train = X[:train_size], Y[:train_size]
+X_val, Y_val = X[train_size:], Y[train_size:]
+
+train_loader = DataLoader(TensorDataset(X_train, Y_train), batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(TensorDataset(X_val, Y_val), batch_size=batch_size)
+
+trainer.train(train_loader, val_loader=val_loader, epochs=num_epochs)
+trainer.plot_prediction(X_val, Y_val, full_series=series, offset=train_size, stride=1)
+metrics = trainer.metrics(X_val, Y_val)
+print(metrics)
+```
+
+## Mamba/Raven direct-backbone examples
+
+These examples use Mamba and Raven as the `ForecastingModel` backbone (`encoder`) for direct forecasting. `ForecastingModel` owns the horizon projection, so these blocks replace LSTM/Transformer-style model bodies rather than serving as heads.
+
+```{python}
+# Raven as a ForecastingModel backbone.# Raven uses CUDA-backed FLA/Triton kernels, so this example intentionally skips CPU-only machines.if not torch.cuda.is_available():    print("Skipping Raven example: Raven requires CUDA-backed FLA/Triton kernels.")elif not bool(int(os.environ.get("FOREBLOCKS_FORCE_RAVEN", "0"))):    # FLA submodule not present — guard against ModuleNotFoundError    try:        import fla  # noqa: F401    except ModuleNotFoundError:        print("Skipping Raven example: flash-linear-attention not installed. Install the `fla` extra or run `git submodule update --init --recursive`.")    else:        raven_backbone = RavenModelBlock(            input_size=1,            hidden_size=64,            num_layers=2,            num_heads=4,            num_slots=16,            topk=8,            feature_map="relu",            gate_fn="relu",            fuse_norm=False,            device="cuda",        )        raven_trainer = train_direct_backbone(            "raven-direct-backbone",            raven_backbone,            model_type="raven",            epochs=3,        )
+```
+
+```{python}
+# Mamba2 as a ForecastingModel backbone.
+# implementation="custom" uses Foreblocks' own SSD + causal-conv1d Triton
+# kernels (no Dao-AILab causal_conv1d / selective_state_update dependency),
+# so it runs warning-free on CPU or CUDA. Use implementation="fla" only if
+# you have the upstream CUDA kernels installed.
+mamba_backbone = Mamba2ModelBlock(
+    input_size=1,
+    hidden_size=64,
+    num_layers=2,
+    num_heads=4,
+    d_state=16,
+    implementation="custom",
+)
+
+mamba_trainer = train_direct_backbone(
+    "mamba2-direct-backbone",
+    mamba_backbone,
+    model_type="mamba2",
+    epochs=3,
+)
+```
+
+```{python}
+# Raven as a ForecastingModel backbone.
+# Raven uses CUDA-backed FLA/Triton kernels, so this example intentionally skips CPU-only machines.
+if not torch.cuda.is_available():
+    print("Skipping Raven example: Raven requires CUDA-backed FLA/Triton kernels.")
+else:
+    raven_backbone = RavenModelBlock(
+        input_size=1,
+        hidden_size=64,
+        num_layers=2,
+        num_heads=4,
+        num_slots=16,
+        topk=8,
+        feature_map="relu",
+        gate_fn="relu",
+        fuse_norm=False,
+        device="cuda",
+    )
+
+    raven_trainer = train_direct_backbone(
+        "raven-direct-backbone",
+        raven_backbone,
+        model_type="raven",
+        epochs=3,
+    )
+```
+
+## Nemotron-style heterogeneous block stack
+
+`BlockStack` stacks heterogeneous block *types* sequentially — e.g. `Mamba2 → Attention → MoE` — each as a pre-norm residual sub-block. This is the NVIDIA Nemotron pattern, distinct from `HybridMamba2Block` which fuses an SSM and attention *in parallel* inside one block.
+
+Pass it as the `ForecastingModel` `encoder` (backbone) with `model_type="hybrid_mamba"`. MoE auxiliary (load-balancing) losses accumulate in `BlockStack.aux_loss` and flow into the training loss automatically via `ForecastingModel.get_aux_loss()`.
+
+```{python}
+from foreblocks.sequence import BlockStack
+
+import torch
+import torch.nn as nn
+import numpy as np
+import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader, TensorDataset
+
+from foreblocks import ForecastingModel, Trainer
+from foreblocks.config import TrainingConfig
+from foreblocks.sequence.forecast_blocks import Mamba2ModelBlock, RavenModelBlock
+
+torch.manual_seed(7)
+np.random.seed(7)
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
+seq_len = 50
+pred_len = 10
+batch_size = 32
+total_len = 900
+
+# Synthetic multiscale signal with light noise.
+t = torch.linspace(0, 36 * torch.pi, total_len)
+series = (torch.sin(t) + 0.35 * torch.sin(t / 4.0) + 0.05 * torch.randn_like(t)).unsqueeze(-1)
+series = (series - series.mean()) / series.std()
+
+X, Y = [], []
+for i in range(total_len - seq_len - pred_len + 1):
+    X.append(series[i : i + seq_len])
+    Y.append(series[i + seq_len : i + seq_len + pred_len])
+X = torch.stack(X)
+Y = torch.stack(Y)
+
+split = int(0.8 * len(X))
+X_train, Y_train = X[:split], Y[:split]
+X_val, Y_val = X[split:], Y[split:]
+
+train_loader = DataLoader(TensorDataset(X_train, Y_train), batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(TensorDataset(X_val, Y_val), batch_size=batch_size)
+
+
+def train_direct_backbone(name, backbone, model_type, epochs=3):
+    model = ForecastingModel(
+        encoder=backbone,
+        forecasting_strategy="direct",
+        model_type=model_type,
+        target_len=pred_len,
+        output_size=1,
+    )
+    trainer = Trainer(
+        model,
+        config=TrainingConfig(
+            num_epochs=epochs,
+            learning_rate=1e-3,
+            batch_size=batch_size,
+            patience=max(epochs, 2),
+            use_amp=(device == "cuda"),
+        ),
+        criterion=nn.MSELoss(),
+        device=device,
+        auto_track=False,
+    )
+    trainer.train(train_loader, val_loader=val_loader, epochs=epochs, run_name=name)
+    val_loss = trainer.evaluate(val_loader)
+    with torch.no_grad():
+        sample_pred = trainer.model(X_val[:4].to(trainer.device))
+    print(f"{name}: val_loss={val_loss:.4f}, sample_pred={tuple(sample_pred.shape)}, model_device={trainer.device}")
+
+    fig = trainer.plot_prediction(
+        X_val,
+        Y_val,
+        full_series=series,
+        offset=split,
+        stride=1,
+        figsize=(12, 4),
+        show=False,
+        names=name,
+    )
+    fig.suptitle(f"{name}: forecast vs actual", y=1.04)
+    plt.show()
+    return trainer
+
+
+# One "layer" = Mamba2 -> Attention -> MoE; repeat x2 for a 6-sub-block stack.
+# input_size=1 projects the univariate series up to d_model internally.
+blockstack_backbone = BlockStack(
+    d_model=64,
+    spec=["mamba2", "attn", "moe"] * 2,
+    input_size=1,
+    dropout=0.1,
+    mamba_kwargs=dict(d_state=16, num_heads=4),
+    attn_kwargs=dict(n_heads=4),
+    moe_kwargs=dict(num_experts=8, top_k=2),
+)
+
+blockstack_trainer = train_direct_backbone(
+    "nemotron-blockstack",
+    blockstack_backbone,
+    model_type="hybrid_mamba",
+    epochs=30,
+)
+```

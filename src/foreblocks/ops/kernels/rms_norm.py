@@ -489,6 +489,27 @@ class FusedAddRMSNormFunction(torch.autograd.Function):
 # ============================== Python API ====================================
 
 
+def rms_norm_fallback(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Apply RMSNorm using native PyTorch operations."""
+    rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
+    return x * rms * weight
+
+
+def rms_norm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Apply RMSNorm using Triton when supported, otherwise use PyTorch."""
+    if _should_use_triton(x) and weight.is_cuda:
+        return RMSNormTritonFunction.apply(x, weight, eps)
+    return rms_norm_fallback(x, weight, eps)
+
+
 def fused_add_rmsnorm(
     residual: torch.Tensor,
     update: torch.Tensor,
@@ -569,6 +590,8 @@ __all__ = [
     "_should_use_triton",
     "_supports_fused_row_width",
     "RMSNormTritonFunction",
+    "rms_norm",
+    "rms_norm_fallback",
     "FusedAddRMSNormFunction",
     "fused_add_rmsnorm",
     "fused_add_rmsnorm_fwd_kernel",
