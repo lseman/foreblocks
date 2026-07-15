@@ -23,6 +23,7 @@
 
 #include "foretree/core/gradient_hist_system.hpp"
 #include "foretree/core/ordered_categorical.hpp"
+#include "foretree/split/split_engine.hpp"
 #include "foretree/tree/unified_tree.hpp"
 
 namespace foretree {
@@ -173,6 +174,15 @@ struct ForeForestConfig {
     int dart_max_drop = 3;
     bool dart_normalize = true;
     bool dart_one_drop_min = true;
+
+    // Oblique splits (k-feature ridge regression)
+    bool oblique_enabled = false;
+    int oblique_k_features = 6;
+    int oblique_newton_steps = 1;
+    double oblique_ridge = 1e-3;
+    double oblique_l1 = 0.0;
+    double axis_vs_oblique_guard = 1.02;  // if axis_gain * guard >= oblique_gain, keep axis
+    ObliqueMode oblique_mode = ObliqueMode::Off;
 
     int threads = 0;
 };
