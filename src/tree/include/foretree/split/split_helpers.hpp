@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <random>
 #include <utility>
 #include <vector>
 
@@ -34,6 +35,13 @@ struct AdaptiveBinningConfig {
     int max_refined_bins = 64;      // Max bins after refinement around split
 };
 
+struct GossConfig {
+    bool enabled = false;     // Enable GOSS row sampling
+    double top_rate = 0.2;    // Keep fraction of rows with highest |gradient|
+    double other_rate = 0.1;  // Keep fraction of remaining rows randomly
+    // Reweight other rows by 1 / other_rate to keep expected loss unchanged
+};
+
 struct SplitHyper {
     double lambda_ = 1.0;
     double alpha_ = 0.0;
@@ -48,6 +56,9 @@ struct SplitHyper {
 
     // Adaptive binning for high-cardinality features
     AdaptiveBinningConfig adaptive_binning;
+
+    // Gradient-based One-Side Sampling (GOSS)
+    GossConfig goss;
 
     // Helper: compute lambda per class/target
     double min_child_weight() const {
@@ -109,6 +120,28 @@ inline bool valid_children(double HL, double HR, int nL, int nR, const SplitHype
     if (HL < hyp.min_child_weight_ || HR < hyp.min_child_weight_)
         return false;
     return true;
+}
+
+// Check monotone constraint on a split. Given left/right leaf objectives,
+// verify mono constraint: mono > 0 => non-decreasing, mono < 0 => non-increasing.
+// Returns true if constraint satisfied or mono == 0.
+inline bool check_monotone_constraint(int8_t mono, double GL, double HL, double GR, double HR, double lambda) {
+    if (mono == 0)
+        return true;  // No constraint
+
+    // Compute per-class weight: w = -G / (H + lambda)
+    const double denom_L = HL + lambda;
+    const double denom_R = HR + lambda;
+    if (!(denom_L > 0.0) || !(denom_R > 0.0))
+        return false;  // Invalid
+
+    const double wL = -GL / denom_L;
+    const double wR = -GR / denom_R;
+
+    if (mono > 0)  // Non-decreasing: wL <= wR
+        return wL <= wR + 1e-12;
+    else  // Non-increasing: wL >= wR
+        return wL >= wR - 1e-12;
 }
 
 inline double split_gain_from_parent(double parent_gain, double GL, double HL, double GR, double HR, int nL, int nR,
@@ -178,6 +211,56 @@ struct JointHistogramBatch {
 
 using JointHistogramBuilder = bool (*)(void* state, const int* interleaved_pairs, int pair_count, int reduced_bins,
                                        JointHistogramBatch& output);
+
+// ============================================================================
+// Gradient-based One-Side Sampling (GOSS) — Row Filtering
+// ============================================================================
+// Filter rows by gradient magnitude (GOSS). Returns indices of kept rows.
+// Keeps top_rate fraction of rows with highest |gradient|, plus
+// other_rate fraction of remaining rows, upweighting the latter.
+inline std::vector<int> apply_goss(const std::vector<double>& gradients,
+                                   const GossConfig& cfg, uint64_t seed = 0) {
+    if (!cfg.enabled || cfg.top_rate < 0.001 || cfg.other_rate < 0.001)
+        return {};  // Empty => use all rows
+
+    const int N = static_cast<int>(gradients.size());
+    if (N <= 2)
+        return {};
+
+    // Rank by |gradient|
+    std::vector<std::pair<double, int>> grad_idx;
+    for (int i = 0; i < N; ++i) {
+        grad_idx.push_back({std::abs(gradients[i]), i});
+    }
+    std::sort(grad_idx.rbegin(), grad_idx.rend());  // descending by |grad|
+
+    const int top_k = std::max(1, static_cast<int>(N * cfg.top_rate));
+    const int remaining = N - top_k;
+    const int other_k = std::max(1, static_cast<int>(remaining * cfg.other_rate));
+
+    std::vector<int> kept;
+    kept.reserve(top_k + other_k);
+
+    // Add top-k rows
+    for (int i = 0; i < top_k; ++i) {
+        kept.push_back(grad_idx[i].second);
+    }
+
+    // Random sample from remaining rows
+    std::mt19937 rng(seed);
+    std::vector<int> remaining_indices;
+    remaining_indices.reserve(remaining);
+    for (int i = top_k; i < N; ++i) {
+        remaining_indices.push_back(grad_idx[i].second);
+    }
+    std::shuffle(remaining_indices.begin(), remaining_indices.end(), rng);
+    for (int i = 0; i < other_k && i < static_cast<int>(remaining_indices.size()); ++i) {
+        kept.push_back(remaining_indices[i]);
+    }
+
+    std::sort(kept.begin(), kept.end());
+    return kept;
+}
 
 // ============================================================================
 // Feature Importance Tracking

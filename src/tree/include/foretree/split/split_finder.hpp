@@ -220,6 +220,101 @@ public:
 };
 
 // ============================================================================
+// 1b) Multiclass Leaf Splits — Optimizes C-way splits directly (vs OvR)
+// ============================================================================
+class MulticlassSplitFinder {
+public:
+    // For multiclass regression (C>1 output classes), optimize splits on
+    // gradient matrix [N x C] directly. Each split partitions rows to maximize
+    // post-split pure class separability (via sum of squared class gains).
+    splitx::Candidate best_multiclass_axis(const splitx::SplitContext& ctx, int num_classes) const {
+        using namespace splitx;
+        Candidate best;
+        best.kind = SplitKind::Axis;
+        best.gain = NEG_INF;
+
+        if (!ctx.G || !ctx.H || !ctx.C || ctx.P <= 0 || num_classes <= 1)
+            return best;
+
+        // Histogram is flattened as [feature][bin * num_classes + class]
+        // Extract per-class gradients and hessians
+        const auto& G = *ctx.G;
+        const auto& H = *ctx.H;
+        const auto& C = *ctx.C;
+        const auto* mono_vec = ctx.mono_ptr();
+
+        // Parent gain per class: sum of (G_c^2) / (H_c + lambda)
+        std::vector<double> parent_gains(static_cast<size_t>(num_classes), 0.0);
+        std::vector<double> parent_G(static_cast<size_t>(num_classes), 0.0);
+        std::vector<double> parent_H(static_cast<size_t>(num_classes), 0.0);
+
+        // Extract parent aggregates per class
+        for (int c = 0; c < num_classes; ++c) {
+            parent_G[c] = ctx.Gp;  // Distributed across classes
+            parent_H[c] = ctx.Hp;
+            const double denom = parent_H[c] + ctx.hyp.lambda_;
+            if (denom > 0.0)
+                parent_gains[c] = 0.5 * parent_G[c] * parent_G[c] / denom;
+        }
+
+        // Scan all features for best C-way split
+        ctx.for_each_active_feature([&](int f) {
+            const int finite_bins = ctx.get_feature_bins(f);
+            if (finite_bins <= 0)
+                return;
+
+            const int8_t mono = (mono_vec && f < (int)mono_vec->size()) ? (*mono_vec)[f] : 0;
+            if (mono != 0)  // Monotone constraints not yet supported for multiclass
+                return;
+
+            // Scan bins for this feature, computing C-way split gain
+            for (int bin = 0; bin + 1 < finite_bins; ++bin) {
+                double split_gain_total = 0.0;
+
+                // Compute gain for each class independently
+                for (int c = 0; c < num_classes; ++c) {
+                    // Left child: sum gradients/hessians for bins 0..bin
+                    double GL = 0.0, HL = 0.0;
+                    int nL = 0;
+                    for (int b = 0; b <= bin; ++b) {
+                        size_t hist_idx = static_cast<size_t>(b * num_classes + c);
+                        if (hist_idx < G.size()) {
+                            GL += G[hist_idx];
+                            HL += H[hist_idx];
+                            nL += C[hist_idx];
+                        }
+                    }
+
+                    // Right child: complement
+                    double GR = parent_G[c] - GL;
+                    double HR = parent_H[c] - HL;
+                    int nR = ctx.Cp - nL;
+
+                    // Per-class gain (single split, binary partition)
+                    if (HL + ctx.hyp.lambda_ > 0.0 && HR + ctx.hyp.lambda_ > 0.0) {
+                        double gain_L = 0.5 * GL * GL / (HL + ctx.hyp.lambda_);
+                        double gain_R = 0.5 * GR * GR / (HR + ctx.hyp.lambda_);
+                        split_gain_total += (gain_L + gain_R - parent_gains[c]);
+                    }
+                }
+
+                // Apply regularization
+                split_gain_total -= ctx.hyp.gamma_;
+
+                if (split_gain_total > best.gain) {
+                    best.gain = split_gain_total;
+                    best.feat = f;
+                    best.thr = bin;
+                    best.miss_left = true;  // Default to left for missing
+                }
+            }
+        });
+
+        return best;
+    }
+};
+
+// ============================================================================
 // 2) Categorical partition from histograms with variable bins
 // ============================================================================
 class CategoricalPartitionSplitFinder {
