@@ -8,7 +8,7 @@
 #include "foretree/core/parallel_executor.hpp"
 #include "foretree/split/split_engine.hpp"
 #include "foretree/split/split_helpers.hpp"
-#include "foretree/tree/neural.hpp"
+#include "foretree/gpu/neural_leaf.hpp"
 #include "foretree/tree/packed_tree.hpp"
 #ifdef FORETREE_HAS_CUDA
 #include "foretree/gpu/cuda_histogram.hpp"
@@ -43,8 +43,8 @@ namespace foretree {
 class UnifiedTree {
    public:
     friend struct ExactProvider;
-    NeuralLeafConfig neural_leaf_cfg_;
-    void set_neural_leaf_config(const NeuralLeafConfig& cfg) {
+    GpuNeuralLeafConfig neural_leaf_cfg_;
+    void set_neural_leaf_config(const GpuNeuralLeafConfig& cfg) {
         neural_leaf_cfg_ = cfg;
     }
 #ifdef FORETREE_HAS_CUDA
@@ -3024,7 +3024,7 @@ class UnifiedTree {
         // Train with weights
         neural_leaf_cfg_.input_dim = P_;
         auto candidate =
-            std::make_unique<NeuralLeafPredictor>(neural_leaf_cfg_);
+            std::make_unique<GpuNeuralLeafPredictor>(neural_leaf_cfg_);
         candidate->fit(Xbuf.data(), M, ybuf.data(), wbuf.data());
 
         if (candidate->valid()) {

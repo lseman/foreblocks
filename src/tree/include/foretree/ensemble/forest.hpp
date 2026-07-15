@@ -120,7 +120,7 @@ struct ForeForestConfig {
 
     HistogramConfig hist_cfg{};
     TreeConfig tree_cfg{};
-    NeuralLeafConfig neural_cfg{};
+    GpuNeuralLeafConfig neural_cfg{};
 
     double colsample_bytree = 1.0;
     double colsample_bynode = 1.0;

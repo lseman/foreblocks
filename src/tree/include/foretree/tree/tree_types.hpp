@@ -1,7 +1,7 @@
 #pragma once
 
 #include "foretree/split/split_engine.hpp"
-#include "foretree/tree/neural.hpp"
+#include "foretree/gpu/neural_leaf.hpp"
 
 #include <cstdint>
 #include <limits>
@@ -157,7 +157,7 @@ struct TrainingNode {
     mutable std::vector<int> goss_rest_indices_;
     mutable bool goss_samples_valid_ = false;
 
-    std::unique_ptr<NeuralLeafPredictor> neural_leaf;
+    std::unique_ptr<GpuNeuralLeafPredictor> neural_leaf;
     bool has_neural_leaf() const {
         return static_cast<bool>(neural_leaf);
     }
