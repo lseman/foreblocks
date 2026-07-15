@@ -72,6 +72,7 @@ enum class ObliqueMode : uint8_t {
 struct SplitEngineConfig {
     bool enable_axis = true;
     bool enable_categorical_partition = false; // histogram backend only
+    bool enable_multiclass = false;            // use MulticlassSplitFinder when num_classes > 1
     bool enable_oblique = false;               // set true to try oblique splits
     bool enable_pair_interactions = false;
 
@@ -142,6 +143,13 @@ struct HistogramBackend {
         return finder.best_categorical_partition(ctx);
     }
 
+    static foretree::splitx::Candidate best_multiclass(const foretree::splitx::SplitContext& ctx, int num_classes) {
+        if (num_classes <= 1)
+            return foretree::splitx::Candidate();  // Fallback to axis split
+        MulticlassSplitFinder finder;
+        return finder.best_multiclass_axis(ctx, num_classes);
+    }
+
     static foretree::splitx::Candidate best_oblique(const foretree::splitx::SplitContext& ctx, int k_features,
                                                     int newton_steps, double l1, double ridge,
                                                     double /*axis_guard_gain*/ = -1.0, const double* = nullptr, int = 0,
@@ -168,6 +176,14 @@ struct ExactBackend {
                                                  const uint8_t* miss_mask) {
         AxisSplitFinder finder;
         return finder.best_axis_exact(ctx, Xraw, P, node_idx, nidx, missing_policy, miss_mask);
+    }
+
+    // Multiclass (exact mode uses histogram gradients, same as histogram backend)
+    static foretree::splitx::Candidate best_multiclass(const foretree::splitx::SplitContext& ctx, int num_classes) {
+        if (num_classes <= 1)
+            return foretree::splitx::Candidate();  // Fallback to axis split
+        MulticlassSplitFinder finder;
+        return finder.best_multiclass_axis(ctx, num_classes);
     }
 
     // Oblique remains delegated to ObliqueSplitFinder (exact uses ctx columns)
