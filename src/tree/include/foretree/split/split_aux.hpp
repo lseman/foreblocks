@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "foretree/split/split_helpers.hpp"
@@ -44,6 +45,168 @@ inline double weight_from_GRH(double G, double H, const SplitHyper& hyp) {
     return -soft(G, hyp.alpha_) / denom;
 }
 }  // namespace detail
+
+// ============================================================================
+// Adaptive Binning: Refine bins around promising split thresholds
+// ============================================================================
+// Rebin a high-cardinality feature to target_bins based on gradient quantiles.
+// Focuses resolution on high-gradient regions. Useful post-split for child nodes.
+inline int rebin_by_quantiles(std::vector<double>& bin_centers, std::vector<double>& gradient_hist,
+                              std::vector<double>& hessian_hist, std::vector<int>& count_hist,
+                              int original_bins, int target_bins) {
+    if (original_bins <= target_bins || target_bins < 2)
+        return original_bins;
+
+    // Compute gradient quantiles across bins
+    std::vector<std::pair<double, int>> gradient_bins;  // (gradient, original_bin_id)
+    for (int b = 0; b < original_bins; ++b) {
+        gradient_bins.push_back({std::abs(gradient_hist[b]), b});
+    }
+    std::sort(gradient_bins.rbegin(), gradient_bins.rend());  // descending by abs gradient
+
+    // Keep top target_bins by gradient magnitude
+    std::vector<int> kept_bins;
+    for (int i = 0; i < std::min(target_bins, original_bins); ++i) {
+        kept_bins.push_back(gradient_bins[i].second);
+    }
+    std::sort(kept_bins.begin(), kept_bins.end());  // restore order
+
+    // Aggregate non-kept bins into left/right edges
+    std::vector<double> refined_centers;
+    std::vector<double> refined_gradients;
+    std::vector<double> refined_hessians;
+    std::vector<int> refined_counts;
+
+    double left_g = 0.0, left_h = 0.0;
+    int left_c = 0;
+    for (int b = 0; b < kept_bins.front(); ++b) {
+        left_g += gradient_hist[b];
+        left_h += hessian_hist[b];
+        left_c += count_hist[b];
+    }
+    if (kept_bins.front() > 0 && left_c > 0) {
+        refined_centers.push_back(bin_centers[kept_bins.front() - 1]);
+        refined_gradients.push_back(left_g);
+        refined_hessians.push_back(left_h);
+        refined_counts.push_back(left_c);
+    }
+
+    // Add kept bins
+    for (int b : kept_bins) {
+        refined_centers.push_back(bin_centers[b]);
+        refined_gradients.push_back(gradient_hist[b]);
+        refined_hessians.push_back(hessian_hist[b]);
+        refined_counts.push_back(count_hist[b]);
+    }
+
+    // Right edge
+    double right_g = 0.0, right_h = 0.0;
+    int right_c = 0;
+    for (int b = kept_bins.back() + 1; b < original_bins; ++b) {
+        right_g += gradient_hist[b];
+        right_h += hessian_hist[b];
+        right_c += count_hist[b];
+    }
+    if (kept_bins.back() < original_bins - 1 && right_c > 0) {
+        refined_centers.push_back(bin_centers[kept_bins.back() + 1]);
+        refined_gradients.push_back(right_g);
+        refined_hessians.push_back(right_h);
+        refined_counts.push_back(right_c);
+    }
+
+    bin_centers.swap(refined_centers);
+    gradient_hist.swap(refined_gradients);
+    hessian_hist.swap(refined_hessians);
+    count_hist.swap(refined_counts);
+
+    return static_cast<int>(refined_centers.size());
+}
+
+// Rebin a feature by clustering around the split threshold. Splits high-cardinality
+// features that are split candidates. Returns new bin count, or original if no refinement.
+inline int refine_bins_adaptive(std::vector<double>& bin_centers, std::vector<double>& gradient_hist,
+                                std::vector<double>& hessian_hist, std::vector<int>& count_hist,
+                                double split_threshold, int original_bins, int max_refined_bins = 32) {
+    if (original_bins <= max_refined_bins || split_threshold != split_threshold)  // NaN check
+        return original_bins;
+
+    // Count non-empty bins near split threshold (within ±2 original bin widths)
+    const double bin_width = 1.0 / (original_bins - 1);
+    const double margin = 2.0 * bin_width;
+    const double lo = std::max(0.0, split_threshold - margin);
+    const double hi = std::min(1.0, split_threshold + margin);
+
+    std::vector<int> refined_indices;
+    for (int b = 0; b < original_bins; ++b) {
+        const double bc = bin_centers[static_cast<size_t>(b)];
+        if (bc >= lo && bc <= hi && count_hist[b] > 0) {
+            refined_indices.push_back(b);
+        }
+    }
+
+    // If too few bins in refined region or no improvement, skip
+    if (refined_indices.size() < 2 || static_cast<int>(refined_indices.size()) > max_refined_bins)
+        return original_bins;
+
+    // Create new binning centered on high-gradient region
+    std::vector<double> refined_centers;
+    std::vector<double> refined_gradients;
+    std::vector<double> refined_hessians;
+    std::vector<int> refined_counts;
+
+    // Keep refined bins, collapse others into edges
+    double left_g = 0.0, left_h = 0.0;
+    int left_c = 0, left_b = -1;
+    double right_g = 0.0, right_h = 0.0;
+    int right_c = 0, right_b = -1;
+
+    for (int b = 0; b < original_bins; ++b) {
+        if (b < refined_indices.front()) {
+            left_g += gradient_hist[b];
+            left_h += hessian_hist[b];
+            left_c += count_hist[b];
+            left_b = b;
+        } else if (b > refined_indices.back()) {
+            right_g += gradient_hist[b];
+            right_h += hessian_hist[b];
+            right_c += count_hist[b];
+            right_b = b;
+        }
+    }
+
+    // Add left edge if exists
+    if (left_b >= 0) {
+        refined_centers.push_back(bin_centers[left_b]);
+        refined_gradients.push_back(left_g);
+        refined_hessians.push_back(left_h);
+        refined_counts.push_back(left_c);
+    }
+
+    // Add refined bins
+    for (int b : refined_indices) {
+        refined_centers.push_back(bin_centers[b]);
+        refined_gradients.push_back(gradient_hist[b]);
+        refined_hessians.push_back(hessian_hist[b]);
+        refined_counts.push_back(count_hist[b]);
+    }
+
+    // Add right edge if exists
+    if (right_b >= 0) {
+        refined_centers.push_back(bin_centers[right_b]);
+        refined_gradients.push_back(right_g);
+        refined_hessians.push_back(right_h);
+        refined_counts.push_back(right_c);
+    }
+
+    // Commit refined binning
+    const int refined_count = static_cast<int>(refined_centers.size());
+    bin_centers.swap(refined_centers);
+    gradient_hist.swap(refined_gradients);
+    hessian_hist.swap(refined_hessians);
+    count_hist.swap(refined_counts);
+
+    return refined_count;
+}
 
 // ============================================================================
 // Helper function for variable bin centers in oblique splitting

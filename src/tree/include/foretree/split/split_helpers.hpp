@@ -27,6 +27,13 @@ struct QuantizedCodesView {
 // ============================================================================
 // Split hyper-parameters (unchanged API)
 // ============================================================================
+struct AdaptiveBinningConfig {
+    bool enabled = false;           // Enable adaptive binning post-split
+    int target_bins_high_card = 32; // Target bin count for high-cardinality features
+    int cardinality_threshold = 256; // Features with >this many bins are high-cardinality
+    int max_refined_bins = 64;      // Max bins after refinement around split
+};
+
 struct SplitHyper {
     double lambda_ = 1.0;
     double alpha_ = 0.0;
@@ -38,6 +45,9 @@ struct SplitHyper {
     int missing_policy = 0; // mapped from TreeConfig::MissingPolicy
     double leaf_gain_eps = 0.0;
     bool allow_zero_gain = false;
+
+    // Adaptive binning for high-cardinality features
+    AdaptiveBinningConfig adaptive_binning;
 
     // Helper: compute lambda per class/target
     double min_child_weight() const {
