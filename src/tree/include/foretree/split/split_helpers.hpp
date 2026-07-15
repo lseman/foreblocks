@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <random>
 #include <utility>
@@ -42,6 +43,17 @@ struct GossConfig {
     // Reweight other rows by 1 / other_rate to keep expected loss unchanged
 };
 
+// Custom metric callback for early stopping
+// Signature: bool(const std::vector<double>& predictions, const std::vector<double>& targets, double& metric_value)
+using CustomMetricFn = std::function<bool(const std::vector<double>&, const std::vector<double>&, double&)>;
+
+struct CustomMetricConfig {
+    bool enabled = false;
+    CustomMetricFn metric_fn;
+    bool higher_is_better = false;  // false => lower is better (default)
+    double patience = 1e-6;          // Min improvement threshold
+};
+
 struct SplitHyper {
     double lambda_ = 1.0;
     double alpha_ = 0.0;
@@ -59,6 +71,9 @@ struct SplitHyper {
 
     // Gradient-based One-Side Sampling (GOSS)
     GossConfig goss;
+
+    // Custom metric callback for early stopping
+    CustomMetricConfig custom_metric;
 
     // Helper: compute lambda per class/target
     double min_child_weight() const {

@@ -92,6 +92,11 @@ template <class F> inline void bulk_iota(Context& ctx, int n, F&& fn) {
 struct ForeForestConfig {
     enum class Mode { Bagging, GBDT, FWBoost } mode = Mode::Bagging;
     enum class Device { CPU, CUDA, Auto } device = Device::CPU;
+#ifdef FORETREE_HAS_CUDA
+    bool enable_cuda_backend = true; // Enabled by default when compiled with CUDA
+#else
+    bool enable_cuda_backend = false; // Explicitly enable or disable CUDA histogram backend
+#endif
     enum class Objective {
         SquaredError,
         BinaryLogloss,
@@ -150,6 +155,9 @@ struct ForeForestConfig {
     int early_stopping_rounds = 20;
     double early_stopping_min_delta = 0.0;
     bool track_train_metric = false;
+
+    // Custom metric callback for early stopping
+    CustomMetricConfig custom_metric_config;
 
     // Frank-Wolfe / LPBoost-inspired boosting
     bool fw_use_subsample = true;
@@ -298,13 +306,18 @@ public:
         compact_codes_ = ghs_->prebin_dataset_compact(X_fit, N, P_eff);
         miss_id_ = ghs_->binner()->missing_bin_id("hist");
 #ifdef FORETREE_HAS_CUDA
-        const bool request_cuda = cfg_.device == ForeForestConfig::Device::CUDA ||
+        const bool request_cuda = cfg_.enable_cuda_backend || cfg_.device == ForeForestConfig::Device::CUDA ||
                                   (cfg_.device == ForeForestConfig::Device::Auto && cuda::is_available());
         cuda_histogram_engine_.reset();
         if (request_cuda && !cuda::is_available())
             throw std::runtime_error("ForeForest: no CUDA device is available");
         if (request_cuda)
             cuda_histogram_engine_ = std::make_unique<cuda::CudaHistogramEngine>(*compact_codes_);
+#else
+        if (cfg_.enable_cuda_backend || cfg_.device == ForeForestConfig::Device::CUDA) {
+            throw std::invalid_argument("ForeForest: CUDA requested but TREE_ENABLE_CUDA_BACKEND is "
+                                        "disabled");
+        }
 #endif
         QuantizedDatasetPtr valid_codes;
         if (has_valid) {
@@ -585,7 +598,7 @@ public:
 private:
     void validate_config_() {
 #ifndef FORETREE_HAS_CUDA
-        if (cfg_.device == ForeForestConfig::Device::CUDA) {
+        if (cfg_.enable_cuda_backend || cfg_.device == ForeForestConfig::Device::CUDA) {
             throw std::invalid_argument("ForeForest: CUDA requested but TREE_ENABLE_CUDA_BACKEND is "
                                         "disabled");
         }
