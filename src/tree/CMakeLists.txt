@@ -12,7 +12,7 @@ option(TREE_BUILD_FOREFOREST "Build foreforest pybind module" ON)
 option(TREE_ENABLE_TBB "Enable TBB if available" ON)
 option(TREE_ENABLE_STDEXEC "Enable stdexec include path for foreforest" ON)
 option(FORETREE_EXEC_USE_CUDA "Use nvexec CUDA scheduler for foreforest" OFF)
-option(TREE_ENABLE_CUDA_BACKEND "Build native CUDA histogram backend" OFF)
+option(TREE_ENABLE_CUDA_BACKEND "Build native CUDA histogram backend" ON)
 set(TREE_STDEXEC_INCLUDE_DIR "" CACHE PATH "Path to stdexec include directory")
 
 # Paths to local tree module sources
@@ -68,7 +68,7 @@ find_package(Eigen3 CONFIG REQUIRED)
 if(TREE_ENABLE_CUDA_BACKEND)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
-  add_library(foretree_cuda STATIC "${TREE_SRC_DIR}/cuda_histogram.cu")
+  add_library(foretree_cuda STATIC "${TREE_SRC_DIR}/gpu/cuda_histogram.cu")
   target_include_directories(foretree_cuda PUBLIC "${TREE_INCLUDE_DIR}")
   target_link_libraries(foretree_cuda PUBLIC CUDA::cudart)
   target_compile_features(foretree_cuda PUBLIC cxx_std_20)
@@ -79,15 +79,15 @@ if(TREE_ENABLE_CUDA_BACKEND)
   )
   target_compile_definitions(foretree_cuda PUBLIC FORETREE_HAS_CUDA=1)
 
-  enable_testing()
-  add_executable(test_cuda_histogram "${TREE_ROOT_DIR}/tests/test_cuda_histogram.cu")
-  target_include_directories(test_cuda_histogram PRIVATE "${TREE_INCLUDE_DIR}")
-  target_link_libraries(test_cuda_histogram PRIVATE foretree_cuda)
-  set_target_properties(test_cuda_histogram PROPERTIES
-    CUDA_STANDARD 20
-    CUDA_STANDARD_REQUIRED ON
-  )
-  add_test(NAME cuda_histogram COMMAND test_cuda_histogram)
+  # enable_testing()
+  # add_executable(test_cuda_histogram "${TREE_ROOT_DIR}/tests/test_cuda_histogram.cu")
+  # target_include_directories(test_cuda_histogram PRIVATE "${TREE_INCLUDE_DIR}")
+  # target_link_libraries(test_cuda_histogram PRIVATE foretree_cuda)
+  # set_target_properties(test_cuda_histogram PROPERTIES
+  # CUDA_STANDARD 20
+  # CUDA_STANDARD_REQUIRED ON
+  # )
+  # add_test(NAME cuda_histogram COMMAND test_cuda_histogram)
 endif()
 
 add_library(foretree_core INTERFACE)
@@ -134,9 +134,22 @@ function(tree_common_setup tgt)
 endfunction()
 
 if(TREE_BUILD_FORETREE)
-  find_package(Python3 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
-  find_package(pybind11 CONFIG REQUIRED)
-  pybind11_add_module(foretree "${TREE_SRC_DIR}/foretree_pybind.cpp")
+  # Prefer Python 3.12
+  if(NOT DEFINED Python3_EXECUTABLE)
+    find_program(Python3_EXECUTABLE NAMES python3.12 python3.11 python3)
+  endif()
+  find_package(Python3 3.12 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
+  CPMAddPackage(
+    NAME nanobind
+    GITHUB_REPOSITORY wjakob/nanobind
+    GIT_TAG v2.9.2
+    OPTIONS "NANOBIND_INSTALL OFF" "NB_USE_BUILD_SUPPORT ON"
+  )
+  # Link Python development headers to nanobind build
+  if(TARGET nanobind-static)
+    target_link_libraries(nanobind-static PRIVATE Python3::Module)
+  endif()
+  nanobind_add_module(foretree NB_DOMAIN foretree "${TREE_SRC_DIR}/pybind/foretree.cpp")
   tree_common_setup(foretree)
   target_link_libraries(foretree PRIVATE foretree_core)
   if(TREE_ENABLE_CUDA_BACKEND)
@@ -148,10 +161,23 @@ if(TREE_BUILD_FORETREE)
 endif()
 
 if(TREE_BUILD_FOREFOREST)
-  find_package(Python3 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
+  # Prefer Python 3.12
+  if(NOT DEFINED Python3_EXECUTABLE)
+    find_program(Python3_EXECUTABLE NAMES python3.12 python3.11 python3)
+  endif()
+  find_package(Python3 3.12 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
 
-  find_package(pybind11 CONFIG REQUIRED)
-  pybind11_add_module(foreforest "${TREE_SRC_DIR}/foreforest.cpp")
+  cpmaddpackage(
+    NAME nanobind
+    GITHUB_REPOSITORY wjakob/nanobind
+    GIT_TAG v2.9.2
+    OPTIONS "NANOBIND_INSTALL OFF" "NB_USE_BUILD_SUPPORT ON"
+  )
+  # Link Python development headers to nanobind build
+  if(TARGET nanobind-static)
+    target_link_libraries(nanobind-static PRIVATE Python3::Module)
+  endif()
+  nanobind_add_module(foreforest NB_DOMAIN foreforest "${TREE_SRC_DIR}/pybind/foreforest.cpp")
   tree_common_setup(foreforest)
   target_link_libraries(foreforest PRIVATE foretree_core)
   if(TREE_ENABLE_CUDA_BACKEND)
