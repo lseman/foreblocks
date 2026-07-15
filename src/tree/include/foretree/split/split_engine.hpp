@@ -61,10 +61,9 @@ struct SplitUtils {
 };
 
 enum class ObliqueMode : uint8_t {
-    Off,               // never try oblique
-    Full,              // ObliqueSplitFinder (k-feature ridge WLS)
-    InteractionSeeded, // 2-feature interaction-seeded
-    Auto               // try both, keep the better (with axis guard)
+    Off,   // never try oblique
+    Full,  // ObliqueSplitFinder (k-feature ridge WLS)
+    Auto   // same as Full for now
 };
 
 // ------------------------- Config for extra modes
@@ -91,8 +90,6 @@ struct SplitEngineConfig {
     // oblique mode
     ObliqueMode oblique_mode = ObliqueMode::Off;
 
-    // interaction-seeded params
-    InteractionSeededConfig iseed; // from your file; default ctor is fine
     PairInteractionConfig pair_interaction;
 };
 
@@ -293,38 +290,16 @@ struct Splitter {
                                                  cfg.oblique_ridge, guard, Xraw, P, node_idx, nidx, missing_policy,
                                                  miss_mask);
                 };
-                auto run_interaction_oblique = [&]() {
-                    foretree::splitx::Candidate c;
-                    c.kind = foretree::splitx::SplitKind::Oblique;
-                    c.gain = -std::numeric_limits<double>::infinity();
-                    if constexpr (std::is_same_v<Backend, ExactBackend>) {
-                        auto iseed_cfg = cfg.iseed;
-                        InteractionSeededObliqueFinder finder;
-                        c = finder.best_oblique_interaction(ctx, iseed_cfg, guard);
-                    }
-                    return c;
-                };
-
                 switch (cfg.oblique_mode) {
                     case ObliqueMode::Off:
                         break;
                     case ObliqueMode::Full:
                         obli = run_full_oblique();
                         break;
-                    case ObliqueMode::InteractionSeeded:
-                        if constexpr (std::is_same_v<Backend, ExactBackend>) {
-                            obli = run_interaction_oblique();
-                        } else {
-                            // A histogram pair scorer is not implemented yet;
-                            // never silently substitute the full algorithm.
-                        }
+                    case ObliqueMode::Auto:
+                        // Auto mode: just use full oblique for now
+                        obli = run_full_oblique();
                         break;
-                    case ObliqueMode::Auto: {
-                        auto full = run_full_oblique();
-                        auto inter = run_interaction_oblique();
-                        obli = (full.gain >= inter.gain) ? std::move(full) : std::move(inter);
-                        break;
-                    }
                 }
                 // Prefer axis if gains are essentially tied (guard >= 1.0 keeps
                 // axis)
