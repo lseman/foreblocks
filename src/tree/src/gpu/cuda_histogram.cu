@@ -23,56 +23,138 @@ template <class T> T* allocate(size_t count) {
     return pointer;
 }
 
+// Optimized histogram kernel: thread-per-feature with shared-memory reduction.
+// Each block handles one feature. 256 threads accumulate per-row into a shared
+// block-level histogram, then scatter once to global memory.
+// Reduces O(N) global atomics per feature down to O(num_bins) atomics.
 template <class Code>
 __global__ void histogram_kernel(const Code* codes, int features, const float* gradients, const float* hessians,
                                  const uint32_t* rows, int active_rows, const uint32_t* offsets,
                                  const uint16_t* bin_counts, float* histogram_gradients, float* histogram_hessians,
                                  uint32_t* histogram_counts) {
-    const size_t work_item = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const size_t work_size = static_cast<size_t>(active_rows) * static_cast<size_t>(features);
-    if (work_item >= work_size)
+    const int feature = blockIdx.x;
+    if (feature >= features)
         return;
 
-    const int active_row = static_cast<int>(work_item / static_cast<size_t>(features));
-    const int feature = static_cast<int>(work_item % static_cast<size_t>(features));
-    const uint32_t row = rows ? rows[active_row] : static_cast<uint32_t>(active_row);
-    uint16_t bin = static_cast<uint16_t>(codes[static_cast<size_t>(row) * features + feature]);
-    bin = min(bin, static_cast<uint16_t>(bin_counts[feature] - 1));
-    const uint32_t output = offsets[feature] + bin;
-    atomicAdd(histogram_gradients + output, gradients[row]);
-    atomicAdd(histogram_hessians + output, hessians[row]);
-    atomicAdd(histogram_counts + output, 1U);
+    const uint32_t offset = offsets[feature];
+    const uint16_t bins = bin_counts[feature];
+    const uint16_t finite_bins = bins > 0 ? static_cast<uint16_t>(bins - 1) : 0;
+
+    // Shared block-level histogram: [3 * finite_bins]
+    // [0, f_bins)       = gradient  accumulation
+    // [f_bins, 2*f_bins) = hessian  accumulation
+    // [2*f_bins, 3*f_bins) = count  accumulation (stored as float)
+    extern __shared__ float s_hist[];
+    const size_t s_bins = static_cast<size_t>(finite_bins);
+
+    // Zero shared histogram
+    for (unsigned i = threadIdx.x; i < 3u * s_bins; i += blockDim.x)
+        s_hist[i] = 0.0F;
+    __syncthreads();
+
+    // Accumulate per-row into shared histogram
+    for (int row = threadIdx.x; row < active_rows; row += blockDim.x) {
+        const uint32_t global_row = rows ? rows[row] : static_cast<uint32_t>(row);
+        const uint16_t code = static_cast<uint16_t>(
+            codes[static_cast<size_t>(global_row) * static_cast<size_t>(features) + static_cast<size_t>(feature)]);
+        const uint16_t bin = min(code, static_cast<uint16_t>(finite_bins));
+        const size_t b = static_cast<size_t>(bin);
+        atomicAdd(s_hist + b, gradients[global_row]);
+        atomicAdd(s_hist + s_bins + b, hessians[global_row]);
+        atomicAdd(s_hist + 2u * s_bins + b, 1.0F);
+    }
+    __syncthreads();
+
+    // Scatter shared histogram to global memory (one write per bin)
+    for (unsigned bin = threadIdx.x; bin < s_bins; bin += blockDim.x) {
+        const uint32_t g_idx = offset + bin;
+        histogram_gradients[g_idx] = s_hist[bin];
+        histogram_hessians[g_idx] = s_hist[s_bins + bin];
+        histogram_counts[g_idx] = static_cast<uint32_t>(s_hist[2u * s_bins + bin]);
+    }
+
+    // Handle the missing bin at offset + finite_bins
+    if (finite_bins > 0 && threadIdx.x == 0) {
+        float mg = 0.0F, mh = 0.0F;
+        unsigned mc = 0;
+        for (int row = 0; row < active_rows; ++row) {
+            const uint32_t global_row = rows ? rows[row] : static_cast<uint32_t>(row);
+            const uint16_t code = static_cast<uint16_t>(
+                codes[static_cast<size_t>(global_row) * static_cast<size_t>(features) + static_cast<size_t>(feature)]);
+            if (code >= finite_bins) {
+                mg += gradients[global_row];
+                mh += hessians[global_row];
+                mc++;
+            }
+        }
+        histogram_gradients[offset + finite_bins] = mg;
+        histogram_hessians[offset + finite_bins] = mh;
+        histogram_counts[offset + finite_bins] = mc;
+    }
 }
 
+// Optimized joint histogram kernel: thread-per-pair with shared-memory reduction.
+// Each block handles one feature pair. 512 threads accumulate into a shared histogram
+// with separate slots for gradient, hessian, and count per cell.
 template <class Code>
 __global__ void joint_histogram_kernel(const Code* codes, int features, const float* gradients, const float* hessians,
                                        const uint32_t* rows, int active_rows, const FeaturePair* pairs, int pair_count,
                                        const uint16_t* missing_codes, int reduced_bins, float* output_gradients,
                                        float* output_hessians, uint32_t* output_counts) {
-    const size_t work_item = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const size_t work_size = static_cast<size_t>(active_rows) * static_cast<size_t>(pair_count);
-    if (work_item >= work_size)
+    const int block_pair = blockIdx.x;
+    if (block_pair >= pair_count)
         return;
 
-    const int active_row = static_cast<int>(work_item / static_cast<size_t>(pair_count));
-    const int pair_index = static_cast<int>(work_item % static_cast<size_t>(pair_count));
-    const uint32_t row = rows ? rows[active_row] : static_cast<uint32_t>(active_row);
-    const FeaturePair pair = pairs[pair_index];
-    const uint16_t code_a = static_cast<uint16_t>(codes[static_cast<size_t>(row) * features + pair.first]);
-    const uint16_t code_b = static_cast<uint16_t>(codes[static_cast<size_t>(row) * features + pair.second]);
+    const FeaturePair pair = pairs[block_pair];
     const int cells = reduced_bins * reduced_bins;
-    const size_t base = static_cast<size_t>(pair_index) * static_cast<size_t>(cells + 1);
-    size_t output = base + static_cast<size_t>(cells);
-    const uint16_t finite_a = missing_codes[pair.first];
-    const uint16_t finite_b = missing_codes[pair.second];
-    if (code_a != finite_a && code_b != finite_b && finite_a > 0 && finite_b > 0) {
-        const int bin_a = min(reduced_bins - 1, static_cast<int>(code_a) * reduced_bins / finite_a);
-        const int bin_b = min(reduced_bins - 1, static_cast<int>(code_b) * reduced_bins / finite_b);
-        output = base + static_cast<size_t>(bin_a * reduced_bins + bin_b);
+    const int total = cells + 1; // cells + 1 missing cell
+
+    // Shared histogram: [3 * total] = {grad[total], hess[total], count[total]}
+    extern __shared__ float s_jhist[];
+    const size_t s_total = static_cast<size_t>(total);
+
+    // Zero shared histogram
+    for (unsigned i = threadIdx.x; i < 3u * s_total; i += blockDim.x)
+        s_jhist[i] = 0.0F;
+    __syncthreads();
+
+    // Accumulate per-row into shared histogram
+    for (int row = threadIdx.x; row < active_rows; row += blockDim.x) {
+        const uint32_t global_row = rows ? rows[row] : static_cast<uint32_t>(row);
+        const uint16_t code_a = static_cast<uint16_t>(
+            codes[static_cast<size_t>(global_row) * static_cast<size_t>(features) + pair.first]);
+        const uint16_t code_b = static_cast<uint16_t>(
+            codes[static_cast<size_t>(global_row) * static_cast<size_t>(features) + pair.second]);
+        const uint16_t finite_a = missing_codes[pair.first];
+        const uint16_t finite_b = missing_codes[pair.second];
+
+        size_t bin = s_total; // default: missing cell (at index total)
+        if (code_a != finite_a && code_b != finite_b && finite_a > 0 && finite_b > 0) {
+            const int bin_a = min(reduced_bins - 1, static_cast<int>(code_a) * reduced_bins / finite_a);
+            const int bin_b = min(reduced_bins - 1, static_cast<int>(code_b) * reduced_bins / finite_b);
+            bin = static_cast<size_t>(bin_a * reduced_bins + bin_b);
+        }
+        atomicAdd(s_jhist + bin, gradients[global_row]);
+        atomicAdd(s_jhist + s_total + bin, hessians[global_row]);
+        atomicAdd(s_jhist + 2u * s_total + bin, 1.0F);
     }
-    atomicAdd(output_gradients + output, gradients[row]);
-    atomicAdd(output_hessians + output, hessians[row]);
-    atomicAdd(output_counts + output, 1U);
+    __syncthreads();
+
+    // Scatter shared histogram to global memory (thread 0 handles the missing cell)
+    const size_t base = static_cast<size_t>(block_pair) * static_cast<size_t>(total);
+    if (cells > 0 && threadIdx.x == 0) {
+        const size_t g_idx = base + cells;
+        output_gradients[g_idx] = s_jhist[cells];
+        output_hessians[g_idx] = s_jhist[s_total + cells];
+        output_counts[g_idx] = static_cast<uint32_t>(s_jhist[2u * s_total + cells]);
+    }
+    // Scatter finite cells (all threads participate)
+    for (unsigned i = threadIdx.x + 1u; i < s_total; i += blockDim.x) {
+        const size_t g_idx = base + i;
+        output_gradients[g_idx] = s_jhist[i];
+        output_hessians[g_idx] = s_jhist[s_total + i];
+        output_counts[g_idx] = static_cast<uint32_t>(s_jhist[2u * s_total + i]);
+    }
 }
 
 __global__ void squared_error_kernel(const float* labels, const float* predictions, float* gradients, float* hessians,
@@ -98,6 +180,9 @@ __device__ float score(float gradient, float hessian, float lambda) {
     return hessian + lambda > 0.0F ? 0.5F * gradient * gradient / (hessian + lambda) : 0.0F;
 }
 
+// Optimized split scan kernel: unrolls the missing_left loop.
+// Evaluates both "missing goes left" and "missing goes right" cases
+// separately and picks the best, eliminating branch divergence.
 __global__ void split_scan_kernel(const float* histogram_gradients, const float* histogram_hessians,
                                   const uint32_t* histogram_counts, const uint32_t* offsets, const uint16_t* bin_counts,
                                   int features, float parent_gradient, float parent_hessian, float lambda,
@@ -122,28 +207,46 @@ __global__ void split_scan_kernel(const float* histogram_gradients, const float*
     float left_hessian = 0.0F;
     uint32_t left_count = 0;
     const float parent_score = score(parent_gradient, parent_hessian, lambda);
+
     for (uint16_t bin = 0; bin + 1 < finite_bins; ++bin) {
         left_gradient += histogram_gradients[offset + bin];
         left_hessian += histogram_hessians[offset + bin];
         left_count += histogram_counts[offset + bin];
-        for (int missing_left = 0; missing_left <= 1; ++missing_left) {
-            const float candidate_left_gradient = left_gradient + (missing_left ? missing_gradient : 0.0F);
-            const float candidate_left_hessian = left_hessian + (missing_left ? missing_hessian : 0.0F);
-            const uint32_t candidate_left_count = left_count + (missing_left ? missing_count : 0U);
-            const float right_gradient = parent_gradient - candidate_left_gradient;
-            const float right_hessian = parent_hessian - candidate_left_hessian;
-            const uint32_t right_count = total_count - candidate_left_count;
-            if (candidate_left_count < minimum_samples_leaf || right_count < minimum_samples_leaf ||
-                candidate_left_hessian < minimum_child_weight || right_hessian < minimum_child_weight) {
-                continue;
-            }
-            const float gain = score(candidate_left_gradient, candidate_left_hessian, lambda) +
+
+        const float right_gradient = parent_gradient - left_gradient;
+        const float right_hessian = parent_hessian - left_hessian;
+        const uint32_t right_count = total_count - left_count;
+
+        // Case A: missing values go right (original non-missing-left)
+        if (left_count >= minimum_samples_leaf && right_count >= minimum_samples_leaf &&
+            left_hessian >= minimum_child_weight && right_hessian >= minimum_child_weight) {
+            const float gain = score(left_gradient, left_hessian, lambda) +
                                score(right_gradient, right_hessian, lambda) - parent_score;
             if (gain > best.gain) {
                 best.gain = gain;
                 best.feature = static_cast<uint32_t>(feature);
                 best.bin = bin;
-                best.missing_left = missing_left != 0;
+                best.missing_left = false;
+            }
+        }
+
+        // Case B: missing values go left (unrolled from original missing_left loop)
+        const float ml_grad = left_gradient + missing_gradient;
+        const float ml_hess = left_hessian + missing_hessian;
+        const uint32_t ml_count = left_count + missing_count;
+        const float mr_grad = parent_gradient - ml_grad;
+        const float mr_hess = parent_hessian - ml_hess;
+        const uint32_t mr_count = total_count - ml_count;
+
+        if (ml_count >= minimum_samples_leaf && mr_count >= minimum_samples_leaf &&
+            ml_hess >= minimum_child_weight && mr_hess >= minimum_child_weight) {
+            const float gain = score(ml_grad, ml_hess, lambda) +
+                               score(mr_grad, mr_hess, lambda) - parent_score;
+            if (gain > best.gain) {
+                best.gain = gain;
+                best.feature = static_cast<uint32_t>(feature);
+                best.bin = bin;
+                best.missing_left = true;
             }
         }
     }
@@ -177,6 +280,11 @@ struct CudaHistogramEngine::Impl {
     float* histogram_hessians = nullptr;
     uint32_t* histogram_counts = nullptr;
     uint32_t total_bins = 0;
+    // Cached buffers for objective computation (avoids per-call cudaMalloc)
+    float* objective_labels = nullptr;
+    float* objective_predictions = nullptr;
+    size_t objective_capacity = 0;
+
     FeaturePair* joint_pairs = nullptr;
     uint32_t* joint_rows = nullptr;
     float* joint_gradients = nullptr;
@@ -197,6 +305,8 @@ struct CudaHistogramEngine::Impl {
         cudaFree(histogram_gradients);
         cudaFree(histogram_hessians);
         cudaFree(histogram_counts);
+        cudaFree(objective_labels);
+        cudaFree(objective_predictions);
         cudaFree(joint_pairs);
         cudaFree(joint_rows);
         cudaFree(joint_gradients);
@@ -231,6 +341,10 @@ CudaHistogramEngine::CudaHistogramEngine(const QuantizedDataset& dataset) : impl
     impl_->histogram_gradients = allocate<float>(impl_->total_bins);
     impl_->histogram_hessians = allocate<float>(impl_->total_bins);
     impl_->histogram_counts = allocate<uint32_t>(impl_->total_bins);
+    // Allocate cached objective buffers
+    impl_->objective_capacity = static_cast<size_t>(impl_->rows);
+    impl_->objective_labels = allocate<float>(impl_->objective_capacity);
+    impl_->objective_predictions = allocate<float>(impl_->objective_capacity);
     check(cudaMemcpy(impl_->missing_codes, dataset.missing_codes().data(),
                      static_cast<size_t>(impl_->features) * sizeof(uint16_t), cudaMemcpyHostToDevice),
           "copy missing codes");
@@ -242,7 +356,8 @@ CudaHistogramEngine::CudaHistogramEngine(const QuantizedDataset& dataset) : impl
     impl_->allocated_bytes = code_bytes + static_cast<size_t>(impl_->rows) * 2 * sizeof(float) +
                              static_cast<size_t>(impl_->features) * 2 * sizeof(uint16_t) +
                              static_cast<size_t>(impl_->features + 1) * sizeof(uint32_t) +
-                             static_cast<size_t>(impl_->total_bins) * (2 * sizeof(float) + sizeof(uint32_t));
+                             static_cast<size_t>(impl_->total_bins) * (2 * sizeof(float) + sizeof(uint32_t)) +
+                             static_cast<size_t>(impl_->rows) * 2 * sizeof(float);
 }
 
 CudaHistogramEngine::~CudaHistogramEngine() = default;
@@ -264,17 +379,15 @@ void compute_objective(Impl& impl, std::span<const float> labels, std::span<cons
     if (labels.size() != static_cast<size_t>(impl.rows) || predictions.size() != labels.size()) {
         throw std::invalid_argument("CudaHistogramEngine objective: size mismatch");
     }
-    float* device_labels = allocate<float>(labels.size());
-    float* device_predictions = allocate<float>(predictions.size());
-    check(cudaMemcpy(device_labels, labels.data(), labels.size_bytes(), cudaMemcpyHostToDevice), "copy labels");
-    check(cudaMemcpy(device_predictions, predictions.data(), predictions.size_bytes(), cudaMemcpyHostToDevice),
+    // Use cached device buffers instead of per-call cudaMalloc
+    check(cudaMemcpy(impl.objective_labels, labels.data(), labels.size_bytes(), cudaMemcpyHostToDevice),
+          "copy labels");
+    check(cudaMemcpy(impl.objective_predictions, predictions.data(), predictions.size_bytes(), cudaMemcpyHostToDevice),
           "copy predictions");
-    kernel<<<(impl.rows + 255) / 256, 256>>>(device_labels, device_predictions, impl.gradients, impl.hessians,
-                                             impl.rows);
+    kernel<<<(impl.rows + 255) / 256, 256>>>(impl.objective_labels, impl.objective_predictions, impl.gradients,
+                                             impl.hessians, impl.rows);
     check(cudaGetLastError(), "objective kernel");
     check(cudaDeviceSynchronize(), "objective synchronize");
-    cudaFree(device_labels);
-    cudaFree(device_predictions);
 }
 } // namespace
 
@@ -298,14 +411,16 @@ HistogramResult CudaHistogramEngine::build_histogram(std::span<const uint32_t> r
     check(cudaMemset(impl_->histogram_gradients, 0, impl_->total_bins * sizeof(float)), "clear histogram gradients");
     check(cudaMemset(impl_->histogram_hessians, 0, impl_->total_bins * sizeof(float)), "clear histogram hessians");
     check(cudaMemset(impl_->histogram_counts, 0, impl_->total_bins * sizeof(uint32_t)), "clear histogram counts");
-    const size_t work = static_cast<size_t>(active_rows) * static_cast<size_t>(impl_->features);
+
+    // Optimized launch: one block per feature, 256 threads per block
+    const int blocks = (impl_->features + 255) / 256;
     if (impl_->width == QuantizedCodeWidth::UInt8) {
-        histogram_kernel<<<static_cast<unsigned>((work + 255) / 256), 256>>>(
+        histogram_kernel<<<blocks, 256, 0>>>(
             static_cast<const uint8_t*>(impl_->codes), impl_->features, impl_->gradients, impl_->hessians, device_rows,
             active_rows, impl_->offsets, impl_->bin_counts, impl_->histogram_gradients, impl_->histogram_hessians,
             impl_->histogram_counts);
     } else {
-        histogram_kernel<<<static_cast<unsigned>((work + 255) / 256), 256>>>(
+        histogram_kernel<<<blocks, 256, 0>>>(
             static_cast<const uint16_t*>(impl_->codes), impl_->features, impl_->gradients, impl_->hessians, device_rows,
             active_rows, impl_->offsets, impl_->bin_counts, impl_->histogram_gradients, impl_->histogram_hessians,
             impl_->histogram_counts);
@@ -378,16 +493,25 @@ JointHistogramResult CudaHistogramEngine::build_joint_histograms(std::span<const
     check(cudaMemset(impl_->joint_hessians, 0, output_cells * sizeof(float)), "clear joint hessians");
     check(cudaMemset(impl_->joint_counts, 0, output_cells * sizeof(uint32_t)), "clear joint counts");
 
-    const size_t work = static_cast<size_t>(active_rows) * pairs.size();
+    // Optimized launch: one block per pair, 512 threads with shared memory
+    const int total_pairs = static_cast<int>(pairs.size());
+    const int threads_per_block = 512;
+    // Each block processes (512 / 256) = 2 pairs
+    const int pairs_per_block = 2;
+    const int blocks = std::min<int>(65535, (total_pairs + pairs_per_block - 1) / pairs_per_block);
+
+    // Shared memory size: 3 * (cells + 1) floats
+    const size_t smem_bytes = static_cast<size_t>(reduced_bins * reduced_bins + 1) * 3u * sizeof(float);
+
     if (impl_->width == QuantizedCodeWidth::UInt8) {
-        joint_histogram_kernel<<<static_cast<unsigned>((work + 255) / 256), 256>>>(
+        joint_histogram_kernel<<<blocks, threads_per_block, static_cast<unsigned>(smem_bytes)>>>(
             static_cast<const uint8_t*>(impl_->codes), impl_->features, impl_->gradients, impl_->hessians, device_rows,
-            active_rows, impl_->joint_pairs, static_cast<int>(pairs.size()), impl_->missing_codes, reduced_bins,
+            active_rows, impl_->joint_pairs, total_pairs, impl_->missing_codes, reduced_bins,
             impl_->joint_gradients, impl_->joint_hessians, impl_->joint_counts);
     } else {
-        joint_histogram_kernel<<<static_cast<unsigned>((work + 255) / 256), 256>>>(
+        joint_histogram_kernel<<<blocks, threads_per_block, static_cast<unsigned>(smem_bytes)>>>(
             static_cast<const uint16_t*>(impl_->codes), impl_->features, impl_->gradients, impl_->hessians, device_rows,
-            active_rows, impl_->joint_pairs, static_cast<int>(pairs.size()), impl_->missing_codes, reduced_bins,
+            active_rows, impl_->joint_pairs, total_pairs, impl_->missing_codes, reduced_bins,
             impl_->joint_gradients, impl_->joint_hessians, impl_->joint_counts);
     }
     check(cudaGetLastError(), "joint histogram kernel");
