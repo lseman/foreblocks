@@ -74,7 +74,8 @@ __global__ void histogram_kernel(const Code* codes, int features, const float* g
     }
 
     // Handle the missing bin at offset + finite_bins
-    if (finite_bins > 0 && threadIdx.x == 0) {
+    // (always present — it's the last bin, may be the only one when finite_bins == 0)
+    if (threadIdx.x == 0) {
         float mg = 0.0F, mh = 0.0F;
         unsigned mc = 0;
         for (int row = 0; row < active_rows; ++row) {
@@ -413,14 +414,17 @@ HistogramResult CudaHistogramEngine::build_histogram(std::span<const uint32_t> r
     check(cudaMemset(impl_->histogram_counts, 0, impl_->total_bins * sizeof(uint32_t)), "clear histogram counts");
 
     // Optimized launch: one block per feature, 256 threads per block
+    // Shared memory per block: 3 * 300 floats (grad/hess/count per bin, up to 300 bins/feature)
+    // Well within the 48KB per-block limit. Each block handles one feature only.
+    const size_t smem_per_block = 3u * 300u * sizeof(float);
     const int blocks = (impl_->features + 255) / 256;
     if (impl_->width == QuantizedCodeWidth::UInt8) {
-        histogram_kernel<<<blocks, 256, 0>>>(
+        histogram_kernel<<<blocks, 256, static_cast<unsigned>(smem_per_block)>>>(
             static_cast<const uint8_t*>(impl_->codes), impl_->features, impl_->gradients, impl_->hessians, device_rows,
             active_rows, impl_->offsets, impl_->bin_counts, impl_->histogram_gradients, impl_->histogram_hessians,
             impl_->histogram_counts);
     } else {
-        histogram_kernel<<<blocks, 256, 0>>>(
+        histogram_kernel<<<blocks, 256, static_cast<unsigned>(smem_per_block)>>>(
             static_cast<const uint16_t*>(impl_->codes), impl_->features, impl_->gradients, impl_->hessians, device_rows,
             active_rows, impl_->offsets, impl_->bin_counts, impl_->histogram_gradients, impl_->histogram_hessians,
             impl_->histogram_counts);

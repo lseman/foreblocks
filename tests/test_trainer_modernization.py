@@ -1,11 +1,15 @@
 from pathlib import Path
+import random
 
+import numpy as np
+import pytest
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from foreblocks.config import TrainingConfig
 from foreblocks.core.training.trainer import Trainer
+from foreblocks.core.training.training_loop import forward_pass
 
 
 class TinyForecast(nn.Module):
@@ -21,10 +25,32 @@ class TinyForecast(nn.Module):
         return out.reshape(x.size(0), self.horizon, self.output_dim)
 
 
+class InternallyBrokenForecast(nn.Module):
+    def forward(self, x, y=None, time_features=None, epoch=None):
+        raise TypeError("internal model bug")
+
+
 def _loader() -> DataLoader:
     x = torch.randn(4, 5, 3)
     y = torch.randn(4, 2, 1)
     return DataLoader(TensorDataset(x, y), batch_size=2, shuffle=False)
+
+
+def test_forward_pass_does_not_swallow_internal_type_error() -> None:
+    with pytest.raises(TypeError, match="internal model bug"):
+        forward_pass(
+            InternallyBrokenForecast(),
+            torch.randn(2, 5, 3),
+            torch.randn(2, 2, 1),
+            None,
+            0,
+            0,
+            None,
+            None,
+            None,
+            None,
+            torch.device("cpu"),
+        )
 
 
 def test_trainer_resolves_device_to_torch_device_and_cpu_safe_amp() -> None:
@@ -77,6 +103,24 @@ def test_train_zero_epochs_does_not_reference_missing_epoch() -> None:
     history = trainer.train(_loader())
 
     assert history.train_losses == []
+
+
+def test_trainer_seed_controls_python_numpy_and_torch_rngs() -> None:
+    def sample_after_trainer_creation():
+        Trainer(
+            TinyForecast(),
+            config=TrainingConfig(seed=123, num_epochs=0, use_amp=False),
+            auto_track=False,
+            device="cpu",
+        )
+        return random.random(), np.random.rand(), torch.rand(1)
+
+    first = sample_after_trainer_creation()
+    second = sample_after_trainer_creation()
+
+    assert first[0] == second[0]
+    assert first[1] == second[1]
+    assert torch.equal(first[2], second[2])
 
 
 def test_save_creates_parent_directories(tmp_path: Path) -> None:

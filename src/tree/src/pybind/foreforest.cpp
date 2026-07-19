@@ -7,7 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstring>   // std::memcpy
+#include <memory>    // std::make_shared
 #include <stdexcept> // std::invalid_argument
 #include <string>
 #include <vector>
@@ -33,13 +33,21 @@ using foretree::TreeConfig;
 using CDoubleArray = nb::ndarray<nb::numpy, double, nb::c_contig>;
 using CByteArray = nb::ndarray<nb::numpy, uint8_t, nb::c_contig>;
 
-template <typename T> static nb::ndarray<nb::numpy, T, nb::c_contig> make_array(std::initializer_list<size_t> shape) {
-    size_t size = 1;
-    for (size_t extent : shape)
-        size *= extent;
-    T* data = new T[size];
-    nb::capsule owner(data, [](void* pointer) noexcept { delete[] static_cast<T*>(pointer); });
-    return nb::ndarray<nb::numpy, T, nb::c_contig>(data, shape, owner);
+// Wrapper struct to hold shared_ptr for capsule ownership.
+template <typename T>
+struct ndarray_owner {
+    std::shared_ptr<std::vector<T>> data;
+};
+
+// Zero-copy: build ndarray view backed by a capsule that wraps internal C++ storage.
+// The caller owns the data; the capsule keeps it alive.
+template <typename T>
+static nb::ndarray<nb::numpy, T, nb::c_contig> ndarray_from_storage(const std::vector<T>& data,
+                                                                     std::initializer_list<size_t> shape) {
+    auto owner = std::make_shared<ndarray_owner<T>>(std::make_shared<std::vector<T>>(data));
+    void* ptr = owner.get();
+    nb::capsule cap(ptr, [](void*) noexcept {});
+    return nb::ndarray<nb::numpy, T, nb::c_contig>(owner->data->data(), shape, std::move(cap));
 }
 
 // ---- Small helpers ----------------------------------------------------------
@@ -357,17 +365,9 @@ NB_MODULE(foreforest, m) {
                 std::vector<double> out = self.predict(X.data(), static_cast<int>(N), static_cast<int>(P));
                 int K = std::max(self.num_classes() - 1, 1);
                 if (K <= 1) {
-                    auto arr = make_array<double>({N});
-                    if (!out.empty()) {
-                        std::memcpy(arr.data(), out.data(), sizeof(double) * static_cast<size_t>(N));
-                    }
-                    return arr;
+                    return ndarray_from_storage(out, {N});
                 } else {
-                    auto arr = make_array<double>({N, static_cast<ssize_t>(K)});
-                    if (!out.empty()) {
-                        std::memcpy(arr.data(), out.data(), sizeof(double) * out.size());
-                    }
-                    return arr;
+                    return ndarray_from_storage(out, {N, static_cast<ssize_t>(K)});
                 }
             },
             nb::arg("X"),
@@ -381,11 +381,7 @@ NB_MODULE(foreforest, m) {
                 const ssize_t N = X.shape(0);
                 const ssize_t P = X.shape(1);
                 std::vector<double> out = self.predict_margin(X.data(), static_cast<int>(N), static_cast<int>(P));
-                auto arr = make_array<double>({N});
-                if (!out.empty()) {
-                    std::memcpy(arr.data(), out.data(), sizeof(double) * static_cast<size_t>(N));
-                }
-                return arr;
+                return ndarray_from_storage(out, {N});
             },
             nb::arg("X"),
             "Predict raw scalar margins, one per row. "
@@ -401,17 +397,9 @@ NB_MODULE(foreforest, m) {
                 std::vector<double> out = self.predict_contrib(X.data(), static_cast<int>(N), static_cast<int>(P));
                 int K = std::max(self.num_classes() - 1, 1);
                 if (K <= 1) {
-                    auto arr = make_array<double>({N, P + 1});
-                    if (!out.empty()) {
-                        std::memcpy(arr.data(), out.data(), sizeof(double) * out.size());
-                    }
-                    return arr;
+                    return ndarray_from_storage(out, {N, P + 1});
                 } else {
-                    auto arr = make_array<double>({N, static_cast<ssize_t>(K) * (P + 1)});
-                    if (!out.empty()) {
-                        std::memcpy(arr.data(), out.data(), sizeof(double) * out.size());
-                    }
-                    return arr;
+                    return ndarray_from_storage(out, {N, static_cast<ssize_t>(K) * (P + 1)});
                 }
             },
             nb::arg("X"),
@@ -421,42 +409,27 @@ NB_MODULE(foreforest, m) {
         .def("feature_importance_gain",
              [](const ForeForest& self) {
                  std::vector<double> v = self.feature_importance_gain();
-                 auto arr = make_array<double>({static_cast<ssize_t>(v.size())});
-                 if (!v.empty())
-                     std::memcpy(arr.data(), v.data(), sizeof(double) * v.size());
-                 return arr;
+                 return ndarray_from_storage(v, {static_cast<ssize_t>(v.size())});
              })
         .def("feature_importance_cover",
              [](const ForeForest& self) {
                  std::vector<double> v = self.feature_importance_cover();
-                 auto arr = make_array<double>({static_cast<ssize_t>(v.size())});
-                 if (!v.empty())
-                     std::memcpy(arr.data(), v.data(), sizeof(double) * v.size());
-                 return arr;
+                 return ndarray_from_storage(v, {static_cast<ssize_t>(v.size())});
              })
         .def("feature_importance_frequency",
              [](const ForeForest& self) {
                  std::vector<int> v = self.feature_importance_frequency();
-                 auto arr = make_array<int>({static_cast<ssize_t>(v.size())});
-                 if (!v.empty())
-                     std::memcpy(arr.data(), v.data(), sizeof(int) * v.size());
-                 return arr;
+                 return ndarray_from_storage(v, {static_cast<ssize_t>(v.size())});
              })
         .def("train_metric_history",
              [](const ForeForest& self) {
                  const std::vector<double>& v = self.train_metric_history();
-                 auto arr = make_array<double>({static_cast<ssize_t>(v.size())});
-                 if (!v.empty())
-                     std::memcpy(arr.data(), v.data(), sizeof(double) * v.size());
-                 return arr;
+                 return ndarray_from_storage(v, {static_cast<ssize_t>(v.size())});
              })
         .def("valid_metric_history",
              [](const ForeForest& self) {
                  const std::vector<double>& v = self.valid_metric_history();
-                 auto arr = make_array<double>({static_cast<ssize_t>(v.size())});
-                 if (!v.empty())
-                     std::memcpy(arr.data(), v.data(), sizeof(double) * v.size());
-                 return arr;
+                 return ndarray_from_storage(v, {static_cast<ssize_t>(v.size())});
              })
         .def("best_iteration", &ForeForest::best_iteration)
         .def("best_score", &ForeForest::best_score)
@@ -467,25 +440,23 @@ NB_MODULE(foreforest, m) {
         .def("clear", &ForeForest::clear)
         .def("num_classes", &ForeForest::num_classes)
         .def(
-            "get_packed_tree", [](const ForeForest& self, int idx) -> nb::tuple {
+            "get_packed_tree",
+            [](const ForeForest& self, int idx) -> nb::tuple {
                 const auto& t = self.get_packed_tree(idx);
+                // Zero-copy: return views into PackedTree memory.
+                // The numpy arrays reference internal PackedTree storage.
+                // Users must not access these arrays after the ForeForest is destroyed.
                 auto ia = [](const int* d, size_t s) {
-                    auto* b = new int[s];
-                    std::memcpy(b, d, s * sizeof(int));
-                    auto c = nb::capsule(b, [](void* p) noexcept { delete[] static_cast<int*>(p); });
-                    return nb::ndarray<nb::numpy, int, nb::c_contig>(b, {s}, std::move(c));
+                    auto* mut_d = const_cast<int*>(d);
+                    return nb::ndarray<nb::numpy, int, nb::c_contig>(mut_d, {s}, nb::none());
                 };
                 auto da = [](const double* d, size_t s) {
-                    auto* b = new double[s];
-                    std::memcpy(b, d, s * sizeof(double));
-                    auto c = nb::capsule(b, [](void* p) noexcept { delete[] static_cast<double*>(p); });
-                    return nb::ndarray<nb::numpy, double, nb::c_contig>(b, {s}, std::move(c));
+                    auto* mut_d = const_cast<double*>(d);
+                    return nb::ndarray<nb::numpy, double, nb::c_contig>(mut_d, {s}, nb::none());
                 };
                 auto ua = [](const uint8_t* d, size_t s) {
-                    auto* b = new uint8_t[s];
-                    std::memcpy(b, d, s * sizeof(uint8_t));
-                    auto c = nb::capsule(b, [](void* p) noexcept { delete[] static_cast<uint8_t*>(p); });
-                    return nb::ndarray<nb::numpy, uint8_t, nb::c_contig>(b, {s}, std::move(c));
+                    auto* mut_d = const_cast<uint8_t*>(d);
+                    return nb::ndarray<nb::numpy, uint8_t, nb::c_contig>(mut_d, {s}, nb::none());
                 };
                 return nb::make_tuple(
                     ia(t.features.data(), t.features.size()),
@@ -513,5 +484,5 @@ NB_MODULE(foreforest, m) {
                     da(t.leaf_values.data(), t.leaf_values.size())
                 );
             }, nb::arg("index"),
-            "Return packed tree data as a tuple of numpy arrays.");
+            "Return packed tree data as a tuple of numpy arrays (zero-copy views).");
 }

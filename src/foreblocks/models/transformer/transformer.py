@@ -15,6 +15,9 @@ Core API:
 
 """
 
+from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.models.transformer.generation import GenerationConfig
+
 from foreblocks.models.transformer.core.base import (
     BaseTransformer,
     BaseTransformerLayer,
@@ -39,6 +42,7 @@ from foreblocks.models.transformer.runtime.outputs import (
 )
 
 __all__ = [
+    "GenerationConfig",
     "NormWrapper",
     "ResidualRunCfg",
     "ResidualBlockMixin",
@@ -51,4 +55,5 @@ __all__ = [
     "TransformerDecoder",
     "TransformerDecoderOutput",
     "TransformerEncoderOutput",
+    "TransformerConfig",
 ]

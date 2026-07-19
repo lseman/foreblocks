@@ -68,6 +68,7 @@ class DroplessPackedDispatcher:
         expert_usage: torch.Tensor | None = None,
         soft_capacity_min: float = 0.5,
         soft_capacity_max: float = 2.0,
+        filter_zero_weights: bool = False,
     ):
         device = x_flat.device
         T, D = x_flat.shape
@@ -93,15 +94,8 @@ class DroplessPackedDispatcher:
         tokens = self._tokens_buffer[:S]  # type: ignore[index]
 
         # Drop masked/zero-weight routes (used for adaptive K)
-        if (weights <= 0).any():
+        if filter_zero_weights:
             keep = weights > 0
-            if keep.sum().item() == 0:
-                empty = x_flat.new_zeros((0, D))
-                empty_long = x_flat.new_zeros((0,), dtype=torch.long)
-                empty_offsets = x_flat.new_zeros(
-                    (self.num_experts + 1,), dtype=torch.long
-                )
-                return empty, empty, empty_long, empty_long, empty_offsets, 0
             experts = experts[keep]
             weights = weights[keep]
             tokens = tokens[keep]
@@ -127,6 +121,7 @@ class DroplessPackedDispatcher:
 
         del capacity_factor, soft_capacity, expert_usage
         del soft_capacity_min, soft_capacity_max
+        del filter_zero_weights
         return packed_x, packed_w, experts_sorted, tokens_sorted, offsets, 0
 
     @staticmethod
@@ -150,9 +145,10 @@ class ConfidenceCapacityDispatcher(DroplessPackedDispatcher):
         expert_usage: torch.Tensor | None = None,
         soft_capacity_min: float = 0.5,
         soft_capacity_max: float = 2.0,
+        filter_zero_weights: bool = False,
     ):
         packed_x, packed_w, experts, tokens, offsets, _ = super().pack(
-            x_flat, topk_p, topk_i
+            x_flat, topk_p, topk_i, filter_zero_weights=filter_zero_weights
         )
         assignment_count = int(experts.numel())
         if assignment_count == 0:

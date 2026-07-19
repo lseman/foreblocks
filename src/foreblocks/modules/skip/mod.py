@@ -312,18 +312,24 @@ class LayerDropoutSchedule:
         float
             Dropout rate (clamped to [0, 1]).
         """
+        if not 0 <= layer_idx < self.num_layers:
+            raise IndexError(
+                f"layer_idx={layer_idx} outside [0, {self.num_layers})"
+            )
         if self.max_dropout is None or self.profile == "flat":
             return float(max(0.0, min(1.0, self.base_dropout)))
 
-        depth = (layer_idx + 1) / max(1, self.num_layers)
+        depth = layer_idx / max(1, self.num_layers - 1)
 
-        if self.profile == "deeper_more":
-            # Deeper layers: [base_dropout, max_dropout]
-            p = self.base_dropout + (self.max_dropout - self.base_dropout) * depth
-        elif self.profile == "deeper_less":
-            # Deeper layers: [max_dropout, base_dropout]
-            p = self.max_dropout + (self.base_dropout - self.max_dropout) * depth
-        else:
+        if self.profile not in {"deeper_more", "deeper_less"}:
             raise ValueError(f"Unknown profile: {self.profile}")
+        # Both profiles interpolate from the configured shallow-layer value to
+        # the configured deepest-layer value. The profile name documents the
+        # intended ordering; validate it to catch inverted configurations.
+        if self.profile == "deeper_more" and self.max_dropout < self.base_dropout:
+            raise ValueError("deeper_more requires max_dropout >= base_dropout")
+        if self.profile == "deeper_less" and self.max_dropout > self.base_dropout:
+            raise ValueError("deeper_less requires max_dropout <= base_dropout")
+        p = (1.0 - depth) * self.base_dropout + depth * self.max_dropout
 
         return float(max(0.0, min(1.0, p)))

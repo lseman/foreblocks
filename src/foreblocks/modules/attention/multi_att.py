@@ -37,13 +37,11 @@ from foreblocks.modules.attention.cache.decode_stream import (
     paged_stream_decode_standard,
 )
 from foreblocks.modules.attention.cache.kv import (
-    DenseKVProvider,
     KVProvider,
-    PagedKVProvider,
-    StaticKVCache,
-    StaticKVProvider,
 )
 from foreblocks.modules.attention.cache.paged import PagedKVCache
+from foreblocks.modules.attention.cache.selection import AttentionCacheSelector
+from foreblocks.modules.attention.pipeline import QKVPipeline
 from foreblocks.modules.attention.utils.compaction import (
     AttentionMatchingCompactor,
     AttentionMatchingConfig,
@@ -147,6 +145,9 @@ class MultiAttention(nn.Module):
         max_seq_len: int = 4096,  # kept for API, not used here
         cross_attention: bool = False,
         pos_encoding_type: str = "rope",  # "rope" | "sinusoidal" | "alibi" | "learnable"
+        rope_base: float = 10000.0,
+        rope_scaling_type: str = "none",  # "none" | "yarn" | "ntk" | "linear"
+        rope_scaling_factor: float = 1.0,
         softpick_chunk_size: int = 128,
         window_size: int = 64,
         global_attention_ratio: float = 0.1,  # kept for API
@@ -213,12 +214,7 @@ class MultiAttention(nn.Module):
         self.output_attentions = False
         self.last_attn_weights: torch.Tensor | None = None
         self.attn_implementation = str(attn_implementation).lower()
-        backend_spec = ATTENTION_BACKENDS.get(self.attn_implementation)
-        if not backend_spec.available:
-            raise RuntimeError(
-                f"attention backend {backend_spec.name!r} is unavailable: "
-                f"{backend_spec.unavailable_reason}"
-            )
+        ATTENTION_BACKENDS.validate(self.attn_implementation)
         self.cross_attention = cross_attention
 
         # GQA/MQA
@@ -376,7 +372,8 @@ class MultiAttention(nn.Module):
 
         # Setup projections / type-specific modules
         self._setup_attention_modules(
-            attention_type, freq_modes, use_swiglu, pos_encoding_type
+            attention_type, freq_modes, use_swiglu, pos_encoding_type,
+            rope_base, rope_scaling_type, rope_scaling_factor,
         )
         self.position_encoding_applier = self._build_position_encoding_applier()
         self._paged_stream_decode = paged_stream_decode_standard
@@ -404,6 +401,8 @@ class MultiAttention(nn.Module):
         self.use_paged_cache = use_paged_cache
         self.cache_block_size = cache_block_size
         self.max_cache_blocks = max_cache_blocks
+        self.cache_selector = AttentionCacheSelector(self)
+        self.qkv_pipeline = QKVPipeline(self)
 
         # ── Gated Attention (G1) ─────────────────────────────────────────────
         self.use_gated_attention = use_gated_attention
@@ -600,6 +599,9 @@ class MultiAttention(nn.Module):
         freq_modes: int,
         use_swiglu: bool,
         pos_encoding_type: str = "rope",
+        rope_base: float = 10000.0,
+        rope_scaling_type: str = "none",
+        rope_scaling_factor: float = 1.0,
     ):
         """Create QKV projections and attention-type-specific modules."""
         if attention_type in [
@@ -652,7 +654,12 @@ class MultiAttention(nn.Module):
                     RotaryEmbedding,  # local import
                 )
 
-                self.rotary_emb = RotaryEmbedding(self.head_dim)
+                self.rotary_emb = RotaryEmbedding(
+                    self.head_dim,
+                    base=rope_base,
+                    scaling_type=rope_scaling_type,
+                    scaling_factor=rope_scaling_factor,
+                )
             else:
                 self.rotary_emb = None
 
@@ -1218,55 +1225,12 @@ class MultiAttention(nn.Module):
         dtype: torch.dtype,
         force_paged: bool | None = None,
     ) -> KVProvider:
-        static_cache = (
-            layer_state.get("static_cache")
-            if isinstance(layer_state, dict)
-            else None
-        )
-        if isinstance(static_cache, StaticKVCache):
-            cache_position = (
-                layer_state.get("cache_position")
-                if isinstance(layer_state, dict)
-                else None
-            )
-            update_mask = layer_state.get("cache_update_mask")
-            return StaticKVProvider(
-                static_cache,
-                cache_position=cache_position,
-                update_mask=update_mask,
-            )
-
-        use_paged_now = (
-            self.use_paged_cache
-            and (layer_state is not None)
-            and (not self.cross_attention)
-        )
-        if force_paged is not None:
-            use_paged_now = bool(force_paged)
-
-        if use_paged_now:
-            if layer_state is None:
-                raise ValueError("layer_state is required for paged KV provider")
-            cache = self._ensure_paged_cache(
-                layer_state,
-                batch_size=batch_size,
-                device=device,
-                dtype=dtype,
-            )
-            return PagedKVProvider(
-                cache,
-                use_mla=self.use_mla,
-                k_up_proj=self.k_up_proj,
-                v_up_proj=self.v_up_proj,
-                update_mask=layer_state.get("cache_update_mask"),
-            )
-
-        return DenseKVProvider(
-            layer_state=layer_state,
-            cross_attention=self.cross_attention,
-            use_mla=self.use_mla,
-            k_up_proj=self.k_up_proj,
-            v_up_proj=self.v_up_proj,
+        return self.cache_selector.select(
+            layer_state,
+            batch_size=batch_size,
+            device=device,
+            dtype=dtype,
+            force_paged=force_paged,
         )
 
     def _prepare_qkv_with_provider(
@@ -1285,43 +1249,9 @@ class MultiAttention(nn.Module):
         KVProvider,
         torch.Tensor | None,
     ]:
-        B, _, _ = query.shape
-        q, k, v, kv_latent = self._project_qkv_heads(query, key, value)
-
-        provider = self._make_kv_provider(
-            layer_state,
-            batch_size=B,
-            device=q.device,
-            dtype=q.dtype,
-            force_paged=force_paged,
+        return self.qkv_pipeline.prepare(
+            query, key, value, layer_state, force_paged=force_paged
         )
-
-        q_start_pos: torch.Tensor | None = None
-        if not self.cross_attention:
-            q_start_pos = provider.get_start_positions(B, q.device)
-
-        # QK Normalization: applied after projection, before RoPE
-        # (matches FLA's order; stabilises attention scores)
-        if self.qk_norm:
-            if self.q_norm is not None:
-                # RMSNorm mode: learnable per-channel scaling
-                q = self.q_norm(q)  # [B, H, T, D]
-                k = self.k_norm(k)  # [B, H, T, D]
-            else:
-                # L2 mode: pure normalisation (no params)
-                q = F.normalize(q, p=2.0, dim=-1)
-                k = F.normalize(k, p=2.0, dim=-1)
-
-        q, k = self.position_encoding_applier.apply(
-            q,
-            k,
-            query=query,
-            key=key,
-            layer_state=layer_state,
-            seqlen_offset=(q_start_pos if q_start_pos is not None else 0),
-        )
-
-        return q, k, v, kv_latent, provider, q_start_pos
 
     def _process_qkv(
         self,
@@ -1440,31 +1370,22 @@ class MultiAttention(nn.Module):
         B, H, T_q, D = q.shape
         T_k = k.size(2)
 
-        backend = ATTENTION_BACKENDS.get(self.attn_implementation)
+        compiler = getattr(torch, "compiler", None)
+        compiling = bool(
+            compiler is not None
+            and hasattr(compiler, "is_compiling")
+            and compiler.is_compiling()
+        )
+        backend = ATTENTION_BACKENDS.validate(
+            self.attn_implementation,
+            device_type=q.device.type,
+            require_attention_weights=need_weights,
+            require_gqa=q.size(1) != k.size(1),
+            compiling=compiling,
+        )
         if backend.runner is not None:
-            if need_weights and not backend.supports_attention_weights:
-                raise RuntimeError(
-                    f"attention backend {backend.name!r} does not return weights"
-                )
-            if q.size(1) != k.size(1) and not backend.supports_gqa:
-                raise RuntimeError(
-                    f"attention backend {backend.name!r} does not support GQA"
-                )
-            if q.device.type not in backend.devices:
-                raise RuntimeError(
-                    f"attention backend {backend.name!r} does not support {q.device.type}"
-                )
-            compiler = getattr(torch, "compiler", None)
-            if (
-                compiler is not None
-                and hasattr(compiler, "is_compiling")
-                and compiler.is_compiling()
-                and not backend.supports_compile
-            ):
-                raise RuntimeError(
-                    f"attention backend {backend.name!r} is not compile-compatible"
-                )
-            mask_builder = backend.mask_builder or build_attention_mask
+            mask_builder = backend.mask_builder
+            assert mask_builder is not None
             blocked = mask_builder(
                 query=q,
                 key_length=T_k,

@@ -8,6 +8,8 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
+from foreblocks.modules.attention.masking import build_attention_mask
+
 
 @dataclass(frozen=True)
 class AttentionBackendSpec:
@@ -58,11 +60,48 @@ class AttentionBackendRegistry:
     def names(self) -> tuple[str, ...]:
         return tuple(self._specs)
 
+    def validate(
+        self,
+        name: str,
+        *,
+        device_type: str | None = None,
+        require_attention_weights: bool = False,
+        require_gqa: bool = False,
+        compiling: bool = False,
+    ) -> AttentionBackendSpec:
+        spec = self.get(name)
+        if not spec.available:
+            raise RuntimeError(
+                f"attention backend {spec.name!r} is unavailable: "
+                f"{spec.unavailable_reason}"
+            )
+        if spec.mask_builder is None:
+            raise RuntimeError(
+                f"attention backend {spec.name!r} has no registered mask builder"
+            )
+        if device_type is not None and device_type not in spec.devices:
+            raise RuntimeError(
+                f"attention backend {spec.name!r} does not support {device_type}"
+            )
+        if require_attention_weights and not spec.supports_attention_weights:
+            raise RuntimeError(
+                f"attention backend {spec.name!r} does not return weights"
+            )
+        if require_gqa and not spec.supports_gqa:
+            raise RuntimeError(f"attention backend {spec.name!r} does not support GQA")
+        if compiling and not spec.supports_compile:
+            raise RuntimeError(
+                f"attention backend {spec.name!r} is not compile-compatible"
+            )
+        return spec
+
 
 ATTENTION_BACKENDS = AttentionBackendRegistry()
-ATTENTION_BACKENDS.register("auto")
-ATTENTION_BACKENDS.register("eager")
-ATTENTION_BACKENDS.register("sdpa", supports_attention_weights=False)
+ATTENTION_BACKENDS.register("auto", mask_builder=build_attention_mask)
+ATTENTION_BACKENDS.register("eager", mask_builder=build_attention_mask)
+ATTENTION_BACKENDS.register(
+    "sdpa", mask_builder=build_attention_mask, supports_attention_weights=False
+)
 
 
 def register_attention_backend(
@@ -123,6 +162,7 @@ except (ImportError, AttributeError):
     ATTENTION_BACKENDS.register(
         "flash_attention_2",
         _flash_attention_runner,
+        build_attention_mask,
         supports_attention_weights=False,
         devices=("cuda",),
         available=False,
@@ -132,6 +172,7 @@ else:
     ATTENTION_BACKENDS.register(
         "flash_attention_2",
         _flash_attention_runner,
+        build_attention_mask,
         supports_attention_weights=False,
         devices=("cuda",),
     )
@@ -142,6 +183,7 @@ except ImportError:
     ATTENTION_BACKENDS.register(
         "flex_attention",
         _flex_attention_runner,
+        build_attention_mask,
         supports_attention_weights=False,
         devices=("cuda",),
         available=False,
@@ -151,6 +193,7 @@ else:
     ATTENTION_BACKENDS.register(
         "flex_attention",
         _flex_attention_runner,
+        build_attention_mask,
         supports_attention_weights=False,
         devices=("cuda",),
     )

@@ -54,4 +54,4 @@ def test_transformer_encoder_attention_matching_runs():
 
     out, _ = layer(torch.randn(1, 10, 32))
     assert out.shape == (1, 10, 32)
-    assert layer.self_attn_std.use_mla is False
+    assert layer._attn_backends["standard"].use_mla is False

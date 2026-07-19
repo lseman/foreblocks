@@ -192,6 +192,10 @@ class GLABackend(RoPEMixin, nn.Module):
         v = self.v_proj(value).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
         gk = self.gk_proj(query).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
 
+        # L2 normalise (matches DeltaNet/Kimi/GatedDeltaNet Q/K-norm convention)
+        q = F.normalize(q, p=2, dim=-1)
+        k = F.normalize(k, p=2, dim=-1)
+
         # RoPE on Q/K after projection (no-op unless pos_encoding_type="rope")
         q, k = self._apply_rope(q, k)
 

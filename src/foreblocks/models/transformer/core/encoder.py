@@ -16,13 +16,14 @@ Core API:
 from __future__ import annotations
 
 import math
-from typing import Literal, Optional
+from typing import Literal
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.layers.embeddings import InformerTimeEmbedding
+from foreblocks.models.transformer.config import TransformerConfig
 from foreblocks.models.transformer.features.mhc import mhc_init_streams
 from foreblocks.models.transformer.runtime.outputs import TransformerEncoderOutput
 from foreblocks.models.transformer.features.patching import PatchInfo, patchify_padding_mask
@@ -31,14 +32,13 @@ from foreblocks.models.transformer.core.base import (
     BaseTransformerLayer,
 )
 from foreblocks.models.transformer.runtime.execution import (
+    LazyAttentionBackendMixin,
     MHCBlockMixin,
     NormWrapper,
     ResidualBlockMixin,
     _ModelLayerInvokeStrategy,
 )
 from foreblocks.models.transformer.runtime.residual_state import (
-    _append_attention_residual_update,
-    _attention_residual_input,
     _init_attention_residual_state,
 )
 from foreblocks.models.transformer.runtime.routing import (
@@ -47,12 +47,8 @@ from foreblocks.models.transformer.runtime.routing import (
     _gather_sequence_tokens,
     _gather_square_mask,
     _patchify_gateskip_active_mask,
-    _scatter_mixture_of_depths_output,
+    _run_mod_layer,
 )
-from foreblocks.modules.attention.modules.linear_att import ModernLinearAttention
-from foreblocks.modules.attention.modules.linear_att.gated_delta import GatedDeltaNet
-from foreblocks.modules.attention.modules.linear_att.kimi import KimiAttention
-from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.attention.utils.residuals import (
     AttentionResidual,
     BlockAttentionResidual,
@@ -62,7 +58,9 @@ from foreblocks.modules.skip.gateskip import ResidualGate
 from foreblocks.ui.node_spec import node
 
 
-class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformerLayer):
+class TransformerEncoderLayer(
+    ResidualBlockMixin, MHCBlockMixin, LazyAttentionBackendMixin, BaseTransformerLayer
+):
     """
     Encoder layer with:
       - MultiAttention / LinearAttention / KimiAttention
@@ -112,6 +110,9 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         attn_residual_type: str = "full",
         attention_residual_block_size: int = 8,
         pos_encoding_type: str = "rope",
+        rope_base: float = 10000.0,
+        rope_scaling_type: str = "none",
+        rope_scaling_factor: float = 1.0,
     ):
         super().__init__(
             d_model=d_model,
@@ -134,28 +135,18 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             moe_latent_d_ff=moe_latent_d_ff,
         )
 
-        # ── Lazy attention module placeholders ──────────────────────────
-        # Only instantiated on first access (avoids ~22M dead params per 12-layer model).
-        self.self_attn_std: Optional[nn.Module] = None
-        self.self_attn_lin: Optional[nn.Module] = None
-        self.self_attn_gla: Optional[nn.Module] = None
-        self.self_attn_deltanet: Optional[nn.Module] = None
-        self.self_attn_gdn_modern: Optional[nn.Module] = None
-        self.self_attn_sype: Optional[nn.Module] = None
-        self.self_attn_kimi: Optional[nn.Module] = None
-        self.self_attn_gdn: Optional[nn.Module] = None
-
-        # Init parameters for lazy factories (captured once, reused)
+        # Init parameters for the lazy attention-backend registry (captured once, reused).
+        # See core/attention_backends.py + runtime/execution.py's
+        # LazyAttentionBackendMixin for the shared lazy-instantiation cache.
         self._attn_init_kwargs = {
             "d_model": d_model,
             "n_heads": nhead,
             "dropout": dropout,
         }
-        self._std_kwargs = dict(
-            attention_type=att_type,
+        self._attn_backend_cfg = dict(
+            att_type=att_type,
             attn_implementation=attn_implementation,
             freq_modes=freq_modes,
-            use_mla=not use_attention_matching_compaction,
             use_attention_matching_compaction=use_attention_matching_compaction,
             attention_matching_keep_ratio=attention_matching_keep_ratio,
             attention_matching_trigger_len=attention_matching_trigger_len,
@@ -164,32 +155,9 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_matching_force_single_step=attention_matching_force_single_step,
             moba_block_size=moba_block_size,
             moba_topk=moba_topk,
-        )
-        self._sype_kwargs = dict(
-            attention_type="sype",
-            freq_modes=freq_modes,
-            use_mla=not use_attention_matching_compaction,
-            use_attention_matching_compaction=use_attention_matching_compaction,
-            attention_matching_keep_ratio=attention_matching_keep_ratio,
-            attention_matching_trigger_len=attention_matching_trigger_len,
-            attention_matching_min_keep=attention_matching_min_keep,
-            attention_matching_query_budget=attention_matching_query_budget,
-            attention_matching_force_single_step=attention_matching_force_single_step,
-            moba_block_size=moba_block_size,
-            moba_topk=moba_topk,
-        )
-        self._gla_kwargs = dict(
-            backend="gla",
-            mode="chunk",
-            chunk_size=64,
-        )
-        self._deltanet_kwargs = dict(
-            backend="deltanet",
-            mode="chunk",
-            chunk_size=64,
-        )
-        self._gdn_modern_kwargs = dict(
-            chunk_size=64,
+            rope_base=rope_base,
+            rope_scaling_type=rope_scaling_type,
+            rope_scaling_factor=rope_scaling_factor,
         )
         self.layer_attention_type = str(layer_attention_type)
         self._pos_encoding_type = str(pos_encoding_type)
@@ -225,123 +193,6 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             else AttentionResidual(d_model)
         )
         self.materialize_attention_type()
-
-    def set_layer_attention_type(self, layer_attention_type: str) -> None:
-        self.layer_attention_type = str(layer_attention_type)
-
-    def materialize_attention_type(
-        self, layer_attention_type: str | None = None
-    ) -> nn.Module:
-        previous = self.layer_attention_type
-        if layer_attention_type is not None:
-            self.layer_attention_type = str(layer_attention_type)
-        try:
-            return self._self_attn()
-        finally:
-            self.layer_attention_type = previous
-
-    # ── Lazy attention factories ──────────────────────────────────────
-    # Each module is instantiated at most once, on first access.
-    # This eliminates ~22M dead params (88.3 MB fp32) per 12-layer model.
-    def _build_std(self) -> MultiAttention:
-        if self.self_attn_std is None:
-            dev = next(self.parameters()).device
-            self.self_attn_std = MultiAttention(
-                **self._attn_init_kwargs,
-                **self._std_kwargs,
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_std
-
-    def _build_lin(self) -> ModernLinearAttention:
-        if self.self_attn_lin is None:
-            dev = next(self.parameters()).device
-            self.self_attn_lin = ModernLinearAttention(
-                **self._attn_init_kwargs,
-                backend="rda",
-                state="elu",
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_lin
-
-    def _build_gla(self) -> ModernLinearAttention:
-        if self.self_attn_gla is None:
-            dev = next(self.parameters()).device
-            self.self_attn_gla = ModernLinearAttention(
-                **self._attn_init_kwargs,
-                **self._gla_kwargs,
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_gla
-
-    def _build_deltanet(self) -> ModernLinearAttention:
-        if self.self_attn_deltanet is None:
-            dev = next(self.parameters()).device
-            self.self_attn_deltanet = ModernLinearAttention(
-                **self._attn_init_kwargs,
-                **self._deltanet_kwargs,
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_deltanet
-
-    def _build_gdn_modern(self) -> GatedDeltaNet:
-        # "gated_deltanet" consolidated onto the standalone GatedDeltaNet:
-        # the modern backend's chunk path was numerically inconsistent with its
-        # recurrent path and slower. Same algorithm, correct + faster impl.
-        if self.self_attn_gdn_modern is None:
-            dev = next(self.parameters()).device
-            self.self_attn_gdn_modern = GatedDeltaNet(
-                **self._attn_init_kwargs,
-                chunk_size=self._gdn_modern_kwargs["chunk_size"],
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_gdn_modern
-
-    def _build_sype(self) -> MultiAttention:
-        if self.self_attn_sype is None:
-            dev = next(self.parameters()).device
-            self.self_attn_sype = MultiAttention(
-                **self._attn_init_kwargs,
-                **self._sype_kwargs,
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_sype
-
-    def _build_kimi(self) -> KimiAttention:
-        if self.self_attn_kimi is None:
-            dev = next(self.parameters()).device
-            self.self_attn_kimi = KimiAttention(
-                **self._attn_init_kwargs,
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_kimi
-
-    def _build_gdn(self) -> GatedDeltaNet:
-        if self.self_attn_gdn is None:
-            dev = next(self.parameters()).device
-            self.self_attn_gdn = GatedDeltaNet(
-                **self._attn_init_kwargs,
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_gdn
-
-    def _self_attn(self) -> nn.Module:
-        t = self.layer_attention_type
-        if t == "linear":
-            return self._build_lin()
-        if t == "sype":
-            return self._build_sype()
-        if t == "kimi":
-            return self._build_kimi()
-        if t == "gated_delta":
-            return self._build_gdn()
-        if t == "gla":
-            return self._build_gla()
-        if t == "deltanet":
-            return self._build_deltanet()
-        if t == "gated_deltanet":
-            return self._build_gdn_modern()
-        return self._build_std()
 
     def _ensure_mhc_mixers(self) -> None:
         if not self.use_mhc:
@@ -382,7 +233,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             else None
         )
 
-        self._apply_runtime_mhc_overrides(
+        self._validate_runtime_mhc_overrides(
             use_mhc=use_mhc,
             mhc_n_streams=mhc_n_streams,
             mhc_sinkhorn_iters=mhc_sinkhorn_iters,
@@ -407,48 +258,16 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
                 raise RuntimeError(
                     "Attention Residuals are not compatible with mHC at the layer level."
                 )
-
-            state = attention_residual_state
-            if state is None:
-                state = _init_attention_residual_state(
+            if attention_residual_state is None:
+                attention_residual_state = _init_attention_residual_state(
                     src,
                     self.attention_residual_mode,
                     self.attention_residual_block_size,
                 )
 
-            attn_in = _attention_residual_input(
-                state["current"], state, self.attn_input_residual
-            )
-
-            def attn_core_attnres(
-                x_in: torch.Tensor,
-            ) -> tuple[torch.Tensor, dict | None]:
-                out, _, _ = attn_mod(x_in, x_in, x_in, src_mask, src_key_padding_mask)
-                return out, None
-
-            attn_out, _ = self._run_attnres_core(
-                attn_in, self.attn_norm, attn_core_attnres
-            )
-            _append_attention_residual_update(state, attn_out)
-
-            ff_in = _attention_residual_input(
-                state["current"], state, self.ff_input_residual
-            )
-
-            def ff_core_attnres(
-                x_in: torch.Tensor,
-            ) -> tuple[torch.Tensor, dict | None]:
-                return self._ff_forward_with_aux(
-                    x_in,
-                    mtp_targets=mtp_targets,
-                    padding_mask=src_key_padding_mask,
-                ), None
-
-            ff_out, _ = self._run_attnres_core(ff_in, self.ff_norm, ff_core_attnres)
-            _append_attention_residual_update(state, ff_out)
-            return state["current"], None
-
-        strategy = self._make_exec_strategy(x=src, streams=streams)
+        strategy = self._make_exec_strategy(
+            x=src, streams=streams, attention_residual_state=attention_residual_state
+        )
         if self.use_mhc:
             assert self.mhc_conn_attn is not None and self.mhc_conn_ff is not None
 
@@ -469,6 +288,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             mhc_core=attn_mhc_core,
             hyper_conn=self.mhc_conn_attn,
             active_mask=gateskip_active_mask,
+            residual_module=self.attn_input_residual,
         )
 
         def ff_core(x_in: torch.Tensor) -> tuple[torch.Tensor, dict | None]:
@@ -494,9 +314,13 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             mhc_core=ff_mhc_core,
             hyper_conn=self.mhc_conn_ff,
             active_mask=gateskip_active_mask,
+            residual_module=self.ff_input_residual,
         )
 
         self._finalize_gateskip_aux(cfg, aux_l2_terms)
+
+        if self.use_attention_residual:
+            return strategy.x, None
 
         out_src, out_streams = strategy.collapse(self.mhc_collapse)
         return out_src, out_streams
@@ -513,7 +337,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
 class TransformerEncoder(BaseTransformer):
     def __init__(
         self,
-        input_size: int = 1,
+        input_size: int | TransformerConfig = 1,
         use_time_encoding: bool = False,
         model_type: str = "transformer",
         ct_patchtst: bool = False,
@@ -521,8 +345,36 @@ class TransformerEncoder(BaseTransformer):
         ct_patch_stride: int = 8,
         ct_patch_pad_end: bool = True,
         ct_patch_fuse: Literal["mean", "linear"] = "linear",
+        config: TransformerConfig | None = None,
         **kwargs,
     ):
+        if isinstance(input_size, TransformerConfig):
+            if config is not None:
+                raise ValueError("pass TransformerConfig once, as input_size or config")
+            config = input_size
+        if config is not None:
+            input_size = config.input_size
+            model_type = config.model_type
+            use_time_encoding = config.use_time_encoding
+            ct_patchtst = config.ct_patchtst
+            ct_patch_len = config.ct_patch_len
+            ct_patch_stride = config.ct_patch_stride
+            ct_patch_pad_end = config.ct_patch_pad_end
+            ct_patch_fuse = config.ct_patch_fuse
+            kwargs = {**config.model_kwargs(), **kwargs}
+        else:
+            config = TransformerConfig.from_kwargs(
+                input_size=input_size,
+                model_type=model_type,
+                use_time_encoding=use_time_encoding,
+                ct_patchtst=ct_patchtst,
+                ct_patch_len=ct_patch_len,
+                ct_patch_stride=ct_patch_stride,
+                ct_patch_pad_end=ct_patch_pad_end,
+                ct_patch_fuse=ct_patch_fuse,
+                **kwargs,
+            )
+        config.validate_compatibility(role="encoder")
         self.model_type = model_type
         # Auto-configure based on model_type
         if model_type == "informer-like":
@@ -542,6 +394,7 @@ class TransformerEncoder(BaseTransformer):
             # CT-PatchTST is an alternative encoder tokenization path.
             kwargs["patch_encoder"] = False
         super().__init__(input_size, **kwargs)
+        self.config = config
         self.input_size = input_size
         self.time_encoder = (
             InformerTimeEmbedding(self.d_model) if use_time_encoding else None
@@ -554,6 +407,14 @@ class TransformerEncoder(BaseTransformer):
             if (self.ct_patchtst and self.ct_patch_fuse == "linear")
             else None
         )
+
+        # These modules are created after BaseTransformer has applied the
+        # model-wide initialization policy, so initialize them explicitly.
+        # Otherwise they retain PyTorch defaults and have a seed-dependent
+        # scale that is inconsistent with the rest of the transformer.
+        for module in (self.time_encoder, self.ct_patch_embed, self.ct_channel_fuse):
+            if module is not None:
+                module.apply(self._init_weights)
 
         # FIX: stash last patched mask + patch info to avoid decoder mismatch bugs
         self.last_memory_key_padding_mask: torch.Tensor | None = None
@@ -623,10 +484,21 @@ class TransformerEncoder(BaseTransformer):
         src_key_padding_mask: torch.Tensor | None = None,  # [B,T] bool
         time_features: torch.Tensor | None = None,  # [B, T, F_tf]
         gateskip_active_mask: torch.Tensor | None = None,  # [B,T] bool
-        output_hidden_states: bool = False,
-        output_attentions: bool = False,
-        return_dict: bool = False,
+        output_hidden_states: bool | None = None,
+        output_attentions: bool | None = None,
+        return_dict: bool | None = None,
     ) -> torch.Tensor | TransformerEncoderOutput:
+        output_hidden_states = (
+            self.config.output_hidden_states
+            if output_hidden_states is None
+            else output_hidden_states
+        )
+        output_attentions = (
+            self.config.output_attentions
+            if output_attentions is None
+            else output_attentions
+        )
+        return_dict = self.config.return_dict if return_dict is None else return_dict
         B, T, C = src.shape
         if C != self.input_size:
             raise ValueError(f"Expected input size {self.input_size}, got {C}")
@@ -740,54 +612,31 @@ class TransformerEncoder(BaseTransformer):
 
         for i in range(self.num_layers):
             if self.use_mod:
-                (
-                    layer,
-                    router_logits,
-                    _keep_mask,
-                    routed_indices,
-                    routed_slots,
-                ) = self._prepare_layer_routing(i, x, gateskip_active_mask)
-                if (
-                    routed_indices is None
-                    or routed_slots is None
-                    or not bool(routed_slots.any())
-                ):
-                    if all_hidden_states is not None:
-                        all_hidden_states.append(x)
-                    continue
+                def gather_and_invoke(layer, routed_indices, routed_slots):
+                    nonlocal streams
+                    x_routed = _gather_sequence_tokens(x, routed_indices)
+                    src_mask_routed = _gather_square_mask(src_mask, routed_indices)
+                    src_kpm_routed = _gather_padding_mask(
+                        src_key_padding_mask, routed_indices, routed_slots
+                    )
+                    x_routed_out, streams = invoke.run_encoder_layer(
+                        layer=layer,
+                        x=x_routed,
+                        src_mask=src_mask_routed,
+                        src_key_padding_mask=src_kpm_routed,
+                        budget=runtime_budget,
+                        streams=streams,
+                        attention_residual_state=attention_residual_state,
+                        gateskip_active_mask=routed_slots,
+                    )
+                    return x_routed, x_routed_out
 
-                x_routed = _gather_sequence_tokens(x, routed_indices)
-                src_mask_routed = _gather_square_mask(src_mask, routed_indices)
-                src_kpm_routed = _gather_padding_mask(
-                    src_key_padding_mask, routed_indices, routed_slots
+                x, was_used = _run_mod_layer(
+                    self, i, x, gateskip_active_mask, all_hidden_states,
+                    router_states, gather_and_invoke,
                 )
-
-                used_indices.append(i)
-                x_routed_out, streams = invoke.run_encoder_layer(
-                    layer=layer,
-                    x=x_routed,
-                    src_mask=src_mask_routed,
-                    src_key_padding_mask=src_kpm_routed,
-                    budget=runtime_budget,
-                    streams=streams,
-                    attention_residual_state=attention_residual_state,
-                    gateskip_active_mask=routed_slots,
-                )
-                x = _scatter_mixture_of_depths_output(
-                    x,
-                    x_routed,
-                    x_routed_out,
-                    routed_indices,
-                    routed_slots,
-                    router_logits,
-                    use_expert_choice=True,  # Standard Expert Choice: full replacement
-                )
-                if all_hidden_states is not None:
-                    all_hidden_states.append(x)
-                ff_block = getattr(getattr(layer, "feed_forward", None), "block", None)
-                router_state = getattr(ff_block, "last_routing_state", None)
-                if router_state is not None:
-                    router_states.append(router_state)
+                if was_used:
+                    used_indices.append(i)
                 continue
 
             layer = self._resolve_layer(i)

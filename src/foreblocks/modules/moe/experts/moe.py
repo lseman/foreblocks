@@ -46,23 +46,11 @@ from foreblocks.modules.moe.experts.dispatchers import (
     ExpertChoiceDispatcher,
 )
 
-
-@dataclass(frozen=True)
-class MoERoutingState:
-    """Structured routing output for diagnostics and auxiliary objectives."""
-
-    logits: torch.Tensor
-    indices: torch.Tensor
-    weights: torch.Tensor | None
-    aux_loss: torch.Tensor
-    tokens_dropped: int
-    valid_token_indices: torch.Tensor | None = None
-    per_token_k: torch.Tensor | None = None
-    entropy: torch.Tensor | float = 0.0
 from foreblocks.modules.moe.experts.expert_blocks import (
     MoE_FFNExpert,
     MoE_SwiGLUExpert,
     MTPHead,
+    PackedExpertBank,
 )
 from foreblocks.modules.moe.experts.moe_utils import (
     autocast_bf16_enabled as _autocast_bf16_enabled,
@@ -83,6 +71,20 @@ from foreblocks.modules.moe.experts.routers import (
     SoftDenseRouter,
     StraightThroughTopKRouter,
 )
+
+
+@dataclass(frozen=True)
+class MoERoutingState:
+    """Structured routing output for diagnostics and auxiliary objectives."""
+
+    logits: torch.Tensor
+    indices: torch.Tensor
+    weights: torch.Tensor | None
+    aux_loss: torch.Tensor
+    tokens_dropped: int
+    valid_token_indices: torch.Tensor | None = None
+    per_token_k: torch.Tensor | None = None
+    entropy: torch.Tensor | float = 0.0
 
 # Optional import: adjust to your package path
 try:
@@ -111,7 +113,7 @@ class MoEFeedForwardDMoE(nn.Module):
         d_model: int,
         d_ff: int,
         num_experts: int = 8,
-        num_shared: int = 1,
+        num_shared: int = 0,
         top_k: int = 2,
         dropout: float = 0.0,
         use_swiglu: bool = True,
@@ -137,6 +139,7 @@ class MoEFeedForwardDMoE(nn.Module):
         d_ff_shared: int | None = None,
         shared_scale_init: float = 1.0,
         shared_combine: str = "add",
+        shared_gate: bool = True,
         adaptive_k_head_dim: int = 32,
         adaptive_k_tau: float = 1.0,
         adaptive_k_baseline_momentum: float = 0.99,
@@ -147,7 +150,7 @@ class MoEFeedForwardDMoE(nn.Module):
         log_latency: bool = False,
         # Optional compile toggles
         compile_router: bool = True,
-        compile_experts: bool = True,
+        compile_experts: bool = False,
         # Optional grouped-kernel controls
         use_grouped_kernel: bool = True,
         use_fused_router_topk: bool = True,
@@ -336,6 +339,7 @@ class MoEFeedForwardDMoE(nn.Module):
         )
         self.router_type = router_type
         self.shared_combine = shared_combine
+        self.shared_gate_enabled = bool(shared_gate)
         # One canonical value; load_balance_weight remains as a compatibility alias.
         self.load_balance_weight = resolved_aux_weight
         self.z_loss_weight = float(z_loss_weight)
@@ -483,14 +487,6 @@ class MoEFeedForwardDMoE(nn.Module):
 
         # Experts
         expert_cls = MoE_SwiGLUExpert if use_swiglu else MoE_FFNExpert
-        expert_kwargs = dict(
-            d_model=self.routed_d_model,
-            d_ff=self.routed_d_ff,
-            dropout=dropout,
-            expert_dropout=expert_dropout,
-        )
-        if not use_swiglu:
-            expert_kwargs["activation"] = activation
         if d_ff_shared is None:
             shared_ff = int(d_ff // 2)
         else:
@@ -507,12 +503,22 @@ class MoEFeedForwardDMoE(nn.Module):
             shared_kwargs["activation"] = activation
 
         shared_experts = [expert_cls(**shared_kwargs) for _ in range(num_shared)]
-        experts = [expert_cls(**expert_kwargs) for _ in range(num_routed)]
+        # Grouped execution consumes the packed bank directly; compiling each
+        # expert only adds startup work and is never used by that path.
+        if compile_experts and use_grouped_kernel:
+            compile_experts = False
         if compile_experts:
             shared_experts = [maybe_compile(e) for e in shared_experts]
-            experts = [maybe_compile(e) for e in experts]
         self.shared_experts = nn.ModuleList(shared_experts)
-        self.experts = nn.ModuleList(experts)
+        self.experts = PackedExpertBank(
+            num_routed,
+            self.routed_d_model,
+            self.routed_d_ff,
+            use_swiglu=use_swiglu,
+            activation=activation,
+            dropout=dropout,
+            expert_dropout=expert_dropout,
+        )
         if num_shared > 0:
             self.shared_scale = nn.Parameter(
                 torch.full((num_shared,), float(shared_scale_init))
@@ -523,9 +529,15 @@ class MoEFeedForwardDMoE(nn.Module):
                 nn.init.xavier_uniform_(self.shared_proj.weight)
             else:
                 self.shared_proj = None
+            self.shared_gate = (
+                nn.Linear(d_model, num_shared, bias=False)
+                if self.shared_gate_enabled
+                else None
+            )
         else:
             self.shared_scale = None
             self.shared_proj = None
+            self.shared_gate = None
 
         # Optional MTP head bank (off by default).
         self.mtp_num_heads = int(mtp_num_heads)
@@ -646,35 +658,42 @@ class MoEFeedForwardDMoE(nn.Module):
         self._packed_step = step
 
     def get_packed_expert_weights(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return differentiable expert weights stacked on an expert axis.
-
-        For SwiGLU the returned layouts are ``[E, D, 2H]`` and ``[E, H, D]``;
-        standard FFNs use ``[E, D, H]`` and ``[E, H, D]``. Keeping the
-        individual expert modules canonical preserves existing checkpoints;
-        stacking at execution time gives grouped kernels the tensor-packed
-        representation used by modern Transformers MoE implementations.
-        """
-        w12_list, w3_list = [], []
-        for e in self.experts:
-            e = getattr(e, "_orig_mod", e)
-            if hasattr(e, "w12") and hasattr(e, "w3"):
-                w12 = e.w12.weight.t().contiguous()  # [D, 2H]
-                w3 = e.w3.weight.t().contiguous()  # [H, D]
-            elif hasattr(e, "fc1") and hasattr(e, "fc2"):
-                w12 = e.fc1.weight.t().contiguous()  # [D, H]
-                w3 = e.fc2.weight.t().contiguous()  # [H, D]
-            else:
-                # Fallback naming (e.g., gate_up_proj/down_proj style)
-                w12 = e.gate_up_proj.weight.t().contiguous()  # type: ignore
-                w3 = e.down_proj.weight.t().contiguous()  # type: ignore
-            w12_list.append(w12)
-            w3_list.append(w3)
-        return torch.stack(w12_list, dim=0), torch.stack(w3_list, dim=0)
+        """Return canonical ``[E, ...]`` expert parameters without copies."""
+        return self.experts.w12, self.experts.w3
 
     def invalidate_packed_weights(self):
         self._packed_step = -1
         self._B12_cat = None
         self._B3_cat = None
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        """Upgrade legacy per-expert checkpoints to the packed bank layout."""
+        packed_w12 = prefix + "experts.w12"
+        packed_w3 = prefix + "experts.w3"
+        if packed_w12 not in state_dict:
+            old_w12, old_w3, old_keys = [], [], []
+            for idx in range(self.num_routed_experts):
+                up_candidates = (
+                    prefix + f"experts.{idx}.w12.weight",
+                    prefix + f"experts.{idx}.fc1.weight",
+                )
+                down_candidates = (
+                    prefix + f"experts.{idx}.w3.weight",
+                    prefix + f"experts.{idx}.fc2.weight",
+                )
+                up_key = next((key for key in up_candidates if key in state_dict), None)
+                down_key = next((key for key in down_candidates if key in state_dict), None)
+                if up_key is None or down_key is None:
+                    break
+                old_w12.append(state_dict[up_key].t().contiguous())
+                old_w3.append(state_dict[down_key].t().contiguous())
+                old_keys.extend((up_key, down_key))
+            if len(old_w12) == self.num_routed_experts:
+                state_dict[packed_w12] = torch.stack(old_w12)
+                state_dict[packed_w3] = torch.stack(old_w3)
+                for key in old_keys:
+                    state_dict.pop(key)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     # ---------- Helpers ----------
     def _compute_router_outputs(
@@ -698,8 +717,6 @@ class MoEFeedForwardDMoE(nn.Module):
         Returns:
           logits, per_token_k, k_logits, k_probs, precomputed_top_p, precomputed_top_i, router_entropy
         """
-        from foreblocks.modules.moe.experts.routers import RouterOutput
-
         out = self.router(x_flat, return_raw_logits=True, tau=tau)
 
         # --- Prefer named fields from RouterOutput ---
@@ -812,16 +829,14 @@ class MoEFeedForwardDMoE(nn.Module):
 
         with torch.no_grad():
             usage = self.expert_usage.clone()
-            # Skip if usage is too sparse (still in early/noise phase)
-            if usage.max() < 1e-6 or usage.sum() < 1e-12:
-                return
-            # Only update experts below the min_usage threshold
-            mask = usage < self.moe_router_bias_min_usage
-            if not mask.any():
-                return
-            usage = usage / usage.sum().clamp_min(1e-12)
+            usage_sum = usage.sum()
+            valid = ((usage.max() >= 1e-6) & (usage_sum >= 1e-12)).to(usage)
+            usage = usage / usage_sum.clamp_min(1e-12)
             target = torch.full_like(usage, 1.0 / self.num_routed_experts)
-            bias.add_(self.router_bias_update_rate * (target - usage))
+            underused = (usage < self.moe_router_bias_min_usage).to(usage)
+            bias.add_(
+                self.router_bias_update_rate * valid * underused * (target - usage)
+            )
             if self.router_bias_clip > 0:
                 bias.clamp_(-self.router_bias_clip, self.router_bias_clip)
 
@@ -932,6 +947,11 @@ class MoEFeedForwardDMoE(nn.Module):
         ):
             # Shared experts (always-on), computed for all tokens
             if self.num_shared > 0:
+                shared_gates = (
+                    torch.sigmoid(self.shared_gate(x_flat))
+                    if self.shared_gate is not None
+                    else None
+                )
                 # Batched path: pack all-tokens repeated num_shared times into
                 # a single grouped_mlp_swiglu call, avoiding sequential launches.
                 # Requires SwiGLU experts, add-combine, and the grouped kernel.
@@ -975,6 +995,11 @@ class MoEFeedForwardDMoE(nn.Module):
                     )  # [num_shared, T, D]
                     shared_out = (
                         shared_chunks * self.shared_scale.view(self.num_shared, 1, 1)
+                        * (
+                            shared_gates.t().unsqueeze(-1)
+                            if shared_gates is not None
+                            else 1.0
+                        )
                     ).sum(
                         0
                     )  # [T, D]
@@ -986,6 +1011,8 @@ class MoEFeedForwardDMoE(nn.Module):
                         y = s_exp(x_flat)
                         scale = self.shared_scale[s_idx]
                         y = y * scale
+                        if shared_gates is not None:
+                            y = y * shared_gates[:, s_idx : s_idx + 1]
                         shared_out.add_(y)
                         if self.shared_combine == "concat":
                             shared_list.append(y)
@@ -1089,6 +1116,7 @@ class MoEFeedForwardDMoE(nn.Module):
                         expert_usage=self.expert_usage,
                         soft_capacity_min=self.moe_capacity_min,
                         soft_capacity_max=self.moe_capacity_max,
+                        filter_zero_weights=per_token_k is not None,
                     )
                 )
             self._last_num_assignments = int(experts_seq.numel())
@@ -1111,12 +1139,11 @@ class MoEFeedForwardDMoE(nn.Module):
                 self.aux_loss = aux.detach()
                 self.last_mtp_loss = aux.detach()
                 latency_ms = self._maybe_stop_timer(t0)
-                aux_scalar = float(aux.detach())
                 self._populate_router_last(
                     logits,
                     top_i,
                     dropped,
-                    aux_scalar,
+                    aux,
                     latency_ms,
                     meta,
                     per_token_k=per_token_k,
@@ -1126,7 +1153,7 @@ class MoEFeedForwardDMoE(nn.Module):
                     logits,
                     top_i,
                     dropped,
-                    aux_scalar,
+                    aux,
                     latency_ms,
                     meta,
                     per_token_k=per_token_k,
@@ -1171,7 +1198,7 @@ class MoEFeedForwardDMoE(nn.Module):
                         packed_x,
                         offsets,
                         self.experts,
-                        dropout_p=getattr(self.experts[0], "dropout_p", 0.0),
+                        dropout_p=self.experts.dropout_p,
                         training=self.training,
                         out_dtype=packed_x.dtype,
                         use_fp16_acc=self.triton_use_fp16_acc,
@@ -1186,7 +1213,7 @@ class MoEFeedForwardDMoE(nn.Module):
                         packed_x,
                         offsets,
                         self.experts,
-                        dropout_p=getattr(self.experts[0], "dropout_p", 0.0),
+                        dropout_p=self.experts.dropout_p,
                         training=self.training,
                         out_dtype=packed_x.dtype,
                         use_fp16_acc=self.triton_use_fp16_acc,
@@ -1204,10 +1231,10 @@ class MoEFeedForwardDMoE(nn.Module):
                     seg = packed_x[s:t]
                     if self.use_gradient_checkpointing and self.training:
                         y = torch.utils.checkpoint.checkpoint(
-                            self.experts[e_idx], seg, use_reentrant=False
+                            self.experts.forward_expert, e_idx, seg, use_reentrant=False
                         )
                     else:
-                        y = self.experts[e_idx](seg)
+                        y = self.experts.forward_expert(e_idx, seg)
                     packed_y[s:t] = y
 
             # Weight by gate prob and scatter back
@@ -1278,12 +1305,11 @@ class MoEFeedForwardDMoE(nn.Module):
             self.last_mtp_loss = aux.detach()
 
         latency_ms = self._maybe_stop_timer(t0)
-        aux_scalar = float(aux.detach())
         self._populate_router_last(
             logits,
             top_i,
             dropped,
-            aux_scalar,
+            aux,
             latency_ms,
             meta,
             per_token_k=per_token_k,
@@ -1293,7 +1319,7 @@ class MoEFeedForwardDMoE(nn.Module):
             logits,
             top_i,
             dropped,
-            aux_scalar,
+            aux,
             latency_ms,
             meta,
             per_token_k=per_token_k,
@@ -1458,7 +1484,7 @@ class MoEFeedForwardDMoE(nn.Module):
         logits: torch.Tensor,
         topk_idx: torch.Tensor,
         tokens_dropped: int,
-        aux_loss: float,
+        aux_loss: torch.Tensor,
         latency_ms: float,
         meta: dict[str, Any] | None,
         per_token_k: torch.Tensor | None = None,
@@ -1471,10 +1497,14 @@ class MoEFeedForwardDMoE(nn.Module):
             if per_token_k is not None:
                 r.last_per_token_k = per_token_k.detach()
             r.last_tokens_dropped = int(tokens_dropped)
-            r.last_aux_loss = float(aux_loss)
+            r.last_aux_loss = aux_loss.detach()
             r.last_latency_ms = float(latency_ms)
             r.last_meta = meta
-            r.last_router_entropy = float(router_entropy)
+            r.last_router_entropy = (
+                router_entropy.detach()
+                if torch.is_tensor(router_entropy)
+                else router_entropy
+            )
         except Exception:
             pass
 
@@ -1483,7 +1513,7 @@ class MoEFeedForwardDMoE(nn.Module):
         logits: torch.Tensor,
         topk_idx: torch.Tensor,
         tokens_dropped: int,
-        aux_loss: float,
+        aux_loss: torch.Tensor,
         latency_ms: float,
         meta: dict[str, Any] | None,
         per_token_k: torch.Tensor | None = None,

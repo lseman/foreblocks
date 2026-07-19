@@ -133,50 +133,129 @@ class HistogramAccumulator {
         std::fill(hist_c_.begin(), hist_c_.end(), 0);
     }
 
-    // Four-row unrolled accumulation for AVX2-capable builds.
+    // Block-column accumulation with 8-feature blocks.
     //
-    // Histogram updates cannot safely use ordinary SIMD scatter: two lanes may
-    // target the same bin, in which case the later store loses an update.  AVX2
-    // also has no scatter instruction.  Keep the row loop unrolled so the
-    // compiler can overlap independent loads while performing collision-safe
-    // scalar updates to the histogram.
+    // Instead of row-major (for sample: for feature), we iterate feature
+    // blocks in the outer loop and samples in the inner loop.  This hoists
+    // bounds checks and offset lookups outside the inner loop, improving
+    // cache locality and allowing the compiler to vectorize the per-sample
+    // accumulation within each block.
+    //
+    // Histogram updates cannot safely use ordinary SIMD scatter: two lanes
+    // may target the same bin.  AVX2 has no scatter instruction.  We keep
+    // the histogram update scalar but benefit from better instruction
+    // scheduling and reduced overhead per sample.
+    static constexpr int kBlockWidth = 8;
+
     template <bool WITH_COUNTS, typename Code, typename Gdouble,
               typename Hdouble>
-    void accumulate_samples_avx2(const Code* codes, const Gdouble* g,
-                                 const Hdouble* h, const int* sample_indices,
-                                 int n_samples, int P) {
-        auto accumulate_one = [&](int sample) {
-            if (sample < 0) return;
-            const auto* row =
-                codes + static_cast<size_t>(sample) * static_cast<size_t>(P);
-            const double gi = static_cast<double>(g[sample]);
-            const double hi = static_cast<double>(h[sample]);
+    void accumulate_samples_block_column(const Code* codes, const Gdouble* g,
+                                         const Hdouble* h,
+                                         const int* sample_indices,
+                                         int n_samples, int P) {
+        if (!layout_ || n_samples == 0 || P == 0) return;
 
-            for (int feature = 0; feature < P; ++feature) {
-                const uint16_t bin = row[feature];
-                if (bin >= layout_->bins_for_feature(feature)) continue;
+        const size_t total = layout_->total_size();
 
-                const size_t offset = layout_->get_offset(feature, bin);
-                hist_g_[offset] += gi;
-                hist_h_[offset] += hi;
-                if constexpr (WITH_COUNTS) ++hist_c_[offset];
+        // Process features in blocks of kBlockWidth.
+        for (int feat_start = 0; feat_start < P; feat_start += kBlockWidth) {
+            const int feat_end = std::min(feat_start + kBlockWidth, P);
+            const int block_width = feat_end - feat_start;
+
+            // Precompute per-feature constants: max_bins and offset_base.
+            uint16_t max_bins_buf[kBlockWidth];
+            size_t offset_base_buf[kBlockWidth];
+            for (int k = 0; k < block_width; ++k) {
+                int feat = feat_start + k;
+                max_bins_buf[k] = layout_->bins_for_feature(feat);
+                offset_base_buf[k] = layout_->feature_offset(feat);
             }
-        };
 
-        int position = 0;
-        for (; position + 3 < n_samples; position += 4) {
-            accumulate_one(sample_indices ? sample_indices[position]
-                                          : position);
-            accumulate_one(sample_indices ? sample_indices[position + 1]
-                                          : position + 1);
-            accumulate_one(sample_indices ? sample_indices[position + 2]
-                                          : position + 2);
-            accumulate_one(sample_indices ? sample_indices[position + 3]
-                                          : position + 3);
-        }
-        for (; position < n_samples; ++position) {
-            accumulate_one(sample_indices ? sample_indices[position]
-                                          : position);
+            // Inner loop: iterate over samples for this feature block.
+            int position = 0;
+            for (; position + 3 < n_samples; position += 4) {
+                const int idx0 = sample_indices ? sample_indices[position] : position;
+                const int idx1 = sample_indices ? sample_indices[position + 1] : position + 1;
+                const int idx2 = sample_indices ? sample_indices[position + 2] : position + 2;
+                const int idx3 = sample_indices ? sample_indices[position + 3] : position + 3;
+
+                // Sample 0
+                if (idx0 >= 0) {
+                    const auto* row = codes + static_cast<size_t>(idx0) * static_cast<size_t>(P);
+                    const double gi = static_cast<double>(g[idx0]);
+                    const double hi = static_cast<double>(h[idx0]);
+                    for (int k = 0; k < block_width; ++k) {
+                        uint16_t bin = row[feat_start + k];
+                        if (bin < max_bins_buf[k]) {
+                            hist_g_[offset_base_buf[k] + bin] += gi;
+                            hist_h_[offset_base_buf[k] + bin] += hi;
+                            if constexpr (WITH_COUNTS) ++hist_c_[offset_base_buf[k] + bin];
+                        }
+                    }
+                }
+
+                // Sample 1
+                if (idx1 >= 0) {
+                    const auto* row = codes + static_cast<size_t>(idx1) * static_cast<size_t>(P);
+                    const double gi = static_cast<double>(g[idx1]);
+                    const double hi = static_cast<double>(h[idx1]);
+                    for (int k = 0; k < block_width; ++k) {
+                        uint16_t bin = row[feat_start + k];
+                        if (bin < max_bins_buf[k]) {
+                            hist_g_[offset_base_buf[k] + bin] += gi;
+                            hist_h_[offset_base_buf[k] + bin] += hi;
+                            if constexpr (WITH_COUNTS) ++hist_c_[offset_base_buf[k] + bin];
+                        }
+                    }
+                }
+
+                // Sample 2
+                if (idx2 >= 0) {
+                    const auto* row = codes + static_cast<size_t>(idx2) * static_cast<size_t>(P);
+                    const double gi = static_cast<double>(g[idx2]);
+                    const double hi = static_cast<double>(h[idx2]);
+                    for (int k = 0; k < block_width; ++k) {
+                        uint16_t bin = row[feat_start + k];
+                        if (bin < max_bins_buf[k]) {
+                            hist_g_[offset_base_buf[k] + bin] += gi;
+                            hist_h_[offset_base_buf[k] + bin] += hi;
+                            if constexpr (WITH_COUNTS) ++hist_c_[offset_base_buf[k] + bin];
+                        }
+                    }
+                }
+
+                // Sample 3
+                if (idx3 >= 0) {
+                    const auto* row = codes + static_cast<size_t>(idx3) * static_cast<size_t>(P);
+                    const double gi = static_cast<double>(g[idx3]);
+                    const double hi = static_cast<double>(h[idx3]);
+                    for (int k = 0; k < block_width; ++k) {
+                        uint16_t bin = row[feat_start + k];
+                        if (bin < max_bins_buf[k]) {
+                            hist_g_[offset_base_buf[k] + bin] += gi;
+                            hist_h_[offset_base_buf[k] + bin] += hi;
+                            if constexpr (WITH_COUNTS) ++hist_c_[offset_base_buf[k] + bin];
+                        }
+                    }
+                }
+            }
+
+            // Remainder
+            for (; position < n_samples; ++position) {
+                const int idx = sample_indices ? sample_indices[position] : position;
+                if (idx < 0) continue;
+                const auto* row = codes + static_cast<size_t>(idx) * static_cast<size_t>(P);
+                const double gi = static_cast<double>(g[idx]);
+                const double hi = static_cast<double>(h[idx]);
+                for (int k = 0; k < block_width; ++k) {
+                    uint16_t bin = row[feat_start + k];
+                    if (bin < max_bins_buf[k]) {
+                        hist_g_[offset_base_buf[k] + bin] += gi;
+                        hist_h_[offset_base_buf[k] + bin] += hi;
+                        if constexpr (WITH_COUNTS) ++hist_c_[offset_base_buf[k] + bin];
+                    }
+                }
+            }
         }
     }
 
@@ -188,154 +267,10 @@ class HistogramAccumulator {
         if (!layout_ || !codes || hist_g_.size() != layout_->total_size())
             return;
 
-#ifdef FF_NO_TBB
-        // Use AVX2 SIMD when available (4× unroll on rows, 4-wide on features)
-        // Falls back to scalar when P < 4 or total_bins < 4.
-#ifdef __AVX2__
-        if (P >= 4 && layout_->total_size() >= 4) {
-            accumulate_samples_avx2<WITH_COUNTS>(codes, g, h, sample_indices,
-                                                 n_samples, P);
-            return;
-        }
-#endif
-        // Sequential accumulation (scalar)
-        auto accumulate_one = [&](int i) {
-            const Code* row = codes + static_cast<size_t>(i) * P;
-            const double gi = static_cast<double>(g[i]);
-            const double hi = static_cast<double>(h[i]);
-
-            for (int j = 0; j < P; ++j) {
-                const uint16_t bin = row[j];
-                const uint16_t max_bins = layout_->bins_for_feature(j);
-                if (bin >= max_bins) continue;
-
-                const size_t offset = layout_->get_offset(j, bin);
-                if (offset >= hist_g_.size()) continue;
-
-                hist_g_[offset] += gi;
-                hist_h_[offset] += hi;
-                if constexpr (WITH_COUNTS) {
-                    hist_c_[offset] += 1;
-                }
-            }
-        };
-
-        if (!sample_indices) {
-            for (int i = 0; i < n_samples; ++i) accumulate_one(i);
-        } else {
-            for (int t = 0; t < n_samples; ++t) {
-                const int sample_idx = sample_indices[t];
-                if (sample_idx >= 0) {
-                    accumulate_one(sample_idx);
-                }
-            }
-        }
-#else
-        // Parallel accumulation with per-thread buffers
-        const size_t total_bins = layout_->total_size();
-        const int num_threads = std::min(
-            n_samples, static_cast<int>(std::thread::hardware_concurrency()));
-        if (num_threads <= 1 || n_samples < 100) {
-            // Too few samples — sequential
-            for (int i = 0; i < n_samples; ++i) {
-                const int idx = sample_indices ? sample_indices[i] : i;
-                if (idx < 0) continue;
-                const Code* row = codes + static_cast<size_t>(idx) * P;
-                const double gi = static_cast<double>(g[idx]);
-                const double hi = static_cast<double>(h[idx]);
-                for (int j = 0; j < P; ++j) {
-                    const uint16_t bin = row[j];
-                    const uint16_t max_bins = layout_->bins_for_feature(j);
-                    if (bin >= max_bins) continue;
-                    const size_t offset = layout_->get_offset(j, bin);
-                    if (offset >= total_bins) continue;
-                    hist_g_[offset] += gi;
-                    hist_h_[offset] += hi;
-                    if constexpr (WITH_COUNTS) hist_c_[offset] += 1;
-                }
-            }
-            return;
-        }
-
-        // Per-thread accumulators
-        struct ThreadHist {
-            std::vector<double> G, H;
-            std::vector<int> C;
-            void init(size_t size) {
-                G.assign(size, 0.0);
-                H.assign(size, 0.0);
-                C.assign(size, 0);
-            }
-            void add(const ThreadHist& o) {
-                for (size_t i = 0; i < G.size(); ++i) {
-                    G[i] += o.G[i];
-                    H[i] += o.H[i];
-                    C[i] += o.C[i];
-                }
-            }
-        };
-        std::vector<ThreadHist> thread_hists(static_cast<size_t>(num_threads));
-        for (auto& th : thread_hists) th.init(total_bins);
-
-        // Partition work across threads
-        std::vector<std::pair<int, int>> ranges;
-        for (int t = 0; t < num_threads; ++t) {
-            int start = static_cast<int>(static_cast<size_t>(n_samples) *
-                                         static_cast<size_t>(t) /
-                                         static_cast<size_t>(num_threads));
-            int end = static_cast<int>(static_cast<size_t>(n_samples) *
-                                       static_cast<size_t>(t + 1) /
-                                       static_cast<size_t>(num_threads));
-            if (sample_indices) {
-                while (start < end && start < n_samples &&
-                       sample_indices[start] < 0)
-                    start++;
-            }
-            ranges.emplace_back(start, end);
-        }
-
-        // Each thread accumulates into its own buffer
-        auto thread_worker = [&](int t, int start, int end) {
-            auto& th = thread_hists[static_cast<size_t>(t)];
-            for (int i = start; i < end; ++i) {
-                const int idx = sample_indices ? sample_indices[i] : i;
-                if (idx < 0) continue;
-                const Code* row = codes + static_cast<size_t>(idx) * P;
-                const double gi = static_cast<double>(g[idx]);
-                const double hi = static_cast<double>(h[idx]);
-                for (int j = 0; j < P; ++j) {
-                    const uint16_t bin = row[j];
-                    const uint16_t max_bins = layout_->bins_for_feature(j);
-                    if (bin >= max_bins) continue;
-                    const size_t offset = layout_->get_offset(j, bin);
-                    if (offset >= total_bins) continue;
-                    th.G[offset] += gi;
-                    th.H[offset] += hi;
-                    if constexpr (WITH_COUNTS) th.C[offset] += 1;
-                }
-            }
-        };
-
-        // Launch threads
-        std::vector<std::thread> workers;
-        workers.reserve(static_cast<size_t>(num_threads));
-        for (int t = 0; t < num_threads; ++t) {
-            workers.emplace_back(thread_worker, t,
-                                 ranges[static_cast<size_t>(t)].first,
-                                 ranges[static_cast<size_t>(t)].second);
-        }
-        for (auto& w : workers) w.join();
-
-        // Merge into main buffer
-        for (int t = 0; t < num_threads; ++t) {
-            const auto& th = thread_hists[static_cast<size_t>(t)];
-            for (size_t i = 0; i < total_bins; ++i) {
-                hist_g_[i] += th.G[i];
-                hist_h_[i] += th.H[i];
-                if constexpr (WITH_COUNTS) hist_c_[i] += th.C[i];
-            }
-        }
-#endif
+        // Block-column accumulation: process features in blocks of kBlockWidth.
+        // Hoists bounds checks and offset lookups outside the inner sample loop.
+        accumulate_samples_block_column<WITH_COUNTS>(codes, g, h, sample_indices,
+                                                     n_samples, P);
     }
 
     const std::vector<double>& gradients() const { return hist_g_; }

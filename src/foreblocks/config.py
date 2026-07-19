@@ -44,6 +44,8 @@ class ModelConfig:
 class TrainingConfig:
     """Type-safe training configuration with NAS + conformal support."""
 
+    seed: int | None = None
+    deterministic: bool = False
     num_epochs: int = 100
     learning_rate: float = 0.001
     weight_decay: float = 0.0

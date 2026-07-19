@@ -85,6 +85,19 @@ class UnifiedTree {
         fit_with_row_ids(Xb, N, P, g, h, all);
     }
 
+    // Span-based overloads for zero-copy Python bindings.
+    // Accepts spans that point into external memory (e.g., numpy arrays).
+    void fit(std::span<const uint16_t> Xb, int N, int P,
+             std::span<const double> g, std::span<const double> h) {
+        if (N <= 0 || P <= 0) {
+            throw std::invalid_argument(
+                "UnifiedTree::fit: N and P must be positive");
+        }
+        std::vector<int> all(static_cast<size_t>(N));
+        std::iota(all.begin(), all.end(), 0);
+        fit_with_row_ids(Xb, N, P, g, h, all);
+    }
+
     void fit(const QuantizedDataset& Xb, const std::vector<double>& g,
              const std::vector<double>& h) {
         std::vector<int> all(static_cast<size_t>(Xb.rows()));
@@ -106,6 +119,20 @@ class UnifiedTree {
         auto dataset = QuantizedDataset::from_u16(
             N, P, Xb, std::numeric_limits<uint16_t>::max());
         fit_with_row_ids_impl_(dataset, N, P, g, h, root_rows);
+    }
+
+    // Span-based overload for zero-copy Python bindings.
+    void fit_with_row_ids(std::span<const uint16_t> Xb, int N, int P,
+                          std::span<const double> g, std::span<const double> h,
+                          const std::vector<int>& root_rows) {
+        // Construct QuantizedDataset from span (copies data into internal storage)
+        auto dataset = QuantizedDataset::from_u16(
+            N, P, std::vector<uint16_t>(Xb.begin(), Xb.end()),
+            std::numeric_limits<uint16_t>::max());
+        fit_with_row_ids_impl_(dataset, N, P,
+                               std::vector<double>(g.begin(), g.end()),
+                               std::vector<double>(h.begin(), h.end()),
+                               root_rows);
     }
 
    private:
@@ -315,6 +342,68 @@ class UnifiedTree {
         return out;
     }
 
+    // Span-based overload for zero-copy Python bindings.
+    std::vector<double> predict(std::span<const uint16_t> Xb, int N, int P) const {
+        if (N < 0 || P <= 0) {
+            throw std::invalid_argument(
+                "UnifiedTree::predict: N must be non-negative and P positive");
+        }
+        if (P != P_) {
+            throw std::invalid_argument("UnifiedTree::predict: P mismatch");
+        }
+        const size_t n_sz = static_cast<size_t>(N);
+        const size_t p_sz = static_cast<size_t>(P);
+        if (n_sz > 0 && n_sz > std::numeric_limits<size_t>::max() / p_sz) {
+            throw std::runtime_error(
+                "UnifiedTree::predict: dataset dimensions overflow");
+        }
+        if (static_cast<size_t>(Xb.size()) != n_sz * p_sz) {
+            throw std::invalid_argument(
+                "UnifiedTree::predict: Xb size must equal N*P");
+        }
+
+        std::vector<double> out(static_cast<size_t>(N), 0.0);
+        if (!packed_) return out;
+        for (int i = 0; i < N; ++i) {
+            const uint16_t* row_binned =
+                Xb.data() + static_cast<size_t>(i) * static_cast<size_t>(P_);
+            out[static_cast<size_t>(i)] =
+                predict_one_with_raw_opt_(row_binned, i, nullptr);
+        }
+        return out;
+    }
+
+    std::vector<double> predict(std::span<const uint16_t> Xb, int N, int P,
+                                const double* Xraw_opt) const {
+        if (N < 0 || P <= 0) {
+            throw std::invalid_argument(
+                "UnifiedTree::predict: N must be non-negative and P positive");
+        }
+        if (P != P_) {
+            throw std::invalid_argument("UnifiedTree::predict: P mismatch");
+        }
+        const size_t n_sz = static_cast<size_t>(N);
+        const size_t p_sz = static_cast<size_t>(P);
+        if (n_sz > 0 && n_sz > std::numeric_limits<size_t>::max() / p_sz) {
+            throw std::runtime_error(
+                "UnifiedTree::predict: dataset dimensions overflow");
+        }
+        if (static_cast<size_t>(Xb.size()) != n_sz * p_sz) {
+            throw std::invalid_argument(
+                "UnifiedTree::predict: Xb size must equal N*P");
+        }
+
+        std::vector<double> out(static_cast<size_t>(N), 0.0);
+        if (!packed_) return out;
+        for (int i = 0; i < N; ++i) {
+            const uint16_t* row_binned =
+                Xb.data() + static_cast<size_t>(i) * static_cast<size_t>(P_);
+            out[static_cast<size_t>(i)] =
+                predict_one_with_raw_opt_(row_binned, i, Xraw_opt);
+        }
+        return out;
+    }
+
     double predict_one_binned(const uint16_t* row_binned, int row_idx,
                               const double* Xraw_opt = nullptr) const {
         return predict_one_with_raw_opt_(row_binned, row_idx, Xraw_opt);
@@ -343,6 +432,83 @@ class UnifiedTree {
                 "UnifiedTree::predict_contrib: dataset dimensions overflow");
         }
         if (Xb.size() != n_sz * p_sz) {
+            throw std::invalid_argument(
+                "UnifiedTree::predict_contrib: Xb size must equal N*P");
+        }
+        // Multiclass TreeSHAP not yet implemented
+        if (cfg_.num_classes > 1) {
+            throw std::runtime_error(
+                "UnifiedTree::predict_contrib: TreeSHAP not supported for "
+                "multiclass yet");
+        }
+        if (!packed_)
+            return std::vector<double>(
+                static_cast<size_t>(N) * static_cast<size_t>(P_ + 1), 0.0);
+
+        validate_tree_shap_support_();
+        const auto split_features = tree_shap_split_features_();
+        const bool use_bruteforce =
+            split_features.size() <= kBruteforceTreeShapMaxFeatures;
+        const bool has_repeated_feature = tree_shap_has_repeated_feature_();
+        if (!use_bruteforce && has_repeated_feature) {
+            throw std::runtime_error(
+                "UnifiedTree::predict_contrib: repeated split features require "
+                "brute-force "
+                "TreeSHAP and exceed the supported feature limit");
+        }
+
+        std::vector<double> out(
+            static_cast<size_t>(N) * static_cast<size_t>(P_ + 1), 0.0);
+        std::vector<int> feature_to_pos(static_cast<size_t>(P_), -1);
+        for (size_t k = 0; k < split_features.size(); ++k) {
+            feature_to_pos[static_cast<size_t>(split_features[k])] =
+                static_cast<int>(k);
+        }
+        const double bias = use_bruteforce ? 0.0 : tree_expected_value_();
+        for (int i = 0; i < N; ++i) {
+            double* row_out = out.data() + static_cast<size_t>(i) *
+                                               static_cast<size_t>(P_ + 1);
+            const uint16_t* row_binned =
+                Xb.data() + static_cast<size_t>(i) * static_cast<size_t>(P_);
+            const auto raw_view = resolve_predict_raw_view_(Xraw_opt);
+            if (use_bruteforce) {
+                brute_force_tree_shap_row_(
+                    row_binned, i, raw_view, row_out, feature_to_pos,
+                    static_cast<int>(split_features.size()));
+            } else {
+                row_out[P_] = bias;
+                std::vector<PathElement> path(static_cast<size_t>(depth() + 2));
+                tree_shap_recursive_(root_id_, row_binned, i, raw_view, row_out,
+                                     0, path, 1.0, 1.0, -1);
+            }
+        }
+        return out;
+    }
+
+    // Span-based overload for zero-copy Python bindings.
+    std::vector<double> predict_contrib(std::span<const uint16_t> Xb, int N,
+                                        int P) const {
+        return predict_contrib(Xb, N, P, nullptr);
+    }
+
+    std::vector<double> predict_contrib(std::span<const uint16_t> Xb, int N,
+                                        int P, const double* Xraw_opt) const {
+        if (N < 0 || P <= 0) {
+            throw std::invalid_argument(
+                "UnifiedTree::predict_contrib: N must be non-negative and P "
+                "positive");
+        }
+        if (P != P_) {
+            throw std::invalid_argument(
+                "UnifiedTree::predict_contrib: P mismatch");
+        }
+        const size_t n_sz = static_cast<size_t>(N);
+        const size_t p_sz = static_cast<size_t>(P);
+        if (n_sz > 0 && n_sz > std::numeric_limits<size_t>::max() / p_sz) {
+            throw std::runtime_error(
+                "UnifiedTree::predict_contrib: dataset dimensions overflow");
+        }
+        if (static_cast<size_t>(Xb.size()) != n_sz * p_sz) {
             throw std::invalid_argument(
                 "UnifiedTree::predict_contrib: Xb size must equal N*P");
         }

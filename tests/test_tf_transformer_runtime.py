@@ -1,10 +1,12 @@
 import pytest
 import torch
 
+from foreblocks.models.transformer import GenerationConfig, TransformerConfig
 from foreblocks.models.transformer.runtime.outputs import (
     TransformerDecoderOutput,
     TransformerEncoderOutput,
 )
+from foreblocks.models.transformer.runtime.state import DecoderState
 from foreblocks.models.transformer.transformer import (
     TransformerDecoder,
     TransformerEncoder,
@@ -14,6 +16,7 @@ from foreblocks.modules.skip.gateskip import BudgetScheduler
 from foreblocks.modules.skip.mod import MoDBudgetScheduler
 from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.attention.cache.kv import StaticKVCache
+from foreblocks.modules.attention.cache import KVCacheProtocol
 from foreblocks.modules.attention.backends import (
     ATTENTION_BACKENDS,
     register_attention_backend,
@@ -133,8 +136,8 @@ def test_shared_hybrid_attention_materializes_configured_backends():
     layer = model.shared_layer
 
     assert layer is not None
-    assert layer.self_attn_lin is not None
-    assert layer.self_attn_std is not None
+    assert layer._attn_backends.get("linear") is not None
+    assert layer._attn_backends.get("standard") is not None
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     assert {id(p) for p in model.parameters()} <= _optimizer_param_ids(optimizer)
@@ -148,8 +151,8 @@ def test_standalone_encoder_layer_materializes_selected_attention():
         layer_attention_type="linear",
     )
 
-    assert layer.self_attn_lin is not None
-    assert layer.self_attn_std is None
+    assert layer._attn_backends.get("linear") is not None
+    assert layer._attn_backends.get("standard") is None
 
 
 def test_sdpa_backend_matches_eager_with_gqa_and_padding():
@@ -267,13 +270,103 @@ def test_depth_scaled_initialization_targets_residual_outputs():
         depth_scaled_init=True,
     )
     layer = model.layers[0]
-    attention = layer.self_attn_std
+    attention = layer._attn_backends.get("standard")
     expected = 0.04 / (2.0 * 4) ** 0.5
     assert attention is not None
     assert attention.q_proj.weight.std().item() == pytest.approx(0.04, rel=0.15)
     assert attention.out_proj[2].weight.std().item() == pytest.approx(
         expected, rel=0.15
     )
+
+
+def test_decoder_specific_modules_use_transformer_initialization():
+    decoder = TransformerDecoder(
+        input_size=2,
+        output_size=3,
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        patch_encoder=False,
+        use_time_encoding=True,
+        initializer_range=0.03,
+    )
+
+    assert decoder.output_projection.weight.std().item() == pytest.approx(
+        0.03, rel=0.2
+    )
+    assert torch.count_nonzero(decoder.output_projection.bias) == 0
+
+
+def test_encoder_ct_patch_modules_use_transformer_initialization():
+    encoder = TransformerEncoder(
+        input_size=3,
+        d_model=64,
+        nhead=4,
+        num_layers=1,
+        dim_feedforward=128,
+        ct_patchtst=True,
+        ct_patch_len=8,
+        initializer_range=0.03,
+    )
+
+    assert encoder.ct_patch_embed.weight.std().item() == pytest.approx(0.03, rel=0.2)
+    assert encoder.ct_channel_fuse.weight.std().item() == pytest.approx(0.03, rel=0.2)
+    assert torch.count_nonzero(encoder.ct_patch_embed.bias) == 0
+    assert torch.count_nonzero(encoder.ct_channel_fuse.bias) == 0
+
+
+def test_transformer_config_rejects_incompatible_residual_policies_early():
+    with pytest.raises(ValueError, match="incompatible"):
+        TransformerConfig(
+            use_gateskip=True,
+            options={"use_attention_residual": True},
+        )
+
+
+def test_transformer_config_normalizes_aliases_and_rejects_option_typos():
+    config = TransformerConfig(attention_mode="hybrid_linear")
+    assert config.attention.architecture == "hybrid"
+    assert config.residual.policy == "standard"
+    assert config.cache.implementation == "auto"
+
+    with pytest.raises(ValueError, match="unsupported Transformer options"):
+        TransformerConfig(options={"use_gateksip": True})
+
+
+def test_runtime_mhc_arguments_cannot_mutate_layer_configuration():
+    layer = TransformerEncoderLayer(
+        d_model=8,
+        nhead=2,
+        dim_feedforward=16,
+        use_mhc=False,
+    )
+    with pytest.raises(ValueError, match="runtime mHC overrides"):
+        layer(torch.randn(1, 3, 8), use_mhc=True)
+    assert layer.use_mhc is False
+
+
+def test_incremental_decoder_returns_typed_mapping_compatible_state():
+    decoder = TransformerDecoder(
+        input_size=2,
+        output_size=2,
+        d_model=8,
+        nhead=2,
+        num_layers=1,
+        dim_feedforward=16,
+        patch_encoder=False,
+        informer_like=False,
+        dropout=0.0,
+    ).eval()
+    result = decoder(
+        torch.randn(1, 2, 2),
+        torch.randn(1, 3, 8),
+        incremental_state={},
+        return_incremental_state=True,
+        return_dict=True,
+    )
+    assert isinstance(result.past_key_values, DecoderState)
+    assert result.past_key_values.layers[0].self_attention is not None
 
 
 def test_static_cache_incremental_decode_matches_full_decode_last_token():
@@ -314,7 +407,10 @@ def test_static_cache_incremental_decode_matches_full_decode_last_token():
     assert cache.is_compileable
     assert cache.get_seq_length() == 4
     torch.testing.assert_close(
-        second.last_hidden_state[:, -1], full[:, -1], rtol=1e-4, atol=1e-5
+        second.last_hidden_state[:, -1],
+        full.last_hidden_state[:, -1],
+        rtol=1e-4,
+        atol=1e-5,
     )
 
 
@@ -429,7 +525,9 @@ def test_custom_attention_backend_registry_executes_runner():
         calls.append(kwargs["attention_mask"])
         return torch.zeros_like(q)
 
-    register_attention_backend("test_backend", runner)
+    register_attention_backend(
+        "test_backend", runner, mask_builder=build_attention_mask
+    )
     attention = MultiAttention(
         d_model=8, n_heads=2, dropout=0.0, attn_implementation="test_backend"
     ).eval()
@@ -469,6 +567,11 @@ def test_static_cache_selectively_advances_batch_rows():
     cache.update(second, second, update_mask=torch.tensor([True, False]))
     assert cache.get_seq_lengths().tolist() == [2, 1]
     torch.testing.assert_close(cache.keys[1], before)
+
+
+def test_static_cache_conforms_to_public_protocol():
+    cache = StaticKVCache(1, 1, 4, 2, device="cpu", dtype=torch.float32)
+    assert isinstance(cache, KVCacheProtocol)
 
 
 def test_attention_backend_exposes_capabilities():
@@ -558,3 +661,45 @@ def test_generic_beam_search_reorders_static_cache():
     assert scores.shape == (1,)
     cache = state["layers"][0]["self_attn"]["static_cache"]
     assert cache.keys.size(0) == 2
+
+
+def test_transformer_config_drives_structured_output_defaults():
+    config = TransformerConfig(
+        input_size=2,
+        output_size=3,
+        d_model=8,
+        nhead=2,
+        num_layers=1,
+        dim_feedforward=16,
+        patch_encoder=False,
+    )
+    encoder = TransformerEncoder(config).eval()
+    decoder = TransformerDecoder(config).eval()
+
+    encoded = encoder(torch.randn(1, 4, 2))
+    decoded = decoder(torch.randn(1, 2, 2), encoded.last_hidden_state)
+
+    assert isinstance(encoded, TransformerEncoderOutput)
+    assert isinstance(decoded, TransformerDecoderOutput)
+    assert encoder.config is config
+    assert decoder.config is config
+
+
+def test_generation_config_is_separate_from_decoder_config():
+    config = TransformerConfig(
+        input_size=2,
+        output_size=2,
+        d_model=8,
+        nhead=2,
+        num_layers=1,
+        dim_feedforward=16,
+        patch_encoder=False,
+    )
+    decoder = TransformerDecoder(config).eval()
+    result = decoder.generate(
+        torch.randn(1, 1, 2),
+        torch.randn(1, 3, 8),
+        generation_config=GenerationConfig(max_new_tokens=2),
+    )
+
+    assert result.sequences.shape == (1, 2, 2)

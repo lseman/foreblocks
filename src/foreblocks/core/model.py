@@ -622,6 +622,22 @@ class ForecastingModel(nn.Module):
             return out
         return self.output_head(out)
 
+    @staticmethod
+    def _unwrap_sequence_output(result: Any, *, source: str) -> torch.Tensor:
+        """Normalize tensor, tuple, and structured model outputs."""
+        if hasattr(result, "last_hidden_state"):
+            output = result.last_hidden_state
+        elif isinstance(result, tuple):
+            output = result[0]
+        else:
+            output = result
+        if not isinstance(output, torch.Tensor):
+            raise TypeError(
+                f"{source} must return a tensor, a tuple whose first item is a "
+                "tensor, or an object with tensor-valued last_hidden_state"
+            )
+        return output
+
     def _encode_memory(
         self,
         src: torch.Tensor,
@@ -635,7 +651,7 @@ class ForecastingModel(nn.Module):
             if time_features is not None
             else self.encoder(src)
         )
-        enc_out = enc[0] if isinstance(enc, tuple) else enc
+        enc_out = self._unwrap_sequence_output(enc, source="encoder")
         return self._align_memory_to_decoder(enc_out)
 
     @staticmethod
@@ -971,7 +987,9 @@ class ForecastingModel(nn.Module):
         decoder_input = self.dec_init_proj(src[:, -1:, :])
 
         def step_fn(x_in: torch.Tensor, _: int) -> torch.Tensor:
-            out = self.decoder(x_in)
+            out = self._unwrap_sequence_output(
+                self.decoder(x_in), source="decoder"
+            )
             return self.output_head(out)  # map to output dims; keep RAW
 
         return self._rollout_decoder(
@@ -1073,6 +1091,7 @@ class ForecastingModel(nn.Module):
                 )
             except TypeError:
                 out = self.decoder(decoder_input, memory)
+            out = self._unwrap_sequence_output(out, source="decoder")
             out = self.output_head(out)  # RAW mapping
             outputs.append(out[:, -1:, :] if out.size(1) > 1 else out)
 
@@ -1251,6 +1270,10 @@ class ForecastingModel(nn.Module):
                 )
             except TypeError:
                 dec_out_full = self.decoder(dec_input, enc_out)
+
+        dec_out_full = self._unwrap_sequence_output(
+            dec_out_full, source="decoder"
+        )
 
         # Keep only the forecast window
         dec_out = dec_out_full[:, -H:, :]  # [B, H, d_model]

@@ -150,7 +150,17 @@ class BaseTransformerLayer(nn.Module):
         *,
         x: torch.Tensor,
         streams: Optional[torch.Tensor],
+        attention_residual_state: Optional[dict] = None,
     ) -> _LayerExecutionStrategy:
+        if attention_residual_state is not None:
+            return _LayerExecutionStrategy(
+                owner=self,
+                use_mhc=False,
+                x=attention_residual_state["current"],
+                use_attention_residual=True,
+                attention_residual_state=attention_residual_state,
+            )
+
         if not self.use_mhc:
             return _LayerExecutionStrategy(owner=self, use_mhc=False, x=x)
 
@@ -178,7 +188,7 @@ class BaseTransformerLayer(nn.Module):
             conn = conn.to(device=ref.device, dtype=ref.dtype)
         return conn
 
-    def _apply_runtime_mhc_overrides(
+    def _validate_runtime_mhc_overrides(
         self,
         *,
         use_mhc: Optional[bool],
@@ -186,15 +196,29 @@ class BaseTransformerLayer(nn.Module):
         mhc_sinkhorn_iters: Optional[int],
         mhc_collapse: Optional[str],
     ) -> None:
-        """Apply per-call mHC overrides (for backward compatibility)."""
-        if use_mhc is not None:
-            self.use_mhc = bool(use_mhc)
-        if mhc_n_streams is not None:
-            self.mhc_n_streams = int(mhc_n_streams)
-        if mhc_sinkhorn_iters is not None:
-            self.mhc_sinkhorn_iters = int(mhc_sinkhorn_iters)
-        if mhc_collapse is not None:
-            self.mhc_collapse = str(mhc_collapse)
+        """Validate legacy call overrides without mutating persistent model state."""
+        requested = {
+            "use_mhc": use_mhc,
+            "mhc_n_streams": mhc_n_streams,
+            "mhc_sinkhorn_iters": mhc_sinkhorn_iters,
+            "mhc_collapse": mhc_collapse,
+        }
+        configured = {
+            "use_mhc": self.use_mhc,
+            "mhc_n_streams": self.mhc_n_streams,
+            "mhc_sinkhorn_iters": self.mhc_sinkhorn_iters,
+            "mhc_collapse": self.mhc_collapse,
+        }
+        conflicts = [
+            name for name, value in requested.items()
+            if value is not None and value != configured[name]
+        ]
+        if conflicts:
+            names = ", ".join(conflicts)
+            raise ValueError(
+                f"runtime mHC overrides ({names}) are no longer mutable; "
+                "configure them when constructing the transformer"
+            )
 
     def _build_residual_cfg(
         self,
@@ -291,6 +315,9 @@ class BaseTransformer(nn.Module, ABC):
         pos_encoding_scale: float = 1.0,
         pos_encoder: Optional[nn.Module] = None,
         pos_encoding_type: Literal["sinusoidal", "learnable", "rope", "alibi"] = "rope",
+        rope_base: float = 10000.0,
+        rope_scaling_type: Literal["none", "yarn", "ntk", "linear"] = "none",
+        rope_scaling_factor: float = 1.0,
         use_gradient_checkpointing: bool = False,
         share_layers: bool = False,
         use_final_norm: bool = True,
@@ -360,6 +387,9 @@ class BaseTransformer(nn.Module, ABC):
         self.gate_budget = gate_budget
         self.gate_lambda = gate_lambda
         self.pos_encoding_type = str(pos_encoding_type)
+        self.rope_base = float(rope_base)
+        self.rope_scaling_type = str(rope_scaling_type)
+        self.rope_scaling_factor = float(rope_scaling_factor)
         # Backward-compatible behavior:
         # if caller sets att_type to a routed mode but leaves attention_mode default,
         # promote attention_mode so the intended path is used.
@@ -470,6 +500,9 @@ class BaseTransformer(nn.Module, ABC):
                 attn_residual_type=self.attention_residual_mode,
                 attention_residual_block_size=self.attention_residual_block_size,
                 pos_encoding_type=self.pos_encoding_type,
+                rope_base=self.rope_base,
+                rope_scaling_type=self.rope_scaling_type,
+                rope_scaling_factor=self.rope_scaling_factor,
                 **kwargs,
             )
             self.shared_layer = self._make_layer(**layer_kwargs)
@@ -511,6 +544,9 @@ class BaseTransformer(nn.Module, ABC):
                     attn_residual_type=self.attention_residual_mode,
                     attention_residual_block_size=self.attention_residual_block_size,
                     pos_encoding_type=self.pos_encoding_type,
+                rope_base=self.rope_base,
+                rope_scaling_type=self.rope_scaling_type,
+                rope_scaling_factor=self.rope_scaling_factor,
                     **kwargs,
                 )
                 self.layers.append(self._make_layer(**layer_kwargs))
@@ -662,6 +698,9 @@ class BaseTransformer(nn.Module, ABC):
         attn_residual_type: str,
         attention_residual_block_size: int,
         pos_encoding_type: str = "sinusoidal",
+        rope_base: float = 10000.0,
+        rope_scaling_type: str = "none",
+        rope_scaling_factor: float = 1.0,
         **kwargs,
     ):
         return {
@@ -693,6 +732,9 @@ class BaseTransformer(nn.Module, ABC):
             "attention_residual_block_size": attention_residual_block_size,
             # Positional encoding
             "pos_encoding_type": pos_encoding_type,
+            "rope_base": rope_base,
+            "rope_scaling_type": rope_scaling_type,
+            "rope_scaling_factor": rope_scaling_factor,
             **kwargs,
         }
 

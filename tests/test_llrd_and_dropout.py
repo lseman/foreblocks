@@ -91,14 +91,14 @@ class TestGetLLRDParamGroups:
         )
         assert len(param_groups) > 0
         # Check that param groups have decreasing LR for deeper layers
-        layer_groups = [g for g in param_groups if "layer" in g.get("group_name", "")]
+        layer_groups = [g for g in param_groups if g.get("layer_idx") is not None]
         if layer_groups:
-            # Sort by group name to ensure layer order
-            layer_groups_sorted = sorted(layer_groups, key=lambda g: int(g["group_name"].split("_")[1]))
+            layer_groups_sorted = sorted(layer_groups, key=lambda g: g["layer_idx"])
             lrs = [g["lr"] for g in layer_groups_sorted]
-            # Deeper layers should have lower LR (decay is applied)
+            # Conventional LLRD: early layers receive lower LR while the
+            # deepest task-facing layer receives the base LR.
             if len(lrs) > 1:
-                assert lrs[0] > lrs[-1]
+                assert lrs[0] < lrs[-1]
 
     def test_param_deduplication(self):
         """Test that no params are dropped or duplicated."""

@@ -269,7 +269,42 @@ def test_expert_weights_are_available_as_differentiable_packed_tensors():
     assert packed_up.shape == (4, 8, 32)
     assert packed_down.shape == (4, 16, 8)
     (packed_up.sum() + packed_down.sum()).backward()
-    assert all(expert.w12.weight.grad is not None for expert in block.experts)
+    assert block.experts.w12.grad is not None
+    assert block.experts.w3.grad is not None
+    assert packed_up.data_ptr() == block.experts.w12.data_ptr()
+
+
+def test_legacy_per_expert_checkpoint_loads_into_packed_bank():
+    block = FeedForwardBlock(
+        d_model=8, dim_ff=16, use_moe=True, num_experts=2, num_shared=0,
+        use_triton=False, compile_router=False, compile_experts=False,
+    ).block
+    state = block.state_dict()
+    packed_up = state.pop("experts.w12")
+    packed_down = state.pop("experts.w3")
+    for idx in range(2):
+        state[f"experts.{idx}.w12.weight"] = packed_up[idx].t().contiguous()
+        state[f"experts.{idx}.w3.weight"] = packed_down[idx].t().contiguous()
+    restored = FeedForwardBlock(
+        d_model=8, dim_ff=16, use_moe=True, num_experts=2, num_shared=0,
+        use_triton=False, compile_router=False, compile_experts=False,
+    ).block
+    restored.load_state_dict(state)
+    assert torch.equal(restored.experts.w12, packed_up)
+    assert torch.equal(restored.experts.w3, packed_down)
+
+
+def test_shared_expert_is_optional_and_gated_when_enabled():
+    default_block = FeedForwardBlock(
+        d_model=8, dim_ff=16, use_moe=True, num_experts=2,
+        use_triton=False, compile_router=False,
+    ).block
+    assert default_block.num_shared == 0
+    gated_block = FeedForwardBlock(
+        d_model=8, dim_ff=16, use_moe=True, num_experts=3, num_shared=1,
+        shared_gate=True, use_triton=False, compile_router=False,
+    ).block
+    assert gated_block.shared_gate is not None
 
 
 def test_moe_z_loss_computed():

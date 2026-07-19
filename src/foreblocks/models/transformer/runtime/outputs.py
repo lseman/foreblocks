@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 import torch
 
 
+class TransformerOutput:
+    """Tuple-compatible base for structured model outputs."""
+
+    def to_tuple(self) -> tuple:
+        return tuple(
+            value
+            for item in fields(self)
+            if (value := getattr(self, item.name)) is not None
+        )
+
+    def __iter__(self):
+        return iter(self.to_tuple())
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return getattr(self, key)
+        return self.to_tuple()[key]
+
+
 @dataclass
-class TransformerEncoderOutput:
+class TransformerEncoderOutput(TransformerOutput):
     last_hidden_state: torch.Tensor
     hidden_states: tuple[torch.Tensor, ...] | None = None
     aux_loss: torch.Tensor | None = None
@@ -18,7 +37,7 @@ class TransformerEncoderOutput:
 
 
 @dataclass
-class TransformerDecoderOutput:
+class TransformerDecoderOutput(TransformerOutput):
     last_hidden_state: torch.Tensor
     hidden_states: tuple[torch.Tensor, ...] | None = None
     past_key_values: dict | None = None
@@ -29,7 +48,7 @@ class TransformerDecoderOutput:
 
 
 @dataclass
-class TransformerGenerationOutput:
+class TransformerGenerationOutput(TransformerOutput):
     sequences: torch.Tensor
     past_key_values: dict | None = None
 
@@ -38,4 +57,5 @@ __all__ = [
     "TransformerDecoderOutput",
     "TransformerEncoderOutput",
     "TransformerGenerationOutput",
+    "TransformerOutput",
 ]

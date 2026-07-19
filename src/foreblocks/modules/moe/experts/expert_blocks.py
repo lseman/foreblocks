@@ -23,6 +23,52 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class PackedExpertBank(nn.Module):
+    """Canonical expert-axis parameter storage for grouped MoE execution."""
+
+    def __init__(
+        self,
+        num_experts: int,
+        d_model: int,
+        d_ff: int,
+        *,
+        use_swiglu: bool = True,
+        activation: str = "gelu",
+        dropout: float = 0.0,
+        expert_dropout: float = 0.0,
+    ):
+        super().__init__()
+        width = 2 * d_ff if use_swiglu else d_ff
+        self.w12 = nn.Parameter(torch.empty(num_experts, d_model, width))
+        self.w3 = nn.Parameter(torch.empty(num_experts, d_ff, d_model))
+        for expert_idx in range(num_experts):
+            nn.init.xavier_uniform_(self.w12[expert_idx])
+            nn.init.xavier_uniform_(self.w3[expert_idx])
+        self.num_experts = int(num_experts)
+        self.d_ff = int(d_ff)
+        self.use_swiglu = bool(use_swiglu)
+        self.activation = getattr(F, activation.lower(), F.gelu)
+        self.dropout_p = float(dropout)
+        self.expert_dropout_p = float(expert_dropout)
+
+    def __len__(self) -> int:
+        return self.num_experts
+
+    def forward_expert(self, expert_idx: int, x: torch.Tensor) -> torch.Tensor:
+        hidden = x @ self.w12[expert_idx]
+        if self.use_swiglu:
+            gate, value = hidden.split(self.d_ff, dim=-1)
+            hidden = F.silu(gate) * value
+        else:
+            hidden = self.activation(hidden)
+        if self.training and self.dropout_p > 0:
+            hidden = F.dropout(hidden, p=self.dropout_p, training=True)
+        out = hidden @ self.w3[expert_idx]
+        if self.training and self.expert_dropout_p > 0:
+            out = F.dropout(out, p=self.expert_dropout_p, training=True)
+        return out
+
+
 class MoE_SwiGLUExpert(nn.Module):
     def __init__(
         self, d_model: int, d_ff: int, dropout: float = 0.0, expert_dropout: float = 0.0
@@ -100,4 +146,4 @@ class MTPHead(nn.Module):
         return torch.stack(preds, dim=1)
 
 
-__all__ = ["MTPHead", "MoE_FFNExpert", "MoE_SwiGLUExpert"]
+__all__ = ["MTPHead", "MoE_FFNExpert", "MoE_SwiGLUExpert", "PackedExpertBank"]

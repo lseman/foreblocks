@@ -8,7 +8,7 @@ import torch
 
 
 @runtime_checkable
-class TransformerCache(Protocol):
+class KVCacheProtocol(Protocol):
     is_compileable: bool
 
     def get_seq_length(self, batch_idx: int | None = None) -> int: ...
@@ -22,6 +22,13 @@ class TransformerCache(Protocol):
     def reorder_cache(self, beam_idx: torch.LongTensor) -> None: ...
 
     def crop(self, max_length: int) -> None: ...
+
+    def to(self, device: torch.device | str): ...
+
+    def state_dict(self) -> dict: ...
+
+
+TransformerCache = KVCacheProtocol
 
 
 def map_cache_state(value, tensor_fn):
@@ -82,5 +89,6 @@ def load_cache_state_dict(value, *, device=None):
 
 
 __all__ = [
-    "TransformerCache", "cache_state_dict", "load_cache_state_dict", "map_cache_state"
+    "KVCacheProtocol", "TransformerCache", "cache_state_dict",
+    "load_cache_state_dict", "map_cache_state"
 ]

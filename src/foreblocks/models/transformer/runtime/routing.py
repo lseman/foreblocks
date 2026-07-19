@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable, Optional
+
 import torch
 
 from foreblocks.models.transformer.features.patching import patchify_padding_mask
@@ -111,6 +113,51 @@ def scatter_mixture_of_depths_output(
     return out
 
 
+def run_mod_layer(
+    owner,
+    layer_idx: int,
+    x: torch.Tensor,
+    active_mask: Optional[torch.Tensor],
+    all_hidden_states: Optional[list],
+    router_states: list,
+    gather_and_invoke: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]],
+) -> tuple[torch.Tensor, bool]:
+    """Shared Mixture-of-Depths per-layer orchestration.
+
+    Owns routing prep, the empty-capacity early exit, scatter, and
+    hidden_states/router_state bookkeeping — the parts that are identical
+    between encoder and decoder. ``gather_and_invoke(routed_indices,
+    routed_slots) -> (x_routed, x_routed_out)`` supplies the caller-specific
+    gather (which masks exist differs: encoder gathers src_mask/padding_mask
+    only, decoder additionally gathers memory_mask/mtp_targets) and the
+    layer invocation itself (``run_encoder_layer`` vs ``run_decoder_layer``
+    take different arguments).
+
+    Returns ``(x, was_used)`` — ``was_used`` tells the caller whether to
+    record ``layer_idx`` in ``used_indices`` for aux-loss aggregation.
+    """
+    layer, router_logits, _keep_mask, routed_indices, routed_slots = (
+        owner._prepare_layer_routing(layer_idx, x, active_mask)
+    )
+    if routed_indices is None or routed_slots is None or not bool(routed_slots.any()):
+        if all_hidden_states is not None:
+            all_hidden_states.append(x)
+        return x, False
+
+    x_routed, x_routed_out = gather_and_invoke(layer, routed_indices, routed_slots)
+    x = scatter_mixture_of_depths_output(
+        x, x_routed, x_routed_out, routed_indices, routed_slots, router_logits,
+        use_expert_choice=True,  # Standard Expert Choice: full replacement
+    )
+    if all_hidden_states is not None:
+        all_hidden_states.append(x)
+    ff_block = getattr(getattr(layer, "feed_forward", None), "block", None)
+    router_state = getattr(ff_block, "last_routing_state", None)
+    if router_state is not None:
+        router_states.append(router_state)
+    return x, True
+
+
 _gateskip_active_mask_from_padding = gateskip_active_mask_from_padding
 _patchify_gateskip_active_mask = patchify_gateskip_active_mask
 _gather_sequence_tokens = gather_sequence_tokens
@@ -118,9 +165,10 @@ _gather_padding_mask = gather_padding_mask
 _gather_square_mask = gather_square_mask
 _gather_query_mask = gather_query_mask
 _scatter_mixture_of_depths_output = scatter_mixture_of_depths_output
+_run_mod_layer = run_mod_layer
 
 __all__ = [
     "gateskip_active_mask_from_padding", "gather_padding_mask", "gather_query_mask",
     "gather_sequence_tokens", "gather_square_mask", "patchify_gateskip_active_mask",
-    "scatter_mixture_of_depths_output",
+    "run_mod_layer", "scatter_mixture_of_depths_output",
 ]

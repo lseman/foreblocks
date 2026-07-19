@@ -4,6 +4,7 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/shared_ptr.h>
+#include <memory>
 
 #include <cstring> // memcpy
 
@@ -42,32 +43,52 @@ template <typename Array> static ArrayView<Array> request(const Array& array) {
     return {array.ndim(), std::move(shape), array.data()};
 }
 
-template <typename T> static nb::ndarray<nb::numpy, T, nb::c_contig> make_array(std::initializer_list<size_t> shape) {
-    size_t size = 1;
-    for (size_t extent : shape)
-        size *= extent;
-    T* data = new T[size];
-    nb::capsule owner(data, [](void* pointer) noexcept { delete[] static_cast<T*>(pointer); });
-    return nb::ndarray<nb::numpy, T, nb::c_contig>(data, shape, owner);
+// Wrapper struct to hold shared_ptr for capsule ownership.
+template <typename T>
+struct ndarray_owner {
+    std::shared_ptr<std::vector<T>> data;
+};
+
+// Zero-copy: build ndarray view backed by a capsule that wraps internal C++ storage.
+// The caller owns the data; the capsule keeps it alive.
+template <typename T>
+static nb::ndarray<nb::numpy, T, nb::c_contig> ndarray_from_storage(const std::vector<T>& data,
+                                                                     std::initializer_list<size_t> shape) {
+    auto owner = std::make_shared<ndarray_owner<T>>(std::make_shared<std::vector<T>>(data));
+    // Use the owner's address as the capsule pointer; custom deleter does nothing
+    // (the shared_ptr keeps the owner alive)
+    void* ptr = owner.get();
+    nb::capsule cap(ptr, [](void*) noexcept {});
+    return nb::ndarray<nb::numpy, T, nb::c_contig>(owner->data->data(), shape, std::move(cap));
 }
 
+// Zero-copy input: return std::span<const T> over numpy memory (no copy)
 template <typename T>
-static std::vector<T> arr_to_vec_1d(const nb::ndarray<nb::numpy, T, nb::c_contig>& a) {
+static std::span<const T> span_from_1d(const nb::ndarray<nb::numpy, T, nb::c_contig>& a,
+                                        const char* name = "array") {
     auto buf = request(a);
     if (buf.ndim != 1)
-        throw std::invalid_argument("Expected a 1D array");
-    const T* ptr = static_cast<const T*>(buf.ptr);
-    return std::vector<T>(ptr, ptr + buf.shape[0]);
+        throw std::invalid_argument(std::string(name) + ": expected 1D array");
+    return std::span<const T>(static_cast<const T*>(buf.ptr), buf.shape[0]);
 }
 
 template <typename T>
-static std::vector<T> arr_to_vec_any(const nb::ndarray<nb::numpy, T, nb::c_contig>& a) {
+static std::span<const T> span_from_any(const nb::ndarray<nb::numpy, T, nb::c_contig>& a,
+                                         const char* name = "array") {
     auto buf = request(a);
     size_t n = 1;
     for (auto s : buf.shape)
         n *= static_cast<size_t>(s);
-    const T* ptr = static_cast<const T*>(buf.ptr);
-    return std::vector<T>(ptr, ptr + n);
+    return std::span<const T>(static_cast<const T*>(buf.ptr), n);
+}
+
+template <typename T>
+static std::span<const T> span_from_2d(const nb::ndarray<nb::numpy, T, nb::c_contig>& a,
+                                        const char* name = "array") {
+    auto buf = request(a);
+    if (buf.ndim != 2)
+        throw std::invalid_argument(std::string(name) + ": expected 2D array");
+    return std::span<const T>(static_cast<const T*>(buf.ptr), buf.shape[0] * buf.shape[1]);
 }
 
 NB_MODULE(foretree, m) {
@@ -111,8 +132,7 @@ NB_MODULE(foretree, m) {
 
                 auto result = db.prebin(static_cast<const double*>(buf.ptr), N, P, mode, node_id);
 
-                auto codes_array = make_array<uint16_t>({static_cast<size_t>(N), static_cast<size_t>(P)});
-                std::memcpy(codes_array.data(), result.first->data(), result.first->size() * sizeof(uint16_t));
+                auto codes_array = ndarray_from_storage(*result.first, {static_cast<size_t>(N), static_cast<size_t>(P)});
 
                 return nb::make_tuple(codes_array, result.second);
             },
@@ -238,8 +258,7 @@ NB_MODULE(foretree, m) {
 
                 auto result = ghs.prebin_dataset(static_cast<const double*>(buf.ptr), N, P);
 
-                auto codes_array = make_array<uint16_t>({static_cast<size_t>(N), static_cast<size_t>(P)});
-                std::memcpy(codes_array.data(), result.first->data(), result.first->size() * sizeof(uint16_t));
+                auto codes_array = ndarray_from_storage(*result.first, {static_cast<size_t>(N), static_cast<size_t>(P)});
 
                 return nb::make_tuple(codes_array, result.second);
             },
@@ -256,8 +275,7 @@ NB_MODULE(foretree, m) {
 
                 auto result = ghs.prebin_matrix(static_cast<const double*>(buf.ptr), N, P);
 
-                auto codes_array = make_array<uint16_t>({static_cast<size_t>(N), static_cast<size_t>(P)});
-                std::memcpy(codes_array.data(), result.first->data(), result.first->size() * sizeof(uint16_t));
+                auto codes_array = ndarray_from_storage(*result.first, {static_cast<size_t>(N), static_cast<size_t>(P)});
 
                 return nb::make_tuple(codes_array, result.second);
             },
@@ -371,10 +389,7 @@ NB_MODULE(foretree, m) {
 
                 int N = ghs.N();
                 int P = ghs.P();
-                auto codes_array = make_array<uint16_t>({static_cast<size_t>(N), static_cast<size_t>(P)});
-                std::memcpy(codes_array.data(), codes_ptr->data(), codes_ptr->size() * sizeof(uint16_t));
-
-                return codes_array;
+                return ndarray_from_storage(*codes_ptr, {static_cast<size_t>(N), static_cast<size_t>(P)});
             },
             "Returns the cached binned codes as numpy array (N x P)");
 
@@ -517,9 +532,9 @@ NB_MODULE(foretree, m) {
                 const int N = static_cast<int>(xb.shape[0]);
                 const int P = static_cast<int>(xb.shape[1]);
 
-                std::vector<uint16_t> Xv = arr_to_vec_any<uint16_t>(Xb);
-                std::vector<double> gv = arr_to_vec_1d<double>(g);
-                std::vector<double> hv = arr_to_vec_1d<double>(h);
+                auto Xv = span_from_2d<uint16_t>(Xb, "Xb");
+                auto gv = span_from_1d<double>(g, "g");
+                auto hv = span_from_1d<double>(h, "h");
                 if ((int)gv.size() != N || (int)hv.size() != N)
                     throw std::invalid_argument("g and h must have length N = Xb.shape[0]");
 
@@ -538,7 +553,7 @@ NB_MODULE(foretree, m) {
                 const int N = static_cast<int>(xb.shape[0]);
                 const int P = static_cast<int>(xb.shape[1]);
 
-                std::vector<uint16_t> Xv = arr_to_vec_any<uint16_t>(Xb);
+                auto Xv = span_from_2d<uint16_t>(Xb, "Xb");
                 std::vector<double> pred;
                 if (Xraw_opt.is_none()) {
                     pred = self.predict(Xv, N, P);
@@ -558,15 +573,9 @@ NB_MODULE(foretree, m) {
                 }
 
                 if (K <= 1) {
-                    auto out = make_array<double>({N});
-                    if (!pred.empty())
-                        std::memcpy(out.data(), pred.data(), pred.size() * sizeof(double));
-                    return out;
+                    return ndarray_from_storage(pred, {N});
                 } else {
-                    auto out = make_array<double>({N, K});
-                    if (!pred.empty())
-                        std::memcpy(out.data(), pred.data(), pred.size() * sizeof(double));
-                    return out;
+                    return ndarray_from_storage(pred, {N, K});
                 }
             },
             nb::arg("Xb"), nb::arg("Xraw") = nb::none(),
@@ -582,7 +591,7 @@ NB_MODULE(foretree, m) {
                 const int N = static_cast<int>(xb.shape[0]);
                 const int P = static_cast<int>(xb.shape[1]);
 
-                std::vector<uint16_t> Xv = arr_to_vec_any<uint16_t>(Xb);
+                auto Xv = span_from_2d<uint16_t>(Xb, "Xb");
                 std::vector<double> contrib;
                 if (Xraw_opt.is_none()) {
                     contrib = self.predict_contrib(Xv, N, P);
@@ -598,15 +607,9 @@ NB_MODULE(foretree, m) {
 
                 int K = std::max(self.cfg_.num_classes - 1, 1);
                 if (K <= 1) {
-                    auto out = make_array<double>({N, P + 1});
-                    if (!contrib.empty())
-                        std::memcpy(out.data(), contrib.data(), contrib.size() * sizeof(double));
-                    return out;
+                    return ndarray_from_storage(contrib, {N, P + 1});
                 } else {
-                    auto out = make_array<double>({N, K * (P + 1)});
-                    if (!contrib.empty())
-                        std::memcpy(out.data(), contrib.data(), contrib.size() * sizeof(double));
-                    return out;
+                    return ndarray_from_storage(contrib, {N, K * (P + 1)});
                 }
             },
             nb::arg("Xb"), nb::arg("Xraw") = nb::none(),
@@ -708,15 +711,12 @@ NB_MODULE(foretree, m) {
                 if (buf.ndim != 2)
                     throw std::invalid_argument("codes must be 2D (N, P)");
                 int N = static_cast<int>(buf.shape[0]);
-                std::vector<uint16_t> v(buf.shape[0] * buf.shape[1]);
-                std::memcpy(v.data(), buf.ptr, v.size() * sizeof(uint16_t));
                 auto result = self.predict_binned_uint16(
-                    std::span<const uint16_t>(v.data(), v.size()), N);
-                auto out = make_array<double>({static_cast<size_t>(N)});
-                if (!result.empty())
-                    std::memcpy(out.data(), result.data(),
-                                std::min(result.size(), static_cast<size_t>(N)) * sizeof(double));
-                return out;
+                    std::span<const uint16_t>(static_cast<const uint16_t*>(buf.ptr),
+                                              buf.shape[0] * buf.shape[1]), N);
+                if (result.empty())
+                    return nb::ndarray<nb::numpy, double, nb::c_contig>(nullptr, {0}, nb::none());
+                return ndarray_from_storage(std::move(result), {static_cast<size_t>(N)});
             },
             nb::arg("codes"), "Predict on binned data (uint16 codes). Returns (N,).")
         .def_prop_ro("outputs", [](const GpuPredictionEngine& self) { return self.outputs(); })

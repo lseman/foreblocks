@@ -4,6 +4,9 @@ Re-exports the ModernTransformerTuner for auto-hyperparameter selection.
 
 """
 
+from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.models.transformer.generation import GenerationConfig
+
 from foreblocks.models.transformer.tuner import (
     ModernTransformerTuner,
     TransformerTuner,
@@ -30,10 +33,12 @@ from foreblocks.models.transformer.runtime.routing import (
 )
 
 __all__ = [
+    "GenerationConfig",
     "ModernTransformerTuner",
     "TransformerDecoderOutput",
     "TransformerEncoderOutput",
     "TransformerGenerationOutput",
+    "TransformerConfig",
     "TransformerTuner",
     "append_attention_residual_update",
     "attention_residual_input",

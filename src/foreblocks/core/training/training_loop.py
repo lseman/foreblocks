@@ -19,6 +19,7 @@ Core API:
 from __future__ import annotations
 
 import contextlib
+import inspect
 from typing import Any
 
 import numpy as np
@@ -29,7 +30,6 @@ from torch.utils.data import DataLoader
 from foreblocks.core.training.batch_io import (
     loader_len,
     move_batch_to_device,
-    to_device,
     unpack_batch,
 )
 
@@ -102,14 +102,24 @@ def forward_pass(
         outputs = result[0] if isinstance(result, tuple) else result
         return outputs, aux
 
-    # ── Standard paths (graceful signature fallback) ─────────────────
-    try:
-        result = model(X, y, time_feat, current_epoch, meta=meta)
-    except TypeError:
+    # ── Standard paths (signature-aware fallback) ────────────────────
+    candidates = (
+        ((X, y, time_feat, current_epoch), {"meta": meta}),
+        ((X, y, time_feat, current_epoch), {}),
+        ((X,), {}),
+    )
+    signature = inspect.signature(model.forward)
+    for args, kwargs in candidates:
         try:
-            result = model(X, y, time_feat, current_epoch)
+            signature.bind(*args, **kwargs)
         except TypeError:
-            result = model(X)
+            continue
+        result = model(*args, **kwargs)
+        break
+    else:
+        raise TypeError(
+            f"unsupported forward signature for {type(model).__name__}: {signature}"
+        )
 
     outputs = result[0] if isinstance(result, tuple) else result
     return outputs, aux

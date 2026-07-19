@@ -2,9 +2,10 @@
 
 Layer-wise learning rate decay and warmup-cosine scheduling.
 
-Implements LLRD for fine-tuning pre-trained sequence models, where deeper
-layers receive lower learning rates. Provides WarmupCosineLR and
-ExponentialLR schedules compatible with multi-param-group optimizers.
+    Implements LLRD for fine-tuning pre-trained sequence models, where early
+    layers receive lower learning rates and task-facing layers receive the base
+    LR. Provides WarmupCosineLR and ExponentialLR schedules compatible with
+    multi-param-group optimizers.
 Designed for transformer and Mamba-based models.
 
 Core API:
@@ -53,24 +54,36 @@ class WarmupCosineLR:
 
     def __post_init__(self) -> None:
         """Capture base LR from each param group."""
+        if self.warmup_steps < 0:
+            raise ValueError("warmup_steps must be >= 0")
+        if self.total_steps <= 0:
+            raise ValueError("total_steps must be > 0")
+        if self.warmup_steps > self.total_steps:
+            raise ValueError("warmup_steps cannot exceed total_steps")
+        if not 0.0 <= self.min_lr_ratio <= 1.0:
+            raise ValueError("min_lr_ratio must be in [0, 1]")
         self._base_lrs = [g["lr"] for g in self.optimizer.param_groups]
+        if self.warmup_steps > 0:
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = 0.0
 
     def step(self) -> None:
         """Advance the schedule and update optimizer param groups."""
-        s = self._step
         self._step += 1
+        s = self._step
 
         for i, param_group in enumerate(self.optimizer.param_groups):
             base_lr = self._base_lrs[i]
             min_lr = self.min_lr_ratio * base_lr
 
-            if s < self.warmup_steps:
+            if s <= self.warmup_steps and self.warmup_steps > 0:
                 # Linear warmup: [0, base_lr]
                 lr = (s / max(1, self.warmup_steps)) * base_lr
             else:
                 # Cosine annealing from base_lr to min_lr
-                progress = (s - self.warmup_steps) / max(1, self.total_steps)
-                progress = min(progress, 1.0)
+                cosine_steps = max(1, self.total_steps - self.warmup_steps)
+                progress = (s - self.warmup_steps) / cosine_steps
+                progress = max(0.0, min(progress, 1.0))
                 lr = min_lr + 0.5 * (base_lr - min_lr) * (
                     1.0 + math.cos(math.pi * progress)
                 )
@@ -111,7 +124,7 @@ def get_llrd_param_groups(
     Build parameter groups with layer-wise LR decay (LLRD).
 
     Detects transformer layer depth via the `.layers.<idx>.` naming pattern
-    in parameter names. Deeper layers get progressively lower LR.
+    in parameter names. Early layers get progressively lower LR.
 
     Parameters
     ----------
@@ -122,8 +135,8 @@ def get_llrd_param_groups(
     weight_decay : float
         Weight decay; set to 0 for bias and norm weights per standard practice.
     decay : float, optional
-        Multiplicative decay factor per layer (default 0.9). Deeper layers get
-        ``base_lr * decay ** depth_offset``.
+        Multiplicative decay factor per layer (default 0.9). Earlier layers get
+        ``base_lr * decay ** depth_offset`` while the final layer gets ``base_lr``.
     num_layers : int, optional
         Expected number of layers (for validation). If None, inferred from
         the deepest layer index found.
@@ -142,7 +155,7 @@ def get_llrd_param_groups(
       the function falls back to flat LR for that layer.
     """
     param_groups: list[dict[str, Any]] = []
-    pattern = re.compile(r"\.layers\.(\d+)\.")
+    pattern = re.compile(r"(?:^|\.)layers\.(\d+)\.")
     max_layer_idx = -1
 
     # Scan all parameters to classify them
@@ -172,7 +185,8 @@ def get_llrd_param_groups(
         else:
             # Non-layer param or no numbered layers found: use base LR
             lr = base_lr
-            group_name = f"non_layer_{name[:30]}"
+            layer_idx = None
+            group_name = f"other_{name[:30]}"
 
         param_groups.append(
             {
@@ -180,6 +194,7 @@ def get_llrd_param_groups(
                 "lr": lr,
                 "weight_decay": wd,
                 "group_name": group_name,
+                "layer_idx": layer_idx,
             }
         )
 

@@ -14,31 +14,35 @@ Core API:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.layers.embeddings import InformerTimeEmbedding
+from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.models.transformer.generation import GenerationConfig
 from foreblocks.models.transformer.features.mhc import mhc_init_streams
 from foreblocks.models.transformer.runtime.outputs import (
     TransformerDecoderOutput,
     TransformerGenerationOutput,
+)
+from foreblocks.models.transformer.runtime.state import (
+    AttentionCacheState,
+    DecoderLayerState,
+    DecoderState,
 )
 from foreblocks.models.transformer.core.base import (
     BaseTransformer,
     BaseTransformerLayer,
 )
 from foreblocks.models.transformer.runtime.execution import (
+    LazyAttentionBackendMixin,
     MHCBlockMixin,
     NormWrapper,
     ResidualBlockMixin,
     _ModelLayerInvokeStrategy,
 )
 from foreblocks.models.transformer.runtime.residual_state import (
-    _append_attention_residual_update,
-    _attention_residual_input,
     _init_attention_residual_state,
 )
 from foreblocks.models.transformer.runtime.routing import (
@@ -47,11 +51,8 @@ from foreblocks.models.transformer.runtime.routing import (
     _gather_query_mask,
     _gather_sequence_tokens,
     _gather_square_mask,
-    _scatter_mixture_of_depths_output,
+    _run_mod_layer,
 )
-from foreblocks.modules.attention.modules.linear_att import ModernLinearAttention
-from foreblocks.modules.attention.modules.linear_att.gated_delta import GatedDeltaNet
-from foreblocks.modules.attention.modules.linear_att.kimi import KimiAttention
 from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.attention.cache.kv import StaticKVCache
 from foreblocks.modules.attention.cache.paged import PagedKVCache
@@ -68,7 +69,9 @@ from foreblocks.modules.skip.gateskip import ResidualGate
 from foreblocks.ui.node_spec import node
 
 
-class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformerLayer):
+class TransformerDecoderLayer(
+    ResidualBlockMixin, MHCBlockMixin, LazyAttentionBackendMixin, BaseTransformerLayer
+):
     """
     Decoder layer with:
       - (Kimi|Linear|Multi) self-attention
@@ -119,6 +122,9 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         attn_residual_type: str = "full",
         attention_residual_block_size: int = 8,
         pos_encoding_type: str = "rope",
+        rope_base: float = 10000.0,
+        rope_scaling_type: str = "none",
+        rope_scaling_factor: float = 1.0,
     ):
         super().__init__(
             d_model=d_model,
@@ -142,24 +148,19 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         )
 
         # ── Lazy attention module placeholders (decoder uses 5 self-attn backends) ──
-        self.self_attn_std: Optional[nn.Module] = None
-        self.self_attn_lin: Optional[nn.Module] = None
-        self.self_attn_sype: Optional[nn.Module] = None
-        self.self_attn_kimi: Optional[nn.Module] = None
-        self.self_attn_gdn: Optional[nn.Module] = None
-
-        # Init parameters for lazy factories
+        # Init parameters for the lazy attention-backend registry (captured once, reused).
+        # See core/attention_backends.py + runtime/execution.py's
+        # LazyAttentionBackendMixin for the shared lazy-instantiation cache.
         self._attn_init_kwargs = {
             "d_model": d_model,
             "n_heads": nhead,
             "dropout": dropout,
             "cross_attention": False,
         }
-        self._std_kwargs = dict(
-            attention_type=att_type,
+        self._attn_backend_cfg = dict(
+            att_type=att_type,
             attn_implementation=attn_implementation,
             freq_modes=freq_modes,
-            use_mla=not use_attention_matching_compaction,
             use_attention_matching_compaction=use_attention_matching_compaction,
             attention_matching_keep_ratio=attention_matching_keep_ratio,
             attention_matching_trigger_len=attention_matching_trigger_len,
@@ -168,19 +169,9 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             attention_matching_force_single_step=attention_matching_force_single_step,
             moba_block_size=moba_block_size,
             moba_topk=moba_topk,
-        )
-        self._sype_kwargs = dict(
-            attention_type="sype",
-            freq_modes=freq_modes,
-            use_mla=not use_attention_matching_compaction,
-            use_attention_matching_compaction=use_attention_matching_compaction,
-            attention_matching_keep_ratio=attention_matching_keep_ratio,
-            attention_matching_trigger_len=attention_matching_trigger_len,
-            attention_matching_min_keep=attention_matching_min_keep,
-            attention_matching_query_budget=attention_matching_query_budget,
-            attention_matching_force_single_step=attention_matching_force_single_step,
-            moba_block_size=moba_block_size,
-            moba_topk=moba_topk,
+            rope_base=rope_base,
+            rope_scaling_type=rope_scaling_type,
+            rope_scaling_factor=rope_scaling_factor,
         )
         self.layer_attention_type = str(layer_attention_type)
         self._pos_encoding_type = str(pos_encoding_type)
@@ -235,82 +226,6 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         self.ff_input_residual = residual_cls(d_model)
         self.materialize_attention_type()
 
-    def set_layer_attention_type(self, layer_attention_type: str) -> None:
-        self.layer_attention_type = str(layer_attention_type)
-
-    def materialize_attention_type(
-        self, layer_attention_type: str | None = None
-    ) -> nn.Module:
-        previous = self.layer_attention_type
-        if layer_attention_type is not None:
-            self.layer_attention_type = str(layer_attention_type)
-        try:
-            return self._self_attn()
-        finally:
-            self.layer_attention_type = previous
-
-    # ── Lazy attention factories (decoder uses 5 self-attn backends) ──
-    def _build_std(self) -> MultiAttention:
-        if self.self_attn_std is None:
-            dev = next(self.parameters()).device
-            self.self_attn_std = MultiAttention(
-                **self._attn_init_kwargs,
-                **self._std_kwargs,
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_std
-
-    def _build_lin(self) -> ModernLinearAttention:
-        if self.self_attn_lin is None:
-            dev = next(self.parameters()).device
-            self.self_attn_lin = ModernLinearAttention(
-                **self._attn_init_kwargs,
-                backend="rda",
-                state="elu",
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_lin
-
-    def _build_sype(self) -> MultiAttention:
-        if self.self_attn_sype is None:
-            dev = next(self.parameters()).device
-            self.self_attn_sype = MultiAttention(
-                **self._attn_init_kwargs,
-                **self._sype_kwargs,
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_sype
-
-    def _build_kimi(self) -> KimiAttention:
-        if self.self_attn_kimi is None:
-            dev = next(self.parameters()).device
-            self.self_attn_kimi = KimiAttention(
-                **self._attn_init_kwargs,
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_kimi
-
-    def _build_gdn(self) -> GatedDeltaNet:
-        if self.self_attn_gdn is None:
-            dev = next(self.parameters()).device
-            self.self_attn_gdn = GatedDeltaNet(
-                **self._attn_init_kwargs,
-                pos_encoding_type=self._pos_encoding_type,
-            ).to(dev)
-        return self.self_attn_gdn
-
-    def _self_attn(self) -> nn.Module:
-        t = self.layer_attention_type
-        if t == "linear":
-            return self._build_lin()
-        if t == "sype":
-            return self._build_sype()
-        if t == "kimi":
-            return self._build_kimi()
-        if t == "gated_delta":
-            return self._build_gdn()
-        return self._build_std()
-
     def _ensure_mhc_mixers(self) -> None:
         if not self.use_mhc:
             self.mhc_conn_self = None
@@ -355,7 +270,7 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
     ) -> tuple[torch.Tensor, dict | None, torch.Tensor | None]:
         self._reset_aux_loss()
 
-        self._apply_runtime_mhc_overrides(
+        self._validate_runtime_mhc_overrides(
             use_mhc=use_mhc,
             mhc_n_streams=mhc_n_streams,
             mhc_sinkhorn_iters=mhc_sinkhorn_iters,
@@ -415,83 +330,16 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
                 raise RuntimeError(
                     "Attention Residuals are not compatible with mHC at the layer level."
                 )
-
-            residual_state = attention_residual_state
-            if residual_state is None:
-                residual_state = _init_attention_residual_state(
+            if attention_residual_state is None:
+                attention_residual_state = _init_attention_residual_state(
                     tgt,
                     self.attention_residual_mode,
                     self.attention_residual_block_size,
                 )
 
-            def self_core_attnres(
-                x_in: torch.Tensor,
-            ) -> tuple[torch.Tensor, dict | None]:
-                out, _, updated = self_attn_mod(
-                    x_in,
-                    x_in,
-                    x_in,
-                    self_attn_mask,
-                    tgt_key_padding_mask,
-                    is_causal=self.is_causal,
-                    layer_state=state["self_attn"],
-                )
-                return out, updated
-
-            self_in = _attention_residual_input(
-                residual_state["current"], residual_state, self.self_input_residual
-            )
-            self_out, updated_self = self._run_attnres_core(
-                self_in, self.self_attn_norm, self_core_attnres
-            )
-            _append_attention_residual_update(residual_state, self_out)
-            if updated_self is not None:
-                state["self_attn"] = updated_self
-
-            def cross_core_attnres(
-                x_in: torch.Tensor,
-            ) -> tuple[torch.Tensor, dict | None]:
-                out, _, updated = self.cross_attn(
-                    x_in,
-                    memory,
-                    memory,
-                    memory_mask,
-                    memory_key_padding_mask,
-                    layer_state=state["cross_attn"],
-                )
-                return out, updated
-
-            cross_in = _attention_residual_input(
-                residual_state["current"], residual_state, self.cross_input_residual
-            )
-            cross_out, updated_cross = self._run_attnres_core(
-                cross_in, self.cross_attn_norm, cross_core_attnres
-            )
-            _append_attention_residual_update(residual_state, cross_out)
-            if updated_cross is not None:
-                state["cross_attn"] = updated_cross
-
-            def ff_core_attnres(
-                x_in: torch.Tensor,
-            ) -> tuple[torch.Tensor, dict | None]:
-                return self._ff_forward_with_aux(
-                    x_in,
-                    mtp_targets=mtp_targets,
-                    padding_mask=tgt_key_padding_mask,
-                ), None
-
-            ff_in = _attention_residual_input(
-                residual_state["current"], residual_state, self.ff_input_residual
-            )
-            ff_out, _ = self._run_attnres_core(ff_in, self.ff_norm, ff_core_attnres)
-            _append_attention_residual_update(residual_state, ff_out)
-            ret_state = {
-                "self_attn": state["self_attn"],
-                "cross_attn": state["cross_attn"],
-            }
-            return residual_state["current"], ret_state, None
-
-        strategy = self._make_exec_strategy(x=tgt, streams=streams)
+        strategy = self._make_exec_strategy(
+            x=tgt, streams=streams, attention_residual_state=attention_residual_state
+        )
         if self.use_mhc:
             assert (
                 self.mhc_conn_self is not None
@@ -534,6 +382,7 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             prev_layer_state=prev_layer_state,
             kv_key="self_attn",
             active_mask=gateskip_active_mask,
+            residual_module=self.self_input_residual,
         )
         if updated_self is not None:
             state["self_attn"] = updated_self
@@ -571,6 +420,7 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             prev_layer_state=prev_layer_state,
             kv_key="cross_attn",
             active_mask=gateskip_active_mask,
+            residual_module=self.cross_input_residual,
         )
         if updated_cross is not None:
             state["cross_attn"] = updated_cross
@@ -598,12 +448,16 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             mhc_core=ff_mhc_core,
             hyper_conn=self.mhc_conn_ff,
             active_mask=gateskip_active_mask,
+            residual_module=self.ff_input_residual,
         )
 
         self._finalize_gateskip_aux(cfg, aux_l2_terms)
 
         out_tgt, out_streams = strategy.collapse(self.mhc_collapse)
-        ret_state = {"self_attn": state["self_attn"], "cross_attn": state["cross_attn"]}
+        ret_state = DecoderLayerState(
+            self_attn=AttentionCacheState.from_legacy(state["self_attn"]),
+            cross_attn=AttentionCacheState.from_legacy(state["cross_attn"]),
+        )
         return out_tgt, ret_state, out_streams
 
 
@@ -618,15 +472,41 @@ class TransformerDecoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
 class TransformerDecoder(BaseTransformer):
     def __init__(
         self,
-        input_size: int = 1,
+        input_size: int | TransformerConfig = 1,
         output_size: int = 1,
         label_len: int = 0,
         informer_like: bool = True,
         use_time_encoding: bool = False,
         model_type: str = "transformer",
         cache_implementation: str = "auto",
+        config: TransformerConfig | None = None,
         **kwargs,
     ):
+        if isinstance(input_size, TransformerConfig):
+            if config is not None:
+                raise ValueError("pass TransformerConfig once, as input_size or config")
+            config = input_size
+        if config is not None:
+            input_size = config.input_size
+            output_size = config.output_size
+            label_len = config.label_len
+            informer_like = config.informer_like
+            use_time_encoding = config.use_time_encoding
+            model_type = config.model_type
+            cache_implementation = config.cache_implementation
+            kwargs = {**config.model_kwargs(), **kwargs}
+        else:
+            config = TransformerConfig.from_kwargs(
+                input_size=input_size,
+                output_size=output_size,
+                label_len=label_len,
+                informer_like=informer_like,
+                use_time_encoding=use_time_encoding,
+                model_type=model_type,
+                cache_implementation=cache_implementation,
+                **kwargs,
+            )
+        config.validate_compatibility(role="decoder")
         self.model_type = model_type
         # Auto-configure for informer-like
         if model_type == "informer-like":
@@ -646,6 +526,7 @@ class TransformerDecoder(BaseTransformer):
                 "cache_implementation must be auto, dynamic, paged, or static"
             )
         super().__init__(input_size, informer_like=informer_like, **kwargs)
+        self.config = config
 
         self.time_encoder = (
             InformerTimeEmbedding(self.d_model) if use_time_encoding else None
@@ -656,6 +537,13 @@ class TransformerDecoder(BaseTransformer):
             if output_size == self.d_model
             else nn.Linear(self.d_model, output_size)
         )
+
+        # BaseTransformer initializes its module tree before decoder-specific
+        # modules exist. Apply the same policy here so the forecast head does
+        # not keep PyTorch's substantially wider default weights/random bias.
+        if self.time_encoder is not None:
+            self.time_encoder.apply(self._init_weights)
+        self.output_projection.apply(self._init_weights)
 
     def init_static_cache(
         self,
@@ -670,7 +558,7 @@ class TransformerDecoder(BaseTransformer):
         cache_device = reference.device if device is None else torch.device(device)
         cache_dtype = reference.dtype if dtype is None else dtype
         capacity = self.max_seq_len if max_cache_len is None else int(max_cache_len)
-        layer_states = []
+        layer_states: list[DecoderLayerState] = []
         for layer_idx in range(self.num_layers):
             layer = self._get_layer(layer_idx)
             attention = layer._self_attn()
@@ -683,9 +571,14 @@ class TransformerDecoder(BaseTransformer):
                 dtype=cache_dtype,
             )
             layer_states.append(
-                {"self_attn": {"static_cache": cache}, "cross_attn": {}}
+                DecoderLayerState(
+                    self_attn=AttentionCacheState(static_cache=cache),
+                    cross_attn=AttentionCacheState(),
+                )
             )
-        return {"layers": layer_states, "cache_implementation": "static"}
+        return DecoderState(
+            layers=layer_states, cache_implementation="static"
+        )
 
     def _make_layer(self, **kwargs) -> nn.Module:
         return TransformerDecoderLayer(**kwargs)
@@ -762,13 +655,29 @@ class TransformerDecoder(BaseTransformer):
         position_offset: torch.Tensor | int | None = None,
         cache_position: torch.Tensor | None = None,
         cache_update_mask: torch.Tensor | None = None,
-        output_hidden_states: bool = False,
-        output_attentions: bool = False,
-        return_dict: bool = False,
+        output_hidden_states: bool | None = None,
+        output_attentions: bool | None = None,
+        return_dict: bool | None = None,
     ):
+        output_hidden_states = (
+            self.config.output_hidden_states
+            if output_hidden_states is None
+            else output_hidden_states
+        )
+        output_attentions = (
+            self.config.output_attentions
+            if output_attentions is None
+            else output_attentions
+        )
+        return_dict = self.config.return_dict if return_dict is None else return_dict
         B, T, _ = tgt.shape
         device = tgt.device
         user_tgt_key_padding_mask = tgt_key_padding_mask
+
+        if incremental_state is not None and not isinstance(incremental_state, DecoderState):
+            incremental_state = DecoderState.from_legacy(
+                incremental_state, num_layers=self.num_layers
+            )
 
         if cache_position is None and incremental_state is not None:
             existing_layers = incremental_state.get("layers")
@@ -921,15 +830,15 @@ class TransformerDecoder(BaseTransformer):
             raw_layer_states = incremental_state.get("layers")
             if raw_layer_states is None:
                 layer_states = [
-                    {"self_attn": {}, "cross_attn": {}} for _ in range(self.num_layers)
+                    DecoderLayerState.from_legacy(None) for _ in range(self.num_layers)
                 ]
             else:
                 layer_states = []
                 for layer_state in raw_layer_states:
                     if layer_state is None:
-                        layer_states.append({"self_attn": {}, "cross_attn": {}})
+                        layer_states.append(DecoderLayerState.from_legacy(None))
                     else:
-                        layer_states.append(layer_state)
+                        layer_states.append(DecoderLayerState.from_legacy(layer_state))
                 if len(layer_states) != self.num_layers:
                     raise ValueError(
                         f"incremental_state['layers'] length {len(layer_states)} "
@@ -941,11 +850,15 @@ class TransformerDecoder(BaseTransformer):
         if cache_position is not None:
             for layer_state in layer_states:
                 if layer_state is not None:
-                    layer_state.setdefault("self_attn", {})["cache_position"] = cache_position
+                    self_state = AttentionCacheState.from_legacy(
+                        layer_state.setdefault("self_attn", {})
+                    )
+                    layer_state["self_attn"] = self_state
+                    self_state.cache_position = cache_position
                     if cache_update_mask is not None:
-                        layer_state["self_attn"]["cache_update_mask"] = cache_update_mask
+                        self_state.cache_update_mask = cache_update_mask
                     else:
-                        layer_state["self_attn"].pop("cache_update_mask", None)
+                        self_state.cache_update_mask = None
 
         streams: torch.Tensor | None = None
         if self.use_mhc:
@@ -977,66 +890,43 @@ class TransformerDecoder(BaseTransformer):
             prev_state = layer_states[i - 1] if i > 0 else None
 
             if self.use_mod:
-                (
-                    layer,
-                    router_logits,
-                    _keep_mask,
-                    routed_indices,
-                    routed_slots,
-                ) = self._prepare_layer_routing(i, x, gateskip_active_mask)
-                if (
-                    routed_indices is None
-                    or routed_slots is None
-                    or not bool(routed_slots.any())
-                ):
-                    if all_hidden_states is not None:
-                        all_hidden_states.append(x)
-                    continue
+                def gather_and_invoke(layer, routed_indices, routed_slots):
+                    nonlocal streams
+                    x_routed = _gather_sequence_tokens(x, routed_indices)
+                    tgt_mask_routed = _gather_square_mask(tgt_mask, routed_indices)
+                    memory_mask_routed = _gather_query_mask(memory_mask, routed_indices)
+                    tgt_kpm_routed = _gather_padding_mask(
+                        tgt_key_padding_mask, routed_indices, routed_slots
+                    )
+                    mtp_targets_routed = (
+                        _gather_sequence_tokens(layer_mtp_targets, routed_indices)
+                        if layer_mtp_targets is not None
+                        else None
+                    )
+                    x_routed_out, layer_states[i], streams = invoke.run_decoder_layer(
+                        layer=layer,
+                        x=x_routed,
+                        memory=memory,
+                        tgt_mask=tgt_mask_routed,
+                        memory_mask=memory_mask_routed,
+                        tgt_key_padding_mask=tgt_kpm_routed,
+                        memory_key_padding_mask=memory_key_padding_mask,
+                        layer_state=layer_states[i],
+                        prev_state=prev_state,
+                        budget=runtime_budget,
+                        streams=streams,
+                        mtp_targets=mtp_targets_routed,
+                        attention_residual_state=attention_residual_state,
+                        gateskip_active_mask=routed_slots,
+                    )
+                    return x_routed, x_routed_out
 
-                x_routed = _gather_sequence_tokens(x, routed_indices)
-                tgt_mask_routed = _gather_square_mask(tgt_mask, routed_indices)
-                memory_mask_routed = _gather_query_mask(memory_mask, routed_indices)
-                tgt_kpm_routed = _gather_padding_mask(
-                    tgt_key_padding_mask, routed_indices, routed_slots
+                x, was_used = _run_mod_layer(
+                    self, i, x, gateskip_active_mask, all_hidden_states,
+                    router_states, gather_and_invoke,
                 )
-                mtp_targets_routed = (
-                    _gather_sequence_tokens(layer_mtp_targets, routed_indices)
-                    if layer_mtp_targets is not None
-                    else None
-                )
-
-                used_indices.append(i)
-                x_routed_out, layer_states[i], streams = invoke.run_decoder_layer(
-                    layer=layer,
-                    x=x_routed,
-                    memory=memory,
-                    tgt_mask=tgt_mask_routed,
-                    memory_mask=memory_mask_routed,
-                    tgt_key_padding_mask=tgt_kpm_routed,
-                    memory_key_padding_mask=memory_key_padding_mask,
-                    layer_state=layer_states[i],
-                    prev_state=prev_state,
-                    budget=runtime_budget,
-                    streams=streams,
-                    mtp_targets=mtp_targets_routed,
-                    attention_residual_state=attention_residual_state,
-                    gateskip_active_mask=routed_slots,
-                )
-                x = _scatter_mixture_of_depths_output(
-                    x,
-                    x_routed,
-                    x_routed_out,
-                    routed_indices,
-                    routed_slots,
-                    router_logits,
-                    use_expert_choice=True,  # Standard Expert Choice: full replacement
-                )
-                if all_hidden_states is not None:
-                    all_hidden_states.append(x)
-                ff_block = getattr(getattr(layer, "feed_forward", None), "block", None)
-                router_state = getattr(ff_block, "last_routing_state", None)
-                if router_state is not None:
-                    router_states.append(router_state)
+                if was_used:
+                    used_indices.append(i)
                 continue
 
             layer = self._resolve_layer(i)
@@ -1089,7 +979,9 @@ class TransformerDecoder(BaseTransformer):
 
         if return_incremental_state:
             if incremental_state is None:
-                incremental_state = {}
+                incremental_state = DecoderState.from_legacy(
+                    None, num_layers=self.num_layers
+                )
             incremental_state["layers"] = layer_states
             if return_dict:
                 return TransformerDecoderOutput(
@@ -1201,6 +1093,7 @@ class TransformerDecoder(BaseTransformer):
             position_offset=decoded_len,
             cache_position=cache_position,
             cache_update_mask=cache_update_mask,
+            return_dict=False,
         )
         next_state["_decoded_len"] = decoded_len + step_tgt.size(1)
         return out, next_state
@@ -1219,6 +1112,7 @@ class TransformerDecoder(BaseTransformer):
             memory,
             incremental_state=None,
             return_incremental_state=True,
+            return_dict=False,
             **kwargs,
         )
 
@@ -1258,6 +1152,7 @@ class TransformerDecoder(BaseTransformer):
             memory,
             incremental_state=incremental_state,
             return_incremental_state=True,
+            return_dict=False,
             **kwargs,
         )
         state["_decoded_len"] = int(state.get("_decoded_len", 0)) + tgt.size(1)
@@ -1349,17 +1244,28 @@ class TransformerDecoder(BaseTransformer):
         self,
         initial_tgt: torch.Tensor,
         memory: torch.Tensor,
-        max_new_tokens: int,
+        max_new_tokens: int | None = None,
         *,
+        generation_config: GenerationConfig | None = None,
         incremental_state: dict | None = None,
         feedback_fn=None,
         memory_mask: torch.Tensor | None = None,
         memory_key_padding_mask: torch.Tensor | None = None,
-        return_dict: bool = False,
+        return_dict: bool | None = None,
     ):
         """Autoregressively forecast values using the decoder cache."""
-        if max_new_tokens < 0:
-            raise ValueError("max_new_tokens must be non-negative")
+        if generation_config is None:
+            generation_config = GenerationConfig(
+                max_new_tokens=1 if max_new_tokens is None else max_new_tokens
+            )
+        elif max_new_tokens is not None:
+            raise ValueError(
+                "max_new_tokens belongs to GenerationConfig; do not pass both"
+            )
+        max_new_tokens = generation_config.max_new_tokens
+        return_dict = (
+            generation_config.return_dict if return_dict is None else return_dict
+        )
         if feedback_fn is None and self.output_size != initial_tgt.size(-1):
             raise ValueError(
                 "output_size must match the decoder input width unless feedback_fn is provided"

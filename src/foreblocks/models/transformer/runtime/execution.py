@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Protocol
 
 import torch
 import torch.nn as nn
 
 from foreblocks.layers.norms import create_norm_layer
+from foreblocks.models.transformer.core.attention_backends import (
+    build_layer_attention_backend,
+)
 from foreblocks.models.transformer.features.fusions import (
     fused_dropout_add, fused_dropout_add_norm, fused_dropout_gateskip_norm,
     get_dropout_p,
 )
 from foreblocks.models.transformer.features.mhc import (
     mhc_apply_norm_streamwise, mhc_collapse_streams,
+)
+from foreblocks.models.transformer.runtime.residual_state import (
+    _append_attention_residual_update, _attention_residual_input,
 )
 from foreblocks.modules.skip.gateskip import apply_skip_to_kv
 
@@ -96,31 +102,143 @@ class MHCBlockMixin:
         return streams
 
 
+class LazyAttentionBackendMixin:
+    """Lazily instantiate + cache the self-attention module for a layer.
+
+    Shared by encoder and decoder layers so both route through the same
+    ``LAYER_ATTENTION_BACKENDS`` registry (see core/attention_backends.py) and
+    never drift on which backends are supported.
+    """
+
+    def _ensure_attn_backend(self, name: str) -> nn.Module:
+        cache = self.__dict__.setdefault("_attn_backends", {})
+        module = cache.get(name)
+        if module is None:
+            dev = next(self.parameters()).device
+            module = build_layer_attention_backend(
+                name, self._attn_init_kwargs, self._pos_encoding_type,
+                self._attn_backend_cfg,
+            ).to(dev)
+            cache[name] = module
+            self.add_module(f"_attn_backend_{name}", module)
+        return module
+
+    def _self_attn(self) -> nn.Module:
+        return self._ensure_attn_backend(self.layer_attention_type)
+
+    def set_layer_attention_type(self, layer_attention_type: str) -> None:
+        self.layer_attention_type = str(layer_attention_type)
+
+    def materialize_attention_type(
+        self, layer_attention_type: Optional[str] = None
+    ) -> nn.Module:
+        previous = self.layer_attention_type
+        if layer_attention_type is not None:
+            self.layer_attention_type = str(layer_attention_type)
+        try:
+            return self._self_attn()
+        finally:
+            self.layer_attention_type = previous
+
+
+class ResidualExecutionPolicy(Protocol):
+    """Execution contract shared by standard and stream residual policies."""
+
+    def run_block(self, strategy, **kwargs): ...
+
+
+@dataclass(frozen=True)
+class StandardResidualPolicy:
+    def run_block(self, strategy, **kwargs):
+        core_fn = kwargs["core_fn"]
+        if strategy.x is None or core_fn is None:
+            raise RuntimeError("standard residual execution requires x and core_fn")
+        strategy.x, updated, skipped = strategy.owner._run_sublayer_nonmhc(
+            strategy.x,
+            kwargs["normw"],
+            core_fn,
+            kwargs["gate"],
+            kwargs["cfg"],
+            kwargs["aux_l2_terms"],
+            kwargs.get("prev_layer_state"),
+            kwargs.get("kv_key"),
+            kwargs.get("active_mask"),
+        )
+        return updated, skipped
+
+
+@dataclass(frozen=True)
+class MHCResidualPolicy:
+    def run_block(self, strategy, **kwargs):
+        mhc_core = kwargs["mhc_core"]
+        hyper_conn = kwargs["hyper_conn"]
+        if strategy.streams is None or mhc_core is None or hyper_conn is None:
+            raise RuntimeError("mHC residual execution requires streams, core, and connection")
+        strategy.streams = strategy.owner._mhc_run_block(
+            strategy.streams, kwargs["normw"], hyper_conn, mhc_core
+        )
+        return None, None
+
+
+@dataclass(frozen=True)
+class AttentionResidualPolicy:
+    """Residual-replacement policy used by paper-style depth attention.
+
+    Unlike the standard/mHC policies, this one replaces the residual stream
+    entirely with an externally-carried ``attention_residual_state`` (see
+    ``runtime/residual_state.py``) rather than accumulating onto ``strategy.x``.
+    """
+
+    def run_block(self, strategy, **kwargs):
+        core_fn = kwargs["core_fn"]
+        state = strategy.attention_residual_state
+        if state is None or core_fn is None:
+            raise RuntimeError(
+                "attention-residual execution requires attention_residual_state and core_fn"
+            )
+        residual_module = kwargs.get("residual_module")
+        if residual_module is None:
+            raise RuntimeError("attention-residual execution requires residual_module")
+        x_in = _attention_residual_input(state["current"], state, residual_module)
+        out, updated_kv = strategy.owner._run_attnres_core(x_in, kwargs["normw"], core_fn)
+        _append_attention_residual_update(state, out)
+        strategy.x = state["current"]
+        return updated_kv, None
+
+
 @dataclass
 class LayerExecutionStrategy:
     owner: object
     use_mhc: bool
     x: Optional[torch.Tensor] = None
     streams: Optional[torch.Tensor] = None
+    use_attention_residual: bool = False
+    attention_residual_state: Optional[dict] = None
+
+    @property
+    def policy(self) -> ResidualExecutionPolicy:
+        if self.use_attention_residual:
+            return AttentionResidualPolicy()
+        return MHCResidualPolicy() if self.use_mhc else StandardResidualPolicy()
 
     def run_block(
         self, *, normw, gate, cfg, aux_l2_terms, core_fn=None, mhc_core=None,
         hyper_conn=None, prev_layer_state=None, kv_key=None, active_mask=None,
+        residual_module=None,
     ):
-        if not self.use_mhc:
-            if self.x is None or core_fn is None:
-                raise RuntimeError("non-mHC execution requires x and core_fn")
-            self.x, updated, skipped = self.owner._run_sublayer_nonmhc(
-                self.x, normw, core_fn, gate, cfg, aux_l2_terms,
-                prev_layer_state, kv_key, active_mask,
-            )
-            return updated, skipped
-        if self.streams is None or mhc_core is None or hyper_conn is None:
-            raise RuntimeError("mHC execution requires streams, core, and connection")
-        self.streams = self.owner._mhc_run_block(self.streams, normw, hyper_conn, mhc_core)
-        return None, None
+        return self.policy.run_block(
+            self,
+            normw=normw, gate=gate, cfg=cfg, aux_l2_terms=aux_l2_terms,
+            core_fn=core_fn, mhc_core=mhc_core, hyper_conn=hyper_conn,
+            prev_layer_state=prev_layer_state, kv_key=kv_key,
+            active_mask=active_mask, residual_module=residual_module,
+        )
 
     def collapse(self, mode):
+        if self.use_attention_residual:
+            if self.x is None:
+                raise RuntimeError("execution has no tensor")
+            return self.x, None
         if not self.use_mhc:
             if self.x is None:
                 raise RuntimeError("execution has no tensor")
@@ -201,6 +319,8 @@ _LayerExecutionStrategy = LayerExecutionStrategy
 _ModelLayerInvokeStrategy = ModelLayerInvokeStrategy
 
 __all__ = [
-    "LayerExecutionStrategy", "MHCBlockMixin", "ModelLayerInvokeStrategy",
-    "NormWrapper", "ResidualBlockMixin", "ResidualRunCfg",
+    "AttentionResidualPolicy", "LayerExecutionStrategy", "MHCBlockMixin",
+    "MHCResidualPolicy", "ModelLayerInvokeStrategy", "NormWrapper",
+    "ResidualBlockMixin", "ResidualExecutionPolicy", "ResidualRunCfg",
+    "StandardResidualPolicy",
 ]

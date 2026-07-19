@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import datetime
+import random
 import tempfile
 import warnings
 from collections.abc import Callable, Sequence
@@ -100,6 +101,22 @@ class Trainer:
         return device
 
     # ── Initialization ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _seed_everything(seed: int | None, deterministic: bool = False) -> None:
+        """Seed training RNGs; model construction must be seeded by its caller."""
+        if seed is not None:
+            seed = int(seed)
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+        if deterministic:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+            if torch.backends.cudnn.is_available():
+                torch.backends.cudnn.benchmark = False
+                torch.backends.cudnn.deterministic = True
 
     def __init__(
         self,
@@ -191,6 +208,11 @@ class Trainer:
         else:
             self.config = config or TrainingConfig()
 
+        self._seed_everything(
+            self.config.seed,
+            deterministic=self.config.deterministic,
+        )
+
         # ── Device & AMP ───────────────────────────────────────────────
         self._amp_enabled = (
             getattr(self.config, "use_amp", False) and self.device.type == "cuda"
@@ -230,7 +252,11 @@ class Trainer:
                 param_groups = [g for g in param_groups if g["params"]]
             else:
                 param_groups = _weight_params
-            self.optimizer = optimizer or torch.optim.AdamW(param_groups)
+            self.optimizer = optimizer or torch.optim.AdamW(
+                param_groups,
+                lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay,
+            )
         else:
             self._alpha_params: list[torch.nn.Parameter] = []
             self._weight_params = list(self.model.parameters())
@@ -246,7 +272,11 @@ class Trainer:
                 )
             else:
                 param_groups = self.model.parameters()
-            self.optimizer = optimizer or torch.optim.AdamW(param_groups)
+            self.optimizer = optimizer or torch.optim.AdamW(
+                param_groups,
+                lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay,
+            )
 
         # ── Scheduler ──────────────────────────────────────────────────
         self.scheduler = self._create_scheduler()
@@ -570,6 +600,13 @@ class Trainer:
         """
         callbacks = callbacks or []
         num_epochs = epochs if epochs is not None else self.config.num_epochs
+
+        # Reset at the run boundary so RandomSampler/DataLoader worker base
+        # seeds, dropout, and other stochastic training paths are repeatable.
+        self._seed_everything(
+            self.config.seed,
+            deterministic=self.config.deterministic,
+        )
 
         run_context, run_name = _log.init_mltracker_run_context(
             self.mltracker, run_name

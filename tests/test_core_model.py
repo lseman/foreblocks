@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 
 from foreblocks.core.model import ForecastingModel
+from foreblocks.models.transformer.runtime.outputs import (
+    TransformerDecoderOutput,
+    TransformerEncoderOutput,
+)
 
 
 def test_direct_strategy_reshapes_flat_head_output() -> None:
@@ -78,10 +82,57 @@ class _InformerDecoder(nn.Module):
         return torch.cat([memory, pad], dim=1)
 
 
+class _StructuredInformerEncoder(_InformerEncoder):
+    def forward(self, src: torch.Tensor) -> TransformerEncoderOutput:
+        return TransformerEncoderOutput(last_hidden_state=self.proj(src))
+
+
+class _StructuredInformerDecoder(_InformerDecoder):
+    def forward(
+        self, dec_input: torch.Tensor, memory: torch.Tensor, **kwargs
+    ) -> TransformerDecoderOutput:
+        output = super().forward(dec_input, memory, **kwargs)
+        return TransformerDecoderOutput(last_hidden_state=output)
+
+
 def test_informer_style_projects_decoder_features_to_output_size() -> None:
     model = ForecastingModel(
         encoder=_InformerEncoder(),
         decoder=_InformerDecoder(),
+        forecasting_strategy="seq2seq",
+        model_type="informer-like",
+        target_len=4,
+        output_size=2,
+        hidden_size=5,
+        label_len=2,
+    )
+
+    out = model(torch.randn(3, 6, 3))
+
+    assert out.shape == (3, 4, 2)
+
+
+def test_informer_style_accepts_structured_encoder_output() -> None:
+    model = ForecastingModel(
+        encoder=_StructuredInformerEncoder(),
+        decoder=_InformerDecoder(),
+        forecasting_strategy="seq2seq",
+        model_type="informer-like",
+        target_len=4,
+        output_size=2,
+        hidden_size=5,
+        label_len=2,
+    )
+
+    out = model(torch.randn(3, 6, 3))
+
+    assert out.shape == (3, 4, 2)
+
+
+def test_informer_style_accepts_structured_decoder_output() -> None:
+    model = ForecastingModel(
+        encoder=_StructuredInformerEncoder(),
+        decoder=_StructuredInformerDecoder(),
         forecasting_strategy="seq2seq",
         model_type="informer-like",
         target_len=4,
