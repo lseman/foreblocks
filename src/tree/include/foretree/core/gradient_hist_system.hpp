@@ -49,7 +49,7 @@ public:
         else if (cfg_.method == "adaptive")
             strat = std::make_unique<AdaptiveBinner>();
         else if (cfg_.method == "kmeans")
-            strat = std::make_unique<KMeansBinner>();
+            strat = std::make_unique<StreamingKMeansBinner>();
         else if (cfg_.method == "categorical_gradient")
             strat = std::make_unique<CategoricalGradientBinner>();
         else
