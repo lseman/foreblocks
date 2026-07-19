@@ -25,19 +25,37 @@ from foreblocks.models.transformer.runtime.residual_state import (
 from foreblocks.modules.skip.gateskip import apply_skip_to_kv
 
 
-class NormWrapper(nn.Module):
-    """Own a normalization strategy and dropout without hiding residual flow."""
+@dataclass(frozen=True)
+class NormWrapper:
+    """Immutable holder for a normalization layer, strategy, and dropout.
 
-    def __init__(self, d_model, norm_type="rms", strategy="pre_norm", dropout=0.0, eps=1e-5):
-        super().__init__()
+    Replaces the previous nn.Module subclass that raised in forward().
+    Callers access .norm and .dropout explicitly.
+    """
+
+    norm: nn.Module
+    strategy: str  # "pre_norm" | "post_norm" | "sandwich_norm"
+    dropout: nn.Module
+
+    @staticmethod
+    def make(
+        d_model: int,
+        norm_type: str = "rms",
+        strategy: str = "pre_norm",
+        dropout: float = 0.0,
+        eps: float = 1e-5,
+    ) -> "NormWrapper":
         if strategy not in {"pre_norm", "post_norm", "sandwich_norm"}:
             raise ValueError("invalid norm strategy")
-        self.norm = create_norm_layer(norm_type, d_model, eps)
-        self.strategy = strategy
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        norm = create_norm_layer(norm_type, d_model, eps)
+        dropout_layer = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        return NormWrapper(norm=norm, strategy=strategy, dropout=dropout_layer)
 
-    def forward(self, *_, **__):
-        raise RuntimeError("NormWrapper is a holder; invoke .norm and .dropout explicitly")
+    def __post_init__(self) -> None:
+        if self.strategy not in ("pre_norm", "post_norm", "sandwich_norm"):
+            # dataclass frozen can't use __setattr__, so we raise in __new__
+            # but __post_init__ runs after __new__ and before __init__
+            raise ValueError("invalid norm strategy")
 
 
 @dataclass(frozen=True)

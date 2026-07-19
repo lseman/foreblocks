@@ -191,13 +191,13 @@ class TransformerDecoderLayer(
 
         self.is_causal = not informer_like
 
-        self.self_attn_norm = NormWrapper(
+        self.self_attn_norm = NormWrapper.make(
             d_model, custom_norm, norm_strategy, dropout, layer_norm_eps
         )
-        self.cross_attn_norm = NormWrapper(
+        self.cross_attn_norm = NormWrapper.make(
             d_model, custom_norm, norm_strategy, dropout, layer_norm_eps
         )
-        self.ff_norm = NormWrapper(
+        self.ff_norm = NormWrapper.make(
             d_model, custom_norm, norm_strategy, dropout, layer_norm_eps
         )
 
@@ -340,6 +340,7 @@ class TransformerDecoderLayer(
         strategy = self._make_exec_strategy(
             x=tgt, streams=streams, attention_residual_state=attention_residual_state
         )
+        self._record_aux_loss_device(tgt.device)
         if self.use_mhc:
             assert (
                 self.mhc_conn_self is not None
@@ -704,7 +705,7 @@ class TransformerDecoder(BaseTransformer):
             if cache_update_mask.shape != (B,):
                 raise ValueError("cache_update_mask must have shape [B]")
 
-        self.mod_aux_loss.zero_()
+        self.mod_aux_loss = 0.0
 
         compiler = getattr(torch, "compiler", None)
         is_compiling = bool(

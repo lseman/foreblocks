@@ -81,14 +81,14 @@ class DecoderState(dict[str, Any]):
     ) -> "DecoderState":
         raw = dict(value or {})
         raw_layers: Iterable[Mapping[str, Any] | None] = raw.get("layers") or ()
-        layers = [DecoderLayerState.from_legacy(item) for item in raw_layers]
-        if layers and len(layers) != num_layers:
+        parsed_layers = [DecoderLayerState.from_legacy(item) for item in raw_layers]
+        if parsed_layers and len(parsed_layers) != num_layers:
             raise ValueError(
-                f"decoder state has {len(layers)} layers; expected {num_layers}"
+                f"decoder state has {len(parsed_layers)} layers; expected {num_layers}"
             )
-        if not layers:
-            layers = [DecoderLayerState.from_legacy(None) for _ in range(num_layers)]
-        raw["layers"] = layers
+        if not parsed_layers:
+            parsed_layers = [DecoderLayerState.from_legacy(None) for _ in range(num_layers)]
+        raw["layers"] = parsed_layers
         return cls(raw)
 
     @property

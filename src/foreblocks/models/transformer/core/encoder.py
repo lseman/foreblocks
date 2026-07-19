@@ -162,10 +162,10 @@ class TransformerEncoderLayer(
         self.layer_attention_type = str(layer_attention_type)
         self._pos_encoding_type = str(pos_encoding_type)
 
-        self.attn_norm = NormWrapper(
+        self.attn_norm = NormWrapper.make(
             d_model, custom_norm, norm_strategy, dropout, layer_norm_eps
         )
-        self.ff_norm = NormWrapper(
+        self.ff_norm = NormWrapper.make(
             d_model, custom_norm, norm_strategy, dropout, layer_norm_eps
         )
 
@@ -268,6 +268,7 @@ class TransformerEncoderLayer(
         strategy = self._make_exec_strategy(
             x=src, streams=streams, attention_residual_state=attention_residual_state
         )
+        self._record_aux_loss_device(src.device)
         if self.use_mhc:
             assert self.mhc_conn_attn is not None and self.mhc_conn_ff is not None
 
@@ -505,7 +506,7 @@ class TransformerEncoder(BaseTransformer):
         if T > self.max_seq_len and (not self.patch_encoder) and (not self.ct_patchtst):
             raise ValueError(f"Sequence length {T} exceeds max {self.max_seq_len}")
 
-        self.mod_aux_loss.zero_()
+        self.mod_aux_loss = 0.0
 
         patch_info: PatchInfo | None = None
         if self.ct_patchtst:

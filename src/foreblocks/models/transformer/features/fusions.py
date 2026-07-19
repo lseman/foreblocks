@@ -96,29 +96,30 @@ def get_dropout_p(layer: nn.Module | None) -> float:
         return 0.0
 
 
+def _is_norm_wrapper(layer: nn.Module) -> bool:
+    """Check if *layer* is a NormWrapper (has .norm AND .strategy)."""
+    return hasattr(layer, "norm") and hasattr(layer, "strategy")
+
+
 def _apply_norm(norm_layer: nn.Module | None, x: torch.Tensor) -> torch.Tensor:
     """
     Supports either:
-      - NormWrapper (has .norm(x))
+      - NormWrapper (has .norm AND .strategy attributes)
       - Plain nn.Module like LayerNorm/RMSNorm (callable)
-      - None (no-op)
+      - None or nn.Identity (no-op)
     """
-    if norm_layer is None:
+    if norm_layer is None or isinstance(norm_layer, nn.Identity):
         return x
-    norm_fn = getattr(norm_layer, "norm", None)
-    if callable(norm_fn):
-        # NormWrapper path
-        return norm_fn(x)
-    # Plain norm module
+    if _is_norm_wrapper(norm_layer):
+        return norm_layer.norm(x)
     return norm_layer(x)
 
 
 def _resolve_norm_module(norm_layer: nn.Module | None) -> nn.Module | None:
-    if norm_layer is None:
+    if norm_layer is None or isinstance(norm_layer, nn.Identity):
         return None
-    norm_fn = getattr(norm_layer, "norm", None)
-    if callable(norm_fn) and isinstance(norm_fn, nn.Module):
-        return norm_fn
+    if _is_norm_wrapper(norm_layer):
+        return norm_layer.norm
     return norm_layer
 
 

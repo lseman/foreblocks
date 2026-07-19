@@ -2,18 +2,17 @@
 
 Base classes and execution plumbing for modular transformer encoder/decoder.
 
-Implements NormWrapper, ResidualBlockMixin, and MHCBlockMixin that eliminate
-repetitive code across encoder and decoder layers. Provides support for
-pre/post/sandwich normalization, GateSkip residual gating, manifold-constrained
-hyper-connections (mHC), Mixture-of-Depths routing, and attention residual
-tracking. Attention-residual state lives in ``residual_state`` and tensor
-routing lives in ``routing``; this module owns layer/model base classes.
+Implements ResidualBlockMixin and MHCBlockMixin that eliminate repetitive code
+across encoder and decoder layers. Provides support for pre/post/sandwich
+normalization, GateSkip residual gating, manifold-constrained hyper-connections
+(mHC), Mixture-of-Depths routing, and attention residual tracking.
+Attention-residual state lives in ``residual_state`` and tensor routing lives
+in ``routing``; this module owns layer/model base classes.
 
 Core API:
-- NormWrapper: norm+dropout holder for pre/post/sandwich strategies
 - ResidualBlockMixin: shared residual logic for non-mHC blocks
 - MHCBlockMixin: shared stream-wise mHC block logic
-- BaseTransformerLayer: base layer with FFN/MoE and aux_loss
+- BaseTransformerLayer: base layer with FFN/MoE and aux_loss tracking
 - BaseTransformer: abstract encoder/decoder base with embedding, layer building
 - ResidualRunCfg: frozen config for residual computation
 
@@ -22,6 +21,7 @@ Core API:
 from __future__ import annotations
 
 import math
+import warnings
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Callable, List, Literal, Optional, Tuple
 
@@ -136,14 +136,26 @@ class BaseTransformerLayer(nn.Module):
 
         self.register_buffer("aux_loss", torch.tensor(0.0), persistent=False)
 
-    def _reset_aux_loss(self) -> None:
-        self.aux_loss.zero_()
+        # Float accumulator for MoE/aux loss, aggregated by the parent model.
+        # Stored as float (not tensor) so _aggregate_aux_loss in BaseTransformer
+        # can combine per-layer values into a single loss tensor.
+        self._aux_loss: float = 0.0
+        self._aux_loss_device: torch.device | None = None
 
-    def _update_aux_loss(self, new_loss) -> None:
+    def _reset_aux_loss(self) -> None:
+        self._aux_loss = 0.0
+
+    def _update_aux_loss(self, new_loss: float | torch.Tensor) -> None:
         if torch.is_tensor(new_loss):
-            self.aux_loss += new_loss
-        elif new_loss != 0:
-            self.aux_loss += torch.tensor(new_loss, device=self.aux_loss.device)
+            val = float(new_loss.detach())
+        else:
+            val = float(new_loss)
+        if val:
+            self._aux_loss += val
+
+    def _record_aux_loss_device(self, device: torch.device) -> None:
+        """Call once per forward pass to pin the device for aggregation."""
+        self._aux_loss_device = device
 
     def _make_exec_strategy(
         self,
@@ -196,7 +208,12 @@ class BaseTransformerLayer(nn.Module):
         mhc_sinkhorn_iters: Optional[int],
         mhc_collapse: Optional[str],
     ) -> None:
-        """Validate legacy call overrides without mutating persistent model state."""
+        """Reject explicit runtime overrides that conflict with configured values.
+
+        Only checks parameters *passed to forward()*, not the model's own
+        attributes.  The model setters (set_use_mhc / set_mhc_params) are
+        deprecated — configure everything at construction time instead.
+        """
         requested = {
             "use_mhc": use_mhc,
             "mhc_n_streams": mhc_n_streams,
@@ -571,8 +588,10 @@ class BaseTransformer(nn.Module, ABC):
             ]
         )
 
-        self.register_buffer("aux_loss", torch.tensor(0.0), persistent=False)
-        self.register_buffer("mod_aux_loss", torch.tensor(0.0), persistent=False)
+        # Model-level aux_loss is a tensor buffer (set by _aggregate_aux_loss).
+        # mod_aux_loss is a simple float accumulated during forward.
+        self.aux_loss: torch.Tensor = torch.tensor(0.0)
+        self.mod_aux_loss: float = 0.0
         self._materialize_configured_attention_backends()
         self.apply(self._init_weights)
         self._apply_depth_scaled_initialization()
@@ -768,7 +787,11 @@ class BaseTransformer(nn.Module, ABC):
     def set_budget_scheduler(self, scheduler: BudgetScheduler) -> None:
         self.budget_scheduler = scheduler
 
-    # ---- mHC runtime setters ---------------------------------------------------
+    # ---- mHC runtime setters (deprecated) --------------------------------------
+    # These mutate attributes after construction which can leave already-
+    # instantiated attention modules in an inconsistent state.  Configure
+    # use_mhc / mhc_n_streams / etc. at construction time instead.
+
     def _set_layer_mhc_attrs(self, layer: nn.Module) -> None:
         if hasattr(layer, "use_mhc"):
             layer.use_mhc = bool(self.use_mhc)
@@ -782,6 +805,12 @@ class BaseTransformer(nn.Module, ABC):
             layer._ensure_mhc_mixers()
 
     def set_use_mhc(self, flag: bool) -> None:
+        warnings.warn(
+            "set_use_mhc is deprecated; set use_mhc in TransformerConfig or "
+            "the model constructor instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.use_mhc = bool(flag)
         for i in range(self.num_layers):
             layer = self._get_layer(i)
@@ -793,6 +822,12 @@ class BaseTransformer(nn.Module, ABC):
         sinkhorn_iters: Optional[int] = None,
         collapse: Optional[str] = None,
     ) -> None:
+        warnings.warn(
+            "set_mhc_params is deprecated; configure use_mhc, mhc_n_streams, "
+            "and mhc_collapse in the model constructor instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if n_streams is not None:
             self.mhc_n_streams = int(n_streams)
         if sinkhorn_iters is not None:
@@ -892,15 +927,24 @@ class BaseTransformer(nn.Module, ABC):
 
     # FIX: aggregate aux loss over executed layer indices (supports skipping)
     def _aggregate_aux_loss(self, used_indices: List[int]) -> None:
-        total_aux = self.aux_loss.new_zeros(())
+        """Aggregate per-layer aux losses into a single tensor."""
+        total_aux: float = 0.0
+        device: torch.device | None = None
         for i in used_indices:
             layer = self._get_layer(i)
-            if hasattr(layer, "aux_loss"):
-                total_aux = total_aux + layer.aux_loss
+            if hasattr(layer, "_aux_loss"):
+                layer._record_aux_loss_device(next(self.parameters()).device)
+                if layer._aux_loss_device is not None:
+                    device = layer._aux_loss_device
+                total_aux += layer._aux_loss
         denom = max(len(used_indices), 1)
-        self.aux_loss = (total_aux / denom) * self.moe_aux_lambda
-        # Add MoD auxiliary after layer aggregation
-        self.aux_loss = self.aux_loss + self.mod_aux_loss
+        mod_aux = float(self.mod_aux_loss) if hasattr(self, "mod_aux_loss") else 0.0
+        if device is None:
+            device = next(self.parameters()).device
+        self.aux_loss = torch.tensor(
+            ((total_aux / denom) * self.moe_aux_lambda + mod_aux),
+            device=device,
+        )
 
     @staticmethod
     def _run_with_checkpoint(fn, *inputs: torch.Tensor, use_checkpoint: bool):
@@ -1025,13 +1069,13 @@ class BaseTransformer(nn.Module, ABC):
             active_mask=active_mask,
         )
         if self.training and self.mod_lambda > 0:
-            self.mod_aux_loss = self.mod_aux_loss + (
+            self.mod_aux_loss += (
                 self.mod_lambda
-                * mod_router_aux_loss(
+                * float(mod_router_aux_loss(
                     router_logits,
                     keep_mask,
                     active_mask=active_mask,
-                )
+                ).detach())
             )
 
         capacity = mod_capacity(keep_mask)
@@ -1055,18 +1099,4 @@ __all__ = [
     "MHCBlockMixin",
     "BaseTransformerLayer",
     "BaseTransformer",
-    "TransformerEncoder",
-    "TransformerDecoder",
 ]
-
-
-def __getattr__(name: str):
-    if name == "TransformerEncoder":
-        from foreblocks.models.transformer.core.encoder import TransformerEncoder
-
-        return TransformerEncoder
-    if name == "TransformerDecoder":
-        from foreblocks.models.transformer.core.decoder import TransformerDecoder
-
-        return TransformerDecoder
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
