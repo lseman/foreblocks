@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 
-_ATTENTION_ALIASES = {
+_ATTENTION_ALIASES: dict[str, str] = {
     "hybrid_linear": "hybrid",
     "kimi_hybrid": "hybrid_kimi",
     "gdn_hybrid": "hybrid_gdn",
@@ -15,7 +15,7 @@ _ATTENTION_ALIASES = {
     "hybrid_gated_deltanet": "gated_deltanet_hybrid",
 }
 
-_ATTENTION_MODES = {
+_ATTENTION_MODES: set[str] = {
     "standard", "linear", "sype", "hybrid", "kimi", "hybrid_kimi",
     "kimi_3to1", "gated_delta", "hybrid_gdn", "gdn_3to1", "gla",
     "gla_hybrid", "gla_3to1", "deltanet", "deltanet_hybrid",
@@ -23,7 +23,7 @@ _ATTENTION_MODES = {
     "gated_deltanet_3to1",
 }
 
-_SUPPORTED_OPTIONS = {
+_SUPPORTED_OPTIONS: set[str] = {
     "att_type", "layer_norm_eps", "pos_encoding_scale", "pos_encoder",
     "share_layers", "use_final_norm", "use_swiglu", "freq_modes",
     "gate_budget", "gate_lambda", "mhc_n_streams", "mhc_sinkhorn_iters",
@@ -36,6 +36,11 @@ _SUPPORTED_OPTIONS = {
     "attention_matching_min_keep", "attention_matching_query_budget",
     "attention_matching_force_single_step", "moba_block_size", "moba_topk",
 }
+
+
+def _resolve_attention_mode(mode: str) -> str:
+    """Normalize legacy attention-mode aliases to canonical names."""
+    return _ATTENTION_ALIASES.get(mode, mode)
 
 
 @dataclass(frozen=True)
@@ -71,6 +76,11 @@ class TransformerConfig:
 
     Less common experimental options remain supported through ``options`` while
     stable architecture and output controls have first-class fields.
+
+    Immutable once fully constructed.  Attention-mode aliases are
+    resolved in ``__post_init__`` before validation, so both direct
+    construction (``TransformerConfig(...)``) and ``from_dict()``
+    produce canonical values.
     """
 
     input_size: int = 1
@@ -117,9 +127,11 @@ class TransformerConfig:
     options: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.attention_mode = _ATTENTION_ALIASES.get(
-            self.attention_mode, self.attention_mode
-        )
+        # Resolve attention-mode aliases before validation.
+        # This runs for both direct construction (TransformerConfig(...))
+        # and from_dict(), ensuring canonical values everywhere.
+        self.attention_mode = _resolve_attention_mode(self.attention_mode)
+
         if self.input_size <= 0 or self.output_size <= 0:
             raise ValueError("input_size and output_size must be positive")
         if self.d_model <= 0 or self.nhead <= 0 or self.num_layers <= 0:
@@ -215,6 +227,10 @@ class TransformerConfig:
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "TransformerConfig":
+        """Load from a dict, resolving attention-mode aliases first."""
+        values = dict(values)
+        if "attention_mode" in values:
+            values["attention_mode"] = _resolve_attention_mode(values["attention_mode"])
         return cls(**values)
 
     def model_kwargs(self) -> dict[str, Any]:

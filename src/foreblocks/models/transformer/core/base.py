@@ -23,7 +23,7 @@ from __future__ import annotations
 import math
 import warnings
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Callable, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Literal
 
 import torch
 import torch.nn as nn
@@ -98,8 +98,8 @@ class BaseTransformerLayer(nn.Module):
         mhc_sinkhorn_iters: int = 20,
         mhc_collapse: str = "first",
         moe_use_latent: bool = False,
-        moe_latent_dim: Optional[int] = None,
-        moe_latent_d_ff: Optional[int] = None,
+        moe_latent_dim: int | None = None,
+        moe_latent_d_ff: int | None = None,
         use_attention_matching_compaction: bool = False,
         attention_matching_keep_ratio: float = 0.25,
         attention_matching_trigger_len: int = 512,
@@ -161,8 +161,8 @@ class BaseTransformerLayer(nn.Module):
         self,
         *,
         x: torch.Tensor,
-        streams: Optional[torch.Tensor],
-        attention_residual_state: Optional[dict] = None,
+        streams: torch.Tensor | None,
+        attention_residual_state: dict | None = None,
     ) -> _LayerExecutionStrategy:
         if attention_residual_state is not None:
             return _LayerExecutionStrategy(
@@ -203,10 +203,10 @@ class BaseTransformerLayer(nn.Module):
     def _validate_runtime_mhc_overrides(
         self,
         *,
-        use_mhc: Optional[bool],
-        mhc_n_streams: Optional[int],
-        mhc_sinkhorn_iters: Optional[int],
-        mhc_collapse: Optional[str],
+        use_mhc: bool | None,
+        mhc_n_streams: int | None,
+        mhc_sinkhorn_iters: int | None,
+        mhc_collapse: str | None,
     ) -> None:
         """Reject explicit runtime overrides that conflict with configured values.
 
@@ -240,9 +240,9 @@ class BaseTransformerLayer(nn.Module):
     def _build_residual_cfg(
         self,
         *,
-        use_gateskip: Optional[bool],
-        gate_budget: Optional[float],
-        gate_lambda: Optional[float],
+        use_gateskip: bool | None,
+        gate_budget: float | None,
+        gate_lambda: float | None,
         training: bool,
     ) -> ResidualRunCfg:
         """Resolve runtime GateSkip knobs into a single config object."""
@@ -268,8 +268,8 @@ class BaseTransformerLayer(nn.Module):
     def _ff_forward_with_aux(
         self,
         x: torch.Tensor,
-        mtp_targets: Optional[torch.Tensor] = None,
-        padding_mask: Optional[torch.Tensor] = None,
+        mtp_targets: torch.Tensor | None = None,
+        padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Shared FFN / MoE forward with auxiliary loss accounting."""
         if self.use_moe:
@@ -287,8 +287,8 @@ class BaseTransformerLayer(nn.Module):
         self,
         x: torch.Tensor,
         normw: NormWrapper,
-        core_fn: Callable[[torch.Tensor], Tuple[torch.Tensor, Optional[dict]]],
-    ) -> Tuple[torch.Tensor, Optional[dict]]:
+        core_fn: Callable[[torch.Tensor], tuple[torch.Tensor, dict | None]],
+    ) -> tuple[torch.Tensor, dict | None]:
         x_in = normw.norm(x) if normw.strategy in ("pre_norm", "sandwich_norm") else x
         out, updated = core_fn(x_in)
         out = normw.dropout(out)
@@ -330,7 +330,7 @@ class BaseTransformer(nn.Module, ABC):
         layer_norm_eps: float = 1e-5,
         max_seq_len: int = 5000,
         pos_encoding_scale: float = 1.0,
-        pos_encoder: Optional[nn.Module] = None,
+        pos_encoder: nn.Module | None = None,
         pos_encoding_type: Literal["sinusoidal", "learnable", "rope", "alibi"] = "rope",
         rope_base: float = 10000.0,
         rope_scaling_type: Literal["none", "yarn", "ntk", "linear"] = "none",
@@ -383,13 +383,13 @@ class BaseTransformer(nn.Module, ABC):
         use_mod: bool = False,
         mod_mode: Literal["token", "seq"] = "token",
         mod_lambda: float = 0.05,
-        mod_budget_scheduler: Optional[MoDBudgetScheduler] = None,
+        mod_budget_scheduler: MoDBudgetScheduler | None = None,
         # Global scaling for MoE aux loss (FIX)
         moe_aux_lambda: float = 1.0,
         use_attention_residual: bool = False,
         attn_residual_type: str = "full",
         attention_residual_block_size: int = 8,
-        layer_dropout_schedule: Optional["LayerDropoutSchedule"] = None,
+        layer_dropout_schedule: "LayerDropoutSchedule" | None = None,
         initializer_range: float = 0.02,
         depth_scaled_init: bool = True,
         **kwargs,
@@ -419,7 +419,7 @@ class BaseTransformer(nn.Module, ABC):
             attention_mode = att_type
         self.attention_mode = attention_mode
         self.att_type = att_type
-        self.budget_scheduler: Optional[BudgetScheduler] = None
+        self.budget_scheduler: BudgetScheduler | None = None
 
         # MoE aux scaling (FIX)
         self.moe_aux_lambda = float(moe_aux_lambda)
@@ -812,9 +812,9 @@ class BaseTransformer(nn.Module, ABC):
 
     def set_mhc_params(
         self,
-        n_streams: Optional[int] = None,
-        sinkhorn_iters: Optional[int] = None,
-        collapse: Optional[str] = None,
+        n_streams: int | None = None,
+        sinkhorn_iters: int | None = None,
+        collapse: str | None = None,
     ) -> None:
         warnings.warn(
             "set_mhc_params is deprecated; configure use_mhc, mhc_n_streams, "
@@ -920,7 +920,7 @@ class BaseTransformer(nn.Module, ABC):
         )
 
     # FIX: aggregate aux loss over executed layer indices (supports skipping)
-    def _aggregate_aux_loss(self, used_indices: List[int]) -> None:
+    def _aggregate_aux_loss(self, used_indices: list[int]) -> None:
         """Aggregate per-layer aux losses into a single tensor."""
         total_aux: float = 0.0
         device: torch.device | None = None
@@ -946,7 +946,7 @@ class BaseTransformer(nn.Module, ABC):
             return fn(*inputs)
         return torch.utils.checkpoint.checkpoint(fn, *inputs, use_reentrant=False)
 
-    def _get_runtime_budget(self) -> Optional[float]:
+    def _get_runtime_budget(self) -> float | None:
         if self.training and (self.budget_scheduler is not None):
             return self.budget_scheduler.get_budget()
         return self.gate_budget
@@ -968,7 +968,7 @@ class BaseTransformer(nn.Module, ABC):
                 "Paper-style Attention Residuals are not wired for Mixture-of-Depths."
             )
 
-    def _init_attention_residual_state(self, x: torch.Tensor) -> Optional[dict]:
+    def _init_attention_residual_state(self, x: torch.Tensor) -> dict | None:
         if not self.use_attention_residual:
             return None
         return _init_attention_residual_state(
@@ -976,7 +976,7 @@ class BaseTransformer(nn.Module, ABC):
         )
 
     def _finalize_attention_residual_output(
-        self, state: Optional[dict], fallback: torch.Tensor
+        self, state: dict | None, fallback: torch.Tensor
     ) -> torch.Tensor:
         if not self.use_attention_residual or state is None:
             return fallback
@@ -1006,7 +1006,7 @@ class BaseTransformer(nn.Module, ABC):
             layer.set_layer_attention_type(self._get_layer_attention_type(layer_idx))
         return layer
 
-    def _configured_attention_types(self) -> List[str]:
+    def _configured_attention_types(self) -> list[str]:
         return sorted(
             {self._get_layer_attention_type(i) for i in range(self.num_layers)}
         )
@@ -1044,13 +1044,13 @@ class BaseTransformer(nn.Module, ABC):
         self,
         layer_idx: int,
         x: torch.Tensor,
-        active_mask: Optional[torch.Tensor],
-    ) -> Tuple[
+        active_mask: torch.Tensor | None,
+    ) -> tuple[
         nn.Module,
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
-        Optional[torch.Tensor],
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
+        torch.Tensor | None,
     ]:
         layer = self._resolve_layer(layer_idx)
         if not self.use_mod:
@@ -1078,7 +1078,7 @@ class BaseTransformer(nn.Module, ABC):
         indices, slot_mask = mod_routed_indices(keep_mask, capacity=capacity)
         return layer, router_logits, keep_mask, indices, slot_mask
 
-    def _finalize_layer_stack(self, used_indices: List[int]) -> None:
+    def _finalize_layer_stack(self, used_indices: list[int]) -> None:
         self._aggregate_aux_loss(used_indices)
         if self.training and self.budget_scheduler is not None:
             self.budget_scheduler.step()
