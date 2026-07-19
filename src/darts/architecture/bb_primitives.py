@@ -27,12 +27,24 @@ __all__ = ["RMSNorm", "SwiGLUFFN", "GeGLUFFN", "ReluFFN"]
 class RMSNorm(nn.Module):
     """Root Mean Square Layer Normalization with Triton acceleration when available."""
 
-    def __init__(self, dim: int, eps: float = 1e-8):
+    def __init__(self, dim: int, eps: float = 1e-8, use_simple_rmsnorm: bool = False):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
+        self.use_simple_rmsnorm = use_simple_rmsnorm
+        if not use_simple_rmsnorm:
+            self.weight = nn.Parameter(torch.ones(dim))
+        else:
+            # Simple RMSNorm: l2norm(x) * sqrt(dim), no learned gamma
+            self.register_parameter("weight", None)
 
     def forward(self, x):
+        # Simple RMSNorm: l2norm(x) * sqrt(dim), no learned gamma
+        if self.use_simple_rmsnorm:
+            variance = x.pow(2).mean(dim=-1, keepdim=True)
+            return x * torch.rsqrt(variance + self.eps) * torch.sqrt(
+                torch.tensor(x.shape[-1], dtype=x.dtype, device=x.device)
+            )
+
         if (
             _should_use_triton(x, min_numel=2048)
             and TRITON_AVAILABLE

@@ -23,12 +23,20 @@ import torch.nn as nn
 class RMSNorm(nn.Module):
     """Lite RMSNorm over last dim."""
 
-    def __init__(self, d: int, eps: float = 1e-5):
+    def __init__(self, d: int, eps: float = 1e-5, use_simple_rmsnorm: bool = False):
         super().__init__()
         self.eps = eps
-        self.weight = nn.Parameter(torch.ones(d))
+        self.use_simple_rmsnorm = use_simple_rmsnorm
+        if not use_simple_rmsnorm:
+            self.weight = nn.Parameter(torch.ones(d))
+        else:
+            self.register_parameter("weight", None)
 
     def forward(self, x):
+        # Simple RMSNorm: l2norm(x) * sqrt(d), no learned gamma
+        if self.use_simple_rmsnorm:
+            scale = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+            return x * scale * torch.sqrt(torch.tensor(x.shape[-1], dtype=x.dtype, device=x.device))
         scale = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return x * scale * self.weight
 

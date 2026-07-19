@@ -26,14 +26,22 @@ class RMSNorm(nn.Module):
     """High-performance RMSNorm with Triton acceleration."""
 
     def __init__(
-        self, d_model: int, eps: float = 1e-5, elementwise_affine: bool = True
+        self,
+        d_model: int,
+        eps: float = 1e-5,
+        elementwise_affine: bool = True,
+        use_simple_rmsnorm: bool = False,
     ):
         super().__init__()
         self.d_model = d_model
         self.eps = eps
         self.elementwise_affine = elementwise_affine
+        self.use_simple_rmsnorm = use_simple_rmsnorm
 
-        if elementwise_affine:
+        if use_simple_rmsnorm:
+            # Simple RMSNorm: l2norm(x) * sqrt(dim), no learned gamma
+            self.register_parameter("weight", None)
+        elif elementwise_affine:
             self.weight = nn.Parameter(torch.ones(d_model))
         else:
             self.register_parameter("weight", None)
@@ -42,6 +50,16 @@ class RMSNorm(nn.Module):
         if x.shape[-1] != self.d_model:
             raise ValueError(
                 f"Expected last dimension to be {self.d_model}, got {x.shape[-1]}"
+            )
+
+        # Simple RMSNorm: l2norm(x) * sqrt(dim), no learned gamma
+        # From x-transformers: "July 2023 A linear attention paper has experiments to show
+        # that removing the learned multiplicative gamma led to no performance degradation.
+        # This simplifies the RMS normalization to a satisfying l2norm(x) * sqrt(dim)."
+        if self.use_simple_rmsnorm:
+            variance = x.pow(2).mean(dim=-1, keepdim=True)
+            return x * torch.rsqrt(variance + self.eps) * torch.sqrt(
+                torch.tensor(self.d_model, dtype=x.dtype, device=x.device)
             )
 
         if (
@@ -60,7 +78,8 @@ class RMSNorm(nn.Module):
     def extra_repr(self) -> str:
         return (
             f"d_model={self.d_model}, eps={self.eps}, "
-            f"elementwise_affine={self.elementwise_affine}"
+            f"elementwise_affine={self.elementwise_affine}, "
+            f"use_simple_rmsnorm={self.use_simple_rmsnorm}"
         )
 
 

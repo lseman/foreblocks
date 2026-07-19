@@ -53,7 +53,14 @@ class _Residual(nn.Module):
             out, _, _ = self.sublayer(h, is_causal=True)
             aux = x.new_zeros(())
         else:  # moe
-            out, aux = self.sublayer(h, return_aux_loss=True)
+            padding_mask = (
+                None
+                if attention_mask is None
+                else ~attention_mask.to(device=x.device, dtype=torch.bool)
+            )
+            out, aux = self.sublayer(
+                h, return_aux_loss=True, padding_mask=padding_mask
+            )
         return x + self.drop(out), aux
 
 

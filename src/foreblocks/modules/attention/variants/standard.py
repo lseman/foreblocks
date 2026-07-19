@@ -15,7 +15,7 @@ Core API:
 
 import torch
 
-from foreblocks.modules.attention.cache.kv import PagedKVProvider
+from foreblocks.modules.attention.cache.kv import PagedKVProvider, StaticKVCache
 
 
 class StandardAttentionImpl:
@@ -34,16 +34,110 @@ class StandardAttentionImpl:
         is_causal: bool,
         need_weights: bool,
         layer_state=None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
+        if self._is_decode(layer_state=layer_state, is_causal=is_causal):
+            return self.decode(
+                query,
+                key,
+                value,
+                attn_mask,
+                key_padding_mask,
+                is_causal,
+                need_weights,
+                layer_state=layer_state,
+                **kwargs,
+            )
+        return self.prefill(
+            query,
+            key,
+            value,
+            attn_mask,
+            key_padding_mask,
+            is_causal,
+            need_weights,
+            layer_state=layer_state,
+            **kwargs,
+        )
+
+    def _is_decode(self, *, layer_state, is_causal: bool) -> bool:
+        return bool(
+            layer_state is not None
+            and not self.parent.cross_attention
+            and is_causal
+        )
+
+    def prefill(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
+        is_causal: bool,
+        need_weights: bool,
+        layer_state=None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
+        del kwargs
+        B, T_q, _ = query.shape
+        q, k, v, q_start_pos = self.parent._prepare_qkv_attention(
+            query, key, value, layer_state
+        )
+        out, weights = self.parent._compute_attention(
+            q, k, v, attn_mask, key_padding_mask, is_causal, need_weights,
+            q_start_pos=q_start_pos,
+        )
+        return self.parent._finalize_projected_output(out, B, T_q), weights, layer_state
+
+    def decode(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
+        is_causal: bool,
+        need_weights: bool,
+        layer_state=None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
+        return self._decode_impl(
+            query,
+            key,
+            value,
+            attn_mask,
+            key_padding_mask,
+            is_causal,
+            need_weights,
+            layer_state=layer_state,
+            **kwargs,
+        )
+
+    def _decode_impl(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
+        is_causal: bool,
+        need_weights: bool,
+        layer_state=None,
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
         T_k = key.shape[1]
 
+        has_static_cache = bool(
+            isinstance(layer_state, dict) and "static_cache" in layer_state
+        )
         use_paged_decode = (
             self.parent.use_paged_cache
             and (layer_state is not None)
             and (not self.parent.cross_attention)
             and is_causal
+            and not has_static_cache
         )
 
         if use_paged_decode:
@@ -209,6 +303,24 @@ class StandardAttentionImpl:
         q, k, v, q_start_pos = self.parent._prepare_qkv_attention(
             query, key, value, layer_state
         )
+        static_cache = (
+            layer_state.get("static_cache")
+            if isinstance(layer_state, dict)
+            else None
+        )
+        if isinstance(static_cache, StaticKVCache):
+            # The fixed cache has a wider key axis than the current query
+            # chunk. Causality is rebuilt from q_start_pos in _compute_attention.
+            if is_causal and attn_mask is not None and attn_mask.shape[-1] == T_q:
+                attn_mask = None
+            static_padding = torch.arange(
+                k.size(2), device=k.device, dtype=torch.long
+            ).view(1, -1) >= static_cache.lengths.view(B, 1)
+            key_padding_mask = (
+                static_padding
+                if key_padding_mask is None
+                else (key_padding_mask.bool() | static_padding)
+            )
         out, weights = self.parent._compute_attention(
             q,
             k,

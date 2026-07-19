@@ -21,6 +21,7 @@ Core API:
 
 from foreblocks.modules.moe.experts import dispatchers, moe, moe_logging, routers
 from foreblocks.modules.moe.experts.dispatchers import (
+    ConfidenceCapacityDispatcher,
     DroplessPackedDispatcher,
     ExpertChoiceDispatcher,
 )
@@ -31,6 +32,7 @@ from foreblocks.modules.moe.experts.expert_blocks import (
 )
 from foreblocks.modules.moe.experts.moe import (
     MoEFeedForwardDMoE,
+    MoERoutingState,
     eager_topk_routing,
     maybe_compile,
     optimized_topk_routing,
@@ -49,12 +51,14 @@ from foreblocks.modules.moe.experts.routers import (
 __all__ = [
     "AdaptiveNoisyTopKRouter",
     "ContinuousTopKRouter",
+    "ConfidenceCapacityDispatcher",
     "DroplessPackedDispatcher",
     "ExpertChoiceDispatcher",
     "HashTopKRouter",
     "LinearRouter",
     "MTPHead",
     "MoEFeedForwardDMoE",
+    "MoERoutingState",
     "MoELogger",
     "MoE_FFNExpert",
     "MoE_SwiGLUExpert",

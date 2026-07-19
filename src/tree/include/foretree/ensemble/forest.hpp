@@ -169,7 +169,7 @@ struct ForeForestConfig {
     double fw_alpha_tol = 1e-8;
 
     // DART
-    bool dart_enabled = true;
+    bool dart_enabled = false;
     double dart_drop_rate = 0.1;
     int dart_max_drop = 3;
     bool dart_normalize = true;
@@ -553,6 +553,15 @@ public:
     int size() const {
         return (int)trees_.size();
     }
+
+    // Return the packed tree at the given index.
+    const PackedTree& get_packed_tree(int index) const {
+        if (index < 0 || index >= (int)trees_.size())
+            throw std::out_of_range(
+                "ForeForest::get_packed_tree: index out of range");
+        return trees_[static_cast<size_t>(index)].get_packed_tree();
+    }
+
     const std::vector<double>& train_metric_history() const {
         return train_metric_history_;
     }
@@ -1415,6 +1424,12 @@ private:
         std::vector<int> dropped;
         if (!cfg_.dart_enabled || trees_.empty())
             return dropped;
+        // Don't drop the only tree - gradients must reflect all existing trees
+        if (cfg_.dart_one_drop_min && trees_.size() == 1) {
+            return dropped;
+        }
+        // Don't drop all trees - keep at least trees_.size() - cfg_.dart_max_drop
+        int max_drop = cfg_.dart_max_drop > 0 ? std::min(cfg_.dart_max_drop, (int)trees_.size() - 1) : (int)trees_.size() - 1;
 
         std::uniform_real_distribution<double> U(0.0, 1.0);
         for (size_t t = 0; t < trees_.size(); ++t) {

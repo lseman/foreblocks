@@ -20,12 +20,23 @@ except Exception:  # pragma: no cover - foreblocks namespace may exclude transfo
 class RMSNorm(nn.Module):
     """Simple RMS normalization with Triton acceleration when available."""
 
-    def __init__(self, dim: int, eps: float = 1e-8):
+    def __init__(self, dim: int, eps: float = 1e-8, use_simple_rmsnorm: bool = False):
         super().__init__()
-        self.scale = nn.Parameter(torch.ones(dim))
         self.eps = eps
+        self.use_simple_rmsnorm = use_simple_rmsnorm
+        if not use_simple_rmsnorm:
+            self.scale = nn.Parameter(torch.ones(dim))
+        else:
+            self.register_parameter("scale", None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Simple RMSNorm: l2norm(x) * sqrt(dim), no learned gamma
+        if self.use_simple_rmsnorm:
+            variance = x.pow(2).mean(dim=-1, keepdim=True)
+            return x * torch.rsqrt(variance + self.eps) * torch.sqrt(
+                torch.tensor(x.shape[-1], dtype=x.dtype, device=x.device)
+            )
+
         if (
             _should_use_triton(x, min_numel=2048)
             and TRITON_AVAILABLE

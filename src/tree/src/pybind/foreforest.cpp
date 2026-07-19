@@ -17,6 +17,7 @@
 #include "foretree/split/split_engine.hpp"
 #include "foretree/split/split_finder.hpp"
 #include "foretree/tree/tree_types.hpp"
+#include "foretree/tree/packed_tree.hpp"
 
 namespace nb = nanobind;
 using namespace nanobind::literals;
@@ -463,5 +464,54 @@ NB_MODULE(foreforest, m) {
         .def("eval_metric_name", &ForeForest::eval_metric_name)
 
         .def("size", &ForeForest::size)
-        .def("clear", &ForeForest::clear);
+        .def("clear", &ForeForest::clear)
+        .def("num_classes", &ForeForest::num_classes)
+        .def(
+            "get_packed_tree", [](const ForeForest& self, int idx) -> nb::tuple {
+                const auto& t = self.get_packed_tree(idx);
+                auto ia = [](const int* d, size_t s) {
+                    auto* b = new int[s];
+                    std::memcpy(b, d, s * sizeof(int));
+                    auto c = nb::capsule(b, [](void* p) noexcept { delete[] static_cast<int*>(p); });
+                    return nb::ndarray<nb::numpy, int, nb::c_contig>(b, {s}, std::move(c));
+                };
+                auto da = [](const double* d, size_t s) {
+                    auto* b = new double[s];
+                    std::memcpy(b, d, s * sizeof(double));
+                    auto c = nb::capsule(b, [](void* p) noexcept { delete[] static_cast<double*>(p); });
+                    return nb::ndarray<nb::numpy, double, nb::c_contig>(b, {s}, std::move(c));
+                };
+                auto ua = [](const uint8_t* d, size_t s) {
+                    auto* b = new uint8_t[s];
+                    std::memcpy(b, d, s * sizeof(uint8_t));
+                    auto c = nb::capsule(b, [](void* p) noexcept { delete[] static_cast<uint8_t*>(p); });
+                    return nb::ndarray<nb::numpy, uint8_t, nb::c_contig>(b, {s}, std::move(c));
+                };
+                return nb::make_tuple(
+                    ia(t.features.data(), t.features.size()),
+                    ia(t.thresholds.data(), t.thresholds.size()),
+                    da(t.split_values.data(), t.split_values.size()),
+                    ua(t.split_kinds.data(), t.split_kinds.size()),
+                    ua(t.missing_left.data(), t.missing_left.size()),
+                    ia(t.left_children.data(), t.left_children.size()),
+                    ia(t.right_children.data(), t.right_children.size()),
+                    ua(t.leaf_flags.data(), t.leaf_flags.size()),
+                    da(t.cover.data(), t.cover.size()),
+                    ia(t.categorical_offsets.data(), t.categorical_offsets.size()),
+                    ia(t.categorical_counts.data(), t.categorical_counts.size()),
+                    ia(t.categorical_bins.data(), t.categorical_bins.size()),
+                    ia(t.pair_features_a.data(), t.pair_features_a.size()),
+                    ia(t.pair_features_b.data(), t.pair_features_b.size()),
+                    ia(t.pair_thresholds_a.data(), t.pair_thresholds_a.size()),
+                    ia(t.pair_thresholds_b.data(), t.pair_thresholds_b.size()),
+                    ua(t.pair_quadrant_masks.data(), t.pair_quadrant_masks.size()),
+                    ia(t.oblique_offsets.data(), t.oblique_offsets.size()),
+                    ia(t.oblique_counts.data(), t.oblique_counts.size()),
+                    ia(t.oblique_features.data(), t.oblique_features.size()),
+                    da(t.oblique_weights.data(), t.oblique_weights.size()),
+                    da(t.oblique_thresholds.data(), t.oblique_thresholds.size()),
+                    da(t.leaf_values.data(), t.leaf_values.size())
+                );
+            }, nb::arg("index"),
+            "Return packed tree data as a tuple of numpy arrays.");
 }

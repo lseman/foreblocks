@@ -68,7 +68,10 @@ find_package(Eigen3 CONFIG REQUIRED)
 if(TREE_ENABLE_CUDA_BACKEND)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
-  add_library(foretree_cuda STATIC "${TREE_SRC_DIR}/gpu/cuda_histogram.cu")
+  add_library(foretree_cuda STATIC
+    "${TREE_SRC_DIR}/gpu/cuda_histogram.cu"
+    "${TREE_SRC_DIR}/gpu/gpu_prediction.cu"
+  )
   target_include_directories(foretree_cuda PUBLIC "${TREE_INCLUDE_DIR}")
   target_link_libraries(foretree_cuda PUBLIC CUDA::cudart)
   target_compile_features(foretree_cuda PUBLIC cxx_std_20)
@@ -134,11 +137,11 @@ function(tree_common_setup tgt)
 endfunction()
 
 if(TREE_BUILD_FORETREE)
-  # Prefer Python 3.12
+  # Prefer Python 3.12+
   if(NOT DEFINED Python3_EXECUTABLE)
-    find_program(Python3_EXECUTABLE NAMES python3.12 python3.11 python3)
+    find_program(Python3_EXECUTABLE NAMES python3.14 python3.13 python3.12 python3.11 python3)
   endif()
-  find_package(Python3 3.12 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
+  find_package(Python3 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
   CPMAddPackage(
     NAME nanobind
     GITHUB_REPOSITORY wjakob/nanobind
@@ -161,11 +164,11 @@ if(TREE_BUILD_FORETREE)
 endif()
 
 if(TREE_BUILD_FOREFOREST)
-  # Prefer Python 3.12
+  # Prefer Python 3.12+
   if(NOT DEFINED Python3_EXECUTABLE)
-    find_program(Python3_EXECUTABLE NAMES python3.12 python3.11 python3)
+    find_program(Python3_EXECUTABLE NAMES python3.14 python3.13 python3.12 python3.11 python3)
   endif()
-  find_package(Python3 3.12 EXACT COMPONENTS Interpreter Development.Module REQUIRED)
+  find_package(Python3 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
 
   cpmaddpackage(
     NAME nanobind

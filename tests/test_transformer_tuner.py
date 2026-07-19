@@ -1,6 +1,6 @@
 import numpy as np
 
-from foreblocks.models.transformer.transformer_tuner import ModernTransformerTuner
+from foreblocks.models.transformer.tuner import ModernTransformerTuner
 
 
 def test_transformer_tuner_prefers_single_scale_patching_for_clean_daily_cycle():

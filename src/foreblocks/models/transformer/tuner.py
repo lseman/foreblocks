@@ -1,4 +1,4 @@
-"""foreblocks.models.transformer.transformer_tuner.
+"""foreblocks.models.transformer.tuner.
 
 Auto-tuning for transformer hyperparameters from time series characteristics.
 

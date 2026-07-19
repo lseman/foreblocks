@@ -137,9 +137,10 @@ class FeedForwardBlock(nn.Module):
         num_experts: int = 8,
         num_shared: int = 1,
         top_k: int = 2,
-        load_balance_weight: float = 1e-2,
+        load_balance_weight: float | None = None,
         z_loss_weight: float = 1e-3,
         moe_capacity_factor: float = 1.25,
+        moe_capacity_pruning: bool = False,
         router_type: str = "noisy_topk",
         router_temperature: float = 1.0,
         router_perturb_noise: float = 0.0,
@@ -182,7 +183,7 @@ class FeedForwardBlock(nn.Module):
         moe_latent_dim: int | None = None,
         moe_latent_d_ff: int | None = None,
         # ── SOTA: load balancing, soft capacity, entropy ─────────────────────
-        moe_aux_loss_weight: float = 1e-2,
+        moe_aux_loss_weight: float | None = None,
         moe_num_groups: int = 1,
         moe_soft_capacity: bool = False,
         moe_entropy_reg_weight: float = 0.0,
@@ -210,6 +211,7 @@ class FeedForwardBlock(nn.Module):
                 load_balance_weight=load_balance_weight,
                 z_loss_weight=z_loss_weight,
                 moe_capacity_factor=moe_capacity_factor,
+                moe_capacity_pruning=moe_capacity_pruning,
                 router_type=router_type,
                 router_temperature=router_temperature,
                 router_perturb_noise=router_perturb_noise,
@@ -275,9 +277,24 @@ class FeedForwardBlock(nn.Module):
             )
             self._supports_aux = False
 
-    def forward(self, x, return_aux_loss: bool = False, **kwargs):
+    def forward(
+        self,
+        x,
+        return_aux_loss: bool = False,
+        return_router_state: bool = False,
+        **kwargs,
+    ):
         if self.use_moe:
-            out, aux = self.block(x, return_aux_loss=True, **kwargs)
+            result = self.block(
+                x,
+                return_aux_loss=True,
+                return_router_state=return_router_state,
+                **kwargs,
+            )
+            if return_router_state:
+                out, aux, state = result
+                return (out, aux, state) if return_aux_loss else (out, state)
+            out, aux = result
             return (out, aux) if return_aux_loss else out
         else:
             y = self.block(x)

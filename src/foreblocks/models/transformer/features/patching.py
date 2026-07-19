@@ -1,4 +1,4 @@
-"""foreblocks.models.transformer.patching.
+"""foreblocks.models.transformer.features.patching.
 
 PatchTST-style patch tokenization with Triton-accelerated detokenization.
 

@@ -12,6 +12,8 @@ from foreblocks.modules.attention.cache.kv import (
     DenseKVProvider,
     KVProvider,
     PagedKVProvider,
+    StaticKVCache,
+    StaticKVProvider,
 )
 from foreblocks.modules.attention.cache.paged import PagedKVCache
 
@@ -21,4 +23,7 @@ __all__ = [
     "KVProvider",
     "PagedKVProvider",
     "PagedKVCache",
+    "StaticKVCache",
+    "StaticKVProvider",
 ]
+from foreblocks.modules.attention.cache.base import *  # noqa: F403

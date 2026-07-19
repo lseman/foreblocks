@@ -1,4 +1,4 @@
-"""foreblocks.models.transformer.mhc.
+"""foreblocks.models.transformer.features.mhc.
 
 Multi-stream information routing via learned, manifold-constrained gating.
 

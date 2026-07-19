@@ -80,7 +80,7 @@ def test_grad_residual_equals_grad_update():
 
 def test_fallback_for_large_d():
     from foreblocks.layers.norms.rms_norm import RMSNorm
-    from foreblocks.models.transformer.fusions import fused_dropout_add_norm
+    from foreblocks.models.transformer.features.fusions import fused_dropout_add_norm
 
     D = 4096
     residual = torch.randn(1, 4, D, device="cuda")

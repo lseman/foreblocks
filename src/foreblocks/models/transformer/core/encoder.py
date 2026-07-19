@@ -1,4 +1,4 @@
-"""foreblocks.models.transformer.tf_encoder.
+"""foreblocks.models.transformer.core.encoder.
 
 Transformer encoder with lazy multi-backend attention and mixture-of-depths routing.
 
@@ -23,22 +23,29 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.layers.embeddings import InformerTimeEmbedding
-from foreblocks.models.transformer.mhc import mhc_init_streams
-from foreblocks.models.transformer.patching import PatchInfo, patchify_padding_mask
-from foreblocks.models.transformer.tf_base import (
+from foreblocks.models.transformer.features.mhc import mhc_init_streams
+from foreblocks.models.transformer.runtime.outputs import TransformerEncoderOutput
+from foreblocks.models.transformer.features.patching import PatchInfo, patchify_padding_mask
+from foreblocks.models.transformer.core.base import (
     BaseTransformer,
     BaseTransformerLayer,
+)
+from foreblocks.models.transformer.runtime.execution import (
     MHCBlockMixin,
     NormWrapper,
     ResidualBlockMixin,
+    _ModelLayerInvokeStrategy,
+)
+from foreblocks.models.transformer.runtime.residual_state import (
     _append_attention_residual_update,
     _attention_residual_input,
+    _init_attention_residual_state,
+)
+from foreblocks.models.transformer.runtime.routing import (
     _gateskip_active_mask_from_padding,
     _gather_padding_mask,
     _gather_sequence_tokens,
     _gather_square_mask,
-    _init_attention_residual_state,
-    _ModelLayerInvokeStrategy,
     _patchify_gateskip_active_mask,
     _scatter_mixture_of_depths_output,
 )
@@ -73,6 +80,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         dropout: float = 0.1,
         activation: str = "gelu",
         att_type: str = "standard",
+        attn_implementation: str = "auto",
         freq_modes: int = 16,
         use_swiglu: bool = True,
         norm_strategy: str = "pre_norm",
@@ -145,6 +153,7 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         }
         self._std_kwargs = dict(
             attention_type=att_type,
+            attn_implementation=attn_implementation,
             freq_modes=freq_modes,
             use_mla=not use_attention_matching_compaction,
             use_attention_matching_compaction=use_attention_matching_compaction,
@@ -429,7 +438,11 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
             def ff_core_attnres(
                 x_in: torch.Tensor,
             ) -> tuple[torch.Tensor, dict | None]:
-                return self._ff_forward_with_aux(x_in, mtp_targets=mtp_targets), None
+                return self._ff_forward_with_aux(
+                    x_in,
+                    mtp_targets=mtp_targets,
+                    padding_mask=src_key_padding_mask,
+                ), None
 
             ff_out, _ = self._run_attnres_core(ff_in, self.ff_norm, ff_core_attnres)
             _append_attention_residual_update(state, ff_out)
@@ -459,10 +472,18 @@ class TransformerEncoderLayer(ResidualBlockMixin, MHCBlockMixin, BaseTransformer
         )
 
         def ff_core(x_in: torch.Tensor) -> tuple[torch.Tensor, dict | None]:
-            return self._ff_forward_with_aux(x_in, mtp_targets=mtp_targets), None
+            return self._ff_forward_with_aux(
+                x_in,
+                mtp_targets=mtp_targets,
+                padding_mask=src_key_padding_mask,
+            ), None
 
         def ff_mhc_core(x_in: torch.Tensor) -> torch.Tensor:
-            return self._ff_forward_with_aux(x_in, mtp_targets=mtp_targets)
+            return self._ff_forward_with_aux(
+                x_in,
+                mtp_targets=mtp_targets,
+                padding_mask=src_key_padding_mask,
+            )
 
         strategy.run_block(
             normw=self.ff_norm,
@@ -602,7 +623,10 @@ class TransformerEncoder(BaseTransformer):
         src_key_padding_mask: torch.Tensor | None = None,  # [B,T] bool
         time_features: torch.Tensor | None = None,  # [B, T, F_tf]
         gateskip_active_mask: torch.Tensor | None = None,  # [B,T] bool
-    ) -> torch.Tensor:
+        output_hidden_states: bool = False,
+        output_attentions: bool = False,
+        return_dict: bool = False,
+    ) -> torch.Tensor | TransformerEncoderOutput:
         B, T, C = src.shape
         if C != self.input_size:
             raise ValueError(f"Expected input size {self.input_size}, got {C}")
@@ -708,6 +732,11 @@ class TransformerEncoder(BaseTransformer):
         runtime_budget = self._get_runtime_budget()
 
         used_indices: list[int] = []
+        all_hidden_states: list[torch.Tensor] | None = (
+            [x] if output_hidden_states else None
+        )
+        router_states: list[object] = []
+        all_attentions: list[torch.Tensor] = []
 
         for i in range(self.num_layers):
             if self.use_mod:
@@ -723,6 +752,8 @@ class TransformerEncoder(BaseTransformer):
                     or routed_slots is None
                     or not bool(routed_slots.any())
                 ):
+                    if all_hidden_states is not None:
+                        all_hidden_states.append(x)
                     continue
 
                 x_routed = _gather_sequence_tokens(x, routed_indices)
@@ -751,9 +782,18 @@ class TransformerEncoder(BaseTransformer):
                     router_logits,
                     use_expert_choice=True,  # Standard Expert Choice: full replacement
                 )
+                if all_hidden_states is not None:
+                    all_hidden_states.append(x)
+                ff_block = getattr(getattr(layer, "feed_forward", None), "block", None)
+                router_state = getattr(ff_block, "last_routing_state", None)
+                if router_state is not None:
+                    router_states.append(router_state)
                 continue
 
             layer = self._resolve_layer(i)
+            attention_module = layer._self_attn()
+            if hasattr(attention_module, "output_attentions"):
+                attention_module.output_attentions = output_attentions
             used_indices.append(i)
             x, streams = invoke.run_encoder_layer(
                 layer=layer,
@@ -765,13 +805,35 @@ class TransformerEncoder(BaseTransformer):
                 attention_residual_state=attention_residual_state,
                 gateskip_active_mask=gateskip_active_mask,
             )
+            if all_hidden_states is not None:
+                all_hidden_states.append(x)
+            ff_block = getattr(getattr(layer, "feed_forward", None), "block", None)
+            router_state = getattr(ff_block, "last_routing_state", None)
+            if router_state is not None:
+                router_states.append(router_state)
+            attention_weights = getattr(attention_module, "last_attn_weights", None)
+            if attention_weights is not None:
+                all_attentions.append(attention_weights)
 
         # FIX: aggregate only over executed layers
         self._finalize_layer_stack(used_indices)
 
         x = self._finalize_attention_residual_output(attention_residual_state, x)
         x = self.final_norm(x)
+        if all_hidden_states is not None:
+            all_hidden_states[-1] = x
         # IMPORTANT: if patch_encoder=True, we DO NOT unpatch here.
+        if return_dict:
+            return TransformerEncoderOutput(
+                last_hidden_state=x,
+                hidden_states=(
+                    tuple(all_hidden_states) if all_hidden_states is not None else None
+                ),
+                aux_loss=self.aux_loss,
+                padding_mask=src_key_padding_mask,
+                router_states=tuple(router_states) if router_states else None,
+                attentions=tuple(all_attentions) if all_attentions else None,
+            )
         return x
 
 

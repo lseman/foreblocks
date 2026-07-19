@@ -26,7 +26,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.models.transformer.sype import AdaptiveWarp, SyPERotator
+from foreblocks.modules.attention.backends import ATTENTION_BACKENDS
+from foreblocks.modules.attention.masking import (
+    build_attention_mask,
+    normalize_blocked_mask,
+    to_additive_mask,
+)
+from foreblocks.models.transformer.features.sype import AdaptiveWarp, SyPERotator
 from foreblocks.modules.attention.cache.decode_stream import (
     paged_stream_decode_standard,
 )
@@ -34,6 +40,8 @@ from foreblocks.modules.attention.cache.kv import (
     DenseKVProvider,
     KVProvider,
     PagedKVProvider,
+    StaticKVCache,
+    StaticKVProvider,
 )
 from foreblocks.modules.attention.cache.paged import PagedKVCache
 from foreblocks.modules.attention.utils.compaction import (
@@ -133,6 +141,7 @@ class MultiAttention(nn.Module):
         n_kv_heads: int | None = None,
         dropout: float = 0.1,
         attention_type: str = "standard",
+        attn_implementation: str = "auto",
         prob_sparse_factor: float = 0.4,
         freq_modes: int = 32,
         max_seq_len: int = 4096,  # kept for API, not used here
@@ -201,6 +210,15 @@ class MultiAttention(nn.Module):
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
         self.attention_type = attention_type
+        self.output_attentions = False
+        self.last_attn_weights: torch.Tensor | None = None
+        self.attn_implementation = str(attn_implementation).lower()
+        backend_spec = ATTENTION_BACKENDS.get(self.attn_implementation)
+        if not backend_spec.available:
+            raise RuntimeError(
+                f"attention backend {backend_spec.name!r} is unavailable: "
+                f"{backend_spec.unavailable_reason}"
+            )
         self.cross_attention = cross_attention
 
         # GQA/MQA
@@ -832,17 +850,19 @@ class MultiAttention(nn.Module):
         key = key if key is not None else query
         value = value if value is not None else key
 
-        return self.impl.forward(
+        result = self.impl.forward(
             query,
             key,
             value,
             attn_mask,
             key_padding_mask,
             is_causal,
-            need_weights,
+            need_weights or self.output_attentions,
             layer_state=layer_state,
             cu_seqlens=cu_seqlens,
         )
+        self.last_attn_weights = result[1]
+        return result
 
     def reset_cache(self):
         """Reset any non-paged cached patterns in frequency / DWT modules."""
@@ -1154,39 +1174,13 @@ class MultiAttention(nn.Module):
         Normalize attn_mask to bool [B, H, T_q, T_k] (True = masked).
         Supports [T_q,T_k], [B,T_q,T_k], [1,H,T_q,T_k], [B,H,T_q,T_k].
         """
-        mask = attn_mask.bool()
-        if mask.dim() == 2:
-            mask = mask.view(1, 1, T_q, T_k)
-        elif mask.dim() == 3:
-            if mask.shape[0] in (1, B):
-                mask = mask.view(mask.shape[0], 1, T_q, T_k)
-            else:
-                raise ValueError(
-                    f"Unsupported 3D attn_mask shape {tuple(mask.shape)}; expected [B,T_q,T_k]."
-                )
-        elif mask.dim() != 4:
-            raise ValueError(
-                f"Unsupported attn_mask rank {mask.dim()}; expected 2D/3D/4D."
-            )
-
-        if mask.shape[-2:] != (T_q, T_k):
-            raise ValueError(
-                f"attn_mask last dims {tuple(mask.shape[-2:])} != {(T_q, T_k)}."
-            )
-        if mask.shape[0] not in (1, B):
-            raise ValueError(
-                f"attn_mask batch dim {mask.shape[0]} incompatible with B={B}."
-            )
-        if mask.shape[1] not in (1, H):
-            raise ValueError(
-                f"attn_mask head dim {mask.shape[1]} incompatible with H={H}."
-            )
-
-        if mask.shape[0] == 1 and B > 1:
-            mask = mask.expand(B, -1, -1, -1)
-        if mask.shape[1] == 1 and H > 1:
-            mask = mask.expand(-1, H, -1, -1)
-        return mask
+        return normalize_blocked_mask(
+            attn_mask,
+            batch_size=B,
+            num_heads=H,
+            query_length=T_q,
+            key_length=T_k,
+        )
 
     def _slice_attn_mask(
         self,
@@ -1224,6 +1218,24 @@ class MultiAttention(nn.Module):
         dtype: torch.dtype,
         force_paged: bool | None = None,
     ) -> KVProvider:
+        static_cache = (
+            layer_state.get("static_cache")
+            if isinstance(layer_state, dict)
+            else None
+        )
+        if isinstance(static_cache, StaticKVCache):
+            cache_position = (
+                layer_state.get("cache_position")
+                if isinstance(layer_state, dict)
+                else None
+            )
+            update_mask = layer_state.get("cache_update_mask")
+            return StaticKVProvider(
+                static_cache,
+                cache_position=cache_position,
+                update_mask=update_mask,
+            )
+
         use_paged_now = (
             self.use_paged_cache
             and (layer_state is not None)
@@ -1246,6 +1258,7 @@ class MultiAttention(nn.Module):
                 use_mla=self.use_mla,
                 k_up_proj=self.k_up_proj,
                 v_up_proj=self.v_up_proj,
+                update_mask=layer_state.get("cache_update_mask"),
             )
 
         return DenseKVProvider(
@@ -1370,7 +1383,45 @@ class MultiAttention(nn.Module):
         if not self.cross_attention:
             k, v = provider.get_kv(k, v, kv_latent=kv_latent)
 
-        return q, self._repeat_kv(k), self._repeat_kv(v), q_start_pos
+        return q, k, v, q_start_pos
+
+    def _can_use_sdpa(
+        self,
+        *,
+        need_weights: bool,
+        q_start_pos: torch.Tensor | None,
+    ) -> bool:
+        if self.attn_implementation == "eager":
+            return False
+        if not hasattr(F, "scaled_dot_product_attention"):
+            return False
+        if need_weights or q_start_pos is not None:
+            return False
+        # These features modify attention scores and therefore require eager
+        # score materialization until they have dedicated backend hooks.
+        return not (
+            self.logit_softcap is not None
+            or self.use_learned_temp
+            or self.use_multiscale_mask
+            or self.use_alibi
+        )
+
+    def _sdpa_attention_mask(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
+        is_causal: bool,
+    ) -> torch.Tensor | None:
+        blocked = build_attention_mask(
+            query=q,
+            key_length=k.size(2),
+            attention_mask=attn_mask,
+            padding_mask=key_padding_mask,
+            is_causal=is_causal and not self.cross_attention,
+        )
+        return to_additive_mask(blocked, dtype=q.dtype)
 
     # --------------------------------------------------------------------- #
     # Plain full attention compute (prefill / cross)
@@ -1388,6 +1439,97 @@ class MultiAttention(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
+
+        backend = ATTENTION_BACKENDS.get(self.attn_implementation)
+        if backend.runner is not None:
+            if need_weights and not backend.supports_attention_weights:
+                raise RuntimeError(
+                    f"attention backend {backend.name!r} does not return weights"
+                )
+            if q.size(1) != k.size(1) and not backend.supports_gqa:
+                raise RuntimeError(
+                    f"attention backend {backend.name!r} does not support GQA"
+                )
+            if q.device.type not in backend.devices:
+                raise RuntimeError(
+                    f"attention backend {backend.name!r} does not support {q.device.type}"
+                )
+            compiler = getattr(torch, "compiler", None)
+            if (
+                compiler is not None
+                and hasattr(compiler, "is_compiling")
+                and compiler.is_compiling()
+                and not backend.supports_compile
+            ):
+                raise RuntimeError(
+                    f"attention backend {backend.name!r} is not compile-compatible"
+                )
+            mask_builder = backend.mask_builder or build_attention_mask
+            blocked = mask_builder(
+                query=q,
+                key_length=T_k,
+                attention_mask=attn_mask,
+                padding_mask=key_padding_mask,
+                is_causal=is_causal and not self.cross_attention,
+                cache_position=(
+                    q_start_pos[:, None]
+                    + torch.arange(T_q, device=q.device, dtype=torch.long)[None, :]
+                    if q_start_pos is not None
+                    else None
+                ),
+            )
+            backend_mask = (
+                blocked
+                if backend.supports_boolean_mask
+                else to_additive_mask(blocked, dtype=q.dtype)
+            )
+            result = backend.runner(
+                q,
+                k,
+                v,
+                attention_mask=backend_mask,
+                dropout_p=self.dropout_p if self.training else 0.0,
+                scale=self.scale,
+                need_weights=need_weights,
+            )
+            if isinstance(result, tuple):
+                out, weights = result
+            else:
+                out, weights = result, None
+            out = self._apply_subquery_norm(out)
+            out = self._apply_gated_attention(out)
+            return out, weights
+
+        if self._can_use_sdpa(
+            need_weights=need_weights,
+            q_start_pos=q_start_pos,
+        ):
+            sdpa_mask = self._sdpa_attention_mask(
+                q, k, attn_mask, key_padding_mask, is_causal
+            )
+            dropout_p = self.dropout_p if self.training else 0.0
+            try:
+                out = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=sdpa_mask,
+                    dropout_p=dropout_p,
+                    is_causal=False,
+                    enable_gqa=(q.size(1) != k.size(1)),
+                    scale=self.scale,
+                )
+            except (RuntimeError, TypeError) as exc:
+                if self.attn_implementation == "sdpa":
+                    raise RuntimeError("requested SDPA attention backend failed") from exc
+            else:
+                out = self._apply_subquery_norm(out)
+                out = self._apply_gated_attention(out)
+                return out, None
+
+        if k.size(1) != q.size(1):
+            k = self._repeat_kv(k)
+            v = self._repeat_kv(v)
 
         scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B,H,T_q,T_k]
 

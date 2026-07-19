@@ -142,7 +142,7 @@ Deeper transformer layers often benefit from higher dropout (stochastic-depth st
 
 ```python
 from foreblocks.modules.skip.mod import LayerDropoutSchedule
-from foreblocks.models.transformer.tf_encoder import TransformerEncoder
+from foreblocks.models.transformer.core.encoder import TransformerEncoder
 
 # Create the schedule
 dropout_schedule = LayerDropoutSchedule(
@@ -185,7 +185,7 @@ Layer 5: 0.200
 
 ```python
 from foreblocks.modules.skip.mod import LayerDropoutSchedule
-from foreblocks.models.transformer.tf_decoder import TransformerDecoder
+from foreblocks.models.transformer.core.decoder import TransformerDecoder
 
 dropout_schedule = LayerDropoutSchedule(
     num_layers=4,
@@ -560,8 +560,8 @@ moe_ffn = FeedForwardBlock(
 ```python
 from foreblocks.config import TrainingConfig
 from foreblocks.core.training.trainer import Trainer
-from foreblocks.models.transformer.tf_encoder import TransformerEncoder
-from foreblocks.models.transformer.tf_decoder import TransformerDecoder
+from foreblocks.models.transformer.core.encoder import TransformerEncoder
+from foreblocks.models.transformer.core.decoder import TransformerDecoder
 from foreblocks.modules.skip.mod import (
     LayerDropoutSchedule,
     MoDBudgetScheduler,

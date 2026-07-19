@@ -1,12 +1,13 @@
-"""foreblocks.models.transformer.tf_base.
+"""foreblocks.models.transformer.core.base.
 
-Base classes and residual plumbing for modular transformer encoder/decoder.
+Base classes and execution plumbing for modular transformer encoder/decoder.
 
 Implements NormWrapper, ResidualBlockMixin, and MHCBlockMixin that eliminate
 repetitive code across encoder and decoder layers. Provides support for
 pre/post/sandwich normalization, GateSkip residual gating, manifold-constrained
 hyper-connections (mHC), Mixture-of-Depths routing, and attention residual
-tracking. Includes PatchTST-style patching and lazy attention backends.
+tracking. Attention-residual state lives in ``residual_state`` and tensor
+routing lives in ``routing``; this module owns layer/model base classes.
 
 Core API:
 - NormWrapper: norm+dropout holder for pre/post/sandwich strategies
@@ -20,30 +21,32 @@ Core API:
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Callable, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, List, Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
 from foreblocks.layers.embeddings import LearnablePositionalEncoding, PositionalEncoding
 from foreblocks.layers.norms import RMSNorm, create_norm_layer
-from foreblocks.models.transformer.fusions import fused_dropout_add  # fused helpers
-from foreblocks.models.transformer.fusions import (
-    fused_dropout_add_norm,
-    fused_dropout_gateskip_norm,
-    get_dropout_p,
+from foreblocks.models.transformer.runtime.execution import (
+    MHCBlockMixin,
+    NormWrapper,
+    ResidualBlockMixin,
+    ResidualRunCfg,
+    _LayerExecutionStrategy,
 )
-from foreblocks.models.transformer.mhc import (
+from foreblocks.models.transformer.features.mhc import (
     MHCHyperConnection,
-    mhc_apply_norm_streamwise,
-    mhc_collapse_streams,
     mhc_init_streams,
 )
-from foreblocks.models.transformer.patching import (
+from foreblocks.models.transformer.features.patching import (
     PatchTokenizer,
-    patchify_padding_mask,
+)
+from foreblocks.models.transformer.runtime.residual_state import (
+    _attention_residual_values,
+    _init_attention_residual_state,
 )
 from foreblocks.modules.attention.utils.residuals import (
     AttentionResidual,
@@ -52,8 +55,6 @@ from foreblocks.modules.attention.utils.residuals import (
 from foreblocks.modules.moe.ff import FeedForwardBlock
 from foreblocks.modules.skip.gateskip import (
     BudgetScheduler,
-    ResidualGate,
-    apply_skip_to_kv,
 )
 from foreblocks.modules.skip.mod import (
     LayerDropoutSchedule,
@@ -65,624 +66,13 @@ from foreblocks.modules.skip.mod import (
     mod_topk_mask,
 )
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# NormWrapper (holder to avoid accidental double residuals)
-# ──────────────────────────────────────────────────────────────────────────────
-class NormWrapper(nn.Module):
-    """
-    Holder for a norm layer + dropout; do NOT call forward().
-
-    Use:
-        x_norm = self.attn_norm.norm(x)
-        out = sublayer(x_norm)
-        out = self.attn_norm.dropout(out)
-        x = x + out
-    """
-
-    def __init__(
-        self,
-        d_model: int,
-        norm_type: str = "rms",
-        strategy: str = "pre_norm",
-        dropout: float = 0.0,
-        eps: float = 1e-5,
-    ):
-        super().__init__()
-        if strategy not in {"pre_norm", "post_norm", "sandwich_norm"}:
-            raise ValueError(
-                "norm strategy must be one of {'pre_norm','post_norm','sandwich_norm'}"
-            )
-        self.norm = create_norm_layer(norm_type, d_model, eps)
-        self.strategy = strategy
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-
-    def forward(self, *_, **__):
-        raise RuntimeError(
-            "NormWrapper.forward() disabled. Use `.norm(x)` then apply sublayer, "
-            "then `.dropout(y)` and residual yourself."
-        )
+if TYPE_CHECKING:
+    from foreblocks.models.transformer.core.decoder import TransformerDecoder
+    from foreblocks.models.transformer.core.encoder import TransformerEncoder
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Small configs / mixins to DRY repeated residual logic
-# ──────────────────────────────────────────────────────────────────────────────
-@dataclass(frozen=True)
-class ResidualRunCfg:
-    use_gateskip: bool
-    gate_budget: Optional[float]
-    gate_lambda: float
-    training: bool
-
-
-class ResidualBlockMixin:
-    """
-    Eliminates repetitive code for non-mHC residual blocks:
-            - pre_norm vs post_norm vs sandwich_norm
-      - gateskip vs plain residual
-      - fused add vs fused add+norm
-      - optional KV "skip propagation" (decoder)
-    """
-
-    @staticmethod
-    def _drop_p(normw: NormWrapper) -> float:
-        return get_dropout_p(getattr(normw, "dropout", None))
-
-    def _residual_apply(
-        self,
-        x: torch.Tensor,
-        update: torch.Tensor,
-        normw: NormWrapper,
-        p: float,
-        gate: "ResidualGate",
-        cfg: ResidualRunCfg,
-        aux_l2_terms: List[torch.Tensor],
-        # decoder-only KV handling
-        updated_kv: Optional[dict] = None,
-        prev_layer_state: Optional[dict] = None,
-        kv_key: Optional[str] = None,
-        active_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[dict], Optional[torch.Tensor]]:
-        """
-        Returns:
-          x_out,
-          updated_kv (possibly modified by skip-mask),
-          skip_mask (only when gateskip enabled; else None)
-        """
-        if cfg.use_gateskip:
-            x2, skip_mask = fused_dropout_gateskip_norm(
-                residual=x,
-                update=update,
-                gate=gate,
-                use_gateskip=True,
-                gate_budget=cfg.gate_budget,
-                aux_l2_terms=aux_l2_terms,
-                gate_lambda=cfg.gate_lambda,
-                norm_layer=(normw if normw.strategy != "pre_norm" else None),
-                p=p,
-                training=cfg.training,
-                active_mask=active_mask,
-            )
-            if skip_mask is not None and updated_kv is not None and kv_key is not None:
-                updated_kv = apply_skip_to_kv(
-                    updated_kv, skip_mask, prev_layer_state, kv_key
-                )
-            return x2, updated_kv, skip_mask
-
-        # non-gateskip
-        if normw.strategy in ("pre_norm", "sandwich_norm"):
-            x2 = fused_dropout_add(x, update, p=p, training=cfg.training)
-            if normw.strategy == "sandwich_norm":
-                x2 = normw.norm(x2)
-        else:
-            x2 = fused_dropout_add_norm(
-                residual=x,
-                update=update,
-                norm_layer=normw,
-                p=p,
-                training=cfg.training,
-            )
-        return x2, updated_kv, None
-
-    def _run_sublayer_nonmhc(
-        self,
-        x: torch.Tensor,
-        normw: NormWrapper,
-        core_fn: Callable[[torch.Tensor], Tuple[torch.Tensor, Optional[dict]]],
-        gate: "ResidualGate",
-        cfg: ResidualRunCfg,
-        aux_l2_terms: List[torch.Tensor],
-        # KV skip support (decoder)
-        prev_layer_state: Optional[dict] = None,
-        kv_key: Optional[str] = None,
-        active_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[dict], Optional[torch.Tensor]]:
-        """
-        core_fn(x_in) -> (update, updated_kv_or_none)
-        Returns: (x_out, updated_kv, skip_mask)
-        """
-        p = self._drop_p(normw)
-        x_in = normw.norm(x) if normw.strategy in ("pre_norm", "sandwich_norm") else x
-        update, updated_kv = core_fn(x_in)
-        x_out, updated_kv, skip_mask = self._residual_apply(
-            x=x,
-            update=update,
-            normw=normw,
-            p=p,
-            gate=gate,
-            cfg=cfg,
-            aux_l2_terms=aux_l2_terms,
-            updated_kv=updated_kv,
-            prev_layer_state=prev_layer_state,
-            kv_key=kv_key,
-            active_mask=active_mask,
-        )
-        return x_out, updated_kv, skip_mask
-
-
-class MHCBlockMixin:
-    """
-    Eliminates repetitive stream-wise mHC block code:
-      - (optional) streamwise norm
-      - streamwise sublayer run
-      - residual add dropout
-            - (optional) streamwise norm (post_norm / sandwich_norm)
-      - mixer
-    """
-
-    def _mhc_run_block(
-        self,
-        streams: torch.Tensor,  # [B,N,T,D]
-        normw: NormWrapper,
-        hyper_conn: "MHCHyperConnection",
-        core_fn: Callable[[torch.Tensor], torch.Tensor],  # x_in -> upd
-    ) -> torch.Tensor:
-        x_in, maps = hyper_conn.pre_aggregate(streams)
-        if normw.strategy in ("pre_norm", "sandwich_norm"):
-            x_in = normw.norm(x_in)
-
-        upd = core_fn(x_in)
-        upd = normw.dropout(upd)
-        streams = hyper_conn.combine(streams, upd, maps=maps)
-
-        if normw.strategy in ("post_norm", "sandwich_norm"):
-            streams = mhc_apply_norm_streamwise(normw.norm, streams)
-        return streams
-
-
-def _init_attention_residual_state(x: torch.Tensor, mode: str, block_size: int) -> dict:
-    state = {"mode": mode, "current": x}
-    if mode == "full":
-        state["history"] = [x]
-        state["running_sum"] = x
-        return state
-
-    state["blocks"] = [x]
-    state["partial"] = None
-    state["block_size"] = int(block_size)
-    state["sub_layers_in_block"] = 0
-    return state
-
-
-def _attention_residual_input(
-    carrier: torch.Tensor, state: Optional[dict], module: Optional[nn.Module]
-) -> torch.Tensor:
-    if state is None or module is None:
-        return carrier
-    if state["mode"] == "full":
-        return module(state["history"])
-    return module(state["blocks"], state["partial"])
-
-
-def _append_attention_residual_update(
-    state: Optional[dict], update: torch.Tensor
-) -> None:
-    if state is None:
-        return
-
-    if state["mode"] == "full":
-        state["history"].append(update)
-        state["running_sum"] = state["running_sum"] + update
-        state["current"] = state["running_sum"]
-        return
-
-    partial = update if state["partial"] is None else state["partial"] + update
-    state["partial"] = partial
-    state["sub_layers_in_block"] += 1
-    if state["sub_layers_in_block"] >= state["block_size"]:
-        state["blocks"].append(partial)
-        state["partial"] = None
-        state["sub_layers_in_block"] = 0
-    state["current"] = partial
-
-
-def _attention_residual_values(state: dict) -> List[torch.Tensor]:
-    if state["mode"] == "full":
-        return list(state["history"])
-
-    values = list(state["blocks"])
-    if state["partial"] is not None:
-        values.append(state["partial"])
-    return values
-
-
-def _gateskip_active_mask_from_padding(
-    padding_mask: Optional[torch.Tensor],
-) -> Optional[torch.Tensor]:
-    if padding_mask is None:
-        return None
-    return ~padding_mask.to(dtype=torch.bool)
-
-
-def _patchify_gateskip_active_mask(
-    active_mask: Optional[torch.Tensor],
-    *,
-    T: int,
-    patch_len: int,
-    stride: int,
-    pad_end: bool,
-) -> Optional[torch.Tensor]:
-    if active_mask is None:
-        return None
-    pad_mask = ~active_mask.to(dtype=torch.bool)
-    patch_pad_mask = patchify_padding_mask(
-        pad_mask,
-        T=T,
-        patch_len=patch_len,
-        stride=stride,
-        pad_end=pad_end,
-    )
-    if patch_pad_mask is None:
-        return None
-    return ~patch_pad_mask
-
-
-def _gather_sequence_tokens(x: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
-    if indices.numel() == 0:
-        return x[:, :0]
-    view_shape = [indices.size(0), indices.size(1)] + [1] * (x.dim() - 2)
-    expand_shape = [indices.size(0), indices.size(1)] + list(x.shape[2:])
-    gather_idx = indices.view(*view_shape).expand(*expand_shape)
-    return x.gather(1, gather_idx)
-
-
-def _gather_padding_mask(
-    mask: Optional[torch.Tensor],
-    indices: torch.Tensor,
-    slot_mask: torch.Tensor,
-) -> torch.Tensor:
-    if indices.numel() == 0:
-        return slot_mask.new_ones(slot_mask.shape)
-    if mask is None:
-        return ~slot_mask
-    gathered = mask.to(dtype=torch.bool).gather(1, indices)
-    return gathered | (~slot_mask)
-
-
-def _gather_square_mask(
-    mask: Optional[torch.Tensor],
-    indices: torch.Tensor,
-) -> Optional[torch.Tensor]:
-    if mask is None:
-        return None
-    if indices.numel() == 0:
-        shape = (indices.size(0), 0, 0)
-        return mask.new_zeros(shape)
-    B, C = indices.shape
-    if mask.dim() == 2:
-        base = mask.unsqueeze(0).expand(B, -1, -1)
-        gathered = base.gather(1, indices.unsqueeze(-1).expand(-1, -1, base.size(-1)))
-        return gathered.gather(2, indices.unsqueeze(1).expand(-1, C, -1))
-    if mask.dim() == 3:
-        if mask.size(0) == 1 and B > 1:
-            base = mask.expand(B, -1, -1)
-        elif mask.size(0) != B:
-            raise ValueError(
-                f"Batch attention mask shape {tuple(mask.shape)} incompatible with "
-                f"batch size {B}"
-            )
-        else:
-            base = mask
-        gathered = base.gather(1, indices.unsqueeze(-1).expand(-1, -1, base.size(-1)))
-        return gathered.gather(2, indices.unsqueeze(1).expand(-1, C, -1))
-    if mask.dim() == 4:
-        if mask.size(0) == 1 and B > 1:
-            base = mask.expand(B, -1, -1, -1)
-        elif mask.size(0) != B:
-            raise ValueError(
-                f"Batch attention mask shape {tuple(mask.shape)} incompatible with "
-                f"batch size {B}"
-            )
-        else:
-            base = mask
-        gathered = base.gather(
-            2, indices[:, None, :, None].expand(-1, base.size(1), -1, base.size(-1))
-        )
-        return gathered.gather(
-            3, indices[:, None, None, :].expand(-1, base.size(1), C, -1)
-        )
-    raise ValueError(
-        f"Unsupported square attention mask shape {tuple(mask.shape)} for MoD routing"
-    )
-
-
-def _gather_query_mask(
-    mask: Optional[torch.Tensor],
-    indices: torch.Tensor,
-) -> Optional[torch.Tensor]:
-    if mask is None:
-        return None
-    if indices.numel() == 0:
-        shape = (indices.size(0), 0, mask.size(-1))
-        return mask.new_zeros(shape)
-    B = indices.size(0)
-    if mask.dim() == 2:
-        base = mask.unsqueeze(0).expand(B, -1, -1)
-        return base.gather(1, indices.unsqueeze(-1).expand(-1, -1, base.size(-1)))
-    if mask.dim() == 3:
-        if mask.size(0) == 1 and B > 1:
-            base = mask.expand(B, -1, -1)
-        elif mask.size(0) != B:
-            raise ValueError(
-                f"Batch attention mask shape {tuple(mask.shape)} incompatible with "
-                f"batch size {B}"
-            )
-        else:
-            base = mask
-        return base.gather(1, indices.unsqueeze(-1).expand(-1, -1, base.size(-1)))
-    if mask.dim() == 4:
-        if mask.size(0) == 1 and B > 1:
-            base = mask.expand(B, -1, -1, -1)
-        elif mask.size(0) != B:
-            raise ValueError(
-                f"Batch attention mask shape {tuple(mask.shape)} incompatible with "
-                f"batch size {B}"
-            )
-        else:
-            base = mask
-        return base.gather(
-            2, indices[:, None, :, None].expand(-1, base.size(1), -1, base.size(-1))
-        )
-    raise ValueError(
-        f"Unsupported query attention mask shape {tuple(mask.shape)} for MoD routing"
-    )
-
-
-def _scatter_mixture_of_depths_output(
-    x_base: torch.Tensor,
-    x_routed_in: torch.Tensor,
-    x_routed_out: torch.Tensor,
-    indices: torch.Tensor,
-    slot_mask: torch.Tensor,
-    router_logits: torch.Tensor,
-    use_expert_choice: bool = True,
-) -> torch.Tensor:
-    """
-    Scatter MoD routed output back to the base tensor.
-
-    Args:
-        x_base: Original input [B, T, D]
-        x_routed_in: Routed tokens before processing [B, C, D]
-        x_routed_out: Routed tokens after processing [B, C, D]
-        indices: Token indices for each slot [B, C]
-        slot_mask: Boolean mask for valid slots [B, C]
-        router_logits: Router scores for routed tokens [B, C]
-        use_expert_choice: If True, use standard Expert Choice routing
-            (full replacement for routed tokens). If False, use gated delta
-            routing (x_base + sigmoid(logits) * delta).
-
-    Returns:
-        Scattered output [B, T, D]
-    """
-    if indices.numel() == 0:
-        return x_base
-
-    out = x_base.clone()
-    for b in range(out.size(0)):
-        valid = slot_mask[b]
-        if not bool(valid.any()):
-            continue
-        idx = indices[b, valid]
-        if use_expert_choice:
-            # Standard Expert Choice: full replacement for routed tokens
-            out[b, idx] = x_routed_out[b, valid]
-        else:
-            # Legacy gated delta: residual connection with sigmoid gating
-            routed_delta = x_routed_out[b, valid] - x_routed_in[b, valid]
-            routed_scale = torch.sigmoid(router_logits[b, valid]).unsqueeze(-1)
-            out[b, idx] = x_base[b, idx] + routed_scale * routed_delta
-    return out
-
-
-@dataclass
-class _LayerExecutionStrategy:
-    owner: "BaseTransformerLayer"
-    use_mhc: bool
-    x: Optional[torch.Tensor] = None
-    streams: Optional[torch.Tensor] = None
-
-    def run_block(
-        self,
-        *,
-        normw: NormWrapper,
-        gate: "ResidualGate",
-        cfg: ResidualRunCfg,
-        aux_l2_terms: List[torch.Tensor],
-        core_fn: Optional[
-            Callable[[torch.Tensor], Tuple[torch.Tensor, Optional[dict]]]
-        ] = None,
-        mhc_core: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
-        hyper_conn: Optional[nn.Module] = None,
-        prev_layer_state: Optional[dict] = None,
-        kv_key: Optional[str] = None,
-        active_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[Optional[dict], Optional[torch.Tensor]]:
-        if not self.use_mhc:
-            if self.x is None or core_fn is None:
-                raise RuntimeError(
-                    "Non-mHC strategy requires current tensor and core_fn."
-                )
-            self.x, updated_kv, skip_mask = self.owner._run_sublayer_nonmhc(
-                x=self.x,
-                normw=normw,
-                core_fn=core_fn,
-                gate=gate,
-                cfg=cfg,
-                aux_l2_terms=aux_l2_terms,
-                prev_layer_state=prev_layer_state,
-                kv_key=kv_key,
-                active_mask=active_mask,
-            )
-            return updated_kv, skip_mask
-
-        if self.streams is None or mhc_core is None or hyper_conn is None:
-            raise RuntimeError(
-                "mHC strategy requires streams, mhc_core, and hyper_conn."
-            )
-        self.streams = self.owner._mhc_run_block(
-            streams=self.streams,
-            normw=normw,
-            hyper_conn=hyper_conn,
-            core_fn=mhc_core,
-        )
-        return None, None
-
-    def collapse(self, mode: str) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        if not self.use_mhc:
-            if self.x is None:
-                raise RuntimeError("Non-mHC strategy has no tensor to return.")
-            return self.x, None
-        if self.streams is None:
-            raise RuntimeError("mHC strategy has no streams to collapse.")
-        return mhc_collapse_streams(self.streams, mode=mode), self.streams
-
-
-@dataclass(frozen=True)
-class _ModelLayerInvokeStrategy:
-    owner: "BaseTransformer"
-    use_checkpoint: bool
-
-    def run_encoder_layer(
-        self,
-        *,
-        layer: nn.Module,
-        x: torch.Tensor,
-        src_mask: Optional[torch.Tensor],
-        src_key_padding_mask: Optional[torch.Tensor],
-        budget: Optional[float],
-        streams: Optional[torch.Tensor],
-        attention_residual_state: Optional[dict],
-        gateskip_active_mask: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        if self.use_checkpoint:
-
-            def ckpt_fn(_x, layer_mod=layer, b=budget):
-                out_x, _ = layer_mod(
-                    _x,
-                    src_mask,
-                    src_key_padding_mask,
-                    gate_budget=b,
-                    gate_lambda=self.owner.gate_lambda,
-                    use_gateskip=self.owner.use_gateskip,
-                    streams=None,
-                    use_mhc=self.owner.use_mhc,
-                    mhc_n_streams=self.owner.mhc_n_streams,
-                    mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
-                    mhc_collapse=self.owner.mhc_collapse,
-                    gateskip_active_mask=gateskip_active_mask,
-                )
-                return out_x
-
-            x = self.owner._run_with_checkpoint(ckpt_fn, x, use_checkpoint=True)
-            return x, streams
-
-        return layer(
-            x,
-            src_mask,
-            src_key_padding_mask,
-            gate_budget=budget,
-            gate_lambda=self.owner.gate_lambda,
-            use_gateskip=self.owner.use_gateskip,
-            streams=streams,
-            use_mhc=self.owner.use_mhc,
-            mhc_n_streams=self.owner.mhc_n_streams,
-            mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
-            mhc_collapse=self.owner.mhc_collapse,
-            attention_residual_state=attention_residual_state,
-            gateskip_active_mask=gateskip_active_mask,
-        )
-
-    def run_decoder_layer(
-        self,
-        *,
-        layer: nn.Module,
-        x: torch.Tensor,
-        memory: torch.Tensor,
-        tgt_mask: Optional[torch.Tensor],
-        memory_mask: Optional[torch.Tensor],
-        tgt_key_padding_mask: Optional[torch.Tensor],
-        memory_key_padding_mask: Optional[torch.Tensor],
-        layer_state: Optional[dict],
-        prev_state: Optional[dict],
-        budget: Optional[float],
-        streams: Optional[torch.Tensor],
-        mtp_targets: Optional[torch.Tensor],
-        attention_residual_state: Optional[dict],
-        gateskip_active_mask: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, Optional[dict], Optional[torch.Tensor]]:
-        if self.use_checkpoint:
-
-            def ckpt_fn(_x, layer_mod=layer, b=budget, ps=prev_state, ls=layer_state):
-                out_x, _, _ = layer_mod(
-                    _x,
-                    memory,
-                    tgt_mask,
-                    memory_mask,
-                    tgt_key_padding_mask,
-                    memory_key_padding_mask,
-                    incremental_state=ls,
-                    prev_layer_state=ps,
-                    gate_budget=b,
-                    gate_lambda=self.owner.gate_lambda,
-                    use_gateskip=self.owner.use_gateskip,
-                    streams=None,
-                    use_mhc=self.owner.use_mhc,
-                    mhc_n_streams=self.owner.mhc_n_streams,
-                    mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
-                    mhc_collapse=self.owner.mhc_collapse,
-                    mtp_targets=mtp_targets,
-                    gateskip_active_mask=gateskip_active_mask,
-                )
-                return out_x
-
-            x = self.owner._run_with_checkpoint(ckpt_fn, x, use_checkpoint=True)
-            return x, layer_state, streams
-
-        return layer(
-            x,
-            memory,
-            tgt_mask,
-            memory_mask,
-            tgt_key_padding_mask,
-            memory_key_padding_mask,
-            incremental_state=layer_state,
-            prev_layer_state=prev_state,
-            gate_budget=budget,
-            gate_lambda=self.owner.gate_lambda,
-            use_gateskip=self.owner.use_gateskip,
-            streams=streams,
-            use_mhc=self.owner.use_mhc,
-            mhc_n_streams=self.owner.mhc_n_streams,
-            mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
-            mhc_collapse=self.owner.mhc_collapse,
-            mtp_targets=mtp_targets,
-            attention_residual_state=attention_residual_state,
-            gateskip_active_mask=gateskip_active_mask,
-        )
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Base layer (shared by encoder/decoder layers)
+# Shared transformer layer base
 # ──────────────────────────────────────────────────────────────────────────────
 class BaseTransformerLayer(nn.Module):
     """
@@ -835,12 +225,18 @@ class BaseTransformerLayer(nn.Module):
             self._update_aux_loss(cfg.gate_lambda * torch.stack(aux_l2_terms).mean())
 
     def _ff_forward_with_aux(
-        self, x: torch.Tensor, mtp_targets: Optional[torch.Tensor] = None
+        self,
+        x: torch.Tensor,
+        mtp_targets: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Shared FFN / MoE forward with auxiliary loss accounting."""
         if self.use_moe:
             out, aux = self.feed_forward(
-                x, return_aux_loss=True, mtp_targets=mtp_targets
+                x,
+                return_aux_loss=True,
+                mtp_targets=mtp_targets,
+                padding_mask=padding_mask,
             )
             self._update_aux_loss(aux)
             return out
@@ -950,6 +346,8 @@ class BaseTransformer(nn.Module, ABC):
         attn_residual_type: str = "full",
         attention_residual_block_size: int = 8,
         layer_dropout_schedule: Optional["LayerDropoutSchedule"] = None,
+        initializer_range: float = 0.02,
+        depth_scaled_init: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -1010,6 +408,8 @@ class BaseTransformer(nn.Module, ABC):
 
         # Per-layer dropout schedule
         self.layer_dropout_schedule = layer_dropout_schedule
+        self.initializer_range = float(initializer_range)
+        self.depth_scaled_init = bool(depth_scaled_init)
 
         # Modules
         self.patcher = PatchTokenizer(
@@ -1139,6 +539,7 @@ class BaseTransformer(nn.Module, ABC):
         self.register_buffer("mod_aux_loss", torch.tensor(0.0), persistent=False)
         self._materialize_configured_attention_backends()
         self.apply(self._init_weights)
+        self._apply_depth_scaled_initialization()
         self._print_init_summary(
             att_type=att_type,
             custom_norm=custom_norm,
@@ -1374,7 +775,7 @@ class BaseTransformer(nn.Module, ABC):
     # ---- Init & helpers --------------------------------------------------------
     def _init_weights(self, m: nn.Module) -> None:
         if isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight)
+            nn.init.normal_(m.weight, mean=0.0, std=self.initializer_range)
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
         elif isinstance(m, (nn.LayerNorm, RMSNorm)):
@@ -1383,7 +784,26 @@ class BaseTransformer(nn.Module, ABC):
             if hasattr(m, "bias") and m.bias is not None:
                 nn.init.zeros_(m.bias)
         elif isinstance(m, nn.Embedding):
-            nn.init.normal_(m.weight, mean=0.0, std=0.02)
+            nn.init.normal_(m.weight, mean=0.0, std=self.initializer_range)
+
+    def _apply_depth_scaled_initialization(self) -> None:
+        """Scale residual-output projections according to transformer depth."""
+        if not self.depth_scaled_init or self.num_layers <= 0:
+            return
+        residual_std = self.initializer_range / math.sqrt(2.0 * self.num_layers)
+        residual_suffixes = (
+            "out_proj",
+            "o_proj",
+            "w3",
+            "fc2",
+        )
+        with torch.no_grad():
+            for name, module in self.named_modules():
+                if not isinstance(module, nn.Linear):
+                    continue
+                leaf_name = name.rsplit(".", 1)[-1]
+                if leaf_name in residual_suffixes or name.endswith("out_proj.2"):
+                    nn.init.normal_(module.weight, mean=0.0, std=residual_std)
 
     def _get_layer(self, idx: int) -> nn.Module:
         return self.shared_layer if self.layers is None else self.layers[idx]
@@ -1600,11 +1020,11 @@ __all__ = [
 
 def __getattr__(name: str):
     if name == "TransformerEncoder":
-        from foreblocks.models.transformer.tf_encoder import TransformerEncoder
+        from foreblocks.models.transformer.core.encoder import TransformerEncoder
 
         return TransformerEncoder
     if name == "TransformerDecoder":
-        from foreblocks.models.transformer.tf_decoder import TransformerDecoder
+        from foreblocks.models.transformer.core.decoder import TransformerDecoder
 
         return TransformerDecoder
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

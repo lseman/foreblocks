@@ -796,9 +796,15 @@ class RotaryEmbedding(torch.nn.Module):
         seqlen: int,
     ) -> Tensor:
         """
-        Apply dynamic RoPE frequency scaling (YaRN / NTK variants).
+        Apply dynamic RoPE frequency scaling (YaRN / NTK / linear variants).
         freqs: [seqlen, dim/2]
         Returns: scaled freqs [seqlen, dim/2]
+
+        YaRN (Yet another RoPE extension) from Llama 3:
+        - Computes a scaling factor m = scaling_factor^(dim / (dim - 2))
+        - Scales base frequency by m: base_yarn = base * m
+        - Frequencies are then: inv_freq = 1.0 / (base_yarn ** (arange / dim))
+        - This preserves the relative frequency structure while extending context.
         """
         if self.scaling_type == "none" or self.scaling_factor == 1.0:
             return freqs
@@ -815,13 +821,33 @@ class RotaryEmbedding(torch.nn.Module):
             return freqs / self.scaling_factor
 
         elif self.scaling_type == "yarn":
-            # YaRN (Yet another RoPE extension): frequency + position scaling
-            # More nuanced than linear or NTK
-            t = torch.arange(seqlen, device=freqs.device, dtype=freqs.dtype)
-            t_scaled = t / self.scaling_factor
-            # Blend original and scaled positions
-            alpha = min(1.0, seqlen / (self.dim * self.scaling_factor))
-            return freqs * (1.0 - alpha) + (freqs / self.scaling_factor) * alpha
+            # YaRN (Yet another RoPE extension) from Llama 3
+            # m = scaling_factor^(dim / (dim - 2))
+            # base_yarn = base * m
+            # inv_freq = 1.0 / (base_yarn ** (arange(0, dim, 2) / dim))
+            dim = self.dim
+            if dim <= 2:
+                # Fallback for very small dimensions
+                return freqs / self.scaling_factor
+
+            # Compute YaRN scaling factor m
+            # m = scaling_factor^(dim / (dim - 2))
+            m = self.scaling_factor ** (dim / (dim - 2))
+
+            # Compute scaled inv_freq
+            # Original: inv_freq = 1.0 / (base ** (arange / dim))
+            # YaRN: inv_freq_yarn = 1.0 / ((base * m) ** (arange / dim))
+            # Which is equivalent to: inv_freq / m**(arange / dim)
+            arange = torch.arange(0, dim, 2, device=freqs.device, dtype=torch.float32)
+            exponent = arange / dim
+            # m^exponent
+            m_exp = m**exponent
+            # scaled inv_freq
+            inv_freq_scaled = self.inv_freq.to(freqs.device) / m_exp
+
+            # Recompute freqs with scaled inv_freq
+            t = torch.arange(seqlen, device=freqs.device, dtype=torch.float32)
+            return torch.outer(t, inv_freq_scaled)
 
         return freqs
 

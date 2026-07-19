@@ -10,6 +10,12 @@
 // headers (updated paths)
 #include "../../include/foretree/core.hpp"
 #include "../../include/foretree/tree.hpp"
+#include "../../include/foretree/tree/packed_tree.hpp"
+
+#ifdef FORETREE_HAS_CUDA
+#include "../../include/foretree/gpu/gpu_prediction.hpp"
+using foretree::cuda::GpuPredictionEngine;
+#endif
 
 namespace nb = nanobind;
 using namespace nanobind::literals;
@@ -17,6 +23,7 @@ using namespace nanobind::literals;
 using foretree::DataBinner;
 using foretree::EdgeSet;
 using foretree::FeatureBins;
+using foretree::PackedTree;
 using foretree::GradientHistogramSystem;
 using foretree::HistogramConfig;
 using foretree::TreeConfig;
@@ -431,6 +438,35 @@ NB_MODULE(foretree, m) {
         .def_rw("goss", &TreeConfig::goss)
         .def_rw("num_classes", &TreeConfig::num_classes);
 
+    // PackedTree
+    nb::class_<PackedTree>(m, "PackedTree")
+        .def_ro("root", &PackedTree::root)
+        .def_ro("outputs", &PackedTree::outputs)
+        .def_ro("features", &PackedTree::features)
+        .def_ro("thresholds", &PackedTree::thresholds)
+        .def_ro("split_values", &PackedTree::split_values)
+        .def_ro("split_kinds", &PackedTree::split_kinds)
+        .def_ro("missing_left", &PackedTree::missing_left)
+        .def_ro("left_children", &PackedTree::left_children)
+        .def_ro("right_children", &PackedTree::right_children)
+        .def_ro("leaf_flags", &PackedTree::leaf_flags)
+        .def_ro("cover", &PackedTree::cover)
+        .def_ro("categorical_offsets", &PackedTree::categorical_offsets)
+        .def_ro("categorical_counts", &PackedTree::categorical_counts)
+        .def_ro("categorical_bins", &PackedTree::categorical_bins)
+        .def_ro("pair_features_a", &PackedTree::pair_features_a)
+        .def_ro("pair_features_b", &PackedTree::pair_features_b)
+        .def_ro("pair_thresholds_a", &PackedTree::pair_thresholds_a)
+        .def_ro("pair_thresholds_b", &PackedTree::pair_thresholds_b)
+        .def_ro("pair_quadrant_masks", &PackedTree::pair_quadrant_masks)
+        .def_ro("oblique_offsets", &PackedTree::oblique_offsets)
+        .def_ro("oblique_counts", &PackedTree::oblique_counts)
+        .def_ro("oblique_features", &PackedTree::oblique_features)
+        .def_ro("oblique_weights", &PackedTree::oblique_weights)
+        .def_ro("oblique_thresholds", &PackedTree::oblique_thresholds)
+        .def_ro("leaf_values", &PackedTree::leaf_values)
+        .def_prop_ro("node_count", [](const PackedTree& self) { return self.node_count(); });
+
     // UnifiedTree
     nb::class_<UnifiedTree>(m, "UnifiedTree", nb::dynamic_attr())
         .def(nb::init<>())
@@ -583,5 +619,111 @@ NB_MODULE(foretree, m) {
         .def("feature_importance_gain", [](const UnifiedTree& self) { return self.feature_importance_gain(); })
         .def("feature_importance_cover", [](const UnifiedTree& self) { return self.feature_importance_cover(); })
         .def("feature_importance_frequency", [](const UnifiedTree& self) { return self.feature_importance_frequency(); })
-        .def("post_prune_ccp", &UnifiedTree::post_prune_ccp, nb::arg("ccp_alpha"));
+        .def("post_prune_ccp", &UnifiedTree::post_prune_ccp, nb::arg("ccp_alpha"))
+        .def(
+            "get_packed_tree",
+            [](const UnifiedTree& self) -> const PackedTree& {
+                return self.get_packed_tree();
+            },
+            nb::rv_policy::reference_internal,
+            "Return the packed tree representation built during fit.");
+
+#ifdef FORETREE_HAS_CUDA
+    // GPU prediction engine - accepts PackedTree or tuple of numpy arrays
+    nb::class_<GpuPredictionEngine>(m, "GpuPredictionEngine")
+        .def(nb::init<const PackedTree&>(), nb::arg("packed_tree"))
+        .def(
+            "__init__",
+            [](GpuPredictionEngine* self,
+               nb::tuple tree_arrays) {
+                // Expect 23 numpy arrays in tuple (matching foreforest.PackedTree tuple order)
+                if (tree_arrays.size() != 23)
+                    throw std::invalid_argument("GpuPredictionEngine: expected tuple of 23 arrays");
+
+                // Helper to get span from ndarray
+                auto get_span = [](const nb::object& arr, const char* name, bool is_float = false) {
+                    auto na = nb::cast<nb::ndarray<nb::numpy, double, nb::c_contig>>(arr);
+                    if (is_float) {
+                        throw std::invalid_argument(std::string(name) + ": expected float64");
+                    }
+                    auto buf = request(na);
+                    if (buf.ndim != 1)
+                        throw std::invalid_argument(std::string(name) + ": expected 1D array");
+                    return std::span<const double>(static_cast<const double*>(buf.ptr), buf.shape[0]);
+                };
+                auto get_ispan = [](const nb::object& arr, const char* name) {
+                    auto na = nb::cast<nb::ndarray<nb::numpy, int, nb::c_contig>>(arr);
+                    auto buf = request(na);
+                    if (buf.ndim != 1)
+                        throw std::invalid_argument(std::string(name) + ": expected 1D int array");
+                    return std::span<const int>(static_cast<const int*>(buf.ptr), buf.shape[0]);
+                };
+                auto get_u8span = [](const nb::object& arr, const char* name) {
+                    auto na = nb::cast<nb::ndarray<nb::numpy, uint8_t, nb::c_contig>>(arr);
+                    auto buf = request(na);
+                    if (buf.ndim != 1)
+                        throw std::invalid_argument(std::string(name) + ": expected 1D uint8 array");
+                    return std::span<const uint8_t>(static_cast<const uint8_t*>(buf.ptr), buf.shape[0]);
+                };
+
+                std::vector<std::span<const int>> int_a(20);
+                int_a[0] = get_ispan(tree_arrays[0], "features");
+                int_a[1] = get_ispan(tree_arrays[1], "thresholds");
+                int_a[5] = get_ispan(tree_arrays[5], "left_children");
+                int_a[6] = get_ispan(tree_arrays[6], "right_children");
+                int_a[9] = get_ispan(tree_arrays[9], "cat_offsets");
+                int_a[10] = get_ispan(tree_arrays[10], "cat_counts");
+                int_a[11] = get_ispan(tree_arrays[11], "cat_bins");
+                int_a[12] = get_ispan(tree_arrays[12], "pair_a");
+                int_a[13] = get_ispan(tree_arrays[13], "pair_b");
+                int_a[14] = get_ispan(tree_arrays[14], "pair_thresh_a");
+                int_a[15] = get_ispan(tree_arrays[15], "pair_thresh_b");
+                int_a[17] = get_ispan(tree_arrays[17], "oblique_offsets");
+                int_a[18] = get_ispan(tree_arrays[18], "oblique_counts");
+                int_a[19] = get_ispan(tree_arrays[19], "oblique_features");
+
+                std::vector<std::span<const double>> dbl_a(5);
+                dbl_a[0] = get_span(tree_arrays[2], "split_values");
+                dbl_a[1] = get_span(tree_arrays[8], "cover");
+                dbl_a[2] = get_span(tree_arrays[20], "oblique_weights");
+                dbl_a[3] = get_span(tree_arrays[21], "oblique_thresholds");
+                dbl_a[4] = get_span(tree_arrays[22], "leaf_values");
+
+                std::vector<std::span<const uint8_t>> u8_a(4);
+                u8_a[0] = get_u8span(tree_arrays[3], "split_kinds");
+                u8_a[1] = get_u8span(tree_arrays[4], "missing_left");
+                u8_a[2] = get_u8span(tree_arrays[7], "leaf_flags");
+                u8_a[3] = get_u8span(tree_arrays[16], "pair_quadrant_masks");
+
+                // num_features is computed at predict time from codes.shape[1],
+                // not from the tree's feature IDs. Pass 0 as placeholder.
+                new (self) GpuPredictionEngine(int_a, dbl_a, u8_a, 0);
+            },
+            nb::arg("tree_arrays"), "Construct from tuple of 23 numpy arrays (matching PackedTree field order).")
+        .def(
+            "predict",
+            [](const GpuPredictionEngine& self,
+               const nb::ndarray<nb::numpy, uint16_t, nb::c_contig>& codes) {
+                auto buf = request(codes);
+                if (buf.ndim != 2)
+                    throw std::invalid_argument("codes must be 2D (N, P)");
+                int N = static_cast<int>(buf.shape[0]);
+                std::vector<uint16_t> v(buf.shape[0] * buf.shape[1]);
+                std::memcpy(v.data(), buf.ptr, v.size() * sizeof(uint16_t));
+                auto result = self.predict_binned_uint16(
+                    std::span<const uint16_t>(v.data(), v.size()), N);
+                auto out = make_array<double>({static_cast<size_t>(N)});
+                if (!result.empty())
+                    std::memcpy(out.data(), result.data(),
+                                std::min(result.size(), static_cast<size_t>(N)) * sizeof(double));
+                return out;
+            },
+            nb::arg("codes"), "Predict on binned data (uint16 codes). Returns (N,).")
+        .def_prop_ro("outputs", [](const GpuPredictionEngine& self) { return self.outputs(); })
+        .def_prop_ro("trees", [](const GpuPredictionEngine& self) { return self.trees(); })
+        .def_prop_ro("device_bytes", [](const GpuPredictionEngine& self) { return self.device_bytes(); });
+
+    m.def("gpu_available", &foretree::cuda::is_available,
+          "Check if CUDA is available for GPU prediction.");
+#endif
 }

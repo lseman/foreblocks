@@ -92,7 +92,7 @@ trainer = Trainer(model=model, config=config)
 
 ```python
 from foreblocks.modules.skip.mod import LayerDropoutSchedule
-from foreblocks.models.transformer.tf_encoder import TransformerEncoder
+from foreblocks.models.transformer.core.encoder import TransformerEncoder
 
 dropout_schedule = LayerDropoutSchedule(
     num_layers=6,
@@ -121,7 +121,7 @@ trainer = Trainer(model=encoder, config=config)
 from foreblocks.config import TrainingConfig
 from foreblocks.core.training.trainer import Trainer
 from foreblocks.modules.skip.mod import LayerDropoutSchedule
-from foreblocks.models.transformer.tf_encoder import TransformerEncoder
+from foreblocks.models.transformer.core.encoder import TransformerEncoder
 
 # Model with per-layer dropout
 dropout_schedule = LayerDropoutSchedule(

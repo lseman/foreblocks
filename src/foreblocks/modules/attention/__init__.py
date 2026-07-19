@@ -7,6 +7,8 @@ It belongs to the attention modules, variants, caches, and utilities area of For
 
 from foreblocks.modules.attention.cache.kv import *  # noqa: F403
 from foreblocks.modules.attention.cache.paged import *  # noqa: F403
+from foreblocks.modules.attention.backends import *  # noqa: F403
+from foreblocks.modules.attention.masking import *  # noqa: F403
 from foreblocks.modules.attention.modules.autocor_att import *  # noqa: F403
 from foreblocks.modules.attention.modules.dwt_att import *  # noqa: F403
 from foreblocks.modules.attention.modules.frequency_att import *  # noqa: F403

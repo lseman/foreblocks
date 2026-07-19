@@ -1,4 +1,4 @@
-"""foreblocks.models.transformer.fusions.
+"""foreblocks.models.transformer.features.fusions.
 
 Fused residual ops: dropout, add, norm, and GateSkip in a single hot path.
 

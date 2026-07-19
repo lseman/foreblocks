@@ -19,6 +19,8 @@ from torch import Tensor
 
 class PagedKVCache:
     """
+
+    is_compileable = False
     Fixed-page KV cache for autoregressive self-attention (torch-only).
 
     Block-based paging follows vLLM's PagedAttention: KV is stored in fixed-size
@@ -452,7 +454,28 @@ class PagedKVCache:
         if logical_seq_len is None:
             logical_seq_len = int(self.logical_seq_len[b].item())
         self.reset_seq(b, reset_logical=False)
+        if positions_t.numel() == 0:
+            self.logical_seq_len[b] = int(logical_seq_len)
+            return
         self._append_dense_with_meta(k_htd, v_htd, b, positions_t, beta_ht=beta_ht)
+        self.logical_seq_len[b] = int(logical_seq_len)
+
+    def rewrite_seq_latent(
+        self,
+        b: int,
+        latent_tl: Tensor,
+        positions_t: Tensor,
+        logical_seq_len: int | None = None,
+    ) -> None:
+        if not self.use_latent_cache:
+            raise RuntimeError("Latent rewrite requires latent cache mode.")
+        if logical_seq_len is None:
+            logical_seq_len = int(self.logical_seq_len[b].item())
+        self.reset_seq(b, reset_logical=False)
+        if positions_t.numel() == 0:
+            self.logical_seq_len[b] = int(logical_seq_len)
+            return
+        self._append_latent_with_positions(latent_tl, positions_t, b)
         self.logical_seq_len[b] = int(logical_seq_len)
 
     # ---------------------------------------------------------------------
@@ -679,6 +702,147 @@ class PagedKVCache:
             self.write_pos[b] = (0, 0)
             self.seq_len[b] = 0
             self.logical_seq_len[b] = 0
+
+    def reset(self) -> None:
+        self.reset_all()
+
+    def get_seq_length(self, batch_idx: int | None = None) -> int:
+        if batch_idx is None:
+            return self.max_logical_seq_len()
+        return self.get_logical_seq_len(batch_idx)
+
+    def get_seq_lengths(self) -> Tensor:
+        return self.logical_seq_len.clone()
+
+    def get_max_cache_shape(self) -> int:
+        return self.max_blocks * self.block_size
+
+    def reorder_cache(self, beam_idx: Tensor) -> None:
+        indices = beam_idx.to(device=self.seq_len.device, dtype=torch.long)
+        if indices.numel() != self.B:
+            raise ValueError("beam_idx length must equal the cache batch size")
+        if self.storage_k is not None:
+            self.storage_k.copy_(self.storage_k.index_select(0, indices))
+            self.storage_v.copy_(self.storage_v.index_select(0, indices))
+            self.storage_beta.copy_(self.storage_beta.index_select(0, indices))
+        if self.storage_latent is not None:
+            self.storage_latent.copy_(self.storage_latent.index_select(0, indices))
+        self.storage_pos.copy_(self.storage_pos.index_select(0, indices))
+        old_tables = self.block_table
+        old_write_pos = self.write_pos
+        order = indices.cpu().tolist()
+        self.block_table = [list(old_tables[i]) for i in order]
+        self.write_pos = [old_write_pos[i] for i in order]
+        self.seq_len.copy_(self.seq_len.index_select(0, indices))
+        self.logical_seq_len.copy_(self.logical_seq_len.index_select(0, indices))
+
+    def crop(self, max_length: int) -> None:
+        """Truncate every sequence to an absolute logical prefix length."""
+        if max_length < 0:
+            max_length = max(0, self.max_logical_seq_len() + max_length)
+        for b in range(self.B):
+            positions = self.gather_positions_for_seq(b)
+            keep = positions < max_length
+            if self.use_latent_cache:
+                latent = self.gather_latent_for_seq(b)[:, :]
+                self.rewrite_seq_latent(
+                    b, latent[keep], positions[keep], min(max_length, self.get_seq_length(b))
+                )
+            else:
+                k, v = self.gather_kv_for_seq(b)
+                beta = self.gather_beta_for_seq(b)
+                self.rewrite_seq_dense(
+                    b,
+                    k[:, keep, :],
+                    v[:, keep, :],
+                    positions[keep],
+                    beta_ht=beta[:, keep],
+                    logical_seq_len=min(max_length, self.get_seq_length(b)),
+                )
+
+    def evict_to_window(self, window_size: int) -> None:
+        """Keep only the newest physical KV slots while preserving absolute positions."""
+        if window_size < 0:
+            raise ValueError("window_size must be non-negative")
+        for b in range(self.B):
+            positions = self.gather_positions_for_seq(b)
+            keep_from = max(0, positions.numel() - window_size)
+            positions = positions[keep_from:]
+            logical_length = self.get_seq_length(b)
+            if self.use_latent_cache:
+                latent = self.gather_latent_for_seq(b)[keep_from:]
+                self.rewrite_seq_latent(b, latent, positions, logical_length)
+            else:
+                k, v = self.gather_kv_for_seq(b)
+                beta = self.gather_beta_for_seq(b)
+                self.rewrite_seq_dense(
+                    b,
+                    k[:, keep_from:, :],
+                    v[:, keep_from:, :],
+                    positions,
+                    beta_ht=beta[:, keep_from:],
+                    logical_seq_len=logical_length,
+                )
+
+    def state_dict(self) -> dict:
+        """Return a portable cache snapshot suitable for ``torch.save``."""
+        sequences = []
+        for b in range(self.B):
+            item = {
+                "positions": self.gather_positions_for_seq(b).cpu(),
+                "logical_seq_len": self.get_seq_length(b),
+            }
+            if self.use_latent_cache:
+                item["latent"] = self.gather_latent_for_seq(b).cpu()
+            else:
+                k, v = self.gather_kv_for_seq(b)
+                item.update(k=k.cpu(), v=v.cpu(), beta=self.gather_beta_for_seq(b).cpu())
+            sequences.append(item)
+        return {
+            "config": {
+                "batch_size": self.B,
+                "n_kv_heads": self.Hkv,
+                "head_dim": self.D,
+                "latent_dim": self.latent_dim,
+                "block_size": self.block_size,
+                "max_blocks": self.max_blocks,
+                "dtype": self.dtype,
+            },
+            "sequences": sequences,
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: dict, *, device=None) -> "PagedKVCache":
+        config = dict(state["config"])
+        config["device"] = device
+        cache = cls(**config)
+        for b, item in enumerate(state["sequences"]):
+            positions = item["positions"].to(cache.storage_pos.device)
+            if cache.use_latent_cache:
+                cache.rewrite_seq_latent(
+                    b, item["latent"].to(device=device, dtype=cache.dtype), positions,
+                    item["logical_seq_len"],
+                )
+            else:
+                cache.rewrite_seq_dense(
+                    b,
+                    item["k"].to(device=device, dtype=cache.dtype),
+                    item["v"].to(device=device, dtype=cache.dtype),
+                    positions,
+                    beta_ht=item["beta"].to(device=device, dtype=cache.dtype),
+                    logical_seq_len=item["logical_seq_len"],
+                )
+        return cache
+
+    def to(self, device) -> "PagedKVCache":
+        return type(self).from_state_dict(self.state_dict(), device=device)
+
+    def batch_select(self, indices: Tensor) -> "PagedKVCache":
+        state = self.state_dict()
+        order = indices.cpu().tolist()
+        state["sequences"] = [state["sequences"][i] for i in order]
+        state["config"]["batch_size"] = len(order)
+        return type(self).from_state_dict(state, device=self.storage_pos.device)
 
     # Tiny helpers for debug / logging
     def get_seq_len(self, b: int) -> int:

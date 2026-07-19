@@ -32,7 +32,7 @@ if TYPE_CHECKING:
         TransformerDecoder,
         TransformerEncoder,
     )
-    from foreblocks.models.transformer.transformer_tuner import (
+    from foreblocks.models.transformer.tuner import (
         ModernTransformerTuner,
         TransformerTuner,
     )

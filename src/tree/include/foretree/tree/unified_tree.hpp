@@ -965,6 +965,15 @@ class UnifiedTree {
         return d;
     }
 
+    // Return the packed tree representation built during fit().
+    // Throws if called before fit().
+    const PackedTree& get_packed_tree() const {
+        if (packed_tree_.empty())
+            throw std::runtime_error(
+                "UnifiedTree::get_packed_tree: tree not trained yet");
+        return packed_tree_;
+    }
+
     void post_prune_ccp(double ccp_alpha) {
         if (!packed_)
             throw std::runtime_error(

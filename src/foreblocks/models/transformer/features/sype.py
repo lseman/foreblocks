@@ -1,4 +1,4 @@
-"""foreblocks.models.transformer.sype.
+"""foreblocks.models.transformer.features.sype.
 
 Symplectic positional encoding (SyPE) with learnable warping.
 

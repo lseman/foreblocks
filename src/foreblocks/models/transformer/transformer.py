@@ -15,21 +15,27 @@ Core API:
 
 """
 
-from foreblocks.models.transformer.tf_base import (
+from foreblocks.models.transformer.core.base import (
     BaseTransformer,
     BaseTransformerLayer,
+)
+from foreblocks.models.transformer.runtime.execution import (
     MHCBlockMixin,
     NormWrapper,
     ResidualBlockMixin,
     ResidualRunCfg,
 )
-from foreblocks.models.transformer.tf_decoder import (
+from foreblocks.models.transformer.core.decoder import (
     TransformerDecoder,
     TransformerDecoderLayer,
 )
-from foreblocks.models.transformer.tf_encoder import (
+from foreblocks.models.transformer.core.encoder import (
     TransformerEncoder,
     TransformerEncoderLayer,
+)
+from foreblocks.models.transformer.runtime.outputs import (
+    TransformerDecoderOutput,
+    TransformerEncoderOutput,
 )
 
 __all__ = [
@@ -43,4 +49,6 @@ __all__ = [
     "BaseTransformer",
     "TransformerEncoder",
     "TransformerDecoder",
+    "TransformerDecoderOutput",
+    "TransformerEncoderOutput",
 ]

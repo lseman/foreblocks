@@ -87,10 +87,14 @@ def optimized_topk_routing(logits: torch.Tensor, k: int):
         top_p = torch.ones_like(top_v)
         return top_p, top_i
     top_v, top_i = torch.topk(logits, k, dim=-1, sorted=False)
+    # Match production MoE routers (for example Mixtral): normalize routing
+    # probabilities in fp32 even when the expert block runs under autocast.
+    route_dtype = top_v.dtype
+    top_v = top_v.float()
     m = top_v.max(dim=-1, keepdim=True).values
     expv = torch.exp(top_v - m)
     top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
-    return top_p, top_i
+    return top_p.to(route_dtype), top_i
 
 
 def eager_topk_routing(logits: torch.Tensor, k: int):
@@ -103,10 +107,12 @@ def eager_topk_routing(logits: torch.Tensor, k: int):
         top_p = torch.ones_like(top_v)
         return top_p, top_i
     top_v, top_i = torch.topk(logits, k, dim=-1, sorted=False)
+    route_dtype = top_v.dtype
+    top_v = top_v.float()
     m = top_v.max(dim=-1, keepdim=True).values
     expv = torch.exp(top_v - m)
     top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
-    return top_p, top_i
+    return top_p.to(route_dtype), top_i
 
 
 def should_fallback_router_topk(exc: RuntimeError) -> bool:

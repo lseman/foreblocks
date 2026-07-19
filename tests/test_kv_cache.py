@@ -122,6 +122,48 @@ def test_out_of_blocks_raises():
         c.append(torch.randn(1, 2, 100, 8), torch.randn(1, 2, 100, 8))
 
 
+def test_crop_rewrites_paged_prefix_and_reclaims_blocks():
+    c = _cache(B=1, block_size=4)
+    k = torch.randn(1, 2, 10, 8)
+    v = torch.randn_like(k)
+    c.append(k, v)
+    c.crop(5)
+    gathered_k, gathered_v = c.gather_kv_batched()
+    torch.testing.assert_close(gathered_k, k[:, :, :5])
+    torch.testing.assert_close(gathered_v, v[:, :, :5])
+    assert c.get_seq_length() == 5
+
+
+def test_sliding_window_preserves_absolute_positions():
+    c = _cache(B=1, block_size=4)
+    k = torch.randn(1, 2, 9, 8)
+    c.append(k, k)
+    c.evict_to_window(3)
+    gathered, _ = c.gather_kv_batched()
+    torch.testing.assert_close(gathered, k[:, :, -3:])
+    assert c.gather_positions_for_seq(0).tolist() == [6, 7, 8]
+    assert c.get_seq_length() == 9
+
+
+def test_paged_cache_snapshot_and_batch_select_roundtrip():
+    c = _cache(B=2, block_size=4)
+    k = torch.randn(2, 2, 5, 8)
+    c.append(k, k)
+    restored = PagedKVCache.from_state_dict(c.state_dict(), device=CPU)
+    torch.testing.assert_close(restored.gather_kv_batched()[0], k)
+    duplicated = restored.batch_select(torch.tensor([1, 1, 0]))
+    assert duplicated.B == 3
+    torch.testing.assert_close(duplicated.gather_kv_batched()[0], k[[1, 1, 0]])
+
+
+def test_paged_provider_selectively_updates_batch_rows():
+    c = _cache(B=2, block_size=4)
+    provider = PagedKVProvider(c, update_mask=torch.tensor([True, False]))
+    k = torch.randn(2, 2, 1, 8)
+    provider.get_kv(k, k)
+    assert c.get_seq_lengths().tolist() == [1, 0]
+
+
 # ----------------------------------------------- paged decode vs dense reference
 @pytest.mark.parametrize("Tk", [1, 4, 5, 9, 16])
 @pytest.mark.parametrize("Tq", [1, 3])

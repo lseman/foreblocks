@@ -2,14 +2,14 @@
 
 Token packing and scatter for Mixture-of-Experts routing.
 
-Packs token-to-expert assignments by expert index with optional capacity pruning,
+Packs token-to-expert assignments by expert index without capacity pruning,
 and provides scatter-back for accumulating expert outputs. Supports both token-choice
 (every token picks top-K experts) and expert-choice (every expert picks top tokens)
 routing modes with hard or soft capacity limits. Use when building custom MoE layers
 that need vectorized packing without dropping tokens.
 
 Core API:
-- DroplessPackedDispatcher: token-choice dispatcher with capacity pruning
+- DroplessPackedDispatcher: token-choice dispatcher that preserves every assignment
 - ExpertChoiceDispatcher: expert-choice dispatcher with per-expert token selection
 
 """
@@ -23,7 +23,11 @@ import torch
 
 class DroplessPackedDispatcher:
     """
-    Packs token-choice assignments by expert, with optional capacity pruning.
+    Packs every token-choice assignment by expert without capacity pruning.
+
+    Capacity arguments remain accepted for API compatibility, but this dispatcher
+    is deliberately dropless. Capacity-limited routing belongs in a separately
+    named dispatcher so callers can rely on this class's contract.
     Returns packed_x / packed_w and (experts_seq, tokens_seq, offsets, dropped).
     """
 
@@ -121,64 +125,9 @@ class DroplessPackedDispatcher:
         packed_x = x_flat.index_select(0, tokens_sorted)  # [S, D]
         packed_w = weights_sorted.unsqueeze(1)  # [S, 1]
 
-        # Capacity calculation: hard vs soft (elastic) mode
-        if soft_capacity and expert_usage is not None:
-            # Qwen2.5-MoE style soft capacity: scale per expert by utilization
-            total_capacity = math.ceil(
-                T * K * (capacity_factor or self.capacity_factor)
-            )
-            base_per_expert = total_capacity / max(self.num_experts, 1)
-            # Clamp usage to avoid division issues; higher usage = higher capacity
-            usage = expert_usage.clamp(min=1e-6)
-            usage_ratio = usage / (usage.sum() + 1e-12)  # normalize to sum=1
-            # Scale factor per expert: 1.0 for average, >1 for over-represented
-            scale = usage_ratio * self.num_experts  # sum = num_experts
-            scale = scale.clamp(min=soft_capacity_min, max=soft_capacity_max)
-            per_expert_cap = (base_per_expert * scale).ceil().long()  # [E]
-        else:
-            # Standard hard capacity: fixed per expert
-            per_expert_cap = torch.full(
-                (self.num_experts,),
-                max(
-                    1,
-                    math.ceil(
-                        T
-                        * K
-                        * (capacity_factor or self.capacity_factor)
-                        / self.num_experts
-                    ),
-                ),
-                dtype=torch.long,
-                device=device,
-            )
-
-        # Per-expert index tracking
-        cum_offsets = torch.cat(
-            [torch.zeros(1, device=device, dtype=torch.long), offsets[:-1]]
-        )
-        idx_in_expert = self._arange_buffer[:S] - cum_offsets[experts_sorted]  # type: ignore[index]
-
-        if soft_capacity and expert_usage is not None:
-            # Soft mode: per-expert capacity varies
-            kept_mask = idx_in_expert < per_expert_cap[experts_sorted]
-        else:
-            kept_mask = idx_in_expert < per_expert_cap[experts_sorted]
-
-        kept = kept_mask.nonzero(as_tuple=True)[0]
-        dropped = int(S - kept.numel())
-
-        if dropped > 0:
-            experts_sorted = experts_sorted[kept]
-            tokens_sorted = tokens_sorted[kept]
-            packed_x = packed_x[kept]
-            packed_w = packed_w[kept]
-            counts = torch.bincount(experts_sorted, minlength=self.num_experts)
-            offsets = torch.cumsum(
-                torch.cat([torch.zeros(1, device=device, dtype=torch.long), counts]),
-                dim=0,
-            )
-
-        return packed_x, packed_w, experts_sorted, tokens_sorted, offsets, dropped
+        del capacity_factor, soft_capacity, expert_usage
+        del soft_capacity_min, soft_capacity_max
+        return packed_x, packed_w, experts_sorted, tokens_sorted, offsets, 0
 
     @staticmethod
     def scatter_back(
@@ -186,6 +135,78 @@ class DroplessPackedDispatcher:
     ):
         out_accum.index_add_(0, tokens_seq, packed_y)
         return out_accum
+
+
+class ConfidenceCapacityDispatcher(DroplessPackedDispatcher):
+    """Capacity-limited dispatcher that keeps the strongest routes per expert."""
+
+    def pack(
+        self,
+        x_flat: torch.Tensor,
+        topk_p: torch.Tensor,
+        topk_i: torch.Tensor,
+        capacity_factor: float | None = None,
+        soft_capacity: bool = False,
+        expert_usage: torch.Tensor | None = None,
+        soft_capacity_min: float = 0.5,
+        soft_capacity_max: float = 2.0,
+    ):
+        packed_x, packed_w, experts, tokens, offsets, _ = super().pack(
+            x_flat, topk_p, topk_i
+        )
+        assignment_count = int(experts.numel())
+        if assignment_count == 0:
+            return packed_x, packed_w, experts, tokens, offsets, 0
+
+        token_count = int(x_flat.size(0))
+        routes_per_token = int(topk_i.size(1))
+        factor = self.capacity_factor if capacity_factor is None else capacity_factor
+        total_capacity = math.ceil(token_count * routes_per_token * float(factor))
+        base_capacity = total_capacity / max(self.num_experts, 1)
+        if soft_capacity and expert_usage is not None:
+            usage = expert_usage.float().clamp_min(1e-6)
+            scale = usage / usage.sum().clamp_min(1e-12) * self.num_experts
+            scale = scale.clamp(min=soft_capacity_min, max=soft_capacity_max)
+            capacities = (base_capacity * scale).ceil().long().clamp_min(1)
+        else:
+            capacities = torch.full(
+                (self.num_experts,),
+                max(1, math.ceil(base_capacity)),
+                dtype=torch.long,
+                device=x_flat.device,
+            )
+
+        kept_parts: list[torch.Tensor] = []
+        for expert_idx in range(self.num_experts):
+            start = int(offsets[expert_idx].item())
+            end = int(offsets[expert_idx + 1].item())
+            count = end - start
+            capacity = min(count, int(capacities[expert_idx].item()))
+            if capacity == 0:
+                continue
+            local_weights = packed_w[start:end, 0]
+            strongest = torch.topk(
+                local_weights, k=capacity, sorted=False
+            ).indices.add(start)
+            kept_parts.append(strongest)
+
+        kept = torch.cat(kept_parts) if kept_parts else experts.new_empty((0,))
+        experts = experts.index_select(0, kept)
+        tokens = tokens.index_select(0, kept)
+        packed_x = packed_x.index_select(0, kept)
+        packed_w = packed_w.index_select(0, kept)
+        counts = torch.bincount(experts, minlength=self.num_experts)
+        offsets = torch.cumsum(
+            torch.cat([counts.new_zeros(1), counts]), dim=0
+        )
+        return (
+            packed_x,
+            packed_w,
+            experts,
+            tokens,
+            offsets,
+            assignment_count - int(kept.numel()),
+        )
 
 
 class ExpertChoiceDispatcher:
@@ -271,6 +292,7 @@ class ExpertChoiceDispatcher:
 
 
 __all__ = [
+    "ConfidenceCapacityDispatcher",
     "DroplessPackedDispatcher",
     "ExpertChoiceDispatcher",
 ]
