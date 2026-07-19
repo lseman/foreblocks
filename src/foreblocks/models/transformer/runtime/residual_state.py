@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,7 @@ def init_attention_residual_state(x: torch.Tensor, mode: str, block_size: int) -
 
 
 def attention_residual_input(
-    carrier: torch.Tensor, state: Optional[dict], module: Optional[nn.Module]
+    carrier: torch.Tensor, state: dict | None, module: nn.Module | None
 ) -> torch.Tensor:
     if state is None or module is None:
         return carrier
@@ -30,7 +30,7 @@ def attention_residual_input(
 
 
 def append_attention_residual_update(
-    state: Optional[dict], update: torch.Tensor
+    state: dict | None, update: torch.Tensor,
 ) -> None:
     if state is None:
         return

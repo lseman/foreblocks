@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol
+from typing import Protocol
 
 import torch
 import torch.nn as nn
@@ -61,7 +61,7 @@ class NormWrapper:
 @dataclass(frozen=True)
 class ResidualRunCfg:
     use_gateskip: bool
-    gate_budget: Optional[float]
+    gate_budget: float | None
     gate_lambda: float
     training: bool
 
@@ -148,7 +148,7 @@ class LazyAttentionBackendMixin:
         self.layer_attention_type = str(layer_attention_type)
 
     def materialize_attention_type(
-        self, layer_attention_type: Optional[str] = None
+        self, layer_attention_type: str | None = None
     ) -> nn.Module:
         previous = self.layer_attention_type
         if layer_attention_type is not None:
@@ -228,10 +228,10 @@ class AttentionResidualPolicy:
 class LayerExecutionStrategy:
     owner: object
     use_mhc: bool
-    x: Optional[torch.Tensor] = None
-    streams: Optional[torch.Tensor] = None
+    x: torch.Tensor | None = None
+    streams: torch.Tensor | None = None
     use_attention_residual: bool = False
-    attention_residual_state: Optional[dict] = None
+    attention_residual_state: dict | None = None
 
     @property
     def policy(self) -> ResidualExecutionPolicy:

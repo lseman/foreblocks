@@ -90,7 +90,7 @@ class BaseTransformerLayer(nn.Module):
         num_experts: int = 8,
         top_k: int = 2,
         use_gateskip: bool = False,
-        gate_budget: Optional[float] = None,
+        gate_budget: float | None = None,
         gate_lambda: float = 0.1,
         # mHC
         use_mhc: bool = False,
@@ -345,7 +345,7 @@ class BaseTransformer(nn.Module, ABC):
         top_k: int = 2,
         # GateSkip toggles
         use_gateskip: bool = False,
-        gate_budget: Optional[float] = None,
+        gate_budget: float | None = None,
         gate_lambda: float = 0.1,
         # Attention mode
         attention_mode: Literal[
@@ -639,54 +639,48 @@ class BaseTransformer(nn.Module, ABC):
         return mask
 
     # ---- Attention mode routing ------------------------------------------------
+    # Routing tables define which backend each layer uses.
+    # pattern="all" → single backend; "hybrid" → early layers use secondary,
+    # last layer uses primary; "3to1" → every group of 4 uses secondary 3 times.
+    _ATTN_ROUTES: dict[str, tuple[str, str, Literal["all", "hybrid", "3to1"]]] = {
+        "standard": ("standard", "standard", "all"),
+        "linear": ("linear", "linear", "all"),
+        "sype": ("sype", "sype", "all"),
+        "kimi": ("kimi", "kimi", "all"),
+        "gated_delta": ("gated_delta", "gated_delta", "all"),
+        "gla": ("gla", "gla", "all"),
+        "deltanet": ("deltanet", "deltanet", "all"),
+        "gated_deltanet": ("gated_deltanet", "gated_deltanet", "all"),
+        "hybrid": ("standard", "linear", "hybrid"),
+        "hybrid_linear": ("standard", "linear", "hybrid"),
+        "hybrid_kimi": ("standard", "kimi", "hybrid"),
+        "kimi_hybrid": ("standard", "kimi", "hybrid"),
+        "kimi_3to1": ("standard", "kimi", "3to1"),
+        "hybrid_gdn": ("standard", "gated_delta", "hybrid"),
+        "gdn_hybrid": ("standard", "gated_delta", "hybrid"),
+        "gdn_3to1": ("standard", "gated_delta", "3to1"),
+        "gla_hybrid": ("standard", "gla", "hybrid"),
+        "hybrid_gla": ("standard", "gla", "hybrid"),
+        "gla_3to1": ("standard", "gla", "3to1"),
+        "deltanet_hybrid": ("standard", "deltanet", "hybrid"),
+        "hybrid_deltanet": ("standard", "deltanet", "hybrid"),
+        "deltanet_3to1": ("standard", "deltanet", "3to1"),
+        "gated_deltanet_hybrid": ("standard", "gated_deltanet", "hybrid"),
+        "hybrid_gated_deltanet": ("standard", "gated_deltanet", "hybrid"),
+        "gated_deltanet_3to1": ("standard", "gated_deltanet", "3to1"),
+    }
+
     def _get_layer_attention_type(self, layer_idx: int) -> str:
-        mode = self.attention_mode
-        if mode == "standard":
-            return "standard"
-        if mode == "linear":
-            return "linear"
-        if mode == "sype":
-            return "sype"
-        if mode == "kimi":
-            return "kimi"
-        if mode in ("hybrid", "hybrid_linear"):
-            return "linear" if layer_idx < (self.num_layers - 1) else "standard"
-        if mode in ("hybrid_kimi", "kimi_hybrid"):
-            return "kimi" if layer_idx < (self.num_layers - 1) else "standard"
-        if mode == "kimi_3to1":
-            return "kimi" if (layer_idx % 4) < 3 else "standard"
-        if mode == "gated_delta":
-            return "gated_delta"
-        if mode in ("hybrid_gdn", "gdn_hybrid"):
-            return "gated_delta" if layer_idx < (self.num_layers - 1) else "standard"
-        if mode == "gdn_3to1":
-            return "gated_delta" if (layer_idx % 4) < 3 else "standard"
-
-        # GLA (Gated Linear Attention)
-        if mode == "gla":
-            return "gla"
-        if mode in ("gla_hybrid", "hybrid_gla"):
-            return "gla" if layer_idx < (self.num_layers - 1) else "standard"
-        if mode == "gla_3to1":
-            return "gla" if (layer_idx % 4) < 3 else "standard"
-
-        # DeltaNet
-        if mode == "deltanet":
-            return "deltanet"
-        if mode in ("deltanet_hybrid", "hybrid_deltanet"):
-            return "deltanet" if layer_idx < (self.num_layers - 1) else "standard"
-        if mode == "deltanet_3to1":
-            return "deltanet" if (layer_idx % 4) < 3 else "standard"
-
-        # GatedDeltaNet (Mamba-2 style)
-        if mode == "gated_deltanet":
-            return "gated_deltanet"
-        if mode in ("gated_deltanet_hybrid", "hybrid_gated_deltanet"):
-            return "gated_deltanet" if layer_idx < (self.num_layers - 1) else "standard"
-        if mode == "gated_deltanet_3to1":
-            return "gated_deltanet" if (layer_idx % 4) < 3 else "standard"
-
-        raise ValueError(f"Unknown attention_mode: {mode}")
+        primary, secondary, pattern = self._ATTN_ROUTES[self.attention_mode]
+        match pattern:
+            case "all":
+                return primary
+            case "hybrid":
+                return secondary if layer_idx < (self.num_layers - 1) else primary
+            case "3to1":
+                return secondary if (layer_idx % 4) < 3 else primary
+        # unreachable — _ATTN_ROUTES only contains "all", "hybrid", "3to1"
+        raise RuntimeError(f"unreachable pattern {pattern!r}")
 
     def _build_layer_kwargs(
         self,
@@ -772,7 +766,7 @@ class BaseTransformer(nn.Module, ABC):
             layer = self._get_layer(i)
             self._set_layer_gateskip_attrs(layer)
 
-    def set_gate_budget(self, budget: Optional[float]) -> None:
+    def set_gate_budget(self, budget: float | None) -> None:
         self.gate_budget = budget
         for i in range(self.num_layers):
             layer = self._get_layer(i)

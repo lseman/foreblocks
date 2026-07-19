@@ -10,7 +10,7 @@ the two never drift on which backends exist (see runtime/execution.py's
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 import torch.nn as nn
 
@@ -23,7 +23,7 @@ from foreblocks.modules.attention.multi_att import MultiAttention
 @dataclass(frozen=True)
 class LayerAttentionBackendSpec:
     name: str
-    module_cls: Callable[..., nn.Module]
+    module_cls: type[nn.Module]
     extra_kwargs: Callable[[dict], dict] = field(default=lambda cfg: {})
 
     def build(self, attn_init_kwargs: dict, pos_encoding_type: str, cfg: dict) -> nn.Module:

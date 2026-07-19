@@ -40,16 +40,24 @@ _SUPPORTED_OPTIONS = {
 
 @dataclass(frozen=True)
 class AttentionConfig:
-    architecture: str
-    backend: str
-    position: str
+    architecture: Literal[
+        "standard", "linear", "sype", "hybrid", "kimi", "gated_delta",
+        "gla", "deltanet", "gated_deltanet", "kimi_hybrid", "hybrid_kimi",
+        "hybrid_gdn", "gdn_hybrid", "gla_hybrid", "hybrid_gla",
+        "deltanet_hybrid", "hybrid_deltanet",
+        "gated_deltanet_hybrid", "hybrid_gated_deltanet",
+        "kimi_3to1", "gdn_3to1", "gla_3to1", "deltanet_3to1",
+        "gated_deltanet_3to1",
+    ]
+    backend: Literal["auto", "sdpa", "flash", "cudnn"]
+    position: Literal["rope", "alibi", "sinusoidal", "learnable"]
 
 
 @dataclass(frozen=True)
 class ResidualConfig:
     policy: Literal["standard", "gateskip", "mhc", "attention_residual", "mod"]
-    norm_strategy: str
-    norm_type: str
+    norm_strategy: Literal["pre_norm", "post_norm", "sandwich_norm"]
+    norm_type: Literal["rms", "layer", "layernorm", "rmsnorm"]
 
 
 @dataclass(frozen=True)
