@@ -435,11 +435,8 @@ class UnifiedTree {
             throw std::invalid_argument(
                 "UnifiedTree::predict_contrib: Xb size must equal N*P");
         }
-        // Multiclass TreeSHAP not yet implemented
         if (cfg_.num_classes > 1) {
-            throw std::runtime_error(
-                "UnifiedTree::predict_contrib: TreeSHAP not supported for "
-                "multiclass yet");
+            return compute_multiclass_tree_shap_(Xb, N, P, Xraw_opt);
         }
         if (!packed_)
             return std::vector<double>(
@@ -512,11 +509,8 @@ class UnifiedTree {
             throw std::invalid_argument(
                 "UnifiedTree::predict_contrib: Xb size must equal N*P");
         }
-        // Multiclass TreeSHAP not yet implemented
         if (cfg_.num_classes > 1) {
-            throw std::runtime_error(
-                "UnifiedTree::predict_contrib: TreeSHAP not supported for "
-                "multiclass yet");
+            return compute_multiclass_tree_shap_(Xb, N, P, Xraw_opt);
         }
         if (!packed_)
             return std::vector<double>(
@@ -1106,6 +1100,235 @@ class UnifiedTree {
                              unique_depth + 1, path,
                              cold_zero_fraction * incoming_zero_fraction, 0.0,
                              split_feature);
+    }
+
+    // ---- Multiclass TreeSHAP helpers ----
+
+    double tree_expected_value_from_node_class_(int id, int cls) const {
+        if (id < 0) return 0.0;
+        if (id >= static_cast<int>(packed_tree_.leaf_flags.size())) return 0.0;
+        if (packed_tree_.leaf_flags[id] != 0)
+            return packed_tree_.leaf_values[static_cast<size_t>(id) * K_ + static_cast<size_t>(cls)];
+
+        const int left_id = packed_tree_.left_children[static_cast<size_t>(id)];
+        const int right_id =
+            packed_tree_.right_children[static_cast<size_t>(id)];
+        const double cover = node_cover_(id);
+        const double left_cover = node_cover_(left_id);
+        const double right_cover = node_cover_(right_id);
+        if (cover <= 0.0) {
+            return 0.5 * tree_expected_value_from_node_class_(left_id, cls) +
+                   0.5 * tree_expected_value_from_node_class_(right_id, cls);
+        }
+        const double left_frac = left_cover / cover;
+        const double right_frac = right_cover / cover;
+        return left_frac * tree_expected_value_from_node_class_(left_id, cls) +
+               right_frac * tree_expected_value_from_node_class_(right_id, cls);
+    }
+
+    double tree_expected_value_class_(int cls) const {
+        return tree_expected_value_from_node_class_(root_id_, cls);
+    }
+
+    double tree_shap_expected_value_mask_class_(
+        int node_id, const uint16_t* row_binned, int row_idx,
+        const PredictRawView& raw_view, const std::vector<int>& feature_to_pos,
+        uint64_t mask, int cls) const {
+        if (node_id < 0) return 0.0;
+        if (packed_tree_.leaf_flags[static_cast<size_t>(node_id)] != 0)
+            return packed_tree_.leaf_values[static_cast<size_t>(node_id) * K_ + static_cast<size_t>(cls)];
+
+        const int split_feature =
+            packed_tree_.features[static_cast<size_t>(node_id)];
+        const int feature_pos =
+            (split_feature >= 0 &&
+             split_feature < static_cast<int>(feature_to_pos.size()))
+                ? feature_to_pos[static_cast<size_t>(split_feature)]
+                : -1;
+
+        if (feature_pos >= 0 &&
+            (mask & (uint64_t{1} << static_cast<uint64_t>(feature_pos))) != 0) {
+            const bool go_left = predict_go_left_axis_(
+                node_id, row_binned, row_idx, split_feature,
+                packed_tree_.thresholds[static_cast<size_t>(node_id)],
+                packed_tree_.missing_left[static_cast<size_t>(node_id)] != 0,
+                raw_view);
+            return tree_shap_expected_value_mask_class_(
+                go_left
+                    ? packed_tree_.left_children[static_cast<size_t>(node_id)]
+                    : packed_tree_.right_children[static_cast<size_t>(node_id)],
+                row_binned, row_idx, raw_view, feature_to_pos, mask, cls);
+        }
+
+        const int left_id =
+            packed_tree_.left_children[static_cast<size_t>(node_id)];
+        const int right_id =
+            packed_tree_.right_children[static_cast<size_t>(node_id)];
+        const double cover = std::max(1e-12, node_cover_(node_id));
+        const double left_fraction = node_cover_(left_id) / cover;
+        const double right_fraction = node_cover_(right_id) / cover;
+        return left_fraction * tree_shap_expected_value_mask_class_(
+                                   left_id, row_binned, row_idx, raw_view,
+                                   feature_to_pos, mask, cls) +
+               right_fraction * tree_shap_expected_value_mask_class_(
+                                    right_id, row_binned, row_idx, raw_view,
+                                    feature_to_pos, mask, cls);
+    }
+
+    void brute_force_tree_shap_row_class_(
+        const uint16_t* row_binned, int row_idx,
+        const PredictRawView& raw_view, double* phi,
+        const std::vector<int>& feature_to_pos,
+        int M, int cls) const {
+        if (M <= 0) {
+            phi[P_ + 1 + cls * (P_ + 1)] = tree_expected_value_class_(cls);
+            return;
+        }
+
+        const size_t n_masks = size_t{1} << static_cast<size_t>(M);
+        std::vector<double> values(n_masks, 0.0);
+        for (size_t mask = 0; mask < n_masks; ++mask) {
+            values[mask] = tree_shap_expected_value_mask_class_(
+                root_id_, row_binned, row_idx, raw_view, feature_to_pos,
+                static_cast<uint64_t>(mask), cls);
+        }
+
+        phi[P_ + 1 + cls * (P_ + 1)] = values[0];
+        for (int j = 0; j < P_; ++j) phi[j + cls * (P_ + 1)] = 0.0;
+
+        for (int j = 0; j < P_; ++j) {
+            const int pos = feature_to_pos[static_cast<size_t>(j)];
+            if (pos < 0) continue;
+            const uint64_t bit = uint64_t{1} << static_cast<uint64_t>(pos);
+            double contrib = 0.0;
+            for (size_t mask = 0; mask < n_masks; ++mask) {
+                if ((static_cast<uint64_t>(mask) & bit) != 0) continue;
+                const int s =
+                    __builtin_popcountll(static_cast<unsigned long long>(mask));
+                const double weight = 1.0 / (static_cast<double>(M) *
+                                             tree_shap_combination_(M - 1, s));
+                contrib += weight * (values[mask | bit] - values[mask]);
+            }
+            phi[j + cls * (P_ + 1)] = contrib;
+        }
+    }
+
+    void tree_shap_recursive_class_(int node_id, const uint16_t* row_binned,
+                                    int row_idx, const PredictRawView& raw_view,
+                                    double* phi, int cls, int unique_depth,
+                                    std::vector<PathElement> path,
+                                    double parent_zero_fraction,
+                                    double parent_one_fraction,
+                                    int parent_feature_index) const {
+        if (node_id < 0) return;
+
+        extend_path_(path, unique_depth, parent_zero_fraction,
+                     parent_one_fraction, parent_feature_index);
+
+        if (packed_tree_.leaf_flags[static_cast<size_t>(node_id)] != 0) {
+            const double leaf_value =
+                packed_tree_.leaf_values[static_cast<size_t>(node_id) * K_ + static_cast<size_t>(cls)];
+            for (int i = 1; i <= unique_depth; ++i) {
+                const double weight = unwound_path_sum_(path, unique_depth, i);
+                const auto& el = path[static_cast<size_t>(i)];
+                if (el.feature_index >= 0 && el.feature_index < P_) {
+                    phi[el.feature_index + cls * (P_ + 1)] +=
+                        weight * (el.one_fraction - el.zero_fraction) *
+                        leaf_value;
+                }
+            }
+            return;
+        }
+
+        const int split_feature =
+            packed_tree_.features[static_cast<size_t>(node_id)];
+        const int split_thr =
+            packed_tree_.thresholds[static_cast<size_t>(node_id)];
+        const bool miss_left =
+            (packed_tree_.missing_left[static_cast<size_t>(node_id)] != 0);
+        const bool hot_left =
+            predict_go_left_axis_(node_id, row_binned, row_idx, split_feature,
+                                  split_thr, miss_left, raw_view);
+
+        const int hot_index =
+            hot_left
+                ? packed_tree_.left_children[static_cast<size_t>(node_id)]
+                : packed_tree_.right_children[static_cast<size_t>(node_id)];
+        const int cold_index =
+            hot_left ? packed_tree_.right_children[static_cast<size_t>(node_id)]
+                     : packed_tree_.left_children[static_cast<size_t>(node_id)];
+
+        double incoming_zero_fraction = 1.0;
+        double incoming_one_fraction = 1.0;
+        int path_index = 0;
+        for (; path_index <= unique_depth; ++path_index) {
+            if (path[static_cast<size_t>(path_index)].feature_index ==
+                split_feature)
+                break;
+        }
+        if (path_index <= unique_depth) {
+            incoming_zero_fraction =
+                path[static_cast<size_t>(path_index)].zero_fraction;
+            incoming_one_fraction =
+                path[static_cast<size_t>(path_index)].one_fraction;
+            unwind_path_(path, unique_depth, path_index);
+            --unique_depth;
+        }
+
+        const double cover = std::max(1e-12, node_cover_(node_id));
+        const double hot_zero_fraction = node_cover_(hot_index) / cover;
+        const double cold_zero_fraction = node_cover_(cold_index) / cover;
+
+        tree_shap_recursive_class_(hot_index, row_binned, row_idx, raw_view, phi, cls,
+                             unique_depth + 1, path,
+                             hot_zero_fraction * incoming_zero_fraction,
+                             incoming_one_fraction, split_feature);
+        tree_shap_recursive_class_(cold_index, row_binned, row_idx, raw_view, phi, cls,
+                             unique_depth + 1, path,
+                             cold_zero_fraction * incoming_zero_fraction, 0.0,
+                             split_feature);
+    }
+
+    // Compute multiclass TreeSHAP: return [N, K_*(P+1)].
+    std::vector<double> compute_multiclass_tree_shap_(
+        std::span<const uint16_t> Xb, int N, int P, const double* Xraw_opt) const {
+        const size_t row_size = static_cast<size_t>(K_) * static_cast<size_t>(P_ + 1);
+        std::vector<double> out(static_cast<size_t>(N) * row_size, 0.0);
+        std::vector<int> feature_to_pos(static_cast<size_t>(P_), -1);
+        const auto split_features = tree_shap_split_features_();
+        for (size_t k = 0; k < split_features.size(); ++k) {
+            feature_to_pos[static_cast<size_t>(split_features[k])] =
+                static_cast<int>(k);
+        }
+
+        if (split_features.size() <= kBruteforceTreeShapMaxFeatures) {
+            for (int i = 0; i < N; ++i) {
+                double* row_out = out.data() + static_cast<size_t>(i) * row_size;
+                const uint16_t* row_binned =
+                    Xb.data() + static_cast<size_t>(i) * static_cast<size_t>(P_);
+                const auto raw_view = resolve_predict_raw_view_(Xraw_opt);
+                for (int cls = 0; cls < K_; ++cls) {
+                    brute_force_tree_shap_row_class_(
+                        row_binned, i, raw_view, row_out, feature_to_pos,
+                        static_cast<int>(split_features.size()), cls);
+                }
+            }
+        } else {
+            for (int i = 0; i < N; ++i) {
+                double* row_out = out.data() + static_cast<size_t>(i) * row_size;
+                const uint16_t* row_binned =
+                    Xb.data() + static_cast<size_t>(i) * static_cast<size_t>(P_);
+                const auto raw_view = resolve_predict_raw_view_(Xraw_opt);
+                for (int cls = 0; cls < K_; ++cls) {
+                    const double bias = tree_expected_value_class_(cls);
+                    row_out[P_ + 1 + cls * (P_ + 1)] = bias;
+                    std::vector<PathElement> path(static_cast<size_t>(depth() + 2));
+                    tree_shap_recursive_class_(root_id_, row_binned, i, raw_view, row_out, cls,
+                                         0, path, 1.0, 1.0, -1);
+                }
+            }
+        }
+        return out;
     }
 
     const std::vector<double>& feature_importance_gain() const {
