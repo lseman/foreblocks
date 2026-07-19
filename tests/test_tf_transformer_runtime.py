@@ -685,6 +685,58 @@ def test_transformer_config_drives_structured_output_defaults():
     assert decoder.config is config
 
 
+def test_transformer_config_promotes_stable_layer_options_to_fields():
+    config = TransformerConfig(
+        d_model=8,
+        nhead=2,
+        num_layers=1,
+        layer_norm_eps=1e-6,
+        use_swiglu=False,
+        freq_modes=7,
+        gate_lambda=0.25,
+        mhc_n_streams=3,
+        initializer_range=0.01,
+    )
+
+    model = TransformerEncoder(config)
+    layer = model._get_layer(0)
+
+    assert model.config is config
+    assert layer.config is config
+    assert model.gate_lambda == 0.25
+    assert model.mhc_n_streams == 3
+    assert model.initializer_range == 0.01
+    assert layer._attn_backend_cfg["freq_modes"] == 7
+    assert type(layer.feed_forward.block).__name__ == "_StandardFeedForwardBlock"
+
+
+def test_transformer_config_loads_legacy_promoted_options():
+    config = TransformerConfig.from_dict(
+        {
+            "d_model": 8,
+            "nhead": 2,
+            "num_layers": 1,
+            "options": {"gate_lambda": 0.4, "use_final_norm": False},
+        }
+    )
+
+    assert config.gate_lambda == 0.4
+    assert config.use_final_norm is False
+    assert config.options == {}
+
+
+@pytest.mark.parametrize("feature", ["use_mhc", "use_attention_residual"])
+def test_checkpointing_rejects_stateful_residual_policies(feature):
+    with pytest.raises(ValueError, match="use_gradient_checkpointing is incompatible"):
+        TransformerConfig(
+            d_model=8,
+            nhead=2,
+            num_layers=1,
+            use_gradient_checkpointing=True,
+            **{feature: True},
+        )
+
+
 def test_generation_config_is_separate_from_decoder_config():
     config = TransformerConfig(
         input_size=2,

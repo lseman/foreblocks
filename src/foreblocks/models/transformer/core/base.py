@@ -30,6 +30,7 @@ import torch.nn as nn
 
 from foreblocks.layers.embeddings import LearnablePositionalEncoding, PositionalEncoding
 from foreblocks.layers.norms import RMSNorm, create_norm_layer
+from foreblocks.models.transformer.config import TransformerConfig
 from foreblocks.models.transformer.runtime.execution import (
     MHCBlockMixin,
     NormWrapper,
@@ -81,57 +82,37 @@ class BaseTransformerLayer(nn.Module):
 
     def __init__(
         self,
-        d_model: int,
-        dim_feedforward: int = 2048,
-        dropout: float = 0.1,
-        activation: str = "gelu",
-        use_swiglu: bool = True,
-        use_moe: bool = False,
-        num_experts: int = 8,
-        top_k: int = 2,
-        use_gateskip: bool = False,
-        gate_budget: float | None = None,
-        gate_lambda: float = 0.1,
-        # mHC
-        use_mhc: bool = False,
-        mhc_n_streams: int = 4,
-        mhc_sinkhorn_iters: int = 20,
-        mhc_collapse: str = "first",
-        moe_use_latent: bool = False,
-        moe_latent_dim: int | None = None,
-        moe_latent_d_ff: int | None = None,
-        use_attention_matching_compaction: bool = False,
-        attention_matching_keep_ratio: float = 0.25,
-        attention_matching_trigger_len: int = 512,
-        attention_matching_min_keep: int = 64,
-        attention_matching_query_budget: int = 64,
-        attention_matching_force_single_step: bool = False,
+        config: TransformerConfig,
+        *,
+        dropout: float | None = None,
     ):
         super().__init__()
-        self.use_moe = use_moe
-        self.use_gateskip = use_gateskip
-        self.gate_budget = gate_budget
-        self.gate_lambda = gate_lambda
-        self.d_model = int(d_model)
+        self.config = config
+        dropout = config.dropout if dropout is None else dropout
+        self.use_moe = config.use_moe
+        self.use_gateskip = config.use_gateskip
+        self.gate_budget = config.gate_budget
+        self.gate_lambda = config.gate_lambda
+        self.d_model = int(config.d_model)
 
         # mHC knobs (layer-level)
-        self.use_mhc = bool(use_mhc)
-        self.mhc_n_streams = int(mhc_n_streams)
-        self.mhc_sinkhorn_iters = int(mhc_sinkhorn_iters)
-        self.mhc_collapse = str(mhc_collapse)
+        self.use_mhc = bool(config.use_mhc)
+        self.mhc_n_streams = int(config.mhc_n_streams)
+        self.mhc_sinkhorn_iters = int(config.mhc_sinkhorn_iters)
+        self.mhc_collapse = str(config.mhc_collapse)
 
         self.feed_forward = FeedForwardBlock(
-            d_model=d_model,
-            dim_ff=dim_feedforward,
+            d_model=config.d_model,
+            dim_ff=config.dim_feedforward,
             dropout=dropout,
-            use_swiglu=use_swiglu,
-            activation=activation,
-            use_moe=use_moe,
-            num_experts=num_experts,
-            top_k=top_k,
-            moe_use_latent=moe_use_latent,
-            moe_latent_dim=moe_latent_dim,
-            moe_latent_d_ff=moe_latent_d_ff,
+            use_swiglu=config.use_swiglu,
+            activation=config.activation,
+            use_moe=config.use_moe,
+            num_experts=config.num_experts,
+            top_k=config.top_k,
+            moe_use_latent=config.moe_use_latent,
+            moe_latent_dim=config.moe_latent_dim,
+            moe_latent_d_ff=config.moe_latent_d_ff,
         )
 
         self.register_buffer("aux_loss", torch.tensor(0.0), persistent=False)
@@ -318,95 +299,38 @@ class BaseTransformer(nn.Module, ABC):
     def __init__(
         self,
         input_size: int,
-        d_model: int = 256,
-        nhead: int = 8,
-        num_layers: int = 6,
-        dim_feedforward: int = 1024,
-        dropout: float = 0.1,
-        activation: str = "gelu",
-        att_type: str = "standard",
-        norm_strategy: str = "pre_norm",
-        custom_norm: str = "rms",
-        layer_norm_eps: float = 1e-5,
-        max_seq_len: int = 5000,
-        pos_encoding_scale: float = 1.0,
+        config: TransformerConfig,
+        *,
+        informer_like: bool = False,
         pos_encoder: nn.Module | None = None,
-        pos_encoding_type: Literal["sinusoidal", "learnable", "rope", "alibi"] = "rope",
-        rope_base: float = 10000.0,
-        rope_scaling_type: Literal["none", "yarn", "ntk", "linear"] = "none",
-        rope_scaling_factor: float = 1.0,
-        use_gradient_checkpointing: bool = False,
-        share_layers: bool = False,
-        use_final_norm: bool = True,
-        use_swiglu: bool = True,
-        freq_modes: int = 32,
-        use_moe: bool = False,
-        num_experts: int = 8,
-        top_k: int = 2,
-        # GateSkip toggles
-        use_gateskip: bool = False,
-        gate_budget: float | None = None,
-        gate_lambda: float = 0.1,
-        # Attention mode
-        attention_mode: Literal[
-            "standard",
-            "linear",
-            "sype",
-            "hybrid",
-            "kimi",
-            "hybrid_kimi",
-            "kimi_3to1",
-            "gated_delta",
-            "hybrid_gdn",
-            "gdn_3to1",
-            "gla",
-            "gla_hybrid",
-            "gla_3to1",
-            "deltanet",
-            "deltanet_hybrid",
-            "deltanet_3to1",
-            "gated_deltanet",
-            "gated_deltanet_hybrid",
-            "gated_deltanet_3to1",
-        ] = "standard",
-        # mHC toggles
-        use_mhc: bool = False,
-        mhc_n_streams: int = 4,
-        mhc_sinkhorn_iters: int = 20,
-        mhc_collapse: str = "first",  # "first" or "mean"
-        # PatchTST-style patching (best default: patch encoder only)
-        patch_encoder: bool = True,
-        patch_len: int = 16,
-        patch_stride: int = 8,
-        patch_pad_end: bool = True,
-        # Mixture-of-Depths
-        use_mod: bool = False,
-        mod_mode: Literal["token", "seq"] = "token",
-        mod_lambda: float = 0.05,
         mod_budget_scheduler: MoDBudgetScheduler | None = None,
-        # Global scaling for MoE aux loss (FIX)
-        moe_aux_lambda: float = 1.0,
-        use_attention_residual: bool = False,
-        attn_residual_type: str = "full",
-        attention_residual_block_size: int = 8,
         layer_dropout_schedule: "LayerDropoutSchedule" | None = None,
-        initializer_range: float = 0.02,
-        depth_scaled_init: bool = True,
-        **kwargs,
     ):
         super().__init__()
+        self.config = config
+        d_model = config.d_model
+        att_type = config.att_type
+        attention_mode = config.attention_mode
+        dropout = config.dropout
+        num_layers = config.num_layers
+        max_seq_len = config.max_seq_len
+        custom_norm = config.custom_norm
+        layer_norm_eps = config.layer_norm_eps
+        pos_encoding_scale = config.pos_encoding_scale
+        share_layers = config.share_layers
+        use_final_norm = config.use_final_norm
         self.d_model = d_model
         self.num_layers = num_layers
         self.dropout = dropout
         self.max_seq_len = max_seq_len
-        self.use_gradient_checkpointing = use_gradient_checkpointing
-        self.use_gateskip = use_gateskip
-        self.gate_budget = gate_budget
-        self.gate_lambda = gate_lambda
-        self.pos_encoding_type = str(pos_encoding_type)
-        self.rope_base = float(rope_base)
-        self.rope_scaling_type = str(rope_scaling_type)
-        self.rope_scaling_factor = float(rope_scaling_factor)
+        self.use_gradient_checkpointing = config.use_gradient_checkpointing
+        self.use_gateskip = config.use_gateskip
+        self.gate_budget = config.gate_budget
+        self.gate_lambda = config.gate_lambda
+        self.pos_encoding_type = str(config.pos_encoding_type)
+        self.rope_base = float(config.rope_base)
+        self.rope_scaling_type = str(config.rope_scaling_type)
+        self.rope_scaling_factor = float(config.rope_scaling_factor)
         # Backward-compatible behavior:
         # if caller sets att_type to a routed mode but leaves attention_mode default,
         # promote attention_mode so the intended path is used.
@@ -422,13 +346,15 @@ class BaseTransformer(nn.Module, ABC):
         self.budget_scheduler: BudgetScheduler | None = None
 
         # MoE aux scaling (FIX)
-        self.moe_aux_lambda = float(moe_aux_lambda)
+        self.moe_aux_lambda = float(config.moe_aux_lambda)
 
-        self.use_attention_residual = bool(use_attention_residual)
+        self.use_attention_residual = bool(config.use_attention_residual)
         self.attention_residual_mode = normalize_attention_residual_mode(
-            attn_residual_type
+            config.attn_residual_type
         )
-        self.attention_residual_block_size = int(attention_residual_block_size)
+        self.attention_residual_block_size = int(
+            config.attention_residual_block_size
+        )
         if self.attention_residual_block_size <= 0:
             raise ValueError("attention_residual_block_size must be > 0")
         self.output_attention_residual = (
@@ -436,27 +362,27 @@ class BaseTransformer(nn.Module, ABC):
         )
 
         # mHC model-level
-        self.use_mhc = bool(use_mhc)
-        self.mhc_n_streams = int(mhc_n_streams)
-        self.mhc_sinkhorn_iters = int(mhc_sinkhorn_iters)
-        self.mhc_collapse = str(mhc_collapse)
+        self.use_mhc = bool(config.use_mhc)
+        self.mhc_n_streams = int(config.mhc_n_streams)
+        self.mhc_sinkhorn_iters = int(config.mhc_sinkhorn_iters)
+        self.mhc_collapse = str(config.mhc_collapse)
 
         # PatchTST-style patching knobs (subclasses decide whether to apply)
-        self.patch_encoder = bool(patch_encoder)
-        self.patch_len = int(patch_len)
-        self.patch_stride = int(patch_stride)
-        self.patch_pad_end = bool(patch_pad_end)
+        self.patch_encoder = bool(config.patch_encoder)
+        self.patch_len = int(config.patch_len)
+        self.patch_stride = int(config.patch_stride)
+        self.patch_pad_end = bool(config.patch_pad_end)
 
         # Mixture-of-Depths knobs
-        self.use_mod = bool(use_mod)
-        self.mod_mode = str(mod_mode)
-        self.mod_lambda = float(mod_lambda)
+        self.use_mod = bool(config.use_mod)
+        self.mod_mode = str(config.mod_mode)
+        self.mod_lambda = float(config.mod_lambda)
         self.mod_budget_scheduler = mod_budget_scheduler
 
         # Per-layer dropout schedule
         self.layer_dropout_schedule = layer_dropout_schedule
-        self.initializer_range = float(initializer_range)
-        self.depth_scaled_init = bool(depth_scaled_init)
+        self.initializer_range = float(config.initializer_range)
+        self.depth_scaled_init = bool(config.depth_scaled_init)
 
         # Modules
         self.patcher = PatchTokenizer(
@@ -490,39 +416,9 @@ class BaseTransformer(nn.Module, ABC):
         # Build layers (per-layer attention type decided by attention_mode)
         if share_layers:
             layer_attn_type = self._get_layer_attention_type(0)
-            layer_kwargs = self._build_layer_kwargs(
-                d_model,
-                nhead,
-                dim_feedforward,
-                dropout,
-                activation,
-                att_type,
-                norm_strategy,
-                custom_norm,
-                layer_norm_eps,
-                use_swiglu,
-                freq_modes,
-                use_moe,
-                num_experts,
-                top_k,
-                use_gateskip,
-                gate_budget,
-                gate_lambda,
-                layer_attn_type,
-                use_mhc=self.use_mhc,
-                mhc_n_streams=self.mhc_n_streams,
-                mhc_sinkhorn_iters=self.mhc_sinkhorn_iters,
-                mhc_collapse=self.mhc_collapse,
-                use_attention_residual=self.use_attention_residual,
-                attn_residual_type=self.attention_residual_mode,
-                attention_residual_block_size=self.attention_residual_block_size,
-                pos_encoding_type=self.pos_encoding_type,
-                rope_base=self.rope_base,
-                rope_scaling_type=self.rope_scaling_type,
-                rope_scaling_factor=self.rope_scaling_factor,
-                **kwargs,
+            self.shared_layer = self._make_layer(
+                config, layer_attn_type, dropout, informer_like
             )
-            self.shared_layer = self._make_layer(**layer_kwargs)
             self.layers = None
         else:
             self.layers = nn.ModuleList()
@@ -534,39 +430,11 @@ class BaseTransformer(nn.Module, ABC):
                     if self.layer_dropout_schedule
                     else dropout
                 )
-                layer_kwargs = self._build_layer_kwargs(
-                    d_model,
-                    nhead,
-                    dim_feedforward,
-                    layer_dropout,
-                    activation,
-                    att_type,
-                    norm_strategy,
-                    custom_norm,
-                    layer_norm_eps,
-                    use_swiglu,
-                    freq_modes,
-                    use_moe,
-                    num_experts,
-                    top_k,
-                    use_gateskip,
-                    gate_budget,
-                    gate_lambda,
-                    layer_attn_type,
-                    use_mhc=self.use_mhc,
-                    mhc_n_streams=self.mhc_n_streams,
-                    mhc_sinkhorn_iters=self.mhc_sinkhorn_iters,
-                    mhc_collapse=self.mhc_collapse,
-                    use_attention_residual=self.use_attention_residual,
-                    attn_residual_type=self.attention_residual_mode,
-                    attention_residual_block_size=self.attention_residual_block_size,
-                    pos_encoding_type=self.pos_encoding_type,
-                rope_base=self.rope_base,
-                rope_scaling_type=self.rope_scaling_type,
-                rope_scaling_factor=self.rope_scaling_factor,
-                    **kwargs,
+                self.layers.append(
+                    self._make_layer(
+                        config, layer_attn_type, layer_dropout, informer_like
+                    )
                 )
-                self.layers.append(self._make_layer(**layer_kwargs))
             self.shared_layer = None
 
         self.final_norm = (
@@ -598,10 +466,10 @@ class BaseTransformer(nn.Module, ABC):
         self._print_init_summary(
             att_type=att_type,
             custom_norm=custom_norm,
-            norm_strategy=norm_strategy,
-            use_moe=use_moe,
-            num_experts=num_experts,
-            top_k=top_k,
+            norm_strategy=config.norm_strategy,
+            use_moe=config.use_moe,
+            num_experts=config.num_experts,
+            top_k=config.top_k,
             share_layers=share_layers,
             use_final_norm=use_final_norm,
         )
@@ -681,75 +549,6 @@ class BaseTransformer(nn.Module, ABC):
                 return secondary if (layer_idx % 4) < 3 else primary
         # unreachable — _ATTN_ROUTES only contains "all", "hybrid", "3to1"
         raise RuntimeError(f"unreachable pattern {pattern!r}")
-
-    def _build_layer_kwargs(
-        self,
-        d_model,
-        nhead,
-        dim_feedforward,
-        dropout,
-        activation,
-        att_type,
-        norm_strategy,
-        custom_norm,
-        layer_norm_eps,
-        use_swiglu,
-        freq_modes,
-        use_moe,
-        num_experts,
-        top_k,
-        use_gateskip,
-        gate_budget,
-        gate_lambda,
-        layer_attention_type,
-        # mHC
-        use_mhc: bool,
-        mhc_n_streams: int,
-        mhc_sinkhorn_iters: int,
-        mhc_collapse: str,
-        use_attention_residual: bool,
-        attn_residual_type: str,
-        attention_residual_block_size: int,
-        pos_encoding_type: str = "sinusoidal",
-        rope_base: float = 10000.0,
-        rope_scaling_type: str = "none",
-        rope_scaling_factor: float = 1.0,
-        **kwargs,
-    ):
-        return {
-            "d_model": d_model,
-            "nhead": nhead,
-            "dim_feedforward": dim_feedforward,
-            "dropout": dropout,
-            "activation": activation,
-            "att_type": att_type,
-            "norm_strategy": norm_strategy,
-            "custom_norm": custom_norm,
-            "layer_norm_eps": layer_norm_eps,
-            "use_swiglu": use_swiglu,
-            "freq_modes": freq_modes,
-            "use_moe": use_moe,
-            "num_experts": num_experts,
-            "top_k": top_k,
-            "use_gateskip": use_gateskip,
-            "gate_budget": gate_budget,
-            "gate_lambda": gate_lambda,
-            "layer_attention_type": layer_attention_type,
-            # mHC
-            "use_mhc": use_mhc,
-            "mhc_n_streams": mhc_n_streams,
-            "mhc_sinkhorn_iters": mhc_sinkhorn_iters,
-            "mhc_collapse": mhc_collapse,
-            "use_attention_residual": use_attention_residual,
-            "attn_residual_type": attn_residual_type,
-            "attention_residual_block_size": attention_residual_block_size,
-            # Positional encoding
-            "pos_encoding_type": pos_encoding_type,
-            "rope_base": rope_base,
-            "rope_scaling_type": rope_scaling_type,
-            "rope_scaling_factor": rope_scaling_factor,
-            **kwargs,
-        }
 
     # ---- GateSkip runtime setters ---------------------------------------------
     def _set_layer_gateskip_attrs(self, layer: nn.Module) -> None:
@@ -841,7 +640,13 @@ class BaseTransformer(nn.Module, ABC):
 
     # ---- Layer factory ---------------------------------------------------------
     @abstractmethod
-    def _make_layer(self, **kwargs) -> nn.Module: ...
+    def _make_layer(
+        self,
+        config: TransformerConfig,
+        layer_attention_type: str,
+        dropout: float,
+        informer_like: bool,
+    ) -> nn.Module: ...
 
     # ---- Init & helpers --------------------------------------------------------
     def _init_weights(self, m: nn.Module) -> None:
@@ -1093,4 +898,21 @@ __all__ = [
     "MHCBlockMixin",
     "BaseTransformerLayer",
     "BaseTransformer",
+    "TransformerEncoder",
+    "TransformerDecoder",
 ]
+
+
+def __getattr__(name: str):
+    # Lazy re-export: encoder.py/decoder.py both import FROM this module, so
+    # importing them back at module load time would be circular. Resolve on
+    # first attribute access instead (PEP 562).
+    if name == "TransformerEncoder":
+        from foreblocks.models.transformer.core.encoder import TransformerEncoder
+
+        return TransformerEncoder
+    if name == "TransformerDecoder":
+        from foreblocks.models.transformer.core.decoder import TransformerDecoder
+
+        return TransformerDecoder
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

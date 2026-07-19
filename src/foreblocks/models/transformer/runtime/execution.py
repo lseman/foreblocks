@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
 
 import torch
 import torch.nn as nn
@@ -25,17 +26,24 @@ from foreblocks.models.transformer.runtime.residual_state import (
 from foreblocks.modules.skip.gateskip import apply_skip_to_kv
 
 
-@dataclass(frozen=True)
-class NormWrapper:
-    """Immutable holder for a normalization layer, strategy, and dropout.
+class NormWrapper(nn.Module):
+    """Holder for a normalization layer, strategy, and dropout.
 
-    Replaces the previous nn.Module subclass that raised in forward().
-    Callers access .norm and .dropout explicitly.
+    Must be an nn.Module (not a plain dataclass) so that .norm/.dropout are
+    registered submodules — otherwise .to()/.cuda()/.parameters()/
+    state_dict() silently skip them (they previously did, when this was a
+    frozen dataclass: the weights never moved off CPU and were absent from
+    the optimizer's parameter list). forward() still raises: callers must
+    invoke .norm(...)/.dropout(...) explicitly, never the wrapper itself.
     """
 
-    norm: nn.Module
-    strategy: str  # "pre_norm" | "post_norm" | "sandwich_norm"
-    dropout: nn.Module
+    def __init__(self, norm: nn.Module, strategy: str, dropout: nn.Module) -> None:
+        super().__init__()
+        if strategy not in {"pre_norm", "post_norm", "sandwich_norm"}:
+            raise ValueError("invalid norm strategy")
+        self.norm = norm
+        self.strategy = strategy
+        self.dropout = dropout
 
     @staticmethod
     def make(
@@ -45,17 +53,14 @@ class NormWrapper:
         dropout: float = 0.0,
         eps: float = 1e-5,
     ) -> "NormWrapper":
-        if strategy not in {"pre_norm", "post_norm", "sandwich_norm"}:
-            raise ValueError("invalid norm strategy")
         norm = create_norm_layer(norm_type, d_model, eps)
         dropout_layer = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         return NormWrapper(norm=norm, strategy=strategy, dropout=dropout_layer)
 
-    def __post_init__(self) -> None:
-        if self.strategy not in ("pre_norm", "post_norm", "sandwich_norm"):
-            # dataclass frozen can't use __setattr__, so we raise in __new__
-            # but __post_init__ runs after __new__ and before __init__
-            raise ValueError("invalid norm strategy")
+    def forward(self, *_args, **_kwargs):
+        raise RuntimeError(
+            "NormWrapper is a holder, not callable — use .norm(...) or .dropout(...)"
+        )
 
 
 @dataclass(frozen=True)
@@ -162,38 +167,61 @@ class LazyAttentionBackendMixin:
 class ResidualExecutionPolicy(Protocol):
     """Execution contract shared by standard and stream residual policies."""
 
-    def run_block(self, strategy, **kwargs): ...
+    def run_block(
+        self, strategy: "LayerExecutionStrategy", context: "ResidualBlockContext"
+    ) -> tuple[Any | None, torch.Tensor | None]: ...
+
+
+CoreFn = Callable[[torch.Tensor], tuple[torch.Tensor, Any | None]]
+MhcCoreFn = Callable[[torch.Tensor], torch.Tensor]
+
+
+@dataclass(frozen=True)
+class ResidualBlockContext:
+    """Typed inputs shared by the residual execution policies."""
+
+    normw: NormWrapper
+    gate: nn.Module | None
+    cfg: ResidualRunCfg
+    aux_l2_terms: list[torch.Tensor]
+    core_fn: CoreFn | None = None
+    mhc_core: MhcCoreFn | None = None
+    hyper_conn: nn.Module | None = None
+    prev_layer_state: Any | None = None
+    kv_key: str | None = None
+    active_mask: torch.Tensor | None = None
+    residual_module: nn.Module | None = None
 
 
 @dataclass(frozen=True)
 class StandardResidualPolicy:
-    def run_block(self, strategy, **kwargs):
-        core_fn = kwargs["core_fn"]
+    def run_block(self, strategy, context):
+        core_fn = context.core_fn
         if strategy.x is None or core_fn is None:
             raise RuntimeError("standard residual execution requires x and core_fn")
         strategy.x, updated, skipped = strategy.owner._run_sublayer_nonmhc(
             strategy.x,
-            kwargs["normw"],
+            context.normw,
             core_fn,
-            kwargs["gate"],
-            kwargs["cfg"],
-            kwargs["aux_l2_terms"],
-            kwargs.get("prev_layer_state"),
-            kwargs.get("kv_key"),
-            kwargs.get("active_mask"),
+            context.gate,
+            context.cfg,
+            context.aux_l2_terms,
+            context.prev_layer_state,
+            context.kv_key,
+            context.active_mask,
         )
         return updated, skipped
 
 
 @dataclass(frozen=True)
 class MHCResidualPolicy:
-    def run_block(self, strategy, **kwargs):
-        mhc_core = kwargs["mhc_core"]
-        hyper_conn = kwargs["hyper_conn"]
+    def run_block(self, strategy, context):
+        mhc_core = context.mhc_core
+        hyper_conn = context.hyper_conn
         if strategy.streams is None or mhc_core is None or hyper_conn is None:
             raise RuntimeError("mHC residual execution requires streams, core, and connection")
         strategy.streams = strategy.owner._mhc_run_block(
-            strategy.streams, kwargs["normw"], hyper_conn, mhc_core
+            strategy.streams, context.normw, hyper_conn, mhc_core
         )
         return None, None
 
@@ -207,18 +235,20 @@ class AttentionResidualPolicy:
     ``runtime/residual_state.py``) rather than accumulating onto ``strategy.x``.
     """
 
-    def run_block(self, strategy, **kwargs):
-        core_fn = kwargs["core_fn"]
+    def run_block(self, strategy, context):
+        core_fn = context.core_fn
         state = strategy.attention_residual_state
         if state is None or core_fn is None:
             raise RuntimeError(
                 "attention-residual execution requires attention_residual_state and core_fn"
             )
-        residual_module = kwargs.get("residual_module")
+        residual_module = context.residual_module
         if residual_module is None:
             raise RuntimeError("attention-residual execution requires residual_module")
         x_in = _attention_residual_input(state["current"], state, residual_module)
-        out, updated_kv = strategy.owner._run_attnres_core(x_in, kwargs["normw"], core_fn)
+        out, updated_kv = strategy.owner._run_attnres_core(
+            x_in, context.normw, core_fn
+        )
         _append_attention_residual_update(state, out)
         strategy.x = state["current"]
         return updated_kv, None
@@ -246,10 +276,19 @@ class LayerExecutionStrategy:
     ):
         return self.policy.run_block(
             self,
-            normw=normw, gate=gate, cfg=cfg, aux_l2_terms=aux_l2_terms,
-            core_fn=core_fn, mhc_core=mhc_core, hyper_conn=hyper_conn,
-            prev_layer_state=prev_layer_state, kv_key=kv_key,
-            active_mask=active_mask, residual_module=residual_module,
+            ResidualBlockContext(
+                normw=normw,
+                gate=gate,
+                cfg=cfg,
+                aux_l2_terms=aux_l2_terms,
+                core_fn=core_fn,
+                mhc_core=mhc_core,
+                hyper_conn=hyper_conn,
+                prev_layer_state=prev_layer_state,
+                kv_key=kv_key,
+                active_mask=active_mask,
+                residual_module=residual_module,
+            ),
         )
 
     def collapse(self, mode):
@@ -339,6 +378,6 @@ _ModelLayerInvokeStrategy = ModelLayerInvokeStrategy
 __all__ = [
     "AttentionResidualPolicy", "LayerExecutionStrategy", "MHCBlockMixin",
     "MHCResidualPolicy", "ModelLayerInvokeStrategy", "NormWrapper",
-    "ResidualBlockMixin", "ResidualExecutionPolicy", "ResidualRunCfg",
+    "ResidualBlockContext", "ResidualBlockMixin", "ResidualExecutionPolicy", "ResidualRunCfg",
     "StandardResidualPolicy",
 ]

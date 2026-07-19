@@ -15,6 +15,7 @@ Core API:
 
 from __future__ import annotations
 
+import dataclasses
 import math
 
 
@@ -72,68 +73,35 @@ class TransformerEncoderLayer(
 
     def __init__(
         self,
-        d_model: int,
-        nhead: int,
-        dim_feedforward: int = 2048,
-        dropout: float = 0.1,
-        activation: str = "gelu",
-        att_type: str = "standard",
-        attn_implementation: str = "auto",
-        freq_modes: int = 16,
-        use_swiglu: bool = True,
-        norm_strategy: str = "pre_norm",
-        custom_norm: str = "rms",
-        layer_norm_eps: float = 1e-5,
-        use_moe: bool = False,
-        num_experts: int = 8,
-        top_k: int = 2,
-        use_gateskip: bool = False,
-        gate_budget: float | None = None,
-        gate_lambda: float = 0.1,
+        d_model: int | TransformerConfig | None = None,
+        nhead: int | None = None,
+        *,
+        config: TransformerConfig | None = None,
         layer_attention_type: str = "standard",
-        use_mhc: bool = False,
-        mhc_n_streams: int = 4,
-        mhc_sinkhorn_iters: int = 20,
-        mhc_collapse: str = "first",
-        moe_use_latent: bool = False,
-        moe_latent_dim: int | None = None,
-        moe_latent_d_ff: int | None = None,
-        use_attention_matching_compaction: bool = False,
-        attention_matching_keep_ratio: float = 0.25,
-        attention_matching_trigger_len: int = 512,
-        attention_matching_min_keep: int = 64,
-        attention_matching_query_budget: int = 64,
-        attention_matching_force_single_step: bool = False,
-        moba_block_size: int | None = None,
-        moba_topk: int = 4,
-        use_attention_residual: bool = False,  # True enables depth attention residuals (incompatible with ckpt/mHC/mod/gateskip)
-        attn_residual_type: str = "full",
-        attention_residual_block_size: int = 8,
-        pos_encoding_type: str = "rope",
-        rope_base: float = 10000.0,
-        rope_scaling_type: str = "none",
-        rope_scaling_factor: float = 1.0,
+        dropout: float | None = None,
+        **legacy_kwargs,
     ):
-        super().__init__(
-            d_model=d_model,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=activation,
-            use_swiglu=use_swiglu,
-            use_moe=use_moe,
-            num_experts=num_experts,
-            top_k=top_k,
-            use_gateskip=use_gateskip,
-            gate_budget=gate_budget,
-            gate_lambda=gate_lambda,
-            use_mhc=use_mhc,
-            mhc_n_streams=mhc_n_streams,
-            mhc_sinkhorn_iters=mhc_sinkhorn_iters,
-            mhc_collapse=mhc_collapse,
-            moe_use_latent=moe_use_latent,
-            moe_latent_dim=moe_latent_dim,
-            moe_latent_d_ff=moe_latent_d_ff,
-        )
+        if isinstance(d_model, TransformerConfig):
+            if config is not None:
+                raise ValueError("pass TransformerConfig once")
+            config = d_model
+        elif config is None:
+            if d_model is None or nhead is None:
+                raise TypeError("d_model and nhead are required without config")
+            legacy_kwargs.setdefault("dim_feedforward", 2048)
+            legacy_kwargs.setdefault("freq_modes", 16)
+            config = TransformerConfig.from_kwargs(
+                d_model=d_model, nhead=nhead, **legacy_kwargs
+            )
+            legacy_kwargs.clear()
+        if legacy_kwargs:
+            config = config.with_overrides(**legacy_kwargs)
+
+        dropout = config.dropout if dropout is None else dropout
+        super().__init__(config, dropout=dropout)
+
+        d_model = config.d_model
+        nhead = config.nhead
 
         # Init parameters for the lazy attention-backend registry (captured once, reused).
         # See core/attention_backends.py + runtime/execution.py's
@@ -144,29 +112,29 @@ class TransformerEncoderLayer(
             "dropout": dropout,
         }
         self._attn_backend_cfg = dict(
-            att_type=att_type,
-            attn_implementation=attn_implementation,
-            freq_modes=freq_modes,
-            use_attention_matching_compaction=use_attention_matching_compaction,
-            attention_matching_keep_ratio=attention_matching_keep_ratio,
-            attention_matching_trigger_len=attention_matching_trigger_len,
-            attention_matching_min_keep=attention_matching_min_keep,
-            attention_matching_query_budget=attention_matching_query_budget,
-            attention_matching_force_single_step=attention_matching_force_single_step,
-            moba_block_size=moba_block_size,
-            moba_topk=moba_topk,
-            rope_base=rope_base,
-            rope_scaling_type=rope_scaling_type,
-            rope_scaling_factor=rope_scaling_factor,
+            att_type=config.att_type,
+            attn_implementation=config.attn_implementation,
+            freq_modes=config.freq_modes,
+            use_attention_matching_compaction=config.use_attention_matching_compaction,
+            attention_matching_keep_ratio=config.attention_matching_keep_ratio,
+            attention_matching_trigger_len=config.attention_matching_trigger_len,
+            attention_matching_min_keep=config.attention_matching_min_keep,
+            attention_matching_query_budget=config.attention_matching_query_budget,
+            attention_matching_force_single_step=config.attention_matching_force_single_step,
+            moba_block_size=config.moba_block_size,
+            moba_topk=config.moba_topk,
+            rope_base=config.rope_base,
+            rope_scaling_type=config.rope_scaling_type,
+            rope_scaling_factor=config.rope_scaling_factor,
         )
         self.layer_attention_type = str(layer_attention_type)
-        self._pos_encoding_type = str(pos_encoding_type)
+        self._pos_encoding_type = str(config.pos_encoding_type)
 
         self.attn_norm = NormWrapper.make(
-            d_model, custom_norm, norm_strategy, dropout, layer_norm_eps
+            d_model, config.custom_norm, config.norm_strategy, dropout, config.layer_norm_eps
         )
         self.ff_norm = NormWrapper.make(
-            d_model, custom_norm, norm_strategy, dropout, layer_norm_eps
+            d_model, config.custom_norm, config.norm_strategy, dropout, config.layer_norm_eps
         )
 
         self.gate_attn = ResidualGate(d_model)
@@ -177,11 +145,11 @@ class TransformerEncoderLayer(
         if self.use_mhc:
             self._ensure_mhc_mixers()
 
-        self.use_attention_residual = use_attention_residual
+        self.use_attention_residual = config.use_attention_residual
         self.attention_residual_mode = normalize_attention_residual_mode(
-            attn_residual_type
+            config.attn_residual_type
         )
-        self.attention_residual_block_size = int(attention_residual_block_size)
+        self.attention_residual_block_size = int(config.attention_residual_block_size)
         self.attn_input_residual = (
             BlockAttentionResidual(d_model)
             if self.attention_residual_mode == "block"
@@ -354,6 +322,8 @@ class TransformerEncoder(BaseTransformer):
                 raise ValueError("pass TransformerConfig once, as input_size or config")
             config = input_size
         if config is not None:
+            if kwargs:
+                config = config.with_overrides(**kwargs)
             input_size = config.input_size
             model_type = config.model_type
             use_time_encoding = config.use_time_encoding
@@ -362,7 +332,6 @@ class TransformerEncoder(BaseTransformer):
             ct_patch_stride = config.ct_patch_stride
             ct_patch_pad_end = config.ct_patch_pad_end
             ct_patch_fuse = config.ct_patch_fuse
-            kwargs = {**config.model_kwargs(), **kwargs}
         else:
             config = TransformerConfig.from_kwargs(
                 input_size=input_size,
@@ -375,11 +344,13 @@ class TransformerEncoder(BaseTransformer):
                 ct_patch_fuse=ct_patch_fuse,
                 **kwargs,
             )
+        kwargs.clear()
         config.validate_compatibility(role="encoder")
         self.model_type = model_type
         # Auto-configure based on model_type
         if model_type == "informer-like":
-            use_time_encoding = kwargs.get("use_time_encoding", True)
+            config = config.with_overrides(use_time_encoding=True)
+            use_time_encoding = config.use_time_encoding
             # Informers often use patching or specific attention,
             # but usually handled by kwargs or specific layers.
 
@@ -391,10 +362,19 @@ class TransformerEncoder(BaseTransformer):
         self.ct_patch_fuse = str(ct_patch_fuse)
         if self.ct_patch_fuse not in ("mean", "linear"):
             raise ValueError("ct_patch_fuse must be 'mean' or 'linear'")
-        if self.ct_patchtst:
+        if self.ct_patchtst and config.patch_encoder:
             # CT-PatchTST is an alternative encoder tokenization path.
-            kwargs["patch_encoder"] = False
-        super().__init__(input_size, **kwargs)
+            config = dataclasses.replace(config, patch_encoder=False)
+        pos_encoder = config.option("pos_encoder")
+        mod_budget_scheduler = config.option("mod_budget_scheduler")
+        layer_dropout_schedule = config.option("layer_dropout_schedule")
+        super().__init__(
+            input_size,
+            config=config,
+            pos_encoder=pos_encoder,
+            mod_budget_scheduler=mod_budget_scheduler,
+            layer_dropout_schedule=layer_dropout_schedule,
+        )
         self.config = config
         self.input_size = input_size
         self.time_encoder = (
@@ -474,9 +454,16 @@ class TransformerEncoder(BaseTransformer):
         )
         return tokens, info
 
-    def _make_layer(self, **kwargs) -> nn.Module:
-        kwargs.pop("informer_like", None)
-        return TransformerEncoderLayer(**kwargs)
+    def _make_layer(
+        self,
+        config: TransformerConfig,
+        layer_attention_type: str,
+        dropout: float,
+        informer_like: bool,
+    ) -> nn.Module:
+        return TransformerEncoderLayer(
+            config, layer_attention_type=layer_attention_type, dropout=dropout
+        )
 
     def forward(
         self,

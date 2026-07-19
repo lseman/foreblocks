@@ -24,17 +24,7 @@ _ATTENTION_MODES: set[str] = {
 }
 
 _SUPPORTED_OPTIONS: set[str] = {
-    "att_type", "layer_norm_eps", "pos_encoding_scale", "pos_encoder",
-    "share_layers", "use_final_norm", "use_swiglu", "freq_modes",
-    "gate_budget", "gate_lambda", "mhc_n_streams", "mhc_sinkhorn_iters",
-    "mhc_collapse", "mod_mode", "mod_lambda", "mod_budget_scheduler",
-    "moe_aux_lambda", "use_attention_residual", "attn_residual_type",
-    "attention_residual_block_size", "layer_dropout_schedule",
-    "initializer_range", "depth_scaled_init", "moe_use_latent",
-    "moe_latent_dim", "moe_latent_d_ff", "use_attention_matching_compaction",
-    "attention_matching_keep_ratio", "attention_matching_trigger_len",
-    "attention_matching_min_keep", "attention_matching_query_budget",
-    "attention_matching_force_single_step", "moba_block_size", "moba_topk",
+    "pos_encoder", "mod_budget_scheduler", "layer_dropout_schedule",
 }
 
 
@@ -77,8 +67,8 @@ class TransformerConfig:
     Less common experimental options remain supported through ``options`` while
     stable architecture and output controls have first-class fields.
 
-    Immutable once fully constructed.  Attention-mode aliases are
-    resolved in ``__post_init__`` before validation, so both direct
+    Attention-mode aliases are resolved in ``__post_init__`` before validation,
+    so both direct
     construction (``TransformerConfig(...)``) and ``from_dict()``
     produce canonical values.
     """
@@ -95,8 +85,11 @@ class TransformerConfig:
     model_type: str = "transformer"
     attention_mode: str = "standard"
     attn_implementation: str = "auto"
+    att_type: str = "standard"
     norm_strategy: str = "pre_norm"
     custom_norm: str = "rms"
+    layer_norm_eps: float = 1e-5
+    pos_encoding_scale: float = 1.0
     pos_encoding_type: str = "rope"
     rope_base: float = 10000.0
     rope_scaling_type: Literal["none", "yarn", "ntk", "linear"] = "none"
@@ -106,12 +99,40 @@ class TransformerConfig:
     patch_stride: int = 8
     patch_pad_end: bool = True
     use_gradient_checkpointing: bool = False
+    share_layers: bool = False
+    use_final_norm: bool = True
+    use_swiglu: bool = True
+    freq_modes: int = 32
     use_moe: bool = False
     num_experts: int = 8
     top_k: int = 2
+    moe_use_latent: bool = False
+    moe_latent_dim: int | None = None
+    moe_latent_d_ff: int | None = None
+    moe_aux_lambda: float = 1.0
     use_gateskip: bool = False
+    gate_budget: float | None = None
+    gate_lambda: float = 0.1
     use_mhc: bool = False
+    mhc_n_streams: int = 4
+    mhc_sinkhorn_iters: int = 20
+    mhc_collapse: Literal["first", "mean"] = "first"
     use_mod: bool = False
+    mod_mode: Literal["token", "seq"] = "token"
+    mod_lambda: float = 0.05
+    use_attention_residual: bool = False
+    attn_residual_type: str = "full"
+    attention_residual_block_size: int = 8
+    initializer_range: float = 0.02
+    depth_scaled_init: bool = True
+    use_attention_matching_compaction: bool = False
+    attention_matching_keep_ratio: float = 0.25
+    attention_matching_trigger_len: int = 512
+    attention_matching_min_keep: int = 64
+    attention_matching_query_budget: int = 64
+    attention_matching_force_single_step: bool = False
+    moba_block_size: int | None = None
+    moba_topk: int = 4
     cache_implementation: Literal["auto", "dynamic", "paged", "static"] = "auto"
     label_len: int = 0
     informer_like: bool = True
@@ -131,6 +152,19 @@ class TransformerConfig:
         # This runs for both direct construction (TransformerConfig(...))
         # and from_dict(), ensuring canonical values everywhere.
         self.attention_mode = _resolve_attention_mode(self.attention_mode)
+
+        # Accept the pre-first-class representation when loading or directly
+        # constructing older configs. New code should pass these as fields.
+        known = {item.name for item in fields(self)} - {"options"}
+        promoted = known & self.options.keys()
+        for name in promoted:
+            setattr(self, name, self.options[name])
+        if promoted:
+            self.options = {
+                name: value
+                for name, value in self.options.items()
+                if name not in promoted
+            }
 
         if self.input_size <= 0 or self.output_size <= 0:
             raise ValueError("input_size and output_size must be positive")
@@ -152,6 +186,16 @@ class TransformerConfig:
             raise ValueError(f"unsupported pos_encoding_type: {self.pos_encoding_type}")
         if self.rope_scaling_type not in {"none", "yarn", "ntk", "linear"}:
             raise ValueError(f"unsupported rope_scaling_type: {self.rope_scaling_type}")
+        if self.layer_norm_eps <= 0:
+            raise ValueError("layer_norm_eps must be positive")
+        if self.freq_modes <= 0:
+            raise ValueError("freq_modes must be positive")
+        if self.gate_budget is not None and not 0.0 <= self.gate_budget <= 1.0:
+            raise ValueError("gate_budget must be in [0, 1]")
+        if self.mhc_n_streams <= 0 or self.mhc_sinkhorn_iters <= 0:
+            raise ValueError("mhc_n_streams and mhc_sinkhorn_iters must be positive")
+        if self.attention_residual_block_size <= 0:
+            raise ValueError("attention_residual_block_size must be positive")
         unsupported = sorted(set(self.options) - _SUPPORTED_OPTIONS)
         if unsupported:
             raise ValueError(
@@ -169,7 +213,7 @@ class TransformerConfig:
 
     @property
     def residual(self) -> ResidualConfig:
-        if self.option("use_attention_residual", False):
+        if self.use_attention_residual:
             policy = "attention_residual"
         elif self.use_mhc:
             policy = "mhc"
@@ -191,14 +235,23 @@ class TransformerConfig:
 
     def validate_compatibility(self, *, role: str | None = None) -> None:
         """Reject unsupported feature combinations before model execution."""
-        attention_residual = bool(self.option("use_attention_residual", False))
-        mod_mode = str(self.option("mod_mode", "token"))
+        attention_residual = self.use_attention_residual
+        mod_mode = self.mod_mode
         if attention_residual and self.use_gateskip:
             raise ValueError("use_attention_residual is incompatible with use_gateskip")
         if attention_residual and self.use_mhc:
             raise ValueError("use_attention_residual is incompatible with use_mhc")
         if attention_residual and self.use_mod:
             raise ValueError("use_attention_residual is incompatible with use_mod")
+        if self.use_gradient_checkpointing and attention_residual:
+            raise ValueError(
+                "use_gradient_checkpointing is incompatible with "
+                "use_attention_residual"
+            )
+        if self.use_gradient_checkpointing and self.use_mhc:
+            raise ValueError(
+                "use_gradient_checkpointing is incompatible with use_mhc"
+            )
         if self.use_mod and self.use_gateskip:
             raise ValueError("use_mod is incompatible with use_gateskip")
         if self.use_mod and self.use_mhc:
@@ -225,10 +278,25 @@ class TransformerConfig:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def with_overrides(self, **overrides: Any) -> "TransformerConfig":
+        """Return a new config with legacy keyword overrides applied."""
+        values = {
+            item.name: getattr(self, item.name)
+            for item in fields(self)
+            if item.name != "options"
+        }
+        options = dict(self.options)
+        return type(self).from_kwargs(**values, **options, **overrides)
+
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "TransformerConfig":
         """Load from a dict, resolving attention-mode aliases first."""
         values = dict(values)
+        options = dict(values.get("options", {}))
+        known = {item.name for item in fields(cls)} - {"options"}
+        for name in known & options.keys():
+            values.setdefault(name, options.pop(name))
+        values["options"] = options
         if "attention_mode" in values:
             values["attention_mode"] = _resolve_attention_mode(values["attention_mode"])
         return cls(**values)
