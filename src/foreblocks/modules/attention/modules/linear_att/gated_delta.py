@@ -557,7 +557,7 @@ class GatedDeltaNet(nn.Module):
                 out_h, g, self.h_rms.weight
             ):
                 out_h = fused_rmsnorm_sigmoid_gate(
-                    out_h, g, self.h_rms.weight, self.h_rms.eps
+                    out_h, torch.sigmoid(g), self.h_rms.weight, self.h_rms.eps
                 )
             else:
                 out_h = self.h_rms(out_h)
@@ -622,7 +622,7 @@ class GatedDeltaNet(nn.Module):
                 out_h, g, self.h_rms.weight
             ):
                 out_h = fused_rmsnorm_sigmoid_gate(
-                    out_h, g, self.h_rms.weight, self.h_rms.eps
+                    out_h, torch.sigmoid(g), self.h_rms.weight, self.h_rms.eps
                 )
             else:
                 out_h = self.h_rms(out_h)

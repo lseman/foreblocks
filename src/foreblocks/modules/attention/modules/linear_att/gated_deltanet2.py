@@ -20,8 +20,6 @@ Core API:
 from __future__ import annotations
 
 import math
-from typing import Literal
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -585,7 +583,7 @@ class GatedDeltaNet2(nn.Module):
                 out_h, g, self.h_rms.weight
             ):
                 out_h = fused_rmsnorm_sigmoid_gate(
-                    out_h, g, self.h_rms.weight, self.h_rms.eps
+                    out_h, torch.sigmoid(g), self.h_rms.weight, self.h_rms.eps
                 )
             else:
                 out_h = self.h_rms(out_h)
@@ -655,7 +653,7 @@ class GatedDeltaNet2(nn.Module):
                 out_h, g, self.h_rms.weight
             ):
                 out_h = fused_rmsnorm_sigmoid_gate(
-                    out_h, g, self.h_rms.weight, self.h_rms.eps
+                    out_h, torch.sigmoid(g), self.h_rms.weight, self.h_rms.eps
                 )
             else:
                 out_h = self.h_rms(out_h)

@@ -45,10 +45,46 @@ from foreblocks.ts_handler.auto_filter.filters import (
 )
 from foreblocks.ts_handler.auto_filter.heuristics import suggest_weights
 from foreblocks.ts_handler.auto_filter.metrics import ScoringWeights, filter_metrics
-from foreblocks.ts_handler.auto_filter.registry import register_filter
-from foreblocks.ts_handler.auto_filter.runner import auto_filter
-from foreblocks.ts_handler.auto_filter.tuning import TuneFilterResult, tune_filter, tune_weights
+from foreblocks.ts_handler.auto_filter.registry import (
+    _FILTER_REGISTRY,
+    _SLOW_FILTERS,
+    register_filter,
+)
+from foreblocks.ts_handler.auto_filter import runner as _runner
+from foreblocks.ts_handler.auto_filter import tuning as _tuning
+from foreblocks.ts_handler.auto_filter.tuning import (
+    _TUNE_FILTER_FAMILIES as _TUNE_FILTER_FAMILIES,
+    _TUNE_FILTER_SLOW_FAMILIES as _TUNE_FILTER_SLOW_FAMILIES,
+    TuneFilterResult,
+)
 from foreblocks.ts_handler.auto_filter.visualization import plot_results
+
+
+def auto_filter(*args, **kwargs):
+    """Run selection while preserving the legacy monkeypatch surface."""
+    _runner._FILTER_REGISTRY = _FILTER_REGISTRY
+    _runner._SLOW_FILTERS = _SLOW_FILTERS
+    _runner.filter_metrics = filter_metrics
+    return _runner.auto_filter(*args, **kwargs)
+
+
+def tune_weights(*args, **kwargs):
+    """Tune weights while preserving the legacy monkeypatch surface."""
+    _tuning._FILTER_REGISTRY = _FILTER_REGISTRY
+    _tuning._SLOW_FILTERS = _SLOW_FILTERS
+    return _tuning.tune_weights(*args, **kwargs)
+
+
+def tune_filter(*args, **kwargs):
+    """Tune a filter while preserving the legacy monkeypatch surface."""
+    _tuning._suggest_filter_and_params = _suggest_filter_and_params
+    _tuning._run_parametrized_filter = _run_parametrized_filter
+    _tuning.filter_metrics = filter_metrics
+    return _tuning.tune_filter(*args, **kwargs)
+
+
+_suggest_filter_and_params = _tuning._suggest_filter_and_params
+_run_parametrized_filter = _tuning._run_parametrized_filter
 
 __all__ = [
     "auto_filter",

@@ -33,7 +33,7 @@ if HAS_TRITON:
         X,
         G,
         W,
-        O,
+        OUT,
         N: tl.constexpr,
         T: tl.constexpr,
         H: tl.constexpr,
@@ -48,10 +48,9 @@ if HAS_TRITON:
         x = tl.load(X + row * N + offs, mask=mask, other=0.0).to(tl.float32)
         g = tl.load(G + row * N + offs, mask=mask, other=0.0).to(tl.float32)
         w = tl.load(W + h * N + offs, mask=mask, other=0.0).to(tl.float32)
-        g = tl.sigmoid(g)
         var = tl.sum(x * x, axis=0) / N
         y = x * tl.rsqrt(var + eps) * w * g
-        tl.store(O + row * N + offs, y, mask=mask)
+        tl.store(OUT + row * N + offs, y, mask=mask)
 
 
 def can_use_fused_rmsnorm_sigmoid_gate(
@@ -83,12 +82,11 @@ def fused_rmsnorm_sigmoid_gate(
     weight: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Fused RMSNorm(x) * weight * sigmoid(gate) for [B, H, T, D] tensors.
+    """Fused RMSNorm(x) * weight * gate for [B, H, T, D] tensors.
 
     Args:
         x: input tensor [B, H, T, D].
-        gate: PRE-sigmoid gate logits, same shape as x (sigmoid is applied
-            inside the kernel — do not sigmoid before calling).
+        gate: sigmoid-activated gate values with the same shape as ``x``.
         weight: per-head per-dimension RMS weights [H, D].
         eps: RMSNorm epsilon.
 

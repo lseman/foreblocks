@@ -31,7 +31,7 @@ _FALLBACK_REL = Path("flash-linear-attention")
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    return Path(__file__).resolve().parents[4]
 
 
 def fla_path() -> Path:

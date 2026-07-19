@@ -93,6 +93,8 @@ class Informer(nn.Module):
             raise ValueError(f"Expected {self.in_channels} channels, got {C}")
 
         memory = self.encoder(x)
+        if hasattr(memory, "last_hidden_state"):
+            memory = memory.last_hidden_state
         pooled = memory.mean(dim=1)
         y = self.output_proj(pooled).view(B, self.pred_len, self.out_channels)
         return y

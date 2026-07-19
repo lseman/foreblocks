@@ -31,7 +31,6 @@ from foreblocks.ts_handler.diagnostics import (
     analyze_signal_quality,
     detect_seasonality,
     detect_stationarity,
-    estimate_ewt_bands,
     score_ljung_box,
     score_pacf,
 )
@@ -44,9 +43,9 @@ from foreblocks.ts_handler.filters import (
     stl_filter,
     wiener_filter,
 )
+from foreblocks.ts_handler.ewt import apply_ewt_and_detrend_parallel
 from foreblocks.ts_handler.impute import SAITSImputer
 from foreblocks.ts_handler.outlier import _remove_outliers, _remove_outliers_parallel
-from foreblocks.ts_handler.pipeline import _run_pipeline
 from foreblocks.ts_handler.plotting import _plot_comparison, set_plot_style
 from foreblocks.ts_handler.time_features import (
     _generate_time_features,
@@ -56,18 +55,14 @@ from foreblocks.ts_handler.time_features import (
 from foreblocks.ts_handler.transforms import (
     _apply_log_stage,
     _apply_scaling_stage,
-    _build_scaler,
     _centered,
     _ensure_log_flags,
     _mad_sigma,
     _should_log_transform,
-    _TransformState,
 )
 from foreblocks.ts_handler.utils import (
     _as_2d,
-    _cyclical_encode,
     _hybrid_impute,
-    _lag_fill_2d,
     _linear_interpolate_2d,
     _longest_nan_run,
     _mean_fill_2d,
@@ -474,8 +469,6 @@ class TimeSeriesHandler:
         return _dispatch_filter(self, data, method, **kwargs)
 
     def _apply_ewt_and_detrend(self, data: np.ndarray) -> np.ndarray:
-        from foreblocks.ts_handler.ewt import apply_ewt_and_detrend_parallel
-
         output, ewt_components, ewt_boundaries, trend_components = (
             apply_ewt_and_detrend_parallel(
                 data, self.ewt_bands, self.detrend, self.trend_imf_idx
@@ -807,13 +800,7 @@ class TimeSeriesHandler:
         self.filter_selection_ = {}
         if stats["T"] >= max(48, self.window_size * 3):
             try:
-                filter_selection = _auto_select_filter_method(
-                    x,
-                    stats,
-                    self.filter_method,
-                    self._apply_filter,
-                    self.verbose,
-                )
+                filter_selection = self._auto_select_filter_method(x, stats)
                 self.filter_selection_ = filter_selection
                 self.filter_method = str(filter_selection["best_method"])
                 self.apply_filter = bool(filter_selection["apply_filter"])
@@ -1055,6 +1042,27 @@ class TimeSeriesHandler:
             self._infer_timestamp_frequency,
             _generate_time_features,
             T,
+        )
+
+    def _ensure_log_flags(self, data: np.ndarray) -> None:
+        _ensure_log_flags(self, data)
+
+    def _generate_time_features(self, timestamps: np.ndarray) -> np.ndarray:
+        return _generate_time_features(
+            timestamps,
+            freq=self._infer_timestamp_frequency(timestamps),
+            time_feature_mode=self.time_feature_mode,
+        )
+
+    def _auto_select_filter_method(
+        self, data: np.ndarray, stats: dict[str, Any]
+    ) -> dict[str, Any]:
+        return _auto_select_filter_method(
+            data,
+            stats,
+            self.filter_method,
+            self._apply_filter,
+            self.verbose,
         )
 
     def _plot_comparison(

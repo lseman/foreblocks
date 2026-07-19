@@ -286,7 +286,9 @@ class TransformerConfig:
             if item.name != "options"
         }
         options = dict(self.options)
-        return type(self).from_kwargs(**values, **options, **overrides)
+        values.update(options)
+        values.update(overrides)
+        return type(self).from_kwargs(**values)
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "TransformerConfig":

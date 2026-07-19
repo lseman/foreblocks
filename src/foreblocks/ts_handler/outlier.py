@@ -26,6 +26,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 
 from foreblocks.anomaly.tranad import (
+    TranAD as TranAD,
     TranADDetector,
 )
 

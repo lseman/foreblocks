@@ -172,3 +172,6 @@ project-includes = ["**/*.py*", "**/*.ipynb"]
 [tool.basedpyright]
 include = ["src", "tests"]
 extraPaths = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

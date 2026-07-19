@@ -6,7 +6,6 @@ Scoring metrics and functions for filter evaluation.
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -282,6 +281,38 @@ def _candidate_band_penalties(
         penalty, _ = _band_penalty(series, original, target=target)
         penalties[name] = penalty
     return pd.Series(penalties)
+
+
+def _band_penalty(
+    winner: pd.Series,
+    original: pd.Series,
+    *,
+    target: dict[str, float],
+) -> tuple[float, dict[str, float]]:
+    """Measure violations of the configured fidelity/smoothness band."""
+    o = original.to_numpy(dtype=float)
+    d = winner.to_numpy(dtype=float)
+    residual = o - d
+    rel_mae = float(np.mean(np.abs(residual))) / max(
+        float(np.mean(np.abs(o))), 1e-12
+    )
+    roughness_ratio = float(np.std(np.diff(d))) / max(
+        float(np.std(np.diff(o))), 1e-12
+    )
+    derivative_corr = abs(_safe_corr(np.diff(d), np.diff(o)))
+    penalty = (
+        4.0 * max(target["rel_mae_min"] - rel_mae, 0.0)
+        + 4.0 * max(rel_mae - target["rel_mae_max"], 0.0)
+        + 3.0 * max(target["roughness_ratio_min"] - roughness_ratio, 0.0)
+        + 3.0 * max(roughness_ratio - target["roughness_ratio_max"], 0.0)
+        + 4.0 * max(target["derivative_corr_min"] - derivative_corr, 0.0)
+    )
+    diagnostics = {
+        "rel_mae": rel_mae,
+        "roughness_ratio": roughness_ratio,
+        "derivative_corr": derivative_corr,
+    }
+    return penalty, diagnostics
 
 
 def _clip01(value: float) -> float:

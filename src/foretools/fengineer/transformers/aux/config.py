@@ -322,8 +322,6 @@ class FeatureConfig:
             "n_fourier_terms": ("fourier", "n_fourier_terms"),
             "max_interactions": ("interaction", "max_interactions"),
             "max_polynomials": ("interaction", "max_polynomials"),
-            "max_features": ("autoencoder", "max_features"),
-            "min_features": ("autoencoder", "min_features"),
             "ae_latent_dim": ("autoencoder", "latent_dim"),
             "use_boruta": ("selector", "use_boruta"),
             "use_loo": ("categorical", "use_loo"),
@@ -333,6 +331,29 @@ class FeatureConfig:
             "use_quantile_transform": ("selector", "use_quantile_transform"),
         }
 
+        compat_routing = {
+            "target_encode_threshold": ("categorical", "target_encode_threshold"),
+            "shap_threshold": ("selector", "shap_threshold"),
+        }
+        prefixes = {
+            "cat_": "categorical",
+            "binning_": "binning",
+            "fourier_": "fourier",
+            "datetime_": "datetime",
+            "interaction_": "interaction",
+            "selector_": "selector",
+            "mrmr_": "selector",
+            "rfecv_": "selector",
+            "mi_": "selector",
+            "ae_": "autoencoder",
+        }
+        for key in kwargs:
+            for prefix, group in prefixes.items():
+                if key.startswith(prefix):
+                    attr = key[len(prefix):] if prefix not in {"mrmr_", "rfecv_", "mi_"} else key
+                    compat_routing.setdefault(key, (group, attr))
+                    break
+
         for key, value in kwargs.items():
             if isinstance(value, dict) and hasattr(self, key):
                 # Sub-config override: merge dict into existing sub-config
@@ -341,6 +362,11 @@ class FeatureConfig:
                         setattr(getattr(self, key), k, v)
             elif key in legacy_routing:
                 attr_group, attr_name = legacy_routing[key]
+                target = getattr(self, attr_group)
+                if hasattr(target, attr_name):
+                    setattr(target, attr_name, value)
+            elif key in compat_routing:
+                attr_group, attr_name = compat_routing[key]
                 target = getattr(self, attr_group)
                 if hasattr(target, attr_name):
                     setattr(target, attr_name, value)

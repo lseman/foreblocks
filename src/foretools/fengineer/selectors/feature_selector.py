@@ -16,8 +16,8 @@ import numpy as np
 import pandas as pd
 
 from foretools.aux.adaptive_mi import AdaptiveMI
+from foretools.aux.adaptive_mrmr import AdaptiveMRMR
 
-from .base import FeatureSelectorABC
 from .boruta import BorutaSelector
 from .mi_selector import MISelector
 from .mrmr_selector import MRMRSelector
@@ -279,7 +279,7 @@ class PipelineSelector:
 
     def _try_mrmr(self, X: pd.DataFrame, y: pd.Series) -> None:
         num = X.select_dtypes(include=[np.number]).columns
-        if not num:
+        if len(num) == 0:
             return
         sel = self._make_mrmr_selector(X, y)
         sel.fit(X[num], y)
@@ -369,6 +369,18 @@ class PipelineSelector:
             return "mi"
 
         return method
+
+    def _resolve_selector_method(self, n_features: int) -> str:
+        """Backward-compatible name for selector policy resolution."""
+        return self._resolve_method(n_features)
+
+    @property
+    def ami_scorer(self) -> AdaptiveMI:
+        return self._ami_scorer
+
+    @ami_scorer.setter
+    def ami_scorer(self, scorer: AdaptiveMI) -> None:
+        self._ami_scorer = scorer
 
     @staticmethod
     def _clean_target(y: pd.Series) -> pd.Series:

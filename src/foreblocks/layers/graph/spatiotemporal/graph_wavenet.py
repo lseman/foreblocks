@@ -275,7 +275,7 @@ class GraphWaveNetBlock(nn.Module):
             self.conv_channels,
             self.channels,
             gcn_depth=gcn_depth,
-            alpha=prop_alpha,
+            prop_alpha=prop_alpha,
             dropout=dropout,
             add_self_loops=add_self_loops,
         )
@@ -283,7 +283,7 @@ class GraphWaveNetBlock(nn.Module):
             self.conv_channels,
             self.channels,
             gcn_depth=gcn_depth,
-            alpha=prop_alpha,
+            prop_alpha=prop_alpha,
             dropout=dropout,
             add_self_loops=add_self_loops,
         )
