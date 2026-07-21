@@ -77,7 +77,7 @@ Run a quick import check before the full example:
 
 ```bash
 python -c "from foreblocks import ForecastingModel, Trainer; print('foreblocks import OK')"
-```python
+```
 
 ### What this validates
 
@@ -86,11 +86,11 @@ python -c "from foreblocks import ForecastingModel, Trainer; print('foreblocks i
 - The model trains without optional subsystems
 - Evaluation works on held-out data
 
-## 5. Trainer and MLTracker notes
+## 4. Trainer and MLTracker notes
 
 `Trainer` initializes MLTracker automatically if installed. Pass `auto_track=False` during local smoke tests.
 
-## 6. Shape expectations
+## 5. Shape expectations
 
 ### Direct forecasting
 

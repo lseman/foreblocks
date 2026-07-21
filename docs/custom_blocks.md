@@ -59,13 +59,13 @@ model = ForecastingModel(
     output_postprocessor=...,    # default: Identity
     input_skip_connection=False,
 )
-```text
+```
 
 Remove with:
 
 ```python
 model.remove_head("output_norm")
-```python
+```
 
 ## Minimal custom preprocessor example
 
@@ -100,3 +100,4 @@ model = ForecastingModel(
     input_preprocessor=ConvPre(in_features=8, hidden=32),
     input_skip_connection=True,
 )
+```

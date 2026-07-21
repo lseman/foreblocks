@@ -10,7 +10,7 @@ editLink: true
 
 ForeBlocks integrates Mixture-of-Experts into the transformer feedforward path through `MoEFeedForwardDMoE`.
 
-You typically do not instantiate this block directly. Instead, you enable MoE through transformer constructor arguments.
+You typically do not instantiate this block directly. Instead, you enable MoE through transformer constructor arguments or the `FeedForwardBlock` module.
 
 Related docs:
 
@@ -18,6 +18,7 @@ Related docs:
 - [Getting Started](getting-started)
 - [Transformer](transformer)
 - [Custom Blocks](custom_blocks)
+- **[Advanced MoE](moe-advanced)** — routers, load-balancing, expert types, production tuning
 
 ![MoE](imgs/moe_architecture_diagram.svg)
 
@@ -46,7 +47,7 @@ decoder = TransformerDecoder(
     num_experts=8,
     top_k=2,
 )
-```text
+```
 
 ## Recommended presets
 
@@ -67,7 +68,7 @@ encoder = TransformerEncoder(
     z_loss_weight=1e-3,
     moe_aux_lambda=1.0,
 )
-```toml
+```
 
 ### Higher-capacity experimental setup
 
@@ -86,9 +87,24 @@ encoder = TransformerEncoder(
     z_loss_weight=1e-3,
     use_gradient_checkpointing=True,
 )
-```toml
+```
 
 ## Advanced features in the current implementation
+
+### Router types
+
+ForeBlocks provides several router implementations in `foreblocks.modules.moe.experts.routers`:
+
+- `NoisyTopKRouter` (default, recommended)
+- `StraightThroughTopKRouter`
+- `ContinuousTopKRouter`
+- `HashTopKRouter`
+- `AdaptiveNoisyTopKRouter`
+- `SoftDenseRouter`
+- `AuxiliaryTokenRouter`
+- `LinearRouter`
+
+See the [Advanced MoE Guide](moe-advanced) for detailed router configuration.
 
 ### Adaptive top-k
 
@@ -128,3 +144,4 @@ model = ForecastingModel(
     target_len=24,
     output_size=1,
 )
+```

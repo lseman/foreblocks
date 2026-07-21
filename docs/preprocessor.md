@@ -87,6 +87,13 @@ pred_real = pre.inverse_transform(pred_scaled)
 
 ---
 
+## Related pages
+
+- [Getting Started](getting-started)
+- [Feature Engineering](foretools/feature-engineering)
+
+---
+
 ## When to enable `self_tune`
 
 - Use `self_tune=True` for heterogeneous datasets or quick baselines.

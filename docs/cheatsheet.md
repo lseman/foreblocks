@@ -79,11 +79,13 @@ mod_sched = MoDBudgetScheduler(
 
 encoder = TransformerEncoder(
     input_size=8, d_model=256, num_layers=6, nhead=8,
-    attention_mode="linear",  # O(T) attention
     patch_encoder=True, patch_len=16, patch_stride=8,
     use_mod=True, mod_budget_scheduler=mod_sched,
     use_gradient_checkpointing=True,
 )
+
+# Configure attention architecture via config
+encoder.attention.architecture = "linear"  # O(T) attention
 
 config = TrainingConfig(
     num_epochs=50, learning_rate=1e-3,
@@ -166,7 +168,7 @@ trainer.train(train_loader, val_loader)
 
 | Feature | Enable | Default | Why |
 |---------|--------|---------|-----|
-| **Long sequences** | `attention_mode="linear"` | "standard" | O(T) vs O(T²) |
+| **Long sequences** | `attention.architecture="linear"` or `gla` or `deltanet` | "standard" | O(T) vs O(T²) |
 | **Variable tokens** | `use_mod=True` | False | Skip layers for easy tokens |
 | **Overfitting** | `layer_dropout_schedule` | None | Deeper layers → higher dropout |
 | **Capacity** | `use_moe=True` | False | Router to 16+ experts |
@@ -189,16 +191,16 @@ trainer.train(train_loader, val_loader)
 
 ---
 
-## Attention Mode Selector
+## Attention Architecture Selector
 
 ```
 Is sequence length > 5000?
-├─ Yes → use attention_mode="linear"
-└─ No  → use attention_mode="standard"
+├─ Yes → use attention.architecture="linear" or "gla" or "deltanet"
+└─ No  → use attention.architecture="standard"
 
 Do you need length generalization?
-├─ Yes → use pos_encoding_type="alibi"
-└─ No  → use pos_encoding_type="rope" (default)
+├─ Yes → use attention.position.encoding="alibi"
+└─ No  → use attention.position.encoding="rope" (default)
 ```
 
 ---
@@ -270,6 +272,26 @@ steps_per_epoch=2500,  # Required if using warmup_ratio
 
 # Gradient clipping
 gradient_clip_val=1.0,
+```
+
+### Attention configuration (new)
+
+```python
+from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.modules.attention.config import (
+    AttentionConfig, AttentionShapeConfig, AttentionPositionConfig,
+    AttentionVariantConfig,
+)
+
+config = TransformerConfig(
+    d_model=256, nhead=8,
+    attention=AttentionConfig(
+        shape=AttentionShapeConfig(d_model=256, n_heads=8, max_seq_len=4096),
+        architecture="linear",  # or "standard", "gla", "deltanet", etc.
+        position=AttentionPositionConfig(encoding="rope"),
+        variant=AttentionVariantConfig(use_swiglu=True),
+    ),
+)
 ```
 
 ### Optional efficiency
