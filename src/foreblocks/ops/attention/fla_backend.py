@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from types import ModuleType
-from typing import Iterator
+from collections.abc import Iterator
 
 _SUBMODULE_REL = Path("third_party") / "flash-linear-attention"
 _FALLBACK_REL = Path("flash-linear-attention")
@@ -35,7 +35,6 @@ def _repo_root() -> Path:
 
 
 def fla_path() -> Path:
-    """Return the preferred local FLA checkout path."""
     root = _repo_root()
     path = root / _SUBMODULE_REL
     if path.exists():
@@ -44,14 +43,12 @@ def fla_path() -> Path:
 
 
 def has_fla_checkout() -> bool:
-    """Return whether the FLA source checkout is present."""
     path = fla_path()
     return (path / "fla").is_dir()
 
 
 @contextmanager
 def fla_import_path() -> Iterator[Path]:
-    """Temporarily prepend the FLA checkout to ``sys.path``."""
     path = fla_path()
     path_str = str(path)
     inserted = False
@@ -70,7 +67,6 @@ def fla_import_path() -> Iterator[Path]:
 
 @lru_cache(maxsize=None)
 def import_fla_module(module_name: str) -> ModuleType:
-    """Import and cache an upstream FLA module by dotted name."""
     try:
         return importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
@@ -85,12 +81,10 @@ def import_fla_module(module_name: str) -> ModuleType:
 
 
 def get_fla_attr(module_name: str, attr_name: str):
-    """Return an attribute from an upstream FLA module."""
     return getattr(import_fla_module(module_name), attr_name)
 
 
 def is_fla_available(module_name: str = "fla.ops.linear_attn") -> bool:
-    """Return whether the FLA checkout and requested module can be imported."""
     try:
         import_fla_module(module_name)
     except Exception:

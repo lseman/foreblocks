@@ -1119,7 +1119,6 @@ def _bwd_dkdv_split_k_inner(
     split_id: tl.constexpr,
     split_block_m: tl.constexpr,
 ):
-    """Single-split version of _bwd_dkdv_inner for split-K accumulation."""
     offs_m = tl.arange(0, block_m)
     log2e = 1.4426950408889634
     for m in range(start_m, end_m, split_block_m):
@@ -1189,7 +1188,6 @@ def _bwd_dkdv_split_k_kernel(
     fused_delta: tl.constexpr,
     prescale_k: tl.constexpr,
 ):
-    """Split-K dK/dV: each CTA handles a split of Q-tiles, accumulates into shared dk/dv."""
     pid_n = tl.program_id(0)
     pid_bh = tl.program_id(1)
     split_id = tl.program_id(2)
@@ -1440,7 +1438,6 @@ def _bwd_dkdv_persistent_kernel(
     fused_delta: tl.constexpr,
     prescale_k: tl.constexpr,
 ):
-    """Persistent dK/dV: each CTA processes multiple K-tiles with grid-stride loop."""
     tile_n = tl.program_id(0)
     pid_bh = tl.program_id(1)
     log2e = 1.4426950408889634
@@ -1655,13 +1652,6 @@ def _is_ada_or_newer(q):
 
 
 def _split_k_config(q, n_ctx, d_head, causal, fused_delta):
-    """Determine split-K configuration for backward dK/dV.
-
-    Split-K only for non-causal or large causal where diagonal dominates.
-    On Ada (sm_89) shared memory is 101376 bytes; each K-tile uses
-    (block_n * d_head * 4 + block_n * d_head * 4) = block_n * d_head * 8 bytes.
-    For block_n=128, d_head=128 => 131072 bytes (exceeds 101376).
-    """
     if not _is_ada_or_newer(q):
         return None, None
     # Shared memory budget: max 80KB to leave room for other buffers
@@ -1693,7 +1683,6 @@ def _split_k_config(q, n_ctx, d_head, causal, fused_delta):
 
 
 def _use_persistent_dkdv(q, n_ctx, d_head, causal):
-    """Use persistent dK/dV for large sequence lengths where tile count < 2x SMs."""
     if not _is_ada_or_newer(q):
         return False
     if n_ctx < 2048:

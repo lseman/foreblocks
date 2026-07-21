@@ -6,7 +6,6 @@ Wavelet denoising: BayesShrink + garrote thresholding, PyWavelets or pure-NumPy 
 
 from __future__ import annotations
 
-import warnings
 
 import numpy as np
 import pandas as pd
@@ -75,13 +74,6 @@ def _haar_wavelet_denoise_once(x: np.ndarray, levels: int = 4) -> np.ndarray:
 def _bayes_garrote_thresholds(
     details: list[np.ndarray],
 ) -> list[np.ndarray]:
-    """BayesShrink threshold + non-negative garrote shrinkage, per detail level.
-
-    Noise σ is estimated from the finest detail band via the robust MAD
-    estimator (Donoho & Johnstone). Per band we take the smaller of the
-    BayesShrink and universal thresholds, with a mild geometric relaxation at
-    coarser scales so low-frequency structure is preserved.
-    """
     if not details:
         return details
     sigma = np.median(np.abs(details[0])) / 0.6745 + 1e-12
@@ -111,23 +103,6 @@ def wavelet_denoise(
     cycle_spins: int = 4,
     wavelet: str = "sym8",
 ) -> pd.Series:
-    """Translation-invariant wavelet denoising with BayesShrink + garrote.
-
-    Uses a real Daubechies/symlet basis (``wavelet``, default ``sym8``) via
-    pywt — far fewer staircase artefacts than a Haar basis — with cycle
-    spinning (averaging over circular shifts) for translation invariance.
-    Falls back to a pure-NumPy Haar transform if pywt is unavailable.
-
-    Parameters
-    ----------
-    levels:
-        Number of decomposition levels (clamped to the signal length).
-    cycle_spins:
-        Number of circular shifts averaged for translation invariance.
-    wavelet:
-        pywt wavelet name (e.g. ``"sym8"``, ``"db4"``). Ignored on the Haar
-        fallback.
-    """
     x = ts.values.astype(float)
     n = len(x)
     if n < 8:
@@ -138,17 +113,11 @@ def wavelet_denoise(
 
     if pywt is not None:
         try:
-            denoise_once = lambda v: _pywt_denoise_once(
-                v, wavelet, levels
-            )  # noqa: E731
+            denoise_once = lambda v: _pywt_denoise_once(v, wavelet, levels)  # noqa: E731
         except Exception:
-            denoise_once = lambda v: _haar_wavelet_denoise_once(
-                v, levels=levels
-            )  # noqa: E731
+            denoise_once = lambda v: _haar_wavelet_denoise_once(v, levels=levels)  # noqa: E731
     else:
-        denoise_once = lambda v: _haar_wavelet_denoise_once(
-            v, levels=levels
-        )  # noqa: E731
+        denoise_once = lambda v: _haar_wavelet_denoise_once(v, levels=levels)  # noqa: E731
 
     acc = np.zeros_like(x)
     for shift in range(spins):

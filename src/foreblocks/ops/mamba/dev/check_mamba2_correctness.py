@@ -31,7 +31,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
 
 import torch
 
@@ -99,9 +98,7 @@ def check_ssd_forward(
     chunk_size: int = 64,
     mode: str = "quick",
 ) -> dict:
-    """SSD forward: Triton vs torch reference, vs sequential diagonal scan."""
     from foreblocks.ops.mamba.ssd import (
-        _chunked_ssd_forward_torch as torch_fwd,
         chunked_ssd_forward,
         chunked_ssd_forward_reference,
     )
@@ -126,19 +123,25 @@ def check_ssd_forward(
     )
     err_triton_torch = max_abs_err(y_triton, y_torch)
     passed = err_triton_torch < 2e-4
-    _print_check("SSD forward (triton vs torch chunked ref)", passed, f"err={err_triton_torch:.2e}")
+    _print_check(
+        "SSD forward (triton vs torch chunked ref)",
+        passed,
+        f"err={err_triton_torch:.2e}",
+    )
     results["triton_vs_torch_chunked"] = {
         "max_abs_err": err_triton_torch,
         "passed": passed,
     }
 
     # 2. Torch chunked vs sequential diagonal scan
-    y_seq = chunked_ssd_forward_reference(
-        u, dt, A, Bp, Cp, D, chunk_size=chunk_size
-    )
+    y_seq = chunked_ssd_forward_reference(u, dt, A, Bp, Cp, D, chunk_size=chunk_size)
     err_chunked_seq = max_abs_err(y_torch, y_seq)
     passed_seq = err_chunked_seq < 1e-4
-    _print_check("SSD forward (torch chunked vs sequential scan)", passed_seq, f"err={err_chunked_seq:.2e}")
+    _print_check(
+        "SSD forward (torch chunked vs sequential scan)",
+        passed_seq,
+        f"err={err_chunked_seq:.2e}",
+    )
     results["torch_chunked_vs_sequential"] = {
         "max_abs_err": err_chunked_seq,
         "passed": passed_seq,
@@ -157,14 +160,24 @@ def check_ssd_forward(
         Cp_g2 = Cp.detach().clone().requires_grad_(True)
         D_g2 = D.detach().clone().requires_grad_(True)
 
-        y_t = chunked_ssd_forward(u_g, dt_g, A, Bp_g, Cp_g, D_g, chunk_size=chunk_size, use_triton=True)
-        y_p = chunked_ssd_forward(u_g2, dt_g2, A, Bp_g2, Cp_g2, D_g2, chunk_size=chunk_size, use_triton=False)
+        y_t = chunked_ssd_forward(
+            u_g, dt_g, A, Bp_g, Cp_g, D_g, chunk_size=chunk_size, use_triton=True
+        )
+        y_p = chunked_ssd_forward(
+            u_g2, dt_g2, A, Bp_g2, Cp_g2, D_g2, chunk_size=chunk_size, use_triton=False
+        )
         gy = torch.randn_like(y_t)
         y_t.backward(gy, retain_graph=True)
         y_p.backward(gy, retain_graph=True)
 
         grad_errs = {}
-        for name, gt, gp in [("u", u_g, u_g2), ("dt", dt_g, dt_g2), ("B", Bp_g, Bp_g2), ("C", Cp_g, Cp_g2), ("D", D_g, D_g2)]:
+        for name, gt, gp in [
+            ("u", u_g, u_g2),
+            ("dt", dt_g, dt_g2),
+            ("B", Bp_g, Bp_g2),
+            ("C", Cp_g, Cp_g2),
+            ("D", D_g, D_g2),
+        ]:
             g_t = gt.grad if gt.grad is not None else torch.zeros_like(gt)
             g_p = gp.grad if gp.grad is not None else torch.zeros_like(gp)
             e = max_abs_err(g_t, g_p)
@@ -172,7 +185,11 @@ def check_ssd_forward(
         results["gradients"] = grad_errs
         max_grad_err = max(grad_errs.values())
         passed_grad = max_grad_err < 1e-3
-        _print_check("SSD forward gradients (triton vs torch)", passed_grad, f"max_grad_err={max_grad_err:.2e}")
+        _print_check(
+            "SSD forward gradients (triton vs torch)",
+            passed_grad,
+            f"max_grad_err={max_grad_err:.2e}",
+        )
 
     return results
 
@@ -185,7 +202,6 @@ def check_dt_prep(
     T: int = 128,
     D: int = 512,
 ) -> dict:
-    """dt_prep: Triton vs fallback."""
     from foreblocks.ops.mamba.triton_ops import dt_prep_fallback, dt_prep_triton
 
     device = _device()
@@ -209,11 +225,6 @@ def check_fused_out(
     T: int = 128,
     D: int = 512,
 ) -> dict:
-    """fused_out (RMSNormGated): Triton vs PyTorch reference.
-
-    Uses the public fused_out() entry which auto-selects backend.
-    Compares fused_out() against explicit fused_out_fallback().
-    """
     from foreblocks.ops.mamba.triton_ops import fused_out, fused_out_fallback
 
     device = _device()
@@ -239,10 +250,6 @@ def check_causal_conv1d(
     T: int = 128,
     K: int = 3,
 ) -> dict:
-    """Causal conv1d: Triton vs reference.
-
-    Skips Triton path on CPU since Triton kernels require CUDA.
-    """
     from foreblocks.ops.mamba.causal_conv1d import (
         CAUSAL_CONV1D_TRITON_AVAILABLE,
         causal_depthwise_conv1d_reference,
@@ -260,7 +267,11 @@ def check_causal_conv1d(
     if not CAUSAL_CONV1D_TRITON_AVAILABLE or is_cpu:
         y_p = causal_depthwise_conv1d_reference(x, weight, bias)
         _print_check("causal conv1d (reference only)", True, f"shape={y_p.shape}")
-        return {"max_abs_err": None, "passed": True, "note": "Triton unavailable on CPU"}
+        return {
+            "max_abs_err": None,
+            "passed": True,
+            "note": "Triton unavailable on CPU",
+        }
 
     try:
         y_t = causal_depthwise_conv1d_triton(x, weight, bias)
@@ -280,7 +291,9 @@ def check_causal_conv1d(
 def _build_mamba2_args(B, T, num_heads, head_dim, n_groups, d_state, device, dtype):
     d_inner = num_heads * head_dim
     conv_dim = d_inner + 2 * n_groups * d_state
-    projected = torch.randn(B, T, d_inner + conv_dim + num_heads, device=device, dtype=dtype)
+    projected = torch.randn(
+        B, T, d_inner + conv_dim + num_heads, device=device, dtype=dtype
+    )
     residual_inner = torch.randn(B, T, d_inner, device=device, dtype=dtype)
     return projected, residual_inner, d_inner, conv_dim
 
@@ -294,7 +307,6 @@ def check_mamba2_block_forward(
     d_state: int = 16,
     dt_rank: int | None = None,  # None → direct (dt_rank = num_heads)
 ) -> dict:
-    """Full Mamba2 block: Triton SSD path vs torch SSD path."""
     from foreblocks.ops.mamba.mamba2_combined import mamba2_split_conv1d_scan_combined
 
     device = _device()
@@ -304,7 +316,9 @@ def check_mamba2_block_forward(
     d_inner = num_heads * head_dim
     conv_dim = d_inner + 2 * n_groups * d_state
     effective_dt_rank = num_heads if dt_rank is None else dt_rank
-    projected = torch.randn(B, T, d_inner + conv_dim + effective_dt_rank, device=device, dtype=dtype)
+    projected = torch.randn(
+        B, T, d_inner + conv_dim + effective_dt_rank, device=device, dtype=dtype
+    )
     residual_inner = torch.randn(B, T, d_inner, device=device, dtype=dtype)
 
     conv_weight = torch.randn(conv_dim, 3, device=device, dtype=dtype)
@@ -373,10 +387,6 @@ def check_mamba2_block_backward(
     d_state: int = 16,
     dt_rank: int | None = None,  # None → direct (dt_rank = num_heads)
 ) -> dict:
-    """Mamba2 block backward: Triton path gradients vs torch path gradients.
-
-    Runs in float32 because the torch SSD backward path requires float32.
-    """
     from foreblocks.ops.mamba.mamba2_combined import mamba2_split_conv1d_scan_combined
 
     device = _device()
@@ -386,7 +396,9 @@ def check_mamba2_block_backward(
     d_inner = num_heads * head_dim
     conv_dim = d_inner + 2 * n_groups * d_state
     effective_dt_rank = num_heads if dt_rank is None else dt_rank
-    projected = torch.randn(B, T, d_inner + conv_dim + effective_dt_rank, device=device, dtype=bwd_dtype)
+    projected = torch.randn(
+        B, T, d_inner + conv_dim + effective_dt_rank, device=device, dtype=bwd_dtype
+    )
     residual_inner = torch.randn(B, T, d_inner, device=device, dtype=bwd_dtype)
 
     conv_weight = torch.randn(conv_dim, 3, device=device, dtype=bwd_dtype)
@@ -428,18 +440,26 @@ def check_mamba2_block_backward(
     # Triton path
     proj_t = projected.clone().requires_grad_(True)
     res_t = residual_inner.clone().requires_grad_(True)
-    args_t = {k: (v.clone().requires_grad_(True) if isinstance(v, torch.Tensor) else v)
-              for k, v in base_args.items()}
-    y_t = mamba2_split_conv1d_scan_combined(proj_t, res_t, use_triton_ssd=True, **args_t)
+    args_t = {
+        k: (v.clone().requires_grad_(True) if isinstance(v, torch.Tensor) else v)
+        for k, v in base_args.items()
+    }
+    y_t = mamba2_split_conv1d_scan_combined(
+        proj_t, res_t, use_triton_ssd=True, **args_t
+    )
     gy = torch.randn_like(y_t)
     y_t.backward(gy, retain_graph=True)
 
     # Torch path
     proj_p = projected.clone().requires_grad_(True)
     res_p = residual_inner.clone().requires_grad_(True)
-    args_p = {k: (v.clone().requires_grad_(True) if isinstance(v, torch.Tensor) else v)
-              for k, v in base_args.items()}
-    y_p = mamba2_split_conv1d_scan_combined(proj_p, res_p, use_triton_ssd=False, **args_p)
+    args_p = {
+        k: (v.clone().requires_grad_(True) if isinstance(v, torch.Tensor) else v)
+        for k, v in base_args.items()
+    }
+    y_p = mamba2_split_conv1d_scan_combined(
+        proj_p, res_p, use_triton_ssd=False, **args_p
+    )
     y_p.backward(gy, retain_graph=True)
 
     # Compare gradients on shared inputs (handle None grads from residual connection)
@@ -455,25 +475,41 @@ def check_mamba2_block_backward(
     grad_errs = {
         "projected": _grad_err(proj_t, proj_p, "projected"),
         "residual": _grad_err(res_t, res_p, "residual"),
-        "conv_weight": _grad_err(args_t["conv_weight"], args_p["conv_weight"], "conv_weight"),
+        "conv_weight": _grad_err(
+            args_t["conv_weight"], args_p["conv_weight"], "conv_weight"
+        ),
         "conv_bias": _grad_err(args_t["conv_bias"], args_p["conv_bias"], "conv_bias"),
         "dt_proj_weight": max_abs_err(
-            args_t["dt_proj_weight"].grad if args_t["dt_proj_weight"].grad is not None else torch.zeros(1),
-            args_p["dt_proj_weight"].grad if args_p["dt_proj_weight"].grad is not None else torch.zeros(1),
-        ) if args_t["dt_proj_weight"] is not None else 0.0,
+            args_t["dt_proj_weight"].grad
+            if args_t["dt_proj_weight"].grad is not None
+            else torch.zeros(1),
+            args_p["dt_proj_weight"].grad
+            if args_p["dt_proj_weight"].grad is not None
+            else torch.zeros(1),
+        )
+        if args_t["dt_proj_weight"] is not None
+        else 0.0,
         "dt_bias": _grad_err(args_t["dt_bias"], args_p["dt_bias"], "dt_bias"),
         "A_log": _grad_err(args_t["A_log"], args_p["A_log"], "A_log"),
         "Dskip": _grad_err(args_t["Dskip"], args_p["Dskip"], "Dskip"),
-        "norm_weight": _grad_err(args_t["norm_weight"], args_p["norm_weight"], "norm_weight"),
-        "out_proj_weight": _grad_err(args_t["out_proj_weight"], args_p["out_proj_weight"], "out_proj_weight"),
-        "out_proj_bias": _grad_err(args_t["out_proj_bias"], args_p["out_proj_bias"], "out_proj_bias"),
+        "norm_weight": _grad_err(
+            args_t["norm_weight"], args_p["norm_weight"], "norm_weight"
+        ),
+        "out_proj_weight": _grad_err(
+            args_t["out_proj_weight"], args_p["out_proj_weight"], "out_proj_weight"
+        ),
+        "out_proj_bias": _grad_err(
+            args_t["out_proj_bias"], args_p["out_proj_bias"], "out_proj_bias"
+        ),
     }
 
     max_grad_err = max(grad_errs.values())
     # Float16 backward has more numerical drift; also some kernels may have
     # small backward bugs. Use a relaxed threshold and print details.
     passed = max_grad_err < 5e-2
-    details = ", ".join(f"{k}={v:.2e}" for k, v in sorted(grad_errs.items(), key=lambda x: -x[1])[:5])
+    details = ", ".join(
+        f"{k}={v:.2e}" for k, v in sorted(grad_errs.items(), key=lambda x: -x[1])[:5]
+    )
     _print_check(
         "Mamba2 block backward (triton vs torch grads)",
         passed,
@@ -497,10 +533,6 @@ def check_step_vs_parallel(
     d_conv: int = 4,
     num_heads: int = 4,
 ) -> dict:
-    """Autoregressive step should match parallel forward output.
-
-    Runs in float32 to avoid dtype-mismatch bugs in step() → out_proj.
-    """
     from foreblocks.sequence.mamba import Mamba2Block
 
     device = _device()
@@ -522,9 +554,7 @@ def check_step_vs_parallel(
     with torch.no_grad():
         y_par = block(x)
         state = block.make_state(B, device=device, dtype=torch.float32)
-        y_step = torch.stack(
-            [block.step(x[:, t], state) for t in range(T)], dim=1
-        )
+        y_step = torch.stack([block.step(x[:, t], state) for t in range(T)], dim=1)
 
     err = max_abs_err(y_par, y_step)
     # Step vs parallel accumulates per-token, so drift is expected.
@@ -547,7 +577,6 @@ def check_attention_mask(
     d_model: int = 64,
     num_heads: int = 4,
 ) -> dict:
-    """Attention mask is correctly applied (zeroed positions produce zero output contribution)."""
     from foreblocks.sequence.mamba import Mamba2Block
 
     device = _device()
@@ -604,7 +633,6 @@ def check_mamba2_block_torch_path(
     d_conv: int = 4,
     num_heads: int = 4,
 ) -> dict:
-    """Mamba2Block with use_triton_ssd=False: forward + backward."""
     from foreblocks.sequence.mamba import Mamba2Block
 
     device = _device()
@@ -643,7 +671,6 @@ def check_mamba2_block_torch_path(
 
 
 def run_all(mode: str = "quick") -> dict:
-    """Run every check, print results, return dict."""
     results = {}
 
     print(f"Device: {_device()}, dtype: {_dtype()}")
@@ -691,7 +718,9 @@ def run_all(mode: str = "quick") -> dict:
 def main():
     parser = argparse.ArgumentParser(description="Mamba2 correctness checker")
     parser.add_argument(
-        "--mode", choices=["quick", "full"], default="quick",
+        "--mode",
+        choices=["quick", "full"],
+        default="quick",
         help="quick = primitives + forward only, full = + backward",
     )
     parser.add_argument("--output", type=str, default=None, help="Save results JSON")
@@ -707,8 +736,7 @@ def main():
                 serializable[k] = {
                     kk: (vv.item() if hasattr(vv, "item") else vv)
                     for kk, vv in v.items()
-                    if not isinstance(vv, (str, bool))
-                    or kk == "passed"
+                    if not isinstance(vv, (str, bool)) or kk == "passed"
                 }
             else:
                 serializable[k] = v
@@ -718,8 +746,7 @@ def main():
 
     # Exit code: 0 if all passed, 1 if any failed
     any_failed = any(
-        isinstance(v, dict) and v.get("passed") is False
-        for v in results.values()
+        isinstance(v, dict) and v.get("passed") is False for v in results.values()
     )
     sys.exit(1 if any_failed else 0)
 

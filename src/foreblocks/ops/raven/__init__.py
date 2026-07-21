@@ -32,8 +32,6 @@ from foreblocks.ops.raven.backend import (
 
 
 class _LazyFLAAttr:
-    """Proxy an upstream FLA attribute without importing FLA on package import."""
-
     def __init__(self, module_name: str, attr_name: str):
         self._module_name = module_name
         self._attr_name = attr_name

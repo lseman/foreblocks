@@ -33,20 +33,6 @@ def blockwise_rotary(
     k: torch.Tensor,
     angles: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Blockwise rotary on (i, i+num_angles) pairs.
-
-    Mamba3 rotates the first ``2 * num_angles`` elements of the state dimension
-    using learned per-token, per-head angles.  Pair index ``(i, i+num_angles)``
-    where ``num_angles = num_rope_angles``.
-
-    Args:
-        q: ``[B, L, H, N]`` — C tensor (acts as Q in the SSM scan)
-        k: ``[B, L, H, N]`` — B tensor (acts as K in the SSM scan)
-        angles: ``[B, L, H, num_angles]`` — learned rotation angles
-
-    Returns:
-        Rotated ``(q_rot, k_rot)``, same shape.
-    """
     num_angles = angles.shape[-1]
     if num_angles <= 0:
         return q, k
@@ -74,20 +60,6 @@ def blockwise_rotary(
 
 
 class Mamba3Block(nn.Module):
-    """Mamba3-style block (no conv, blockwise rotary on B/C).
-
-    Key differences from Mamba2:
-
-    * **No causal conv1d** — B and C come directly from ``in_proj``.
-    * **dt / A / trap / angles** are direct linear projections from the
-      input (all packed into one ``in_proj``).
-    * **B / C** get a learnable per-head bias, then ``RMSNormGated``, then
-      blockwise rotary embedding before the scan.
-    * **A** = ``-softplus(dd_A)`` (softplus parametrisation instead of
-      ``-exp(A_log)``).
-    * **D** is per-head scalar (not per-head_dim).
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -328,7 +300,6 @@ class Mamba3Block(nn.Module):
     # ── helpers ───────────────────────────────────────────────────────
 
     def _expand_groups(self, flat: torch.Tensor) -> torch.Tensor:
-        """Expand [B, L, ng*N] → [B, L, H, N] by repeating groups."""
         return flat.view(
             flat.shape[0], flat.shape[1], self.n_groups, self.d_state
         ).repeat_interleave(self.num_heads // self.n_groups, dim=2)
@@ -358,11 +329,6 @@ class Mamba3Block(nn.Module):
         }
 
     def step(self, x: torch.Tensor, state: dict) -> torch.Tensor:
-        """Single-token autoregressive step (no chunking).
-
-        ``x`` is ``[B, D]``; internally promoted to ``[B, 1, D]`` so the same
-        ``view(Bsz, 1, ...)`` reshapes used elsewhere are valid.
-        """
         Bsz = x.shape[0]
         if x.ndim == 2:
             x = x.unsqueeze(1)  # [B, 1, D]

@@ -16,7 +16,6 @@ Core API:
 
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING, Any
 
 import matplotlib.pyplot as plt
@@ -28,7 +27,6 @@ if TYPE_CHECKING:
 
 
 def _require_matplotlib() -> None:
-    """Ensure matplotlib is importable; raise a helpful error otherwise."""
     try:
         import matplotlib  # noqa: F401  # type: ignore[import-untyped]
     except ImportError:
@@ -39,7 +37,6 @@ def _require_matplotlib() -> None:
 
 
 def _flatten_forecast_array(values: torch.Tensor | np.ndarray) -> np.ndarray:  # type: ignore[name-defined]
-    """Flatten forecast arrays to ``(N, H, D)``."""
     arr = (
         values.detach().cpu().numpy()
         if hasattr(values, "detach")
@@ -58,7 +55,6 @@ def _forecast_channel_names(
     values: torch.Tensor | np.ndarray,
     names: str | list | None,
 ) -> list[str]:
-    """Generate channel names for forecast arrays."""
     arr = (
         values.detach().cpu().numpy()
         if hasattr(values, "detach")
@@ -93,7 +89,6 @@ def _forecast_channel_names(
 
 
 def _flatten_series_array(values: torch.Tensor | np.ndarray) -> np.ndarray:  # type: ignore[name-defined]
-    """Flatten series arrays to ``(T, S_dim)``."""
     arr = (
         values.detach().cpu().numpy()
         if hasattr(values, "detach")
@@ -107,7 +102,7 @@ def _flatten_series_array(values: torch.Tensor | np.ndarray) -> np.ndarray:  # t
 
 
 def plot_prediction(
-    trainer: "Trainer",
+    trainer: Trainer,
     X_val: torch.Tensor,  # type: ignore[name-defined]
     y_val: torch.Tensor,  # type: ignore[name-defined]
     graph_kwargs: dict[str, Any] | None = None,
@@ -121,7 +116,6 @@ def plot_prediction(
     series_color: str = "blue",
     save_path: str | None = None,
 ) -> plt.Figure:
-    """Plot model predictions against actual values."""
     _require_matplotlib()
 
     from foreblocks.core.evaluation.model_evaluator import ModelEvaluator

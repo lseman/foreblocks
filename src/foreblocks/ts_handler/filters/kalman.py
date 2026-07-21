@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from foreblocks.ts_handler.filters.utils import _as_2d, _nan_interp_1d
+from foreblocks.ts_handler.filters.utils import _as_2d
 
 
 def _estimate_noise_variance(col: np.ndarray) -> tuple[float, float]:
-    """Estimate measurement noise (R) and process noise (Q) from data."""
     valid = col[~np.isnan(col)]
     if len(valid) < 3:
         return 1.0, 0.01
@@ -31,11 +30,9 @@ def _estimate_noise_variance(col: np.ndarray) -> tuple[float, float]:
     return float(r), float(q)
 
 
-def _kalman_filter_1d(obs: np.ndarray, r: float, q: float) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Forward Kalman filter pass.
-    Returns: filtered_states, filtered_covariances
-    """
+def _kalman_filter_1d(
+    obs: np.ndarray, r: float, q: float
+) -> tuple[np.ndarray, np.ndarray]:
     n = len(obs)
     if n == 0:
         return np.array([]), np.array([])
@@ -71,10 +68,9 @@ def _kalman_filter_1d(obs: np.ndarray, r: float, q: float) -> tuple[np.ndarray, 
     return filtered_states, filtered_covariances
 
 
-def _kalman_smoother_1d(filtered_states: np.ndarray, filtered_covariances: np.ndarray, r: float, q: float) -> np.ndarray:
-    """
-    RTS (Rauch-Tung-Striebel) smoother backward pass.
-    """
+def _kalman_smoother_1d(
+    filtered_states: np.ndarray, filtered_covariances: np.ndarray, r: float, q: float
+) -> np.ndarray:
     n = len(filtered_states)
     if n == 0:
         return np.array([])
@@ -92,8 +88,12 @@ def _kalman_smoother_1d(filtered_states: np.ndarray, filtered_covariances: np.nd
         k_s = filtered_covariances[t] / p_pred_next
 
         # Smoothed state and covariance
-        smoothed_states[t] = filtered_states[t] + k_s * (smoothed_states[t + 1] - filtered_states[t])
-        smoothed_covariances[t] = filtered_covariances[t] + k_s * (smoothed_covariances[t + 1] - filtered_covariances[t + 1])
+        smoothed_states[t] = filtered_states[t] + k_s * (
+            smoothed_states[t + 1] - filtered_states[t]
+        )
+        smoothed_covariances[t] = filtered_covariances[t] + k_s * (
+            smoothed_covariances[t + 1] - filtered_covariances[t + 1]
+        )
 
     return smoothed_states
 
@@ -105,14 +105,6 @@ def kalman_filter(
     min_points: int = 10,
     em_on_valid_only: bool = True,
 ) -> np.ndarray:
-    """
-    Apply a per-feature Kalman smoother (numpy implementation).
-
-    Improvements:
-      - preserves NaNs
-      - estimates noise parameters from data
-      - configurable iterations and min points
-    """
     x = _as_2d(data)
     T, F = x.shape
     out = x.copy()

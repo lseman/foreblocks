@@ -18,13 +18,6 @@ import torch.nn.functional as F
 
 
 class AdaptiveWarp(nn.Module):
-    """
-    Adaptive warp module:
-      Δτ_t = Softplus(w^T h_t)
-      τ_t = cumsum(Δτ_t)
-    Matches Eq. (5). :contentReference[oaicite:3]{index=3}
-    """
-
     def __init__(self, d_model: int):
         super().__init__()
         self.w = nn.Linear(d_model, 1, bias=False)
@@ -37,18 +30,6 @@ class AdaptiveWarp(nn.Module):
 
 
 class SyPERotator(nn.Module):
-    """
-    Implements the symplectic flow per 2D pair and applies it to q and k as in:
-      q~_t = S(τ_t) q_t
-      k~_t = J S(τ_t) k_t
-    See SyPE mechanism around Eq. (6). :contentReference[oaicite:4]{index=4}
-
-    Closed form:
-      S(t) = cos(ωt) I + sin(ωt)/ω * A,  with A=JK  :contentReference[oaicite:5]{index=5}
-    Stable parameterization:
-      a=exp(α), b=exp(β), c=ρ sqrt(ab), ρ=tanh(γ)  :contentReference[oaicite:6]{index=6}
-    """
-
     def __init__(self, head_dim: int):
         super().__init__()
         assert head_dim % 2 == 0, "SyPE needs head_dim even (pairs of 2)."
@@ -71,22 +52,12 @@ class SyPERotator(nn.Module):
 
     @staticmethod
     def _apply_2x2(M11, M12, M21, M22, x):
-        """
-        Apply 2x2 matrix M to x in R^2, batched.
-        x: (..., 2)
-        Returns: (..., 2)
-        """
         x1, x2 = x[..., 0], x[..., 1]
         y1 = M11 * x1 + M12 * x2
         y2 = M21 * x1 + M22 * x2
         return torch.stack([y1, y2], dim=-1)
 
     def _flow(self, tau: torch.Tensor):
-        """
-        Build S(τ) for all tokens and pairs using the closed form.
-        tau: (B, N) or (B, N, 1)
-        Returns matrix entries (S11,S12,S21,S22) each of shape (B, N, P)
-        """
         a, b, c, omega = self._params()  # (P,)
         # A = JK = [[ c,  b],
         #           [-a, -c]]  :contentReference[oaicite:7]{index=7}
@@ -119,13 +90,6 @@ class SyPERotator(nn.Module):
         return S11, S12, S21, S22
 
     def rotate_qk(self, q: torch.Tensor, k: torch.Tensor, tau: torch.Tensor):
-        """
-        q,k: (B, H, N, Dh)
-        tau: (B, N)
-
-        Returns:
-          q_tilde, k_tilde with same shapes as q,k
-        """
         B, H, N, Dh = q.shape
         assert Dh == self.head_dim
 

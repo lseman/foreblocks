@@ -35,12 +35,11 @@ def _sync() -> None:
 
 
 def measure(f, *args, warmup_iters=10, iters=50, **kwargs):
-    """Benchmark function timing with warmup and repetition."""
     if TRITON_BENCH_AVAILABLE:
         try:
             # do_bench expects a no-args callable
             wrapped = lambda: f(*args, **kwargs)
-            return do_bench(wrapped, warmup=warmup_iters, rep=iters, return_mode='mean')
+            return do_bench(wrapped, warmup=warmup_iters, rep=iters, return_mode="mean")
         except Exception:
             pass
 
@@ -80,7 +79,6 @@ def gb_s_str(value: float | None) -> str:
 
 
 def calc_bandwidth_gb_s(n_bytes: float, time_ms: float | None) -> float | None:
-    """Calculate effective memory bandwidth in GB/s."""
     if time_ms is None or time_ms <= 0:
         return None
     return (n_bytes / (1024**3)) / (time_ms / 1000.0)
@@ -122,7 +120,10 @@ def bench_dt_prep(use_triton=True, iters=50):
         n_bytes = B * T * D * 4 + D * 4  # dt_raw (float32) + bias (float32)
         bw = calc_bandwidth_gb_s(n_bytes, t)
         key = f"B{B}_T{T}_D{D}"
-        results[key] = {"time_ms": round(t, 4), "bandwidth_gb_s": round(bw, 2) if bw else None}
+        results[key] = {
+            "time_ms": round(t, 4),
+            "bandwidth_gb_s": round(bw, 2) if bw else None,
+        }
         print(
             f"  dt_prep{'_triton' if use_triton else '_fallback'} B={B} T={T} D={D}: {t:.3f}ms {gb_s_str(bw)}"
         )
@@ -149,7 +150,10 @@ def bench_fused_dt(use_triton=True, iters=50):
         n_bytes = B * T * R * 4 + H * R * 4 + H * 4  # dt_hidden + weight + bias
         bw = calc_bandwidth_gb_s(n_bytes, t)
         key = f"B{B}_T{T}_R{R}_H{H}"
-        results[key] = {"time_ms": round(t, 4), "bandwidth_gb_s": round(bw, 2) if bw else None}
+        results[key] = {
+            "time_ms": round(t, 4),
+            "bandwidth_gb_s": round(bw, 2) if bw else None,
+        }
         print(
             f"  fused_dt{'_triton' if use_triton else '_fallback'} B={B} T={T} R={R} H={H}: {t:.3f}ms {gb_s_str(bw)}"
         )
@@ -176,7 +180,10 @@ def bench_fused_out(use_triton=True, iters=50):
         n_bytes = B * T * D * 4 * 2 + D * 4  # y + z + w
         bw = calc_bandwidth_gb_s(n_bytes, t)
         key = f"B{B}_T{T}_D{D}"
-        results[key] = {"time_ms": round(t, 4), "bandwidth_gb_s": round(bw, 2) if bw else None}
+        results[key] = {
+            "time_ms": round(t, 4),
+            "bandwidth_gb_s": round(bw, 2) if bw else None,
+        }
         print(
             f"  fused_out{'_triton' if use_triton else '_fallback'} B={B} T={T} D={D}: {t:.3f}ms {gb_s_str(bw)}"
         )
@@ -371,7 +378,9 @@ def bench_full_mamba2(
     device = "cuda"
     d_inner = num_heads * head_dim  # total capacity
     conv_dim = d_inner + 2 * n_groups * d_state  # conv output = u + B + C
-    projected = torch.randn(B, T, d_inner + conv_dim + dt_rank, dtype=torch.float32, device=device)
+    projected = torch.randn(
+        B, T, d_inner + conv_dim + dt_rank, dtype=torch.float32, device=device
+    )
     residual_inner = torch.randn(B, T, d_inner, dtype=torch.float32, device=device)
     conv_weight = torch.randn(conv_dim, 3, dtype=torch.float32, device=device)
     conv_bias = torch.randn(conv_dim, dtype=torch.float32, device=device)
@@ -505,9 +514,7 @@ def check_correctness():
     y = torch.randn(B, T, H, device="cuda")
     z = torch.randn(B, T, H, device="cuda")
     w = torch.randn(H, device="cuda")
-    fo_err = max_abs_err(
-        fused_out_triton(y, z, w), fused_out_fallback(y, z, w)
-    )
+    fo_err = max_abs_err(fused_out_triton(y, z, w), fused_out_fallback(y, z, w))
 
     Bf, Tf, heads, head_dim, groups, d_state, dt_rank = 2, 256, 8, 64, 4, 16, 16
     d_inner = heads * head_dim

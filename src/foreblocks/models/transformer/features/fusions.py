@@ -82,11 +82,6 @@ except Exception:  # pragma: no cover
 
 
 def get_dropout_p(layer: nn.Module | None) -> float:
-    """
-    Safely extract p from a Dropout-like module or return 0.0 for Identity/None.
-
-    This is robust to passing nn.Identity, None, or any module without `.p`.
-    """
     if layer is None:
         return 0.0
     p = getattr(layer, "p", None)
@@ -97,17 +92,10 @@ def get_dropout_p(layer: nn.Module | None) -> float:
 
 
 def _is_norm_wrapper(layer: nn.Module) -> bool:
-    """Check if *layer* is a NormWrapper (has .norm AND .strategy)."""
     return hasattr(layer, "norm") and hasattr(layer, "strategy")
 
 
 def _apply_norm(norm_layer: nn.Module | None, x: torch.Tensor) -> torch.Tensor:
-    """
-    Supports either:
-      - NormWrapper (has .norm AND .strategy attributes)
-      - Plain nn.Module like LayerNorm/RMSNorm (callable)
-      - None or nn.Identity (no-op)
-    """
     if norm_layer is None or isinstance(norm_layer, nn.Identity):
         return x
     if _is_norm_wrapper(norm_layer):
@@ -126,10 +114,6 @@ def _resolve_norm_module(norm_layer: nn.Module | None) -> nn.Module | None:
 def _apply_norm_triton_if_possible(
     norm_layer: nn.Module | None, x: torch.Tensor
 ) -> torch.Tensor:
-    """
-    Dedicated Triton norm fast path for post-norm branches.
-    Falls back to module forward when unsupported.
-    """
     mod = _resolve_norm_module(norm_layer)
     if mod is None:
         return x
@@ -284,18 +268,6 @@ def fused_dropout_add(
     p: float,
     training: bool,
 ) -> torch.Tensor:
-    """
-    Fuse: Dropout(update) + Residual add
-
-    Args:
-        residual: [..., D]
-        update:   same shape as residual
-        p:        dropout probability
-        training: apply dropout only if True
-
-    Returns:
-        out = residual + dropout(update)
-    """
     # Fast-path for p == 0.0 or eval mode avoids F.dropout call.
     if p > 0.0 and training:
         update = F.dropout(update, p=p, training=True)
@@ -312,15 +284,6 @@ def fused_dropout_add_norm(
     p: float,
     training: bool,
 ) -> torch.Tensor:
-    """
-    Fuse: Dropout(update) → Residual add → Norm  (post-norm style)
-
-    Use this where you currently do:
-        o = dropout(o); src = src + o; src = norm(src)
-
-    Works with NormWrapper or plain norm modules.
-    Fast path: single-kernel fused add+RMSNorm when p==0, CUDA, D<=2048.
-    """
     if (p == 0.0 or not training) and _can_fused_add_rmsnorm(
         residual, update, norm_layer
     ):
@@ -345,18 +308,6 @@ def fused_dropout_gateskip_norm(
     training: bool,
     active_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """
-    Fuse: Dropout(update) → GateSkip(residual, update) → Norm
-
-    Returns:
-        out: fused output tensor (same shape as residual)
-        skip_mask: optional boolean mask from gateskip_apply (for KV cache copy)
-
-    Notes:
-        - If use_gateskip=False, this reduces to:
-              out = residual + dropout(update); out = norm(out)
-        - If GateSkip is requested but unavailable, raises a RuntimeError.
-    """
     if p > 0.0 and training:
         update = F.dropout(update, p=p, training=True)
 

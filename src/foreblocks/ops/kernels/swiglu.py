@@ -199,7 +199,6 @@ if HAS_TRITON:
 
 
 def _swiglu_row_fits(dh: int, element_size: int) -> bool:
-    """Triton fused-row limit: BLOCK * element_size must stay under 64KB."""
     if not HAS_TRITON:
         return False
     return triton.next_power_of_2(dh) <= 65536 // element_size
@@ -222,7 +221,6 @@ def swiglu_gate(a, b):
 def _weights_from_swiglu_experts(
     experts: Sequence[torch.nn.Module],
 ) -> tuple[list[torch.Tensor], list[torch.Tensor], int]:
-    """Extract per-expert weights for SwiGLU experts. Returns ([w12_e], [w3_e], H)."""
     w12_list: list[torch.Tensor] = []
     w3_list: list[torch.Tensor] = []
     H: int | None = None
@@ -260,15 +258,6 @@ def grouped_mlp_swiglu(
     B12_cat_prepacked: torch.Tensor | None = None,
     B3_cat_prepacked: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """
-    SwiGLU MLP in grouped mode over packed slices:
-
-        GU = grouped_mm_varM(packed_x, W12[e])  # D -> 2H
-        H  = SiLU(G) * U
-        Y  = grouped_mm_varM(H, W3[e])         # H -> D
-
-    Returns Y packed in the same order ([S, D]).
-    """
     if offsets.numel() <= 1:
         return packed_x.new_zeros((0, packed_x.shape[1]))
 

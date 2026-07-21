@@ -14,7 +14,6 @@ from foreblocks.ts_handler.auto_filter.registry import register_filter
 
 
 def _ssa_reconstruct(x: np.ndarray, window: int, n_components: int) -> np.ndarray:
-    """Reconstruct signal from the leading SSA eigentriples."""
     N = len(x)
     L = window
     K = N - L + 1
@@ -41,20 +40,6 @@ def _ssa_reconstruct(x: np.ndarray, window: int, n_components: int) -> np.ndarra
 def ssa_filter(
     ts: pd.Series, window: int | None = None, n_components: int = 3
 ) -> pd.Series:
-    """Singular Spectrum Analysis denoising.
-
-    Embeds the series in a trajectory (Hankel) matrix, performs SVD, keeps
-    the leading ``n_components`` eigentriples (trend + dominant oscillations),
-    and reconstructs via anti-diagonal averaging.
-
-    Parameters
-    ----------
-    window:
-        Embedding window length L.  Defaults to ``len(ts) // 4``, clamped to
-        [8, 200].
-    n_components:
-        Number of leading eigentriples to retain.
-    """
     x = ts.values.astype(float)
     N = len(x)
     if N < 16:

@@ -47,13 +47,6 @@ SSD_TRITON_BACKWARD_MIN_SEQLEN = 0  # vectorized torch backward is always faster
 
 
 def segment_sum(x: torch.Tensor) -> torch.Tensor:
-    """Exp(lower-triangular cumulative sum).
-
-    Given ``x`` of shape ``[..., C]``, returns ``L`` of shape ``[..., C, C]``
-    with ``L[i, j] = exp(sum(x[j : i+1]))`` for ``j <= i`` and ``0`` otherwise.
-
-    Stable formulation using cumsum differences.
-    """
     cumsum = torch.cumsum(x, dim=-1)  # [..., C]
     cumsum_pad = F.pad(cumsum, (1, 0), value=0.0)  # [..., C+1]
     cumsum_pad = cumsum_pad[..., :-1]  # [..., C], cumsum_pad[j] = cumsum[j-1]
@@ -66,7 +59,6 @@ def segment_sum(x: torch.Tensor) -> torch.Tensor:
 
 
 def _segment_sum_log(x: torch.Tensor) -> torch.Tensor:
-    """FLA-style stable lower-triangular segment sums in log space."""
     size = x.size(-1)
     expanded = x[..., None].expand(*x.shape, size)
     strict_lower = torch.tril(
@@ -90,24 +82,6 @@ def _chunked_ssd_forward_torch_trapezoid(
     adt: torch.Tensor | None,
     trap: torch.Tensor,
 ) -> torch.Tensor:
-    """Trapezoidal-discretisation forward, exact via scan linearity.
-
-    State update:
-        h_t = abar_t * h_{t-1} + dt_t * [trap_t * k_t + (1 - trap_t) * k_{t-1}]
-    where ``k_t = B_t u_t``.  The state is linear in the per-step rank-1
-    injection ``B u``, so the trapezoidal state equals the sum of two standard
-    (Euler) scans that share decay/C/D:
-
-      * "current" tap : weight ``trap * dt``,        source (B_t,   u_t)
-      * "previous" tap: weight ``(1 - trap) * dt``,  source (B_{t-1}, u_{t-1})
-
-    The D-skip ``D * u_t`` is part of the output (not the state), so it is
-    applied once — by the current-tap scan only; the previous-tap scan passes
-    ``D = 0``.
-
-    Requires ``adt`` (Mamba3): the decay must come from ``adt`` so that splitting
-    ``dt`` into trap-weighted taps changes only the injection, not the decay.
-    """
     if adt is None:
         raise ValueError("trapezoidal (trap) discretisation requires adt (Mamba3)")
     trap = trap.float()
@@ -140,32 +114,6 @@ def _chunked_ssd_forward_torch(
     trap: torch.Tensor | None = None,
     seq_idx: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Torch chunked SSM forward with **diagonal A** (one scalar per head).
-
-    Implements the Mamba2-style scan:
-
-    1. Intra-chunk output via the ``L`` matrix (causal attention pattern)
-    2. Inter-chunk state propagation
-
-    Args:
-        u: ``[B, T, H, P]`` — input sequence
-        dt: ``[B, T, H]`` — discretised time-step (post softplus + clamp)
-        A: ``[H]`` — scalar per head (diagonal A matrix, already negated)
-        B: ``[B, T, H, N]`` — B projection
-        C: ``[B, T, H, N]`` — C projection
-        D: ``[H, P]`` — skip connection
-        chunk_size: tokens per chunk
-        trap: ``[B, T, H]`` or None — trapezoidal-discretisation gate (Mamba3).
-            When given, the input injected at step ``t`` is the blend
-            ``dt_t * [trap_t * (B_t u_t) + (1 - trap_t) * (B_{t-1} u_{t-1})]``
-            instead of the plain Euler ``dt_t * B_t u_t`` (``trap=1`` recovers
-            Euler).  Implemented exactly via the linearity of the scan: the sum
-            of the standard scan on the "current" tap and on the one-step-shifted
-            "previous" tap (the D-skip is applied once).
-
-    Returns:
-        y: ``[B, T, H, P]`` — SSM output
-    """
     if trap is not None:
         return _chunked_ssd_forward_torch_trapezoid(
             u, dt, A, B, C, D, chunk_size=chunk_size, adt=adt, trap=trap
@@ -288,9 +236,7 @@ def _chunked_ssd_forward_torch(
     decay_prefix = torch.exp(_segment_sum_log(chunk_log_decay)).transpose(1, 3)
     boundary_all = (
         decay_prefix[..., None, None] * state_summaries[:, :, None, ...]
-    ).sum(
-        dim=1
-    )  # [B, nc+1, H, P, N]
+    ).sum(dim=1)  # [B, nc+1, H, P, N]
     states_boundary = boundary_all[:, :-1]  # [B, nc, H, P, N]
 
     # ── Inter-chunk output ─────────────────────────────────────────
@@ -298,9 +244,7 @@ def _chunked_ssd_forward_torch(
     decay_from_start = torch.exp(cumsum_dtA)  # [B, nc, C, H]
     state_entered = states_boundary.unsqueeze(2) * decay_from_start.unsqueeze(
         -1
-    ).unsqueeze(
-        -1
-    )  # [B, nc, C, H, P, N]
+    ).unsqueeze(-1)  # [B, nc, C, H, P, N]
     # y_inter[c, t, h, p] = sum_n C[c,t,h,n] * state_entered[c,t,h,p,n]
     y_inter = torch.einsum("bcthn,bcthpn->bcthp", C, state_entered)  # [B, nc, C, H, P]
 
@@ -332,19 +276,6 @@ def _chunked_ssd_backward_torch(
     adt: torch.Tensor | None = None,
     needs_adt_grad: bool = False,
 ) -> tuple[torch.Tensor | None, ...]:
-    """Vectorised chunked backward matching ``_chunked_ssd_forward_torch``.
-
-    Parallel over chunks (no Python time loop) and bounded by the small
-    ``[B, nc, C, C, H]`` intra-chunk matrices (kept tiny by a modest chunk_size,
-    FLA-style). Returns ``(du, ddt, dA, dB, dC, dD, dadt)``.
-
-    Forward (per chunk, S_in = state entering the chunk; cs = cumsum of dtA):
-        Y_intra[t] = sum_{j<=t} L[t,j] dt[j] (C[t]·B[j]) u[j],  L[t,j]=exp(cs[t]-cs[j])
-        y_inter[t] = (C[t] · (exp(cs[t]) ⊙ S_in))            # over state dim n
-        y[t]       = Y_intra[t] + y_inter[t] + D u[t]
-        S_end[c]   = exp(cs[-1]) S_in + sum_j exp(cs[-1]-cs[j]) dt[j] B[j]⊗u[j]
-    with S_in given by a prefix scan over the per-chunk local end-states.
-    """
     if needs_input_grad is None:
         needs_input_grad = (True,) * 6
     use_adt = adt is not None
@@ -551,11 +482,6 @@ def _chunked_ssd_backward_torch(
 
 
 def _segment_sum_log(x: torch.Tensor) -> torch.Tensor:
-    """FLA-style stable lower-triangular segment sums in log space.
-
-    Input  x: [..., C]
-    Output [..., C, C]  with  output[i, j] = sum_{k=j+1..i} x[k]  (0 if i<=j)
-    """
     size = x.size(-1)
     expanded = x[..., None].expand(*x.shape, size)
     strict_lower = torch.tril(
@@ -584,7 +510,6 @@ def _chunk_state_fwd(
     cs_last: torch.Tensor,
     cumsum_dtA: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute per-chunk state end (stage 1 forward)."""
     # w[j] = exp(cs_last - cs[j])  [B, nc, C, H]
     w = torch.exp(cs_last - cumsum_dtA)
     # wdt[j] = w[j] * dt[j]  [B, nc, C, H]
@@ -616,13 +541,6 @@ def _chunk_state_bwd(
     needs_du: bool,
     needs_ddt: bool,
 ) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
-    """Backward through chunk_state_fwd.
-
-    state_end = einsum("bcjhn,bcjhp->bchpn", wdt * B_c, u_c)
-    where wdt = exp(cs_last - cumsum_dtA) * dt_c
-
-    Returns (dB, ddu, ddt_from_state).
-    """
     w = torch.exp(cs_last - cumsum_dtA)
     wdt = w * dt_c
 
@@ -664,16 +582,6 @@ def _state_passing_fwd(
     seq_idx: torch.Tensor | None = None,
     initial_states: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Compute propagated boundary states (stage 2 forward).
-
-    Args:
-        state_end: Per-chunk accumulated states [B, nc, H, P, N]
-        cumsum_dtA: Cumulative dt*A per token within chunk [B, nc, C, H]
-        seq_idx: Per-token sequence index for variable-length handling [B, T_pad]
-        initial_states: Initial KV-cache states [B, H, P, N], replaces zero padding
-
-    Returns (states_boundary, decay_prefix, chunk_log_decay, state_summaries, final_states).
-    """
     Bsz = state_end.shape[0]
     nc = state_end.shape[1]
     H = state_end.shape[2]
@@ -758,19 +666,6 @@ def _state_passing_bwd(
     cs_last: torch.Tensor,
     dfinal_states: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Backward through state_passing_fwd.
-
-    Args:
-        g_states_boundary: Gradient of boundary states [B, nc, H, P, N]
-        decay_prefix: Forward decay prefix [B, nc+1, nc+1, H]
-        chunk_log_decay: Chunk log decays [B, H, nc+1]
-        state_summaries: Padded states [B, nc+1, H, P, N]
-        cumsum_dtA: Cumulative dt*A [B, nc, C, H]
-        cs_last: Cumsum at chunk ends [B, nc, 1, H]
-        dfinal_states: Gradient of final states from downstream [B, 1, H, P, N]
-
-    Returns (g_state_end, d_cs_last, g_initial_states).
-    """
     Bsz = g_states_boundary.shape[0]
     nc = g_states_boundary.shape[1]
     H = g_states_boundary.shape[2]
@@ -835,10 +730,6 @@ def _chunk_scan_fwd(
     cumsum_dtA: torch.Tensor,
     D: torch.Tensor,
 ) -> tuple[torch.Tensor, dict]:
-    """Compute intra-chunk scan output (stage 3 forward).
-
-    Returns (y_chunked, intermediates_for_backward).
-    """
     # Y_intra = sum_j L[c,t,j] * dt[j] * G[c,t,j] * u[c,j]
     LdtG = L * dt_c[:, :, None, :, :] * G  # [B, nc, C, C, H]
     Y_intra = torch.einsum("bctjh,bcjhp->bcthp", LdtG, u_c)  # [B, nc, C, H, P]
@@ -847,9 +738,7 @@ def _chunk_scan_fwd(
     decay_from_start = torch.exp(cumsum_dtA)  # [B, nc, C, H]
     state_entered = states_boundary.unsqueeze(2) * decay_from_start.unsqueeze(
         -1
-    ).unsqueeze(
-        -1
-    )  # [B, nc, C, H, P, N]
+    ).unsqueeze(-1)  # [B, nc, C, H, P, N]
     y_inter = torch.einsum(
         "bcthn,bcthpn->bcthp", C_c, state_entered
     )  # [B, nc, C, H, P]
@@ -886,10 +775,6 @@ def _chunk_scan_bwd(
 ) -> tuple[
     torch.Tensor | None, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None
 ]:
-    """Backward through chunk_scan_fwd.
-
-    Returns (g_states_boundary, g_C, ddt_from_intra, dcs).
-    """
     L = intermediates["L"]
     G = intermediates["G"]
     LdtG = intermediates["LdtG"]
@@ -969,7 +854,6 @@ def _chunked_ssd_forward_modular(
     seq_idx: torch.Tensor | None = None,
     initial_states: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict]:
-    """Modular SSD forward following Mamba2 decomposition."""
     Bsz, T, H, P = u.shape
     N = B.shape[-1]
 
@@ -1093,7 +977,6 @@ def _chunked_ssd_backward_modular(
     needs_input_grad: tuple[bool, ...] | None = None,
     needs_adt_grad: bool = False,
 ) -> tuple[torch.Tensor | None, ...]:
-    """Modular SSD backward using saved intermediates."""
     if needs_input_grad is None:
         needs_input_grad = (True,) * 6
 
@@ -1430,9 +1313,7 @@ class _ChunkedSSDFnModular(torch.autograd.Function):
             )
         else:
             from foreblocks.ops.mamba.ssd import (
-                SSD_TRITON_BACKWARD_MIN_SEQLEN,
                 _chunked_ssd_backward_torch,
-                chunked_ssd_backward_triton,
             )
 
             u, dt, A, B, C, D, adt = ctx.saved_tensors
@@ -1475,13 +1356,6 @@ def chunked_ssd_forward_modular(
     initial_states: torch.Tensor | None = None,
     dfinal_states: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Chunked SSD forward using modular Mamba2-style decomposition.
-
-    Args:
-        seq_idx: Per-token sequence index for variable-length sequences [B, T]
-        initial_states: Initial KV-cache states [B, H, P, N]
-        dfinal_states: Gradient of final states for KV cache continuation [B, 1, H, P, N]
-    """
     can_use_triton = (
         use_triton
         and CHUNKED_SSD_TRITON_AVAILABLE
@@ -1573,11 +1447,6 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         USE_ADT: tl.constexpr,
         D_PER_HEAD: tl.constexpr,
     ):
-        """Parallel forward: processes ALL chunks at once via (b, nc, h) grid.
-
-        Each program ID maps to one (b, nc, h) triple. Within that, pid_p
-        handles a BLOCK_P-wide slice of the P dimension.
-        """
         # Decode program ID: grid = (B * NC * H, npb)
         pid_bhnc = tl.program_id(axis=0)
         pid_p = tl.program_id(axis=1)
@@ -1665,14 +1534,6 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         BLOCK_N: tl.constexpr,
         D_PER_HEAD: tl.constexpr,
     ):
-        """Parallel SSD forward: one program computes one token and P block.
-
-        This avoids the recurrent state sweep inside each chunk. Instead it
-        evaluates the SSD formula directly:
-            y_t = C_t @ (decay_from_start_t * entry_state)
-                + sum_{j<=t} exp(cumsum_t - cumsum_j) dt_j (C_t @ B_j) u_j
-                + D * u_t
-        """
         pid_bhnct = tl.program_id(axis=0)
         pid_p = tl.program_id(axis=1)
 
@@ -1779,12 +1640,6 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         BLOCK_N: tl.constexpr,
         D_PER_HEAD: tl.constexpr,
     ):
-        """Tiled closed-form SSD forward.
-
-        One program computes [BLOCK_T, BLOCK_P] outputs. The intra-chunk term is
-        tiled as (C_t @ B_j.T) @ U_j, giving Triton larger matrix-shaped work
-        than the one-token direct parallel kernel.
-        """
         pid_tile = tl.program_id(axis=0)
         pid_p = tl.program_id(axis=1)
 
@@ -1919,7 +1774,6 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         BLOCK_N: tl.constexpr,
         USE_ADT: tl.constexpr,
     ):
-        """Recompute and store the per-chunk entry states for the backward pass."""
         pid_bh = tl.program_id(axis=0)
         pid_p = tl.program_id(axis=1)
         b = pid_bh // H
@@ -2007,13 +1861,6 @@ if CHUNKED_SSD_TRITON_AVAILABLE:
         D_PER_HEAD: tl.constexpr,
         CHUNK_INDEX: tl.constexpr,
     ):
-        """Reverse-time backward for one chunk (driver loops chunks high→low).
-
-        Numerically stable: recomputes the chunk's forward states into a scratch
-        buffer (a forward sweep from bstate[c]), then walks reverse reading state_t
-        and state_{t-1} from scratch — no division by the (possibly tiny) decay.
-        grad_state is carried between chunks via gstate_ptr.
-        """
         pid_bh = tl.program_id(axis=0)
         pid_p = tl.program_id(axis=1)
         b = pid_bh // H
@@ -2165,20 +2012,6 @@ def chunked_ssd_forward_triton(
     chunk_size: int = 64,
     adt: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Parallel Triton chunk kernel for SSD forward.
-
-    Supports both decay parametrisations:
-
-    * ``adt is None`` (Mamba2): per-head scalar ``A`` ``[H]``, decay ``exp(dt*A)``.
-    * ``adt`` given (Mamba3): time-dependent log-decay ``[B, T, H]``, decay
-      ``exp(adt)``; ``A`` is ignored.
-
-    ``D`` may be per-head_dim ``[H, P]`` or per-head ``[H]``.
-
-    Inter-chunk boundary states are computed via parallel ``segment_sum_log``
-    (same as the torch vectorised path), then ONE kernel processes all chunks
-    simultaneously.  No Python loop over chunks.
-    """
     if not CHUNKED_SSD_TRITON_AVAILABLE:
         raise RuntimeError(
             "chunked_ssd_forward_triton called but Triton is unavailable"
@@ -2259,9 +2092,7 @@ def chunked_ssd_forward_triton(
     decay_prefix = torch.exp(_segment_sum_log(chunk_log_decay)).transpose(1, 3)
     boundary_all = (
         decay_prefix[..., None, None] * state_summaries[:, :, None, ...]
-    ).sum(
-        dim=1
-    )  # [B, nc+1, H, P, N]
+    ).sum(dim=1)  # [B, nc+1, H, P, N]
     entry_states = boundary_all[:, :-1]  # [B, nc, H, P, N]
 
     # ── launch ONE kernel: all (b, nc, h) threads at once ─────────
@@ -2321,12 +2152,6 @@ def chunked_ssd_forward_triton_parallel(
     chunk_size: int = 64,
     adt: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Token-parallel Triton SSD forward.
-
-    This path computes each output token independently from the SSD closed form
-    inside its chunk. It is useful for validating and benchmarking a fully
-    parallel SSD formulation against the recurrent-in-chunk Triton kernel.
-    """
     if not CHUNKED_SSD_TRITON_AVAILABLE:
         raise RuntimeError(
             "chunked_ssd_forward_triton_parallel called but Triton is unavailable"
@@ -2447,7 +2272,6 @@ def chunked_ssd_forward_triton_tiled(
     chunk_size: int = 64,
     adt: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Tiled token-parallel Triton SSD forward."""
     if not CHUNKED_SSD_TRITON_AVAILABLE:
         raise RuntimeError(
             "chunked_ssd_forward_triton_tiled called but Triton is unavailable"
@@ -2577,15 +2401,6 @@ def chunked_ssd_backward_triton(
     adt: torch.Tensor | None = None,
     needs_adt_grad: bool = False,
 ) -> tuple[torch.Tensor | None, ...]:
-    """Fused Triton backward (reverse-time per-chunk recurrence).
-
-    Two passes: (1) recompute per-chunk entry states; (2) walk chunks high→low,
-    reconstructing state_{t-1}=(state_t - dt u⊗B)/decay and accumulating grads.
-    Stable only when the per-step decay is not tiny (guaranteed by Mamba2/Mamba3
-    A-init); callers should fall back to the vectorised path otherwise.
-
-    Returns ``(du, ddt, dA, dB, dC, dD, dadt)``.
-    """
     if not CHUNKED_SSD_TRITON_AVAILABLE:
         raise RuntimeError(
             "chunked_ssd_backward_triton called but Triton is unavailable"
@@ -2791,13 +2606,6 @@ def chunked_ssd_forward(
     initial_states: torch.Tensor | None = None,
     dfinal_states: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Chunked SSD forward with modular Mamba2-style decomposition.
-
-    Args:
-        seq_idx: Per-token sequence index for variable-length sequences [B, T]
-        initial_states: Initial KV-cache states [B, H, P, N]
-        dfinal_states: Gradient of final states for KV cache continuation [B, 1, H, P, N]
-    """
     can_use_triton = (
         use_triton
         and CHUNKED_SSD_TRITON_AVAILABLE
@@ -2874,11 +2682,6 @@ def chunked_ssd_forward_reference(
     D: torch.Tensor,
     chunk_size: int = 64,
 ) -> torch.Tensor:
-    """Simple (but correct) chunked forward used as a reference for testing.
-
-    Runs the sequential scan within each chunk, propagating state across chunks.
-    This is **not** the fast L-matrix path; it is a correctness reference.
-    """
     Bsz, T, H, P = u.shape
     N = B.shape[-1]
 
@@ -2928,21 +2731,6 @@ def chunked_ssd_backward_reference(
     adt: torch.Tensor | None = None,
     needs_adt_grad: bool = False,
 ) -> tuple[torch.Tensor | None, ...]:
-    """Analytic backward for ``chunked_ssd_forward_reference``.
-
-    Uses the sequential reverse-time algorithm (the same sequential diagonal-A
-    scan used as the correctness oracle).
-
-    Supports both parametrisations of the per-step log-decay:
-
-    * Mamba2: ``log_decay = dt * A`` (``A`` per-head ``[H]``) — produces ``dA``.
-    * Mamba3: ``log_decay = adt`` (time-dependent ``[B, T, H]``) — produces
-      ``dadt`` and leaves ``dA`` zero (the passed ``A`` is a dummy).
-
-    ``D`` may be per-head ``[H]`` (Mamba3) or per-head_dim ``[H, P]`` (Mamba2).
-
-    Returns ``(du, ddt, dA, dB, dC, dD, dadt)``.
-    """
     if needs_input_grad is None:
         needs_input_grad = (True,) * 6
 

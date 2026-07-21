@@ -71,7 +71,6 @@ def fla_gdn2_forward(
     *,
     recurrent: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run upstream FLA GDN-2 kernels with [B, H, T, *] layout."""
     if not can_use_fla_gdn2(
         q, k, v, g, b, w, initial_state, chunk_size, recurrent=recurrent
     ):

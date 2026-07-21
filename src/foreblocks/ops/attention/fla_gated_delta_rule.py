@@ -65,7 +65,6 @@ def fla_gated_delta_rule_forward(
     *,
     recurrent: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run upstream FLA Gated Delta Rule with [B, H, T, *] layout."""
     if not can_use_fla_gated_delta_rule(
         q, k, v, g, beta, initial_state, chunk_size, recurrent=recurrent
     ):

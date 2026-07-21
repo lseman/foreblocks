@@ -61,7 +61,6 @@ from foreblocks.ts_handler.auto_filter.visualization import plot_results
 
 
 def auto_filter(*args, **kwargs):
-    """Run selection while preserving the legacy monkeypatch surface."""
     _runner._FILTER_REGISTRY = _FILTER_REGISTRY
     _runner._SLOW_FILTERS = _SLOW_FILTERS
     _runner.filter_metrics = filter_metrics
@@ -69,14 +68,12 @@ def auto_filter(*args, **kwargs):
 
 
 def tune_weights(*args, **kwargs):
-    """Tune weights while preserving the legacy monkeypatch surface."""
     _tuning._FILTER_REGISTRY = _FILTER_REGISTRY
     _tuning._SLOW_FILTERS = _SLOW_FILTERS
     return _tuning.tune_weights(*args, **kwargs)
 
 
 def tune_filter(*args, **kwargs):
-    """Tune a filter while preserving the legacy monkeypatch surface."""
     _tuning._suggest_filter_and_params = _suggest_filter_and_params
     _tuning._run_parametrized_filter = _run_parametrized_filter
     _tuning.filter_metrics = filter_metrics

@@ -36,16 +36,6 @@ from foreblocks.core.training.quantization import (
 
 
 class DistilledForecastingModel(ForecastingModel):
-    """
-    Forecasting model with knowledge distillation support (output/feature/attention).
-    - Robust nested-hook registration (supports dotted layer paths).
-    - Cached, trainable adapters for feature-width/head-count mismatches.
-    - AMP-safe interpolation and KL paths.
-    - Optional alpha/temperature schedules and per-component loss weights.
-
-    Public APIs kept similar to your original version.
-    """
-
     VALID_DISTILLATION_MODES = [
         "none",
         "output",
@@ -66,14 +56,13 @@ class DistilledForecastingModel(ForecastingModel):
         task_type: str = "regression",  # "regression" | "logits"
         alpha_schedule=None,  # Callable[[int], float] | None
         temp_schedule=None,  # Callable[[int], float] | None
-        loss_weights: None | (
-            dict[str, float]
-        ) = None,  # keys: "output","feature","attention"
+        loss_weights: None
+        | (dict[str, float]) = None,  # keys: "output","feature","attention"
         **kwargs,
-    ):
-        assert (
-            distillation_mode in self.VALID_DISTILLATION_MODES
-        ), f"Invalid distillation mode: {distillation_mode}"
+    ) -> None:
+        assert distillation_mode in self.VALID_DISTILLATION_MODES, (
+            f"Invalid distillation mode: {distillation_mode}"
+        )
 
         super().__init__(**kwargs)
 
@@ -344,11 +333,6 @@ class DistilledForecastingModel(ForecastingModel):
     def _combine_distillation_losses(
         self, losses: dict[str, torch.Tensor]
     ) -> torch.Tensor:
-        """
-        Combine task loss and available distillation losses with alpha and per-component weights.
-        Expects `losses` to contain at least "task_loss"; optionally:
-          - "output_distillation", "feature_distillation", "attention_distillation"
-        """
         task = losses.get("task_loss", 0.0)
         distill = 0.0
         if "output_distillation" in losses:
@@ -363,7 +347,7 @@ class DistilledForecastingModel(ForecastingModel):
 
     # ==================== CONTROL ====================
 
-    def set_teacher_model(self, model: nn.Module):
+    def set_teacher_model(self, model: nn.Module) -> None:
         self.teacher_model = model
         if model is not None:
             model.eval()
@@ -372,16 +356,18 @@ class DistilledForecastingModel(ForecastingModel):
             if self.distillation_mode != "none":
                 self._setup_distillation()
 
-    def enable_distillation(self, mode="output", teacher_model=None):
-        assert (
-            mode in self.VALID_DISTILLATION_MODES
-        ), f"Invalid distillation mode: {mode}"
+    def enable_distillation(
+        self, mode: str = "output", teacher_model: nn.Module | None = None
+    ) -> None:
+        assert mode in self.VALID_DISTILLATION_MODES, (
+            f"Invalid distillation mode: {mode}"
+        )
         self.distillation_mode = mode
         if teacher_model is not None:
             self.set_teacher_model(teacher_model)
         self._setup_distillation()
 
-    def disable_distillation(self):
+    def disable_distillation(self) -> None:
         self.distillation_mode = "none"
         self._clear_hooks()
         self.teacher_model = None
@@ -438,8 +424,8 @@ class DistilledForecastingModel(ForecastingModel):
         return student_output
 
     def benchmark_inference(
-        self, input_tensor: torch.Tensor, num_runs=100, warmup_runs=10
-    ):
+        self, input_tensor: torch.Tensor, num_runs: int = 100, warmup_runs: int = 10
+    ) -> dict[str, any]:
         result = super().benchmark_inference(input_tensor, num_runs, warmup_runs)
         result.update(
             {
@@ -454,11 +440,6 @@ class DistilledForecastingModel(ForecastingModel):
 
 
 class QuantizedForecastingModel(DistilledForecastingModel):
-    """
-    Forecasting model with quantization support on top of distillation-enabled model.
-    Supports PTQ, QAT, static and dynamic quantization.
-    """
-
     VALID_QUANTIZATION_MODES = ["none", "ptq", "qat", "dynamic", "static"]
 
     def __init__(
@@ -468,10 +449,10 @@ class QuantizedForecastingModel(DistilledForecastingModel):
         symmetric_quantization: bool = True,
         per_channel_quantization: bool = False,
         **kwargs,
-    ):
-        assert (
-            quantization_mode in self.VALID_QUANTIZATION_MODES
-        ), f"Invalid quantization mode: {quantization_mode}"
+    ) -> None:
+        assert quantization_mode in self.VALID_QUANTIZATION_MODES, (
+            f"Invalid quantization mode: {quantization_mode}"
+        )
 
         super().__init__(**kwargs)
 
@@ -502,11 +483,9 @@ class QuantizedForecastingModel(DistilledForecastingModel):
     # ==================== SETUP ====================
 
     def _setup_quantization(self):
-        """Setup quantization observers or fake quant depending on mode"""
         self._add_quantization_observers()
 
     def _add_quantization_observers(self):
-        """Attach fake quant observers to Linear layers"""
         for _, module in self.named_modules():
             if isinstance(module, nn.Linear) and self.quantization_mode == "qat":
                 module.weight_fake_quant = FakeQuantize(self.quantization_config)
@@ -514,7 +493,6 @@ class QuantizedForecastingModel(DistilledForecastingModel):
                     module.bias_fake_quant = FakeQuantize(self.quantization_config)
 
     def set_quantization_mode(self, mode: str):
-        """Switch quantization mode"""
         assert mode in self.VALID_QUANTIZATION_MODES, f"Invalid mode: {mode}"
         self.quantization_mode = mode
 
@@ -528,7 +506,9 @@ class QuantizedForecastingModel(DistilledForecastingModel):
 
     # ==================== PREPARATION MODES ====================
 
-    def prepare_for_quantization(self, calibration_data=None):
+    def prepare_for_quantization(
+        self, calibration_data=None
+    ) -> "QuantizedForecastingModel":
         if self.quantization_mode == "none":
             return self
         elif self.quantization_mode == "dynamic":
@@ -541,22 +521,18 @@ class QuantizedForecastingModel(DistilledForecastingModel):
             return self._apply_static_quantization()
 
     def _apply_dynamic_quantization(self):
-        """Dynamically quantize Linear layers"""
         return self._replace_linear_layers(DynamicQuantizedLinear)
 
     def _apply_static_quantization(self):
-        """Apply static quantization after observer setup"""
         return self._replace_linear_layers(StaticQuantizedLinear)
 
     def _apply_post_training_quantization(self, calibration_data):
-        """PTQ = Calibrate then convert"""
         self._add_quantization_observers()
         if calibration_data:
             self._calibrate_model(calibration_data)
         return self._convert_to_quantized_model()
 
     def _prepare_qat_training(self):
-        """Attach fake quant modules and enable them for QAT"""
         self._add_quantization_observers()
         for m in self.modules():
             if hasattr(m, "weight_fake_quant"):
@@ -564,7 +540,6 @@ class QuantizedForecastingModel(DistilledForecastingModel):
         return self
 
     def _calibrate_model(self, dataloader):
-        """Collect statistics from calibration data"""
         self.eval()
         with torch.no_grad():
             for batch in dataloader:
@@ -575,7 +550,6 @@ class QuantizedForecastingModel(DistilledForecastingModel):
                 _ = self.forward(src, targets)
 
     def finalize_quantization(self):
-        """Convert QAT-trained model to fully quantized version"""
         if self.quantization_mode == "qat":
             for m in self.modules():
                 if hasattr(m, "weight_fake_quant"):
@@ -586,13 +560,11 @@ class QuantizedForecastingModel(DistilledForecastingModel):
         return self
 
     def _convert_to_quantized_model(self):
-        """Convert fake-quant-aware model to real quantized model"""
         return self._replace_linear_layers(StaticQuantizedLinear)
 
     # ==================== MODULE REPLACEMENT ====================
 
     def _replace_linear_layers(self, QuantLayerClass):
-        """Replace all Linear layers with quantized equivalents"""
         model = copy.deepcopy(self)
         for name, module in model.named_modules():
             if isinstance(module, nn.Linear):
@@ -604,7 +576,6 @@ class QuantizedForecastingModel(DistilledForecastingModel):
         return model
 
     def _assign_module_by_name(self, model, full_name, new_module):
-        """Replace a submodule in the model hierarchy given its full dotted path"""
         path = full_name.split(".")
         parent = model
         for name in path[:-1]:
@@ -634,7 +605,6 @@ class QuantizedForecastingModel(DistilledForecastingModel):
         return output
 
     def get_model_size(self) -> dict[str, int | float]:
-        """Estimate model size in MB depending on quantization"""
         param_count = sum(p.numel() for p in self.parameters())
         buffer_count = sum(b.numel() for b in self.buffers())
         element_count = param_count + buffer_count
@@ -649,8 +619,8 @@ class QuantizedForecastingModel(DistilledForecastingModel):
         }
 
     def benchmark_inference(
-        self, input_tensor: torch.Tensor, num_runs=100, warmup_runs=10
-    ):
+        self, input_tensor: torch.Tensor, num_runs: int = 100, warmup_runs: int = 10
+    ) -> dict[str, any]:
         result = super().benchmark_inference(input_tensor, num_runs, warmup_runs)
         result.update(
             {

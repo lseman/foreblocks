@@ -33,12 +33,6 @@ from foreblocks.anomaly.models.base import choose_heads
 
 
 class S6Block(nn.Module):
-    """Selective State Space block (S6 variant of Mamba).
-
-    Replaces transformer attention with a recurrent state
-    that selectively forgets/retains based on input.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -74,7 +68,6 @@ class S6Block(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward through S6 selective state space."""
         B, L, D = x.shape
         residual = x
         x = self.norm(x)
@@ -119,8 +112,6 @@ class S6Block(nn.Module):
 
 
 class PatchSSMBlock(nn.Module):
-    """Apply S6 block on patches instead of tokens."""
-
     def __init__(
         self,
         d_model: int,
@@ -135,7 +126,6 @@ class PatchSSMBlock(nn.Module):
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: [B, n_patches, d_model]. Apply SSM within each patch."""
         B, n_patches, d_model = x.shape
         # Reshape to [B, n_patches * patch_size, d_model] if we want to
         # apply SSM at patch-element level. For efficiency, apply at patch level.
@@ -154,15 +144,6 @@ class PatchMambaForward:
 
 
 class PatchMamba(nn.Module):
-    """Patch-based Mamba (SSM) model for anomaly detection.
-
-    Splits windows into patches, encodes with selective state space
-    layers, reconstructs. Anomaly score = per-patch reconstruction error.
-
-    More efficient than PatchTST for long sequences (linear vs quadratic
-    attention complexity) while maintaining accuracy.
-    """
-
     def __init__(
         self,
         n_features: int,
@@ -256,13 +237,6 @@ class iTransformerForward:
 
 
 class _InvertedAttentionLayer(nn.Module):
-    """Transformer layer with inverted attention.
-
-    Instead of attending over time steps, attend over features.
-    Each feature is a "token" with d_model-dim embedding.
-    Captures multivariate correlations via feature-wise attention.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -293,11 +267,6 @@ class _InvertedAttentionLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """x: [B, n_features, d_model]. Each feature is a token.
-
-        Returns (output, attention_weights).
-        output: [B, n_features, d_model]
-        """
         B, n_feat, d = x.shape
 
         Q = self.W_q(x).view(B, n_feat, self.n_heads, self.head_dim).transpose(1, 2)
@@ -314,16 +283,6 @@ class _InvertedAttentionLayer(nn.Module):
 
 
 class iTransformer(nn.Module):
-    """Inverted attention transformer for multivariate anomaly detection.
-
-    Encodes each feature's time series into a d_model embedding,
-    then applies attention over features to capture cross-feature
-    correlations. Reconstructs the full time series.
-
-    Reference: iTransformer: The Inverted Transformers Are Fine for Time Series
-    (Liu et al., ICLR 2024)
-    """
-
     def __init__(
         self,
         n_features: int,

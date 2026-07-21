@@ -15,8 +15,6 @@ import torch
 
 
 class PositionEncodingApplier:
-    """Composable positional transform pipeline for Q/K tensors."""
-
     def __init__(self):
         self._transforms = []
 

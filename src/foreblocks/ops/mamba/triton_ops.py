@@ -70,12 +70,6 @@ if TRITON_AVAILABLE:
         GROUP_SIZE: tl.constexpr,
         BLOCK_G: tl.constexpr,
     ):
-        """RMSNormGated: rms_norm(y, weight, group_size) * silu(z).
-
-        Grid (M, D // GROUP_SIZE): one program per (row, group), so the
-        RMS statistic is computed over exactly one group. GROUP_SIZE == D
-        recovers full-row RMSNorm.
-        """
         row = tl.program_id(0)
         g = tl.program_id(1)
         lane = tl.arange(0, BLOCK_G)
@@ -160,13 +154,6 @@ if TRITON_AVAILABLE:
         ROWS_PER_PROGRAM: tl.constexpr,
         COMPUTE_DW: tl.constexpr,
     ):
-        """Backward for RMSNormGated with group support.
-
-        Grid (n_row_blocks, D // GROUP_SIZE). Each program walks
-        ROWS_PER_PROGRAM rows for one group and accumulates its dw slice
-        into a per-row-block partial buffer (summed on the host) — no
-        atomics, no separate forward recomputation pass.
-        """
         row_block = tl.program_id(0)
         g = tl.program_id(1)
         lane = tl.arange(0, BLOCK_G)
@@ -246,10 +233,6 @@ def dt_prep_bwd_triton(
     dt_max: float = 1.0,
     compute_bias_grad: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """Triton backward for dt_prep.
-
-    Returns (d_dt_raw, d_bias).
-    """
     if not (TRITON_AVAILABLE and grad_out.is_cuda and dt_raw.is_cuda and bias.is_cuda):
         return _dt_prep_bwd_fallback(
             grad_out,
@@ -298,7 +281,6 @@ def fused_out_fallback(
     eps: float = 1e-5,
     group_size: int | None = None,
 ) -> torch.Tensor:
-    """RMSNormGated: rms_norm(y, weight, group_size) * silu(z) — matches official Mamba2."""
     if group_size is not None and group_size != y.shape[-1]:
         *lead, D = y.shape
         yg = y.view(*lead, D // group_size, group_size)
@@ -319,7 +301,6 @@ def _fused_out_bwd_fallback(
     compute_norm_weight_grad: bool = True,
     group_size: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Backward for RMSNormGated: rms_norm(y, w, group_size) * silu(z)."""
     calc_dtype = torch.float64 if grad_out.dtype == torch.float64 else torch.float32
     grad32 = grad_out.to(calc_dtype)
     y32 = y.to(calc_dtype)
@@ -367,10 +348,6 @@ def fused_out_bwd_triton(
     compute_norm_weight_grad: bool = True,
     group_size: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
-    """Triton backward for fused_out.
-
-    Returns (d_y, d_z, d_norm_weight).
-    """
     if not (
         TRITON_AVAILABLE
         and grad_out.is_cuda
@@ -525,11 +502,6 @@ def fused_out_triton(
     eps: float = 1e-5,
     group_size: int | None = None,
 ) -> torch.Tensor:
-    """RMSNormGated: rms_norm(y, weight, group_size) * silu(z).
-
-    When group_size is None or equals D, normalizes over full D dimension.
-    When group_size is set, normalizes each group independently (for ngroups > 1).
-    """
     if not (TRITON_AVAILABLE and y.is_cuda and z.is_cuda and norm_weight.is_cuda):
         return fused_out_fallback(y, z, norm_weight, eps=eps, group_size=group_size)
     assert y.shape == z.shape
@@ -579,11 +551,6 @@ def fused_out(
     eps: float = 1e-5,
     group_size: int | None = None,
 ) -> torch.Tensor:
-    """RMSNormGated: rms_norm(y, weight, group_size) * silu(z) — matches official Mamba2.
-
-    When group_size is None, normalizes over full D dimension.
-    When group_size is set (e.g., d_inner // ngroups), normalizes each group independently.
-    """
     if TRITON_AVAILABLE and y.is_cuda and z.is_cuda and norm_weight.is_cuda:
         return _FusedOutFn.apply(y, z, norm_weight, eps, group_size)
     return fused_out_fallback(y, z, norm_weight, eps, group_size=group_size)

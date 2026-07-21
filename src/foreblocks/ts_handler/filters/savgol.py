@@ -10,7 +10,12 @@ import numpy as np
 from joblib import Parallel, delayed
 from scipy.signal import savgol_filter
 
-from foreblocks.ts_handler.filters.utils import _as_2d, _mad, _nan_interp_1d, _odd_at_least
+from foreblocks.ts_handler.filters.utils import (
+    _as_2d,
+    _mad,
+    _nan_interp_1d,
+    _odd_at_least,
+)
 
 
 def adaptive_savgol_filter(
@@ -23,23 +28,6 @@ def adaptive_savgol_filter(
     fill_nans_for_filter: bool = True,
     backend: str = "loky",
 ) -> np.ndarray:
-    """
-    Parallelized and numerically robust adaptive Savitzky-Golay filter.
-
-    Args:
-        data: [T, F] input time series
-        window: base window size (will be adapted per feature)
-        polyorder: polynomial order for filtering
-        n_jobs: parallel jobs (default: all cores)
-
-    Keyword Args:
-        robust_center: subtract median before filtering and add back after (stability)
-        fill_nans_for_filter: interpolate NaNs before filtering, then restore NaNs
-        backend: joblib backend ("loky" | "threading" | "multiprocessing")
-
-    Returns:
-        Filtered time series of same shape as input (NaN positions preserved).
-    """
     x = _as_2d(data)
     T, F = x.shape
 
@@ -73,10 +61,6 @@ def _adaptive_savgol_column(
     robust_center: bool,
     fill_nans_for_filter: bool,
 ) -> tuple[int, np.ndarray]:
-    """
-    Adaptive SavGol smoothing to a single column.
-    Preserves NaN mask.
-    """
     x = np.asarray(x, dtype=float)
     out = np.full_like(x, np.nan)
 

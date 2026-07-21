@@ -19,14 +19,6 @@ def wiener_filter(
     noise: float | None = None,
     fill_nans_for_filter: bool = True,
 ) -> np.ndarray:
-    """
-    Apply Wiener filter column-wise.
-
-    Improvements:
-      - uses mysize parameter (previous version ignored it)
-      - preserves NaNs by default (fills, filters, restores)
-      - optionally passes noise
-    """
     x = _as_2d(data)
     T, F = x.shape
     out = np.full_like(x, np.nan)

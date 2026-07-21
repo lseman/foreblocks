@@ -21,8 +21,6 @@ from foreblocks.modules.attention.multi_att import MultiAttention
 
 
 class CrossFormer(nn.Module):
-    """A lightweight cross-scale transformer head for time series."""
-
     def __init__(
         self,
         pred_len: int,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 
-
 import torch
 import torch.nn as nn
 
@@ -30,7 +29,8 @@ def attention_residual_input(
 
 
 def append_attention_residual_update(
-    state: dict | None, update: torch.Tensor,
+    state: dict | None,
+    update: torch.Tensor,
 ) -> None:
     if state is None:
         return

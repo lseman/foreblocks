@@ -182,12 +182,6 @@ if _TRITON_AVAILABLE:
         stride_mt,
         stride_ms,
     ):
-        """Flash-decoding: each program handles one KV split of one (b, h, t).
-
-        Partial (m, l, acc) triples are combined on the host with a
-        logsumexp merge, so long contexts parallelize across SMs instead of
-        one program walking every block sequentially.
-        """
         pid_b = tl.program_id(0)
         pid_hq = tl.program_id(1)
         pid_ts = tl.program_id(2)
@@ -273,7 +267,9 @@ if _TRITON_AVAILABLE:
         )
         tl.store(p_base + d_offs * stride_pd, acc)
         m_base = (
-            pid_b * stride_mb + pid_hq * stride_mh + pid_tq * stride_mt
+            pid_b * stride_mb
+            + pid_hq * stride_mh
+            + pid_tq * stride_mt
             + split * stride_ms
         )
         tl.store(MPartial + m_base, m_i)

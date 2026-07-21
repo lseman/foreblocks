@@ -23,6 +23,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from foreblocks.modules.attention.modules.linear_att.gated_common import (
+    CausalDepthwiseConv,
+    GatedDeltaStateMixin,
+    HeadRMSNorm,
+)
 from foreblocks.ops.attention import (
     can_use_fla_gated_delta_rule,
     can_use_fused_rmsnorm_sigmoid_gate,
@@ -35,49 +40,12 @@ from foreblocks.ops.attention import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _CausalConv(nn.Module):
-    """Causal depthwise Conv1d + SiLU activation."""
-
-    def __init__(self, d_model: int, kernel_size: int = 4):
-        super().__init__()
-        self.pad = kernel_size - 1
-        self.conv = nn.Conv1d(
-            d_model,
-            d_model,
-            kernel_size=kernel_size,
-            groups=d_model,
-            padding=self.pad,
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # [B, T, D]
-        T = x.size(1)
-        x = self.conv(x.transpose(1, 2))[:, :, :T]  # causal crop
-        return F.silu(x.transpose(1, 2).contiguous())
+class _CausalConv(CausalDepthwiseConv):
+    pass
 
 
-class _HeadRMSNorm(nn.Module):
-    """Per-head RMSNorm - applied to [B, H, T, Dv] or [BH, T, Dv]."""
-
-    def __init__(self, num_heads: int, head_dim: int, eps: float = 1e-6):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(num_heads, head_dim))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B, H, *, Dv]  or  [BH, *, Dv]  - norm over last dim
-        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
-        out = x * rms
-        # broadcast weight: handle both (B,H,T,Dv) and (BH,T,Dv)
-        w = self.weight.view(*self.weight.shape)  # (H, Dv)
-        if x.dim() == 4:
-            # (B, H, T, Dv) - unsqueeze for broadcast
-            out = out * w.unsqueeze(0).unsqueeze(2)
-        else:
-            # (BH, T, Dv) - we don't know H here, return as-is (caller reshapes)
-            out = out * w.reshape(-1, w.size(-1)).repeat(
-                x.size(0) // self.weight.size(0), 1
-            ).unsqueeze(1)
-        return out
+class _HeadRMSNorm(HeadRMSNorm):
+    pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,41 +53,7 @@ class _HeadRMSNorm(nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class GatedDeltaNet(nn.Module):
-    """
-    Gated Delta Network attention.
-
-    Drop-in replacement for ``LinearAttention`` / ``KimiAttention``.
-    Accepts the same ``forward(query, key, value, ...)`` signature used by
-    ``TransformerEncoderLayer`` / ``TransformerDecoderLayer``.
-
-    Parameters
-    ----------
-    d_model : int
-        Total model dimension.
-    n_heads : int
-        Number of attention heads.
-    dropout : float
-        Output dropout probability.
-    d_key : int | None
-        Per-head key/query dimension. Defaults to ``d_model // n_heads``.
-    d_val : int | None
-        Per-head value dimension. Defaults to ``d_model // n_heads``.
-    chunk_size : int
-        Chunk length for chunk-parallel mode. 0 = pure sequential.
-    use_short_conv : bool
-        Apply a causal depthwise conv on Q, K, V before the attention recurrence.
-    conv_kernel : int
-        Kernel size for the short conv (default 4).
-    beta_max : float
-        Maximum value for the write gate β.
-    eps : float
-        Epsilon for head-wise RMSNorm.
-    use_mamba_gate : bool
-        Use Mamba2-style gating for α: ``exp(-exp(A_log) * softplus(g + dt))``.
-        Otherwise falls back to legacy ``sigmoid(α_proj(x))``.
-    """
-
+class GatedDeltaNet(GatedDeltaStateMixin, nn.Module):
     def __init__(
         self,
         d_model: int,
@@ -142,7 +76,8 @@ class GatedDeltaNet(nn.Module):
         pos_encoding_type: str = "sinusoidal",
     ):
         super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        if n_heads <= 0 or d_model % n_heads:
+            raise ValueError("n_heads must be positive and divide d_model")
 
         self.d_model = d_model
         self.h = n_heads
@@ -222,20 +157,9 @@ class GatedDeltaNet(nn.Module):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _init_state(
-        self, BH: int, device: torch.device, dtype: torch.dtype
-    ) -> torch.Tensor:
-        return torch.zeros(BH, self.dk, self.dv, device=device, dtype=dtype)
-
-    @staticmethod
-    def _l2_norm(t: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-        """Row-wise L2-normalise last dim."""
-        return t / (t.norm(dim=-1, keepdim=True).clamp_min(eps))
-
     def _project(
         self, x: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Linear project and apply optional short conv. Returns (Q,K,V) raw."""
         q_raw = self.q_proj(x)  # [B, T, H*Dk]
         k_raw = self.k_proj(x)
         v_raw = self.v_proj(x)
@@ -248,14 +172,6 @@ class GatedDeltaNet(nn.Module):
     def _gate_params(
         self, x: torch.Tensor, BH: int, T: int
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Compute forget (α) and write (β) gates.
-
-        Returns
-        -------
-        alpha : [BH, T, 1]  scalar decay per head per step
-        beta  : [BH, T, 1]  scalar write strength per head per step
-        """
         if self.use_mamba_gate:
             # Mamba2-style gating: α = exp(-exp(A_log) * softplus(gk + dt_bias))
             # g_raw: [B, T, H] → g_log: [B, T, H] (log-space decay, always ≤ 0)
@@ -287,7 +203,6 @@ class GatedDeltaNet(nn.Module):
         return alpha, beta, g_log
 
     def _output_gate(self, x: torch.Tensor) -> torch.Tensor:
-        """Data-dependent output gate logits [B, H, T, Dv] (pre-sigmoid)."""
         B, T = x.size(0), x.size(1)
         return (
             self.g_up(F.silu(self.g_down(x)))  # [B, T, H*Dv] gate logits
@@ -307,20 +222,6 @@ class GatedDeltaNet(nn.Module):
         alpha_t: torch.Tensor,  # [BH, 1]        scalar decay
         beta_t: torch.Tensor,  # [BH, 1]        write strength
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Delta-rule update + retrieval, per the Gated DeltaNet paper.
-
-        Paper formula:
-            S_t = α_t (I - β_t k_t^T k_t) S_{t-1} + β_t k_t^T v_t
-        which expands to:
-            S_t = α_t S_{t-1} + β_t k_t ⊗ (v_t - α_t k_t S_{t-1})
-
-        Key: the prediction error is computed from the *decayed* state
-        α_t S_{t-1}, not the raw S_{t-1}. This matches the NVlabs
-        official implementation and the FLA reference kernel.
-
-        Returns (o_t [BH, Dv], S_new [BH, Dk, Dv]).
-        """
         # 1 Apply decay: S' = α S
         S_decayed = alpha_t.unsqueeze(-1) * S  # [BH, Dk, Dv]
 
@@ -353,26 +254,6 @@ class GatedDeltaNet(nn.Module):
         out: torch.Tensor,  # [BH, T, Dv] output buffer (written in place)
         C: int,
     ) -> torch.Tensor:
-        """
-        Chunk-parallel gated delta rule via the WY representation.
-
-        Mathematically equivalent (to fp error) to repeated ``_delta_step``.
-        Within a chunk of length L starting from state S_0:
-
-            b_t   = prod_{j<=t} alpha_j          (cumulative decay, log-space)
-            r_tj  = b_t / b_j   (t>=j, in (0,1])  (bounded relative decay)
-
-            RHS_t = beta_t v_t - beta_t b_t (K_c S_0)_t
-            L_tj  = beta_t r_tj (k_j . k_t)   for j<t   (strictly lower)
-            U     = (I + L)^{-1} RHS           (triangular solve;  U_t = beta_t err_t)
-
-            S_new = b_L S_0 + sum_j (b_L/b_j) k_j (x) U_j
-            o_t   = b_t (Q_c S_0)_t + sum_{j<=t} r_tj (q_t . k_j) U_j
-
-        All decay factors are bounded in (0,1], so no 1/b overflow over long
-        chunks. Derivation matches the file's ``_delta_step`` recurrence:
-        err computed from the *decayed* state.
-        """
         T = Q.shape[1]
         dtype = S.dtype
         # Solve / accumulate in fp32 at minimum (promote fp16/bf16) for stability;
@@ -425,22 +306,6 @@ class GatedDeltaNet(nn.Module):
     # ── Positional encoding helpers ───────────────────────────────────────────
 
     def _apply_rope_to_x(self, x: torch.Tensor, seqlen: int) -> torch.Tensor:
-        """Apply rotary position embeddings to input tensor before recurrence.
-
-        NOTE: GatedDeltaNet is a recurrent attention mechanism. RoPE requires
-        Q and K projections to be rotated separately. For now, this is a no-op
-        placeholder. Full RoPE support requires modifying _forward_recurrent
-        to apply RoPE after q_proj and k_proj.
-
-        Args:
-            x: Input tensor [B, T, D]
-            seqlen: Sequence length
-
-        Returns:
-            Input tensor unchanged (RoPE not yet implemented for GDN)
-        """
-        # TODO: Implement RoPE for GatedDeltaNet
-        # RoPE requires rotating Q and K after projection, before recurrence
         return x
 
     # ── Core recurrent forward (standalone, x-in)  ────────────────────────────
@@ -454,10 +319,6 @@ class GatedDeltaNet(nn.Module):
         skip_proj: bool = False,  # skip internal Q/K/V projection (Oryx)
         skip_gate_norm: bool = False,  # skip internal gate+norm (Oryx)
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Full recurrence over T steps.
-        Returns (y [B, T, D], next_state [B, H, Dk, Dv]).
-        """
         B, T, _ = x.shape
         device, dtype = x.device, x.dtype
         BH = B * self.h
@@ -577,7 +438,6 @@ class GatedDeltaNet(nn.Module):
         state: torch.Tensor | None,  # [B, H, Dk, Dv]
         skip_gate_norm: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """One-step forward for incremental (KV-cached) decoding."""
         B, _, _ = x_t.shape
         device, dtype = x_t.device, x_t.dtype
         BH = B * self.h
@@ -648,27 +508,6 @@ class GatedDeltaNet(nn.Module):
         skip_cross_attention: bool = False,
         skip_gate_norm: bool = False,
     ) -> tuple[torch.Tensor, None, None]:
-        """
-        Drop-in forward with optional Oryx compatibility.
-
-        Notes
-        -----
-        * ``attn_mask`` / ``key_padding_mask`` are handled by masking V:
-          padded positions are zeroed before the recurrence so they contribute
-          nothing to the state update.
-        * ``is_causal`` is implicitly satisfied by the causal recurrence.
-        * For cross-attention (``key != query``) the module uses ``query``
-          as the input token stream and projects K, V from ``key`` / ``value``
-          (standard cross-attention approximation for recurrent models).
-        * ``layer_state`` (dict): reads/writes ``"gdn_state"`` key for
-          single-step incremental decoding.
-        * ``skip_cross_attention`` (Oryx): when True and key/value are
-          provided, uses pre-projected K/V in recurrent self-attention mode
-          instead of the cross-attention approximation.
-        * ``skip_gate_norm`` (Oryx): when True, skips internal RMSNorm +
-          output gate so external GatedRMSNorm can be applied (per Oryx
-          paper: Y = GatedRMSNorm(O, G) W_O).
-        """
         B, Tq, D = query.shape
         is_cross = key is not query and key.data_ptr() != query.data_ptr()
 
@@ -742,13 +581,6 @@ class GatedDeltaNet(nn.Module):
         value: torch.Tensor,  # [B, Tm, D]
         key_padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """
-        Approximate cross-attention using the delta rule:
-         1. Build a state S from (K, V) memory pairs using the delta rule.
-         2. Retrieve from S using query vectors.
-
-        This is O(Tm·Dk·Dv + Tq·Dk·Dv) - linear in both memory and query length.
-        """
         B, Tq, D = query.shape
         _, Tm, _ = key.shape
         device, dtype = query.device, query.dtype
@@ -819,19 +651,6 @@ class GatedDeltaNet(nn.Module):
         x: torch.Tensor,
         state: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Standalone forward (KimiAttention-compatible interface).
-
-        Parameters
-        ----------
-        x     : [B, T, D]
-        state : [B, H, Dk, Dv]  or None
-
-        Returns
-        -------
-        y          : [B, T, D]
-        next_state : [B, H, Dk, Dv]
-        """
         return self._forward_recurrent(x, state)
 
     def extra_repr(self) -> str:

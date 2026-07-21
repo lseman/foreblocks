@@ -25,14 +25,11 @@ from foreblocks.ui.node_spec import node
 def causal_padding(
     x: torch.Tensor, kernel_size: int, dilation: int = 1
 ) -> torch.Tensor:
-    """Left-pad only (causal)."""
     pad = (kernel_size - 1) * dilation
     return F.pad(x, (pad, 0)) if pad > 0 else x
 
 
 class CausalTCNBlock(nn.Module):
-    """One dilated causal depthwise-separable block with gating."""
-
     def __init__(
         self,
         channels: int,
@@ -71,12 +68,6 @@ class CausalTCNBlock(nn.Module):
         self.act = nn.GELU() if activation == "gelu" else nn.SiLU()
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        x: (B*N, C, T)
-        Returns:
-            residual out: (B*N, C, T)
-            skip:         (B*N, C, T)
-        """
         res = x
         z = self.conv_in(x)
         z = causal_padding(z, self.dw.kernel_size[0], self.dw.dilation[0])
@@ -101,11 +92,6 @@ class CausalTCNBlock(nn.Module):
     color="bg-gradient-to-br from-emerald-600 to-emerald-800",
 )
 class TCNPlus(nn.Module):
-    """
-    Improved strong TCN baseline for multivariate / spatiotemporal forecasting.
-    Uses full skip aggregation + final temporal reduction.
-    """
-
     def __init__(
         self,
         input_dim: int,
@@ -169,10 +155,6 @@ class TCNPlus(nn.Module):
     def forward(
         self, x: torch.Tensor, *args
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict]:
-        """
-        x: (B, T_in, N, D_in)
-        Returns: (B, T_out, N), None, {}
-        """
         B, T_in, N, D_in = x.shape
 
         # Project input features

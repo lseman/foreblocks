@@ -24,11 +24,6 @@ from foreblocks.ui.node_spec import node
 
 
 class PatchEmbed(nn.Module):
-    """
-    Local patching via depthwise Conv1d, stride=patch_size (non-overlap), then upsample.
-    Shape preserved: [B,T,F] -> [B,T,F] (residual added).
-    """
-
     def __init__(self, feature_dim: int, patch_size: int = 16, dropout: float = 0.0):
         super().__init__()
         self.feature_dim = int(feature_dim)
@@ -48,7 +43,7 @@ class PatchEmbed(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, F_ = x.shape
-        if F_ != self.feature_dim:
+        if self.feature_dim != F_:
             raise RuntimeError(f"Input F={F_} != feature_dim={self.feature_dim}.")
         if T % self.patch_size != 0:
             raise ValueError(
@@ -73,8 +68,6 @@ class PatchEmbed(nn.Module):
     color="bg-gradient-to-r from-blue-400 to-purple-500",
 )
 class PatchEmbedHead(BaseHead):
-    """BaseHead wrapper for PatchEmbed. Forward -> [B,T,F]."""
-
     def __init__(self, feature_dim: int, patch_size: int = 16, dropout: float = 0.0):
         super().__init__(
             module=PatchEmbed(feature_dim, patch_size, dropout), name="patchemb"

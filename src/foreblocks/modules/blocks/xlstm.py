@@ -46,24 +46,6 @@ def _stack_states_per_layer(states: list[Tensor]) -> Tensor:
 
 
 class sLSTMLayer(nn.Module):
-    """
-    Paper-faithful sLSTM cell.
-
-    Equations (sketch):
-      i_t = exp(tilde_i_t),   f_t = sigmoid(tilde_f_t)  (or exp; we use sigmoid for f)
-      m_t = max( log f_t + m_{t-1},  tilde_i_t )
-      i'_t = exp(tilde_i_t - m_t),   f'_t = exp(log f_t + m_{t-1} - m_t)
-
-      z_t = tanh(W_z x_t + U_z h_{t-1} + b_z)
-      c_t = f'_t * c_{t-1} + i'_t * z_t
-      n_t = f'_t * n_{t-1} + i'_t
-      h_t = o_t * (c_t / clamp(n_t, min=1e-6)),  o_t = sigmoid(W_o x_t + U_o h_{t-1} + b_o)
-
-    Notes:
-      - No tanh on (c_t/n_t) path; φ=tanh is applied only to z_t (cell input).
-      - m_t is a log-domain stabilizer; keep requires_grad=False.
-    """
-
     def __init__(
         self,
         input_size: int,
@@ -166,25 +148,13 @@ class sLSTMLayer(nn.Module):
 
 
 class mLSTMLayer(nn.Module):
-    """
-    Paper-faithful mLSTM cell (multi-head).
-    - q = W_q x
-    - k = (W_k x) / sqrt(Dh)
-    - v = W_v x
-    - gates (i,f) from x (num_heads each), with log-stabilized i', f'
-    - C_t = f' * C_{t-1} + i' * (k v^T)
-    - n_t = f' * n_{t-1} + i' * k
-    - readout per head: h~ = (C_t q) / max(|n_t^T q|, 1)
-    - output gate o = sigmoid(W_o x), h = o ⊙ concat_heads(h~)
-    """
-
     def __init__(
         self, input_size: int, hidden_size: int, num_heads: int = 4, bias: bool = True
     ):
         super().__init__()
-        assert (
-            hidden_size % num_heads == 0
-        ), "hidden_size must be divisible by num_heads"
+        assert hidden_size % num_heads == 0, (
+            "hidden_size must be divisible by num_heads"
+        )
 
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -266,9 +236,7 @@ class mLSTMLayer(nn.Module):
         denom = torch.maximum(nq.abs(), torch.ones_like(nq))  # [B, NH]
         h_tilde_h = torch.matmul(c_new, q_h.unsqueeze(-1)).squeeze(
             -1
-        ) / denom.unsqueeze(
-            -1
-        )  # [B,NH,Dh]
+        ) / denom.unsqueeze(-1)  # [B,NH,Dh]
 
         # Output gate and merge heads
         o = torch.sigmoid(self.o_proj(x))  # [B, H]

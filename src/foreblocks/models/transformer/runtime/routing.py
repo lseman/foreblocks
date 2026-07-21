@@ -26,8 +26,11 @@ def patchify_gateskip_active_mask(
     if active_mask is None:
         return None
     patch_pad_mask = patchify_padding_mask(
-        ~active_mask.to(dtype=torch.bool), T=T, patch_len=patch_len,
-        stride=stride, pad_end=pad_end,
+        ~active_mask.to(dtype=torch.bool),
+        T=T,
+        patch_len=patch_len,
+        stride=stride,
+        pad_end=pad_end,
     )
     return None if patch_pad_mask is None else ~patch_pad_mask
 
@@ -41,7 +44,9 @@ def gather_sequence_tokens(x: torch.Tensor, indices: torch.Tensor) -> torch.Tens
 
 
 def gather_padding_mask(
-    mask: torch.Tensor | None, indices: torch.Tensor, slot_mask: torch.Tensor,
+    mask: torch.Tensor | None,
+    indices: torch.Tensor,
+    slot_mask: torch.Tensor,
 ) -> torch.Tensor:
     if indices.numel() == 0:
         return slot_mask.new_ones(slot_mask.shape)
@@ -61,7 +66,9 @@ def _batch_mask(mask, batch_size):
     return mask
 
 
-def gather_square_mask(mask: torch.Tensor | None, indices: torch.Tensor) -> torch.Tensor | None:
+def gather_square_mask(
+    mask: torch.Tensor | None, indices: torch.Tensor
+) -> torch.Tensor | None:
     if mask is None:
         return None
     if indices.numel() == 0:
@@ -84,7 +91,9 @@ def gather_square_mask(mask: torch.Tensor | None, indices: torch.Tensor) -> torc
     )
 
 
-def gather_query_mask(mask: torch.Tensor | None, indices: torch.Tensor) -> torch.Tensor | None:
+def gather_query_mask(
+    mask: torch.Tensor | None, indices: torch.Tensor
+) -> torch.Tensor | None:
     if mask is None:
         return None
     if indices.numel() == 0:
@@ -104,7 +113,12 @@ def gather_query_mask(mask: torch.Tensor | None, indices: torch.Tensor) -> torch
 
 
 def scatter_mixture_of_depths_output(
-    x_base, x_routed_in, x_routed_out, indices, slot_mask, router_logits,
+    x_base,
+    x_routed_in,
+    x_routed_out,
+    indices,
+    slot_mask,
+    router_logits,
     use_expert_choice=True,
 ):
     if indices.numel() == 0:
@@ -131,22 +145,10 @@ def run_mod_layer(
     active_mask: torch.Tensor | None,
     all_hidden_states: list[torch.Tensor] | None,
     router_states: list[object],
-    gather_and_invoke: Callable[[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]],
+    gather_and_invoke: Callable[
+        [torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]
+    ],
 ) -> tuple[torch.Tensor, bool]:
-    """Shared Mixture-of-Depths per-layer orchestration.
-
-    Owns routing prep, the empty-capacity early exit, scatter, and
-    hidden_states/router_state bookkeeping — the parts that are identical
-    between encoder and decoder. ``gather_and_invoke(routed_indices,
-    routed_slots) -> (x_routed, x_routed_out)`` supplies the caller-specific
-    gather (which masks exist differs: encoder gathers src_mask/padding_mask
-    only, decoder additionally gathers memory_mask/mtp_targets) and the
-    layer invocation itself (``run_encoder_layer`` vs ``run_decoder_layer``
-    take different arguments).
-
-    Returns ``(x, was_used)`` — ``was_used`` tells the caller whether to
-    record ``layer_idx`` in ``used_indices`` for aux-loss aggregation.
-    """
     layer, router_logits, _keep_mask, routed_indices, routed_slots = (
         owner._prepare_layer_routing(layer_idx, x, active_mask)
     )
@@ -157,7 +159,12 @@ def run_mod_layer(
 
     x_routed, x_routed_out = gather_and_invoke(layer, routed_indices, routed_slots)
     x = scatter_mixture_of_depths_output(
-        x, x_routed, x_routed_out, routed_indices, routed_slots, router_logits,
+        x,
+        x_routed,
+        x_routed_out,
+        routed_indices,
+        routed_slots,
+        router_logits,
         use_expert_choice=True,  # Standard Expert Choice: full replacement
     )
     if all_hidden_states is not None:
@@ -178,7 +185,12 @@ _gather_query_mask = gather_query_mask
 _scatter_mixture_of_depths_output = scatter_mixture_of_depths_output
 _run_mod_layer = run_mod_layer
 __all__ = [
-    "gateskip_active_mask_from_padding", "gather_padding_mask", "gather_query_mask",
-    "gather_sequence_tokens", "gather_square_mask", "patchify_gateskip_active_mask",
-    "run_mod_layer", "scatter_mixture_of_depths_output",
+    "gateskip_active_mask_from_padding",
+    "gather_padding_mask",
+    "gather_query_mask",
+    "gather_sequence_tokens",
+    "gather_square_mask",
+    "patchify_gateskip_active_mask",
+    "run_mod_layer",
+    "scatter_mixture_of_depths_output",
 ]

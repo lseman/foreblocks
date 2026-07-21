@@ -27,18 +27,11 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 # ── Temperature scaling ──
 
 
 class TemperatureScaler(nn.Module):
-    """Learnable temperature for calibrating raw anomaly scores.
-
-    Transforms raw scores s → s / T before thresholding or softmax.
-    T is learned on a validation set to minimize NLL of labels.
-    """
-
     def __init__(self, init_temp: float = 1.0, learnable: bool = True) -> None:
         super().__init__()
         if learnable:
@@ -62,7 +55,6 @@ class TemperatureScaler(nn.Module):
         lr: float = 0.01,
         n_steps: int = 200,
     ) -> float:
-        """Learn temperature to minimize binary NLL."""
         s = torch.tensor(raw_scores, dtype=torch.float32)
         y = torch.tensor(labels, dtype=torch.float32)
 
@@ -86,12 +78,6 @@ class TemperatureScaler(nn.Module):
 
 
 class PlattScaler(nn.Module):
-    """Platt scaling: P(anomaly|s) = sigmoid(a * s + b).
-
-    Learns two parameters (a, b) via logistic regression on raw scores.
-    More flexible than temperature scaling (has a bias term).
-    """
-
     def __init__(self) -> None:
         super().__init__()
         self.a = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
@@ -134,11 +120,6 @@ def isotonic_calibrate(
     *,
     increasing: bool = True,
 ) -> np.ndarray:
-    """Non-parametric isotonic regression calibration.
-
-    Maps raw scores to calibrated probabilities while preserving
-    monotonicity. Returns calibrated probability for each score.
-    """
     scores = np.asarray(raw_scores, dtype=np.float64)
     labels = np.asarray(labels, dtype=np.float64)
 
@@ -178,8 +159,6 @@ def isotonic_calibrate(
 
 @dataclass
 class ConfidenceResult:
-    """Per-sample confidence scores and uncertainty estimates."""
-
     probabilities: np.ndarray  # P(anomaly) after calibration
     confidence: np.ndarray  # 1 - P(anomaly) for normal, P(anomaly) for anomaly
     uncertainty: np.ndarray  # 1 - |P(anomaly) - 0.5| * 2 (0=uncertain, 1=confident)
@@ -192,10 +171,6 @@ def compute_confidence(
     *,
     calibrated_scores: np.ndarray | None = None,
 ) -> ConfidenceResult:
-    """Compute confidence and uncertainty for anomaly predictions.
-
-    Uses calibrated probabilities when available, otherwise raw scores.
-    """
     scores = np.asarray(raw_scores, dtype=np.float64)
 
     if calibrated_scores is not None:
@@ -221,14 +196,6 @@ def compute_confidence(
 
 
 class EnsembleScoreCombiner:
-    """Combines scores from multiple detectors using calibrated weights.
-
-    Supports:
-    - Equal weighting
-    - Per-detector weight learning (validation-based)
-    - Adaptive weighting based on detector performance
-    """
-
     def __init__(self, n_detectors: int, strategy: str = "equal") -> None:
         self.n_detectors = n_detectors
         self.strategy = strategy
@@ -246,7 +213,6 @@ class EnsembleScoreCombiner:
             raise ValueError(f"unknown strategy: {strategy}")
 
     def normalize_scores(self, all_scores: np.ndarray) -> np.ndarray:
-        """Z-score normalize each detector's scores."""
         normalized = np.zeros_like(all_scores)
         for i in range(all_scores.shape[1]):
             col = all_scores[:, i]
@@ -258,10 +224,6 @@ class EnsembleScoreCombiner:
         return normalized
 
     def combine(self, all_scores: np.ndarray, *, normalize: bool = True) -> np.ndarray:
-        """Combine per-detector scores into final score.
-
-        all_scores: [n_samples, n_detectors]
-        """
         scores = self.normalize_scores(all_scores) if normalize else all_scores
         return scores @ self.weights
 
@@ -272,13 +234,6 @@ class EnsembleScoreCombiner:
         *,
         method: str = "roc",
     ) -> np.ndarray:
-        """Learn optimal detector weights from validation data.
-
-        Methods:
-        - 'roc': maximize Youden's J statistic per detector
-        - 'accuracy': maximize classification accuracy
-        - 'logloss': minimize log loss
-        """
         scores_arr = all_scores.copy()
         best_weight = np.ones(self.n_detectors) / self.n_detectors
         best_metric = -1.0
@@ -307,7 +262,6 @@ class EnsembleScoreCombiner:
         labels: np.ndarray,
         metric_fn: Callable[[np.ndarray, np.ndarray], float],
     ) -> np.ndarray:
-        """Find weights that maximize metric using coordinate descent."""
         w = np.ones(self.n_detectors) / self.n_detectors
         step = 0.05
 
@@ -330,7 +284,6 @@ class EnsembleScoreCombiner:
         return w
 
     def _roc_j(self, scores: np.ndarray, labels: np.ndarray) -> float:
-        """Youden's J = sensitivity + specificity - 1."""
         best_j = -1.0
         mask_pos = labels == 1
         mask_neg = labels == 0
@@ -362,7 +315,6 @@ class EnsembleScoreCombiner:
     def update_adaptive(
         self, all_scores: np.ndarray, labels: np.ndarray, window_size: int = 100
     ) -> None:
-        """Update weights based on recent performance."""
         n = all_scores.shape[0]
         start = 0 if n < window_size else n - window_size
 
@@ -386,10 +338,6 @@ class EnsembleScoreCombiner:
 def fit_score_distribution(
     scores: np.ndarray, *, method: str = "mad"
 ) -> dict[str, Any]:
-    """Fit a distribution model to normal scores for anomaly thresholding.
-
-    Returns distribution parameters with 'threshold' key.
-    """
     finite = np.asarray(scores, dtype=np.float64)
     finite = finite[np.isfinite(finite)]
     if len(finite) == 0:

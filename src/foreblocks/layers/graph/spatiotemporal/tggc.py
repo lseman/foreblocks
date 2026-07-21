@@ -33,9 +33,6 @@ def symmetric_normalize_adjacency(
     add_self_loops: bool = False,
     eps: float = 1e-8,
 ) -> Tensor:
-    """
-    Symmetric normalization for [N, N] or [B, N, N] adjacency tensors.
-    """
     if adj.dim() not in (2, 3):
         raise ValueError("adj must have shape [N, N] or [B, N, N].")
 
@@ -57,9 +54,6 @@ def normalized_laplacian_from_adjacency(
     adj: Tensor,
     eps: float = 1e-8,
 ) -> Tensor:
-    """
-    L = I - D^{-1/2} A D^{-1/2}
-    """
     norm_adj = symmetric_normalize_adjacency(adj, add_self_loops=False, eps=eps)
     eye = torch.eye(adj.size(-1), device=adj.device, dtype=adj.dtype)
     return eye.unsqueeze(0) - norm_adj if is_batched_adj(adj) else eye - norm_adj
@@ -85,10 +79,6 @@ def build_frequency_indices(
 
 
 class MovingAverage(nn.Module):
-    """
-    Boundary-replicated moving average over [B, T, N, C] tensors.
-    """
-
     def __init__(self, kernel_size: int):
         super().__init__()
         self.kernel_size = int(kernel_size)
@@ -123,10 +113,6 @@ class SeriesDecomposition(nn.Module):
 
 
 class LatentCorrelationLayer(nn.Module):
-    """
-    Learns a soft node correlation graph from per-node temporal histories.
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -185,10 +171,6 @@ class LatentCorrelationLayer(nn.Module):
 
 
 class GraphGegenbauerConv(nn.Module):
-    """
-    Gegenbauer graph polynomial filter over the node axis.
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -243,10 +225,6 @@ class GraphGegenbauerConv(nn.Module):
 
 
 class ComplexLinearModes(nn.Module):
-    """
-    Complex linear mixing across selected FFT modes.
-    """
-
     def __init__(self, num_modes: int, channels: int, per_channel: bool = True):
         super().__init__()
         self.num_modes = int(num_modes)
@@ -275,10 +253,6 @@ class ComplexLinearModes(nn.Module):
 
 
 class TemporalSpectralFilter(nn.Module):
-    """
-    FFT -> mode selection -> complex linear mixing -> inverse FFT.
-    """
-
     def __init__(
         self,
         seq_len: int,
@@ -355,10 +329,6 @@ class FineTemporalSpectralFilter(nn.Module):
 
 
 class TGGCBlock(nn.Module):
-    """
-    TGGC block adapted to [B, T, N, F] tensors.
-    """
-
     def __init__(
         self,
         seq_len: int,
@@ -463,14 +433,6 @@ class TGGCModernConfig:
 
 
 class TGGCModern(nn.Module):
-    """
-    Full TGGC wrapper over [B, T, N, C_in] inputs.
-
-    Returns:
-      - predictions: [B, horizon, N, C_out]
-      - learned adjacency: [N, N]
-    """
-
     def __init__(self, cfg: TGGCModernConfig):
         super().__init__()
         self.cfg = cfg

@@ -12,7 +12,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from foreblocks.ts_handler.auto_filter.filters.utils import _as_series, _valid_odd_window
+from foreblocks.ts_handler.auto_filter.filters.utils import (
+    _as_series,
+    _valid_odd_window,
+)
 from foreblocks.ts_handler.auto_filter.registry import register_filter
 
 _SEED = 42
@@ -88,7 +91,6 @@ def train_dae(
     lr: float = 1e-3,
     noise_std: float = 0.15,
 ) -> pd.Series:
-    """Train a small denoising autoencoder on sliding windows."""
     rng_state = torch.get_rng_state()
     torch.manual_seed(_SEED)
 
@@ -134,7 +136,6 @@ def train_vae(
     beta: float = 0.02,
     latent_size: int = 8,
 ) -> pd.Series:
-    """Train a compact VAE denoiser on sliding windows."""
     rng_state = torch.get_rng_state()
     torch.manual_seed(_SEED)
 

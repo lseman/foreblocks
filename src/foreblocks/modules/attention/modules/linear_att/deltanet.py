@@ -30,21 +30,6 @@ from foreblocks.ops.attention import (
 
 
 class DeltaNetBackend(nn.Module):
-    """
-    DeltaNet (Yang et al. 2024).
-
-    L2-normalised Q, K with causal conv pre-processing and learnable β gate.
-    Recurrence:
-        S_t = S_{t-1} - β_t · (S_{t-1}·k_t - v_t) · k_t^T
-        o_t = q_t · S_t
-
-    Parallel chunk via WY representation.
-
-    Note: RoPE is intentionally not applied — DeltaNet relies on its causal
-    conv + delta-rule positional structure. ``pos_encoding_type`` is accepted
-    for a uniform backend API but does not add rotary embeddings.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -62,8 +47,10 @@ class DeltaNetBackend(nn.Module):
         self.scale = self.d_head**-0.5
         self.pos_encoding_type = pos_encoding_type
 
-        assert d_model % n_heads == 0
-        assert mode in ("chunk", "recurrent")
+        if n_heads <= 0 or d_model % n_heads:
+            raise ValueError("n_heads must be positive and divide d_model")
+        if mode not in {"chunk", "recurrent"}:
+            raise ValueError("mode must be 'chunk' or 'recurrent'")
 
         self.conv_size = conv_size
         self.mode = mode
@@ -172,7 +159,7 @@ class DeltaNetBackend(nn.Module):
         #   pred_v = S @ k                       (current value estimate)
         #   S     += beta * (v - pred) ⊗ k       (delta-rule rank-1 update)
         #   o      = (q / √d) · Sᵀ               (readout, == q @ S along k)
-        B, H, L, D = q.shape
+        _, _, L, _ = q.shape
         outputs = []
         scale = self.d_head**0.5
 
@@ -218,7 +205,7 @@ class DeltaNetBackend(nn.Module):
 
             # WY representation of this chunk's delta updates.
             #   T = (I + tril(β·K·Kᵀ, -1))⁻¹
-            #   u = T · (β·V − β·K·Sᵀ)   ("pseudo-values", β folded in)
+            #   u = T · (β·V - β·K·Sᵀ)   ("pseudo-values", β folded in)
             I_C = (
                 torch.eye(C, device=Q.device, dtype=Q.dtype)
                 .unsqueeze(0)
@@ -241,9 +228,9 @@ class DeltaNetBackend(nn.Module):
                 .unsqueeze(0)
             )
             A_intra = (Q_scaled @ K.transpose(-1, -2)) * M
-            O = Q_scaled @ S_swapped + A_intra @ U  # [B, H, C, D]
+            out = Q_scaled @ S_swapped + A_intra @ U  # [B, H, C, D]
 
-            o[:, :, s:e] = O
+            o[:, :, s:e] = out
 
             # State carry: S += Σ_t u_t ⊗ k_t   (S is [v, k])
             S = S + U.transpose(-1, -2) @ K

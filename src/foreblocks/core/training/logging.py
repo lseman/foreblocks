@@ -22,13 +22,12 @@ from __future__ import annotations
 import contextlib
 import datetime
 import tempfile
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import torch
 
 if TYPE_CHECKING:
-    from torch.utils.tensorboard import SummaryWriter  # type: ignore
+    pass  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +38,6 @@ if TYPE_CHECKING:
 def init_mltracker_run_context(
     mltracker: Any, run_name: str | None
 ) -> tuple[Any, str | None]:
-    """Create an MLTracker run context (nullcontext if no tracker)."""
     if not mltracker:
         return contextlib.nullcontext(), run_name
 
@@ -56,7 +54,6 @@ def init_mltracker_run_context(
 
 
 def get_mltracker_params(config: Any) -> dict[str, Any]:
-    """Extract all parameters from a config object or dict."""
     params: dict[str, Any] = {}
     if hasattr(config, "__dict__"):
         params.update(config.__dict__)
@@ -71,7 +68,6 @@ def build_mltracker_metrics(
     components: dict[str, float],
     val_loss: float | None,
 ) -> dict[str, float]:
-    """Build the metrics dict used by ``log_mltracker_metrics``."""
     metrics: dict[str, float] = {"train_loss": train_loss, "lr": lr}
     if val_loss is not None:
         metrics["val_loss"] = val_loss
@@ -86,7 +82,6 @@ def build_mltracker_metrics(
 
 
 def log_mltracker_params(mltracker: Any, config: Any) -> None:
-    """Log training parameters to the active MLTracker run."""
     if not mltracker:
         return
     try:
@@ -103,7 +98,6 @@ def log_mltracker_metrics(
     components: dict[str, float],
     val_loss: float | None,
 ) -> None:
-    """Log per-epoch metrics to the active MLTracker run."""
     if not mltracker:
         return
     try:
@@ -116,7 +110,6 @@ def log_mltracker_metrics(
 def log_mltracker_model_info(
     mltracker: Any, model: torch.nn.Module, device: torch.device
 ) -> None:
-    """Log model architecture metadata as params and system/git info as tags."""
     if not mltracker:
         return
     try:
@@ -151,7 +144,6 @@ def log_mltracker_final(
     stopped_early: bool,
     best_val_loss: float,
 ) -> None:
-    """Log end-of-training summary metrics and tags."""
     if not mltracker:
         return
     try:
@@ -177,7 +169,6 @@ def log_mltracker_final(
 
 @contextlib.contextmanager
 def last_run_context(mltracker: Any, last_run_id: Any):
-    """Context manager that temporarily routes MLTracker calls to the most recent training run."""
     if not mltracker or not last_run_id:
         yield False
         return
@@ -196,7 +187,6 @@ def log_to_last_run(
     step: int | None,
     prefix: str,
 ) -> None:
-    """Log metrics to the most recently finished training run without re-opening it."""
     try:
         with last_run_context(mltracker, last_run_id) as active:
             if not active:
@@ -213,7 +203,6 @@ def log_model_to_last_run(
     model: torch.nn.Module,
     model_name: str = "model",
 ) -> None:
-    """Log model artifacts (including architecture) to the most recent run."""
     try:
         with last_run_context(mltracker, last_run_id) as active:
             if not active:
@@ -229,7 +218,6 @@ def log_figure_to_last_run(
     fig: Any,
     artifact_path: str = "plots",
 ) -> None:
-    """Best-effort figure artifact logging for the most recent run."""
     try:
         with last_run_context(mltracker, last_run_id) as active:
             if not active:

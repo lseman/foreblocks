@@ -44,11 +44,6 @@ def _err(a: torch.Tensor, b: torch.Tensor) -> tuple[float, float]:
 
 
 def _seq_scan_autograd(u, dt, A, B, C, D, adt=None, trap=None):
-    """Sequential diagonal-A scan, fully differentiable (autograd oracle).
-
-    With ``trap`` ([B,T,H]) the injection is the trapezoidal blend
-    ``dt_t * [trap_t * k_t + (1-trap_t) * k_{t-1}]``, k_t = B_t u_t.
-    """
     Bsz, T, H, P = u.shape
     N = B.shape[-1]
     state = torch.zeros(Bsz, H, P, N, device=u.device, dtype=torch.float32)
@@ -321,9 +316,7 @@ def check_blocks(device):
     for name, blk in [
         (
             "Mamba2Block",
-            Mamba2Block(
-                d_model, use_triton_ssd=False, chunk_size=64
-            ),
+            Mamba2Block(d_model, use_triton_ssd=False, chunk_size=64),
         ),
         ("Mamba3Block", Mamba3Block(d_model, use_triton_ssd=False, chunk_size=64)),
     ]:
@@ -364,21 +357,15 @@ def check_speed(device):
         configs = [
             (
                 "Mamba2 torch",
-                Mamba2Block(
-                    d_model, use_triton_ssd=False, chunk_size=256
-                ),
+                Mamba2Block(d_model, use_triton_ssd=False, chunk_size=256),
             ),
             (
                 "Mamba2 triton",
-                Mamba2Block(
-                    d_model, use_triton_ssd=True, chunk_size=256
-                ),
+                Mamba2Block(d_model, use_triton_ssd=True, chunk_size=256),
             ),
             (
                 "Mamba2 fused",
-                Mamba2Block(
-                    d_model, use_triton_ssd=True, chunk_size=256
-                ),
+                Mamba2Block(d_model, use_triton_ssd=True, chunk_size=256),
             ),
             (
                 "Mamba3 torch",

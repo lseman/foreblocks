@@ -62,8 +62,6 @@ class _ResidualBlock(nn.Module):
 
 
 class DiffusionNetwork(nn.Module):
-    """Time-conditional MLP for diffusion denoising."""
-
     def __init__(
         self,
         n_features: int,
@@ -98,8 +96,6 @@ class DiffusionNetwork(nn.Module):
 
 
 class DiffusionScheduler:
-    """Linear noise schedule (DDPM-style)."""
-
     def __init__(
         self, num_steps: int = 1000, beta_start: float = 1e-4, beta_end: float = 0.02
     ) -> None:
@@ -169,12 +165,6 @@ class DiffusionScheduler:
 
 
 class DiffusionAnomaly(nn.Module):
-    """Diffusion-based anomaly detector.
-
-    Trains a diffusion model to reconstruct normal windows.
-    Anomaly score = mean-squared reconstruction error after denoising.
-    """
-
     def __init__(
         self,
         n_features: int,
@@ -201,7 +191,6 @@ class DiffusionAnomaly(nn.Module):
     def forward(
         self, x: torch.Tensor, *, noise: torch.Tensor | None = None
     ) -> DiffusionAnomalyForward:
-        """Forward with optional pre-noised input (for testing)."""
         if noise is None:
             noisy, _ = self.scheduler.noise(
                 x,
@@ -227,7 +216,6 @@ class DiffusionAnomaly(nn.Module):
         return self(x).recon_error
 
     def train_step(self, x: torch.Tensor) -> torch.Tensor:
-        """Standard diffusion training: predict noise."""
         t = torch.randint(0, self.scheduler.num_steps, (x.shape[0],), device=x.device)
         noisy, target_noise = self.scheduler.noise(x, t)
         predicted = self.model(noisy, t)
@@ -235,7 +223,6 @@ class DiffusionAnomaly(nn.Module):
 
     @torch.no_grad()
     def infer_error(self, x: torch.Tensor) -> torch.Tensor:
-        """Full denoising for inference scoring."""
         t_max = torch.full((x.shape[0],), self.scheduler.num_steps - 1, device=x.device)
         noisy, _ = self.scheduler.noise(x, t_max)
         recon = self.scheduler.denoise(self.model, noisy, guidance=self.guidance)

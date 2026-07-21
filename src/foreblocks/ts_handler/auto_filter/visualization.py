@@ -7,7 +7,6 @@ Plotting functions for auto-filter results.
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 
 
@@ -19,7 +18,6 @@ def plot_results(
     clean: pd.Series | None = None,
     top_k: int = 6,
 ) -> plt.Figure:
-    """Three-panel plot: best filter / top-k comparison / ranking bar chart."""
     ranked = list(score_table.index)
     top_names = ranked[: min(top_k, len(ranked))]
 

@@ -33,10 +33,6 @@ except Exception:
 def maybe_compile(
     mod: nn.Module, enabled: bool = True, dynamic: bool = True
 ) -> nn.Module:
-    """
-    Wrap with torch.compile if available and enabled, else return the module.
-    Kept tiny/defensive to avoid surprising failures.
-    """
     if not enabled:
         return mod
     try:
@@ -46,20 +42,12 @@ def maybe_compile(
 
 
 def autocast_bf16_enabled(device_type: str) -> bool:
-    """
-    Decide whether to enable bf16 autocast for the given device_type.
-    For now: only CUDA; CPU autocast in bf16 is still not universally stable.
-    """
     if device_type != "cuda":
         return False
     return torch.cuda.is_available()
 
 
 def supports_grouped_prepacked() -> bool:
-    """
-    Detect once whether grouped_mlp_swiglu supports prepacked expert args.
-    Avoids exception-driven probing on every forward.
-    """
     if grouped_mlp_swiglu is None:
         return False
     try:
@@ -73,15 +61,6 @@ def supports_grouped_prepacked() -> bool:
 
 @torch.jit.script
 def optimized_topk_routing(logits: torch.Tensor, k: int):
-    """
-    Returns (top_p, top_i) for K experts per token.
-    - Take topk on raw logits (no full softmax over E).
-    - Normalize only within the chosen K.
-
-    logits: [T, E]
-    top_p:  [T, K]  (probabilities within top-k)
-    top_i:  [T, K]  (expert indices)
-    """
     if k == 1:
         top_v, top_i = torch.max(logits, dim=-1, keepdim=True)
         top_p = torch.ones_like(top_v)
@@ -98,10 +77,6 @@ def optimized_topk_routing(logits: torch.Tensor, k: int):
 
 
 def eager_topk_routing(logits: torch.Tensor, k: int):
-    """
-    Non-scripted fallback for environments where the TorchScript/fused routing
-    path fails at runtime (for example missing NVRTC builtins on CUDA).
-    """
     if k == 1:
         top_v, top_i = torch.max(logits, dim=-1, keepdim=True)
         top_p = torch.ones_like(top_v)

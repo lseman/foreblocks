@@ -22,8 +22,6 @@ from foreblocks.anomaly.models.base import VAEForward
 
 
 class OmniAnomaly(nn.Module):
-    """GRU-VAE backbone inspired by OmniAnomaly for multivariate windows."""
-
     def __init__(
         self,
         n_features: int,

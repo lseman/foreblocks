@@ -166,6 +166,61 @@ combine_as_imports = true
 skip_gitignore = true
 filter_files = true
 
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+exclude = [
+  "third_party",
+  "experimental/attention_kernels/src",
+  ".git",
+  ".ruff_cache",
+  "__pycache__",
+  "build",
+  "dist",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "C4",  # flake8-comprehensions
+  "SIM", # flake8-simplify
+  "RUF", # ruff-specific rules
+]
+ignore = [
+  "E501", # line-too-long (handled by formatter)
+  "SIM108", # use-ternary-operator (sometimes reduces readability)
+  "RUF001", # ambiguous-unicode-character-string (EN DASH, MULTIPLICATION SIGN in strings)
+  "RUF002", # ambiguous-unicode-character-docstring (Greek letters in math docstrings)
+  "RUF003", # ambiguous-unicode-character-comment (Greek letters in math comments)
+  "RUF022", # __all__ is not sorted (sorted manually or not critical)
+  "RUF046", # value-being-cast-to-int-is-already-an-integer (minor)
+  "RUF059", # unpacked-variable-is-never-used (common in tensor shape unpacking)
+  "C408", # unnecessary-dict-call (rewrite as a literal) (minor)
+  "B006", # do-not-use-mutable-data-structures-for-argument-defaults (minor)
+  "B007", # loop-control-variable-not-used-within-loop-body (minor)
+  "B023", # function-definition-does-not-bind-loop-variable (minor)
+  "B028", # no-explicit-stacklevel-keyword-argument-found (minor)
+  "B905", # zip-without-an-explicit-strict-parameter (minor)
+  "F841", # local-variable-assigned-to-but-never-used (minor in test files)
+  "RUF013", # pep-484-prohibits-implicit-optional (minor)
+  "SIM102", # use-a-single-if-statement-instead-of-nested-if-statements (minor)
+  "SIM105", # use-contextlib-suppress-instead-of-try-except-pass (minor)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["foreblocks", "foretools", "darts"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
 [tool.pyrefly]
 project-includes = ["**/*.py*", "**/*.ipynb"]
 

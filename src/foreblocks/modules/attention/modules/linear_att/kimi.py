@@ -18,7 +18,6 @@ Core API:
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -38,13 +37,6 @@ _DEFAULT_CHUNK_SIZE: int = 64
 # Causal ShortConv (mirrors fla.modules.ShortConvolution)
 # ─────────────────────────────────────────────────────────────────────────────
 class _ShortConv1d(nn.Module):
-    """Causal depthwise or pointwise Conv1d with SiLU activation.
-
-    Mirrors fla.modules.ShortConvolution interface:
-    __init__(hidden_size, kernel_size, bias, activation)
-    forward(x, cache=None, output_final_state=False, cu_seqlens=None)
-    """
-
     def __init__(
         self,
         hidden_size: int,
@@ -53,7 +45,8 @@ class _ShortConv1d(nn.Module):
         activation: str = "silu",
     ):
         super().__init__()
-        assert activation == "silu", "Only 'silu' activation supported"
+        if activation != "silu":
+            raise ValueError("only 'silu' activation is supported")
         pad = kernel_size - 1
         self.conv = nn.Conv1d(
             hidden_size,
@@ -68,21 +61,10 @@ class _ShortConv1d(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        cache: Optional[torch.Tensor] = None,
+        cache: torch.Tensor | None = None,
         output_final_state: bool = False,
-        cu_seqlens: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Args:
-            x: [B, D, T] (already transposed from [B, T, D])
-            cache: [B, D, kernel_size - 1] previous inputs
-            output_final_state: whether to return final conv state
-            cu_seqlens: unused (variable-length support placeholder)
-
-        Returns:
-            output: [B, D, T] with SiLU
-            final_cache: [B, D, kernel_size - 1] or None
-        """
+        cu_seqlens: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         T0 = x.size(2)
         # Shift register: prepend cache
         if cache is not None:
@@ -111,15 +93,12 @@ class _ShortConv1d(nn.Module):
 # Head-wise RMSNorm (for output gating)
 # ─────────────────────────────────────────────────────────────────────────────
 class _HeadwiseRMSNorm(nn.Module):
-    """Per-head RMSNorm: normalizes each head independently over d_v."""
-
     def __init__(self, num_heads: int, head_dim: int, eps: float = _DEFAULT_NORM_EPS):
         super().__init__()
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(num_heads, head_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """[B, H, T, Dv] → [B, H, T, Dv]"""
         var = x.pow(2).mean(dim=-1, keepdim=True)
         x = x * torch.rsqrt(var + self.eps)
         w = self.weight.view(1, self.weight.size(0), 1, self.weight.size(1))
@@ -136,13 +115,7 @@ def _kda_seq_step(
     q_t: torch.Tensor,
     alpha_t: torch.Tensor,
     beta_t: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    One KDA recurrence step (exact, autograd-safe PyTorch).
-
-    S_t = (I - β_t · k_t k_t^T) · Diag(α_t) · S_{t-1} + β_t · k_t · v_t^T
-    o_t = S_t^T · q_t
-    """
+) -> tuple[torch.Tensor, torch.Tensor]:
     # Step 1: Decay  Diag(α_t) S_{t-1}
     S = alpha_t.unsqueeze(-1) * S  # [BH, Dk, Dv]
 
@@ -150,9 +123,7 @@ def _kda_seq_step(
     kTS = torch.bmm(k_t.unsqueeze(1), S).squeeze(1)  # [BH, Dv]
     S = S - beta_t.unsqueeze(-1) * torch.bmm(
         k_t.unsqueeze(-1), kTS.unsqueeze(1)
-    ).squeeze(
-        1
-    )  # [BH, Dk, Dv]
+    ).squeeze(1)  # [BH, Dk, Dv]
 
     # Step 3: Write  S + β_t · k_t · v_t^T
     S = S + beta_t.unsqueeze(-1) * torch.bmm(
@@ -178,18 +149,6 @@ def _kda_chunk_parallel(
     out: torch.Tensor,
     C: int,
 ) -> torch.Tensor:
-    """
-    Chunk-parallel KDA: processes each chunk using the verified
-    sequential recurrence.  State is carried forward between chunks,
-    giving an O(T / C) speedup from inter-chunk parallelism of the
-    carry operation.
-
-    Within a chunk, the KDA recurrence is applied step-by-step:
-        S_t = α_t · S_{t-1}
-        S_t = S_t - β_t · k_t · (k_t^T · S_t)
-        S_t = S_t + β_t · k_t · v_t
-        o_t = S_t^T · q_t
-    """
     B, H, T, Dk = Q.shape[:4]
     Dv = V.shape[-1]
     BH = B * H
@@ -203,8 +162,8 @@ def _kda_chunk_parallel(
         e = min(s + C, T)
         L = e - s
 
-        for l in range(L):
-            idx = s + l
+        for step_idx in range(L):
+            idx = s + step_idx
             k_t = Kf[:, idx, :]  # [BH, Dk]
             v_t = Vf[:, idx, :]  # [BH, Dv]
             q_t = Qf[:, idx, :]  # [BH, Dk]
@@ -231,25 +190,6 @@ def _kda_chunk_parallel(
 # Core KDA layer — Kimi Linear architecture
 # ─────────────────────────────────────────────────────────────────────────────
 class _KDA_Fast(nn.Module):
-    """
-    Kimi Delta Attention (KDA) — Kimi Linear core.
-
-    Follows the official Kimi Delta Attention architecture:
-      https://github.com/fla-org/flash-linear-attention/blob/main/fla/layers/kda.py
-
-    Key differences from Gated DeltaNet:
-      - Per-channel forget gate (g shape [B,T,H,K]) vs scalar [B,T,H]
-      - A_log: constant per-head parameter (not learned per-step)
-      - dt_bias: per-head per-key-dim init from inverse time step
-      - f_proj: bottleneck (hidden → head_dim → gate_dim) for gate
-      - g_proj: two-layer bottleneck for output gating
-      - b_proj: single linear for beta (no low-rank)
-
-    Recurrence:
-      S_t = (I - β_t · k_t k_t^T) · Diag(α_t) · S_{t-1} + β_t · k_t · v_t^T
-      o_t = S_t^T · q_t
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -349,7 +289,6 @@ class _KDA_Fast(nn.Module):
     # ── helpers ─────────────────────────────────────────────────────────────
 
     def _l2_norm(self, x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-        """L2 normalize last dimension."""
         return x / x.pow(2).sum(dim=-1, keepdim=True).clamp_min(eps).sqrt()
 
     def _init_state(
@@ -359,11 +298,7 @@ class _KDA_Fast(nn.Module):
 
     def _project_qkv(
         self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Project x → (Q, K, V) with short convolutions and reshape.
-
-        Returns each as [B, T, H, D*].
-        """
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, T, _ = x.shape
 
         if self.use_short_conv:
@@ -398,13 +333,7 @@ class _KDA_Fast(nn.Module):
         T: int,
         A_log: torch.Tensor | None = None,
         dt_bias: torch.Tensor | None = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Returns:
-            alpha_step [BH, T, Dk]  per-step decay in (0, 1]
-            g_flat     [BH, T, Dk]  per-step log-decay
-            beta       [BH, T, 1]
-        """
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         B = x.size(0)
 
         # Gate parameters: per-step decay α and β
@@ -454,13 +383,7 @@ class _KDA_Fast(nn.Module):
         self,
         x: torch.Tensor,  # [B, T, D]
         state: torch.Tensor | None = None,  # [B, H, Dk, Dv]
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Returns:
-            alpha_step [BH, T, Dk]  per-step decay in (0, 1]
-            g_flat     [BH, T, Dk]  per-step log-decay
-            beta       [BH, T, 1]
-        """
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         B, T, D = x.shape
         device, dtype = x.device, x.dtype
 
@@ -580,16 +503,6 @@ class _KDA_Fast(nn.Module):
 # Public adapter — drop-in replacement for MultiAttention / LinearAttention
 # ─────────────────────────────────────────────────────────────────────────────
 class KimiAttention(nn.Module):
-    """
-    Public wrapper around _KDA_Fast with the same call signature as
-    MultiAttention / LinearAttention.
-
-    Self-attention only — cross_attention=True raises immediately.
-
-    layer_state dict carries the recurrent state S under the key "S":
-        { "S": Tensor[B, H, Dk, Dv] }
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -614,7 +527,7 @@ class KimiAttention(nn.Module):
                 "Pass cross_attention=False (default)."
             )
         self.pos_encoding_type = pos_encoding_type
-        self._rotary_emb: Optional[nn.Module] = None
+        self._rotary_emb: nn.Module | None = None
 
         self.kda = _KDA_Fast(
             d_model=d_model,
@@ -640,23 +553,17 @@ class KimiAttention(nn.Module):
         key_padding_mask: torch.Tensor | None = None,  # ignored (recurrent)
         is_causal: bool = True,  # always causal
         layer_state: dict | None = None,
-    ) -> Tuple[torch.Tensor, None, dict | None]:
-        """
-        Returns:
-            out          [B, T, D]
-            attn_weights None  (not computed)
-            updated_state dict {"S": Tensor[B, H, Dk, Dv]}
-        """
+    ) -> tuple[torch.Tensor, None, dict | None]:
         S = None
         if layer_state is not None:
             S_raw = layer_state.get("S", None)
             if isinstance(S_raw, torch.Tensor):
                 S = S_raw
 
-        # Apply RoPE to query if enabled (KimiAttention is recurrent, ALiBi not applicable)
-        # NOTE: RoPE for recurrent models requires special handling.
-        # For now, this is a placeholder — KimiAttention handles positional
-        # information internally via its delta-gating mechanism.
+        # Apply RoPE to query if enabled.
+        # KimiAttention is recurrent so ALiBi is not applicable; RoPE for
+        # recurrent models requires special handling. Current implementation
+        # handles positional information via its delta-gating mechanism.
         if self.pos_encoding_type == "rope" and self._rotary_emb is None:
             B, T, D = query.shape
             from foreblocks.layers.embeddings.rope_alibi_helpers import (

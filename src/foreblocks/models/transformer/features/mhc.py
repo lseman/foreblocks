@@ -27,12 +27,6 @@ def sinkhorn_doubly_stochastic(
     iters: int = 20,
     eps: float = 1e-8,
 ) -> torch.Tensor:
-    """
-    Differentiable Sinkhorn-Knopp projection to (approx) doubly-stochastic matrices.
-
-    logits: [..., N, N] unconstrained
-    returns: [..., N, N] approx doubly stochastic (rows/cols sum to 1, nonnegative)
-    """
     if logits.dim() < 2 or logits.shape[-1] != logits.shape[-2]:
         raise ValueError(f"Expected [...,N,N] logits, got {tuple(logits.shape)}")
 
@@ -52,15 +46,6 @@ def _rms_norm_last_dim(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 
 
 class MHCHyperConnection(nn.Module):
-    """
-    Token-wise manifold-constrained Hyper-Connection.
-
-    streams: [B, N, T, D]
-    H_pre:   [B, T, N]
-    H_post:  [B, T, N]
-    H_res:   [B, T, N, N]
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -166,10 +151,6 @@ class MHCHyperConnection(nn.Module):
 
 
 def mhc_init_streams(x: torch.Tensor, n_streams: int) -> torch.Tensor:
-    """
-    x: [B,T,D] -> streams: [B,N,T,D]
-    Paper-style initialization places the input in the first stream and zeros the rest.
-    """
     if x.dim() != 3:
         raise ValueError(f"Expected [B,T,D], got {tuple(x.shape)}")
     B, T, D = x.shape
@@ -179,9 +160,6 @@ def mhc_init_streams(x: torch.Tensor, n_streams: int) -> torch.Tensor:
 
 
 def mhc_collapse_streams(streams: torch.Tensor, mode: str = "first") -> torch.Tensor:
-    """
-    streams: [B,N,T,D] -> [B,T,D]
-    """
     if streams.dim() != 4:
         raise ValueError(f"Expected [B,N,T,D], got {tuple(streams.shape)}")
     if mode == "first":
@@ -192,9 +170,6 @@ def mhc_collapse_streams(streams: torch.Tensor, mode: str = "first") -> torch.Te
 
 
 def mhc_apply_norm_streamwise(norm: nn.Module, streams: torch.Tensor) -> torch.Tensor:
-    """
-    Apply a norm layer (expecting [B,T,D]) to each stream.
-    """
     B, N, T, D = streams.shape
     flat = streams.reshape(B * N, T, D)
     out = norm(flat)

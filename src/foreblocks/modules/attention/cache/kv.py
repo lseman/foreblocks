@@ -32,7 +32,7 @@ class KVProvider(ABC):
         kv_latent: torch.Tensor | None = None,
         batch_idx: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return full/current K and V (possibly gathered)."""
+        pass
 
     @abstractmethod
     def append(
@@ -149,8 +149,6 @@ class DenseKVProvider(KVProvider):
 
 
 class StaticKVCache:
-    """Preallocated dense KV cache suitable for ``torch.compile`` decode."""
-
     is_compileable = True
 
     def __init__(
@@ -171,7 +169,6 @@ class StaticKVCache:
 
     @property
     def length(self) -> torch.Tensor:
-        """Maximum populated length (compatibility with the original cache)."""
         return self.lengths.max()
 
     def update(
@@ -181,11 +178,14 @@ class StaticKVCache:
         cache_position: torch.Tensor | None = None,
         update_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        batch_size, num_heads, token_count, head_dim = key_states.shape
         if value_states.shape != key_states.shape:
             raise ValueError("key_states and value_states must have identical shapes")
+
+        batch_size, num_heads, token_count, head_dim = key_states.shape
         if (batch_size, num_heads, head_dim) != (
-            self.keys.size(0), self.keys.size(1), self.keys.size(3)
+            self.keys.size(0),
+            self.keys.size(1),
+            self.keys.size(3),
         ):
             raise ValueError("KV update shape does not match the static cache")
 
@@ -229,9 +229,7 @@ class StaticKVCache:
         self.keys.scatter_(2, indices, key_states)
         self.values.scatter_(2, indices, value_states)
         if token_count:
-            next_lengths = torch.maximum(
-                self.lengths, positions.max(dim=1).values + 1
-            )
+            next_lengths = torch.maximum(self.lengths, positions.max(dim=1).values + 1)
             self.lengths.copy_(torch.where(active, next_lengths, self.lengths))
         # Return fixed-shape tensors; the attention path masks unused capacity.
         return self.keys, self.values
@@ -259,7 +257,9 @@ class StaticKVCache:
     def reorder_cache(self, beam_idx: torch.LongTensor) -> None:
         self.keys.copy_(self.keys.index_select(0, beam_idx.to(self.keys.device)))
         self.values.copy_(self.values.index_select(0, beam_idx.to(self.values.device)))
-        self.lengths.copy_(self.lengths.index_select(0, beam_idx.to(self.lengths.device)))
+        self.lengths.copy_(
+            self.lengths.index_select(0, beam_idx.to(self.lengths.device))
+        )
 
     def state_dict(self) -> dict:
         return {
@@ -273,8 +273,12 @@ class StaticKVCache:
     def from_state_dict(cls, state: dict, *, device=None) -> "StaticKVCache":
         keys = state["keys"]
         cache = cls(
-            keys.size(0), keys.size(1), state["max_cache_len"], keys.size(3),
-            device=device or keys.device, dtype=keys.dtype,
+            keys.size(0),
+            keys.size(1),
+            state["max_cache_len"],
+            keys.size(3),
+            device=device or keys.device,
+            dtype=keys.dtype,
         )
         cache.keys.copy_(keys.to(cache.keys.device))
         cache.values.copy_(state["values"].to(cache.values.device))
@@ -287,8 +291,12 @@ class StaticKVCache:
     def batch_select(self, indices: torch.LongTensor) -> "StaticKVCache":
         selected = indices.to(self.keys.device)
         cache = type(self)(
-            selected.numel(), self.keys.size(1), self.max_cache_len, self.keys.size(3),
-            device=self.keys.device, dtype=self.keys.dtype,
+            selected.numel(),
+            self.keys.size(1),
+            self.max_cache_len,
+            self.keys.size(3),
+            device=self.keys.device,
+            dtype=self.keys.dtype,
         )
         cache.keys.copy_(self.keys.index_select(0, selected))
         cache.values.copy_(self.values.index_select(0, selected))
@@ -317,9 +325,7 @@ class StaticKVProvider(KVProvider):
         del kv_latent
         if batch_idx is not None:
             raise ValueError("StaticKVProvider expects batched updates")
-        return self.cache.update(
-            new_k, new_v, self.cache_position, self.update_mask
-        )
+        return self.cache.update(new_k, new_v, self.cache_position, self.update_mask)
 
     def append(
         self,

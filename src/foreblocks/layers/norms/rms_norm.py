@@ -23,8 +23,6 @@ from foreblocks.ops.norms_triton import (
 
 
 class RMSNorm(nn.Module):
-    """High-performance RMSNorm with Triton acceleration."""
-
     def __init__(
         self,
         d_model: int,
@@ -58,8 +56,10 @@ class RMSNorm(nn.Module):
         # This simplifies the RMS normalization to a satisfying l2norm(x) * sqrt(dim)."
         if self.use_simple_rmsnorm:
             variance = x.pow(2).mean(dim=-1, keepdim=True)
-            return x * torch.rsqrt(variance + self.eps) * torch.sqrt(
-                torch.tensor(self.d_model, dtype=x.dtype, device=x.device)
+            return (
+                x
+                * torch.rsqrt(variance + self.eps)
+                * torch.sqrt(torch.tensor(self.d_model, dtype=x.dtype, device=x.device))
             )
 
         if (
@@ -84,8 +84,6 @@ class RMSNorm(nn.Module):
 
 
 class AdaptiveRMSNorm(nn.Module):
-    """RMSNorm with additional learnable scale and bias parameters."""
-
     def __init__(
         self,
         d_model: int,

@@ -48,11 +48,6 @@ def stl_residual_denoise(
     cycle_spins: int = 3,
     robust: bool = True,
 ) -> pd.Series:
-    """Seasonal-trend decomposition followed by residual wavelet denoising.
-
-    This is a good fit for hourly generation/load signals: preserve the
-    seasonal and trend components, then clean only the leftover innovations.
-    """
     if STL is None:
         warnings.warn(
             "statsmodels STL is unavailable; falling back to wavelet denoising.",
@@ -90,12 +85,6 @@ def vmd_filter(
     tol: float = 1e-7,
     drop_modes: int = 1,
 ) -> pd.Series:
-    """Variational Mode Decomposition denoising.
-
-    Drops the highest-frequency VMD mode(s) and reconstructs the rest. VMD is
-    more adaptive than fixed-kernel smoothers, but still much cheaper than a
-    CEEMDAN ensemble.
-    """
     compat_module = sys.modules.get("foreblocks.ts_handler.auto_filter")
     vmd_fn = getattr(compat_module, "VMD", VMD)
     if vmd_fn is None:
@@ -130,30 +119,6 @@ def ceemdan_vmd_filter(
     tau: float = 0.0,
     tol: float = 1e-7,
 ) -> pd.Series:
-    """Two-stage CEEMDAN → VMD denoising filter (current SOTA adaptive method).
-
-    Stage 1 — CEEMDAN (PyEMD):
-        Complete Ensemble EMD with Adaptive Noise.  More statistically
-        consistent than plain EMD or EEMD — each trial adds a different
-        realisation of white noise scaled to the residual, yielding nearly
-        orthogonal, complete IMFs.  The finest IMF (highest frequency,
-        index 0) is discarded as noise.
-
-    Stage 2 — VMD (vmdpy):
-        Variational Mode Decomposition on the CEEMDAN reconstruction to
-        further separate residual noise from signal modes.
-
-    Parameters
-    ----------
-    trials:
-        Number of CEEMDAN ensemble members (more → lower variance, slower).
-    epsilon:
-        Noise std relative to signal std used in CEEMDAN.
-    K:
-        Number of VMD modes.
-    alpha, tau, tol:
-        VMD bandwidth, dual-ascent step, convergence tolerance.
-    """
     x = ts.values.astype(float)
     grand_mean = np.mean(x)
     x_centered = x - grand_mean

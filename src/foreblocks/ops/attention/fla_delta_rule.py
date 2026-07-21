@@ -64,11 +64,6 @@ def fla_delta_rule_forward(
     *,
     recurrent: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run upstream FLA delta rule kernels with Foreblocks layouts.
-
-    Foreblocks uses ``[B, H, T, D]`` and state ``[B, H, V, K]``.  FLA uses
-    ``[B, T, H, D]`` and state ``[B, H, K, V]``.
-    """
     if not can_use_fla_delta_rule(q, k, v, beta, initial_state):
         raise RuntimeError("FLA delta rule is not available")
     fn = fla_fused_recurrent_delta_rule() if recurrent else fla_chunk_delta_rule()

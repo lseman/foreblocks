@@ -26,13 +26,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.backends import ATTENTION_BACKENDS
-from foreblocks.modules.attention.masking import (
-    build_attention_mask,
-    normalize_blocked_mask,
-    to_additive_mask,
-)
 from foreblocks.models.transformer.features.sype import AdaptiveWarp, SyPERotator
+from foreblocks.modules.attention.backends import ATTENTION_BACKENDS
 from foreblocks.modules.attention.cache.decode_stream import (
     paged_stream_decode_standard,
 )
@@ -41,6 +36,13 @@ from foreblocks.modules.attention.cache.kv import (
 )
 from foreblocks.modules.attention.cache.paged import PagedKVCache
 from foreblocks.modules.attention.cache.selection import AttentionCacheSelector
+from foreblocks.modules.attention.config import MultiAttentionConfig
+from foreblocks.modules.attention.dispatch import AttentionKernelDispatcher
+from foreblocks.modules.attention.masking import (
+    build_attention_mask,
+    normalize_blocked_mask,
+    to_additive_mask,
+)
 from foreblocks.modules.attention.pipeline import QKVPipeline
 from foreblocks.modules.attention.utils.compaction import (
     AttentionMatchingCompactor,
@@ -48,6 +50,7 @@ from foreblocks.modules.attention.utils.compaction import (
 )
 from foreblocks.modules.attention.utils.position import PositionEncodingApplier
 from foreblocks.modules.attention.variants.base import AttentionImpl
+from foreblocks.modules.attention.variants.registry import ATTENTION_VARIANTS
 from foreblocks.modules.attention.variants.standard import StandardAttentionImpl
 from foreblocks.ops.attention import triton_apply_rope, triton_paged_decode
 
@@ -56,19 +59,6 @@ from foreblocks.ops.attention import triton_apply_rope, triton_paged_decode
 # Backend detection helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def _get_available_backends() -> dict[str, bool]:
-    """
-    Detect which attention backends are available in the current environment.
-
-    Returns
-    -------
-    dict
-        {
-            "flash": bool,
-            "xformers": bool,
-            "sdp": bool,
-            "softpick": bool,
-        }
-    """
     backends = {"flash": False, "xformers": False, "sdp": False, "softpick": False}
 
     # FlashAttention
@@ -107,28 +97,6 @@ def _get_available_backends() -> dict[str, bool]:
 # MultiAttention (with paged cache support)
 # ─────────────────────────────────────────────────────────────────────────────
 class MultiAttention(nn.Module):
-    """
-    Multi-backend attention with GQA/MQA support + optional paged KV cache.
-
-    Features
-    --------
-    - GQA / MQA
-    - RoPE for self-attention
-    - Attention types:
-        * standard
-        * prob_sparse
-        * softpick
-        * sliding_window
-        * frequency / dwt / autocor (Autoformer-style)
-    - Backends:
-        * PyTorch SDPA
-        * FlashAttn
-        * xFormers
-        * SoftPick (optional third_party)
-    - Boolean mask semantics (True = masked/disallowed)
-    - Paged KV cache for causal self-attention decode (no growing torch.cat; no gather)
-    """
-
     # --------------------------------------------------------------------- #
     # Init
     # --------------------------------------------------------------------- #
@@ -155,58 +123,50 @@ class MultiAttention(nn.Module):
         use_flash_sliding: bool = True,
         use_swiglu: bool = True,
         verbose_init: bool = False,
-        # NEW:
+        # ── KV cache options ────────────────────────────────────────
         use_paged_cache: bool = True,
         cache_block_size: int = 128,
         max_cache_blocks: int = 2048,
-        # NEW: Gated Attention (G1) after SDPA output
+        # ── Attention variants ──────────────────────────────────────
         use_gated_attention: bool = False,
         gated_attn_mode: str = "per_head",  # {"per_head", "shared"}
         gated_attn_bias: bool = True,
-        # NEW: Multi-head Latent Attention (MLA)
         use_mla: bool = True,
         kv_latent_dim: int | None = None,
-        # NEW: Attention-matching KV compaction
         use_attention_matching_compaction: bool = False,
         attention_matching_keep_ratio: float = 0.25,
         attention_matching_trigger_len: int = 512,
         attention_matching_min_keep: int = 64,
         attention_matching_query_budget: int = 64,
         attention_matching_force_single_step: bool = False,
-        # NEW: NSA-specific knobs
         nsa_block_size: int | None = None,
         nsa_topk_ratio: float | None = None,
-        # NEW: MoBA-specific knobs
         moba_block_size: int | None = None,
         moba_topk: int = 4,
-        # Dilated sliding-window knobs
+        # ── Sliding-window / local attention ────────────────────────
         attention_dilation: int = 2,
         dilated_window_size: int | None = None,
-        # NEW: QK normalization (stabilises attention scores)
+        # ── Attention score stabilizers ─────────────────────────────
         qk_norm: bool = False,
         qk_norm_type: str = "rms",  # "rms" | "l2"
-        # NEW: Logit softcapping (Gemini-style pre-softmax smoothing)
-        logit_softcap: float | None = None,  # if set, cap logits to [-cap, cap]
+        logit_softcap: float | None = None,  # cap logits to [-cap, cap]
         use_learned_temp: bool = False,  # learnable per-head temperature scaling
         temp_init: float = 1.0,  # initial temperature scale
-        # NEW: Subquery normalization (DeepSeek style)
         use_subquery_norm: bool = False,  # learnable per-QK-pair gating
         subquery_norm_mode: str = "learned",  # "learned" | "rms"
-        # NEW: Multi-scale masking (hierarchical attention)
         use_multiscale_mask: bool = False,  # blend local + long-range
         multiscale_window_ratio: float = 0.2,  # local window as fraction of seq
         multiscale_topk: int = 16,  # top-K for pooled long-range
-        # NEW: Normalized attention (LeLA style)
         use_normalized_attn_out: bool = False,  # layer norm on attention output
         norm_attn_type: str = "rms",  # "rms" | "layer"
-        # NEW: Head importance pruning (Lottery Ticket style)
         use_head_importance: bool = False,  # learn which heads to prune
         head_importance_sparsity: float = 0.1,  # target sparsity (frac of heads to prune)
     ):
         super().__init__()
 
         # Basic dims
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        if n_heads <= 0 or d_model % n_heads:
+            raise ValueError("n_heads must be positive and divide d_model")
         self.d_model = d_model
         self.n_heads = n_heads
         self.head_dim = d_model // n_heads
@@ -219,7 +179,8 @@ class MultiAttention(nn.Module):
 
         # GQA/MQA
         self.n_kv_heads = n_kv_heads or n_heads
-        assert n_heads % self.n_kv_heads == 0, "n_heads must be divisible by n_kv_heads"
+        if self.n_kv_heads <= 0 or n_heads % self.n_kv_heads:
+            raise ValueError("n_kv_heads must be positive and divide n_heads")
         self.n_rep = n_heads // self.n_kv_heads
         self.kv_dim = self.n_kv_heads * self.head_dim
         self.use_mla = bool(use_mla)
@@ -275,10 +236,8 @@ class MultiAttention(nn.Module):
 
         # ── QK Normalization ───────────────────────────────────────────────
         self.qk_norm = bool(qk_norm)
-        assert qk_norm_type in {
-            "rms",
-            "l2",
-        }, f"qk_norm_type must be 'rms' or 'l2', got {qk_norm_type}"
+        if qk_norm_type not in {"rms", "l2"}:
+            raise ValueError(f"qk_norm_type must be 'rms' or 'l2', got {qk_norm_type}")
         self.qk_norm_type = qk_norm_type
         if self.qk_norm and self.qk_norm_type == "rms":
             self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
@@ -292,9 +251,7 @@ class MultiAttention(nn.Module):
         self.use_learned_temp = bool(use_learned_temp)
         if self.use_learned_temp:
             # Per-head learnable temperature
-            self.temperature = nn.Parameter(
-                torch.ones(self.n_heads) * float(temp_init)
-            )
+            self.temperature = nn.Parameter(torch.ones(self.n_heads) * float(temp_init))
         else:
             self.temperature = None
 
@@ -342,9 +299,7 @@ class MultiAttention(nn.Module):
             if not (0.0 <= self.head_importance_sparsity < 1.0):
                 raise ValueError("head_importance_sparsity must be in [0, 1)")
             # Learnable head importance scores (per head)
-            self.head_importance_scores = nn.Parameter(
-                torch.ones(self.n_heads)
-            )
+            self.head_importance_scores = nn.Parameter(torch.ones(self.n_heads))
         else:
             self.head_importance_scores = None
 
@@ -372,8 +327,13 @@ class MultiAttention(nn.Module):
 
         # Setup projections / type-specific modules
         self._setup_attention_modules(
-            attention_type, freq_modes, use_swiglu, pos_encoding_type,
-            rope_base, rope_scaling_type, rope_scaling_factor,
+            attention_type,
+            freq_modes,
+            use_swiglu,
+            pos_encoding_type,
+            rope_base,
+            rope_scaling_type,
+            rope_scaling_factor,
         )
         self.position_encoding_applier = self._build_position_encoding_applier()
         self._paged_stream_decode = paged_stream_decode_standard
@@ -403,6 +363,7 @@ class MultiAttention(nn.Module):
         self.max_cache_blocks = max_cache_blocks
         self.cache_selector = AttentionCacheSelector(self)
         self.qkv_pipeline = QKVPipeline(self)
+        self.kernel_dispatcher = AttentionKernelDispatcher(self)
 
         # ── Gated Attention (G1) ─────────────────────────────────────────────
         self.use_gated_attention = use_gated_attention
@@ -440,11 +401,15 @@ class MultiAttention(nn.Module):
             if self.use_subquery_norm:
                 sota_features.append(f"subquery_norm({self.subquery_norm_mode})")
             if self.use_multiscale_mask:
-                sota_features.append(f"multiscale(w={self.multiscale_window_ratio:.2f})")
+                sota_features.append(
+                    f"multiscale(w={self.multiscale_window_ratio:.2f})"
+                )
             if self.use_normalized_attn_out:
                 sota_features.append(f"norm_attn({self.norm_attn_type})")
             if self.use_head_importance:
-                sota_features.append(f"head_pruning(s={self.head_importance_sparsity:.2f})")
+                sota_features.append(
+                    f"head_pruning(s={self.head_importance_sparsity:.2f})"
+                )
             sota_str = ", ".join(sota_features) if sota_features else "none"
             print(
                 f"[MultiAttention] {gqa_info}, type={attention_type}, "
@@ -457,19 +422,11 @@ class MultiAttention(nn.Module):
             )
 
     def _apply_logit_softcap(self, scores: torch.Tensor) -> torch.Tensor:
-        """Apply logit softcapping (Gemma-style): cap * tanh(scores / cap).
-
-        Smoothly bounds logits to (-cap, cap) while keeping gradients alive
-        (hard clamp zeroes gradients outside the cap). Must be applied BEFORE
-        any -inf masking, since tanh(-inf) = -1 would turn masked positions
-        into finite -cap logits.
-        """
         if self.logit_softcap is None:
             return scores
         return torch.tanh(scores / self.logit_softcap) * self.logit_softcap
 
     def _apply_learned_temperature(self, scores: torch.Tensor) -> torch.Tensor:
-        """Apply per-head learnable temperature scaling."""
         if self.temperature is None:
             return scores
         # scores: [B, H, T_q, T_k]
@@ -477,7 +434,6 @@ class MultiAttention(nn.Module):
         return scores * self.temperature.view(1, -1, 1, 1)
 
     def _apply_subquery_norm(self, out_bhtd: torch.Tensor) -> torch.Tensor:
-        """Apply subquery normalization (learnable per-QK-pair gating)."""
         if not self.use_subquery_norm:
             return out_bhtd
         if self.subquery_norm_mode == "learned" and self.subquery_gate is not None:
@@ -496,10 +452,6 @@ class MultiAttention(nn.Module):
         device: torch.device,
         is_causal: bool = True,
     ) -> torch.Tensor:
-        """
-        Create hierarchical attention mask: local window + top-K long-range.
-        Returns: [T_q, T_k] boolean mask (True = attend, False = mask).
-        """
         if not self.use_multiscale_mask:
             return None
 
@@ -535,7 +487,6 @@ class MultiAttention(nn.Module):
         self,
         out_bhtd: torch.Tensor,
     ) -> torch.Tensor:
-        """Apply learned head importance masks (Lottery Ticket style)."""
         if not self.use_head_importance or self.head_importance_scores is None:
             return out_bhtd
 
@@ -545,7 +496,6 @@ class MultiAttention(nn.Module):
         return out_bhtd * head_mask.view(1, -1, 1, 1)
 
     def get_head_importance_loss(self) -> torch.Tensor | None:
-        """Return sparsity regularization loss for head pruning."""
         if not self.use_head_importance or self.head_importance_scores is None:
             return None
 
@@ -563,18 +513,11 @@ class MultiAttention(nn.Module):
         self,
         out_btd: torch.Tensor,
     ) -> torch.Tensor:
-        """Apply normalization to attention output (LeLA-style)."""
         if not self.use_normalized_attn_out or self.attn_out_norm is None:
             return out_btd
         return self.attn_out_norm(out_btd)
 
     def _apply_gated_attention(self, out_bhtd: torch.Tensor) -> torch.Tensor:
-        """
-        Gated Attention (G1): apply sigmoid gate AFTER attention output.
-
-        out_bhtd: [B, H, T, D]
-        returns:  [B, H, T, D]
-        """
         if not self.use_gated_attention:
             return out_bhtd
 
@@ -603,7 +546,6 @@ class MultiAttention(nn.Module):
         rope_scaling_type: str = "none",
         rope_scaling_factor: float = 1.0,
     ):
-        """Create QKV projections and attention-type-specific modules."""
         if attention_type in [
             "standard",
             "sype",
@@ -740,37 +682,9 @@ class MultiAttention(nn.Module):
         return applier
 
     def _create_impl(self) -> AttentionImpl:
-        from foreblocks.modules.attention.variants import (
-            DilatedSlidingWindowAttentionImpl,
-            MoBAAttentionImpl,
-            NSAImpl,
-            ProbSparseAttentionImpl,
-            SlidingWindowAttentionImpl,
-            SoftpickAttentionImpl,
-            SpectralAttentionImpl,
-            StandardAttentionImpl,
-        )
-
-        if self.attention_type in {"standard", "sype"}:
-            return StandardAttentionImpl(self)
-        if self.attention_type == "prob_sparse":
-            return ProbSparseAttentionImpl(self)
-        if self.attention_type == "nsa":
-            return NSAImpl(self)
-        if self.attention_type == "moba":
-            return MoBAAttentionImpl(self)
-        if self.attention_type == "sliding_window":
-            return SlidingWindowAttentionImpl(self)
-        if self.attention_type in {"dilated_sliding_window", "dilated_window"}:
-            return DilatedSlidingWindowAttentionImpl(self)
-        if self.attention_type == "softpick":
-            return SoftpickAttentionImpl(self)
-        if self.attention_type in {"frequency", "dwt", "autocor"}:
-            return SpectralAttentionImpl(self)
-        raise ValueError(f"Unknown attention_type: {self.attention_type}")
+        return ATTENTION_VARIANTS.create(self.attention_type, self)
 
     def register_position_transform(self, name: str, fn) -> None:
-        """Register additional positional transforms (e.g., ALiBi adapters)."""
         self.position_encoding_applier.add_transform(name, fn)
 
     def _rope_position_transform(
@@ -829,31 +743,6 @@ class MultiAttention(nn.Module):
         layer_state: dict[str, torch.Tensor] | None = None,
         cu_seqlens: torch.LongTensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, torch.Tensor] | None]:
-        """
-        Parameters
-        ----------
-        query, key, value : torch.Tensor
-            [B, T, C] tensors. If key/value are None, fall back to query (self-attn).
-        attn_mask : torch.Tensor, optional
-            Boolean or additive mask (True = masked) with broadcastable shape.
-        key_padding_mask : torch.Tensor, optional
-            [B, T_k] boolean mask (True = pad / ignore).
-        is_causal : bool
-            Whether to use causal masking.
-        need_weights : bool
-            Whether to return attention weights.
-        layer_state : dict, optional
-            Cache dict for KV, paged cache, etc.
-        cu_seqlens : torch.LongTensor, optional
-            For SoftPick backend with packed sequences.
-
-        Returns
-        -------
-        output : torch.Tensor
-            [B, T_q, C]
-        attn_weights : torch.Tensor or None
-        new_layer_state : dict or None
-        """
         key = key if key is not None else query
         value = value if value is not None else key
 
@@ -872,14 +761,12 @@ class MultiAttention(nn.Module):
         return result
 
     def reset_cache(self):
-        """Reset any non-paged cached patterns in frequency / DWT modules."""
         for attr_name in ["freq_attention", "dwt_attention"]:
             attn = getattr(self, attr_name, None)
             if attn is not None and hasattr(attn, "cache"):
                 attn.cache.clear()
 
     def reset_paged_cache(self, layer_state: dict[str, torch.Tensor] | None):
-        """Clear paged cache for all batch items (if present in layer_state)."""
         if layer_state and "paged_cache" in layer_state:
             cache: PagedKVCache = layer_state["paged_cache"]
             for b in range(cache.B):
@@ -889,7 +776,6 @@ class MultiAttention(nn.Module):
     # Small utilities
     # --------------------------------------------------------------------- #
     def _repeat_kv(self, x: torch.Tensor) -> torch.Tensor:
-        """Repeat KV heads for GQA if needed."""
         if self.n_rep == 1:
             return x
         return x.repeat_interleave(self.n_rep, dim=1)
@@ -905,7 +791,6 @@ class MultiAttention(nn.Module):
         torch.Tensor,
         torch.Tensor | None,
     ]:
-        """Project [B,T,C] inputs into head-first tensors."""
         B, T_q, _ = query.shape
         T_k = key.shape[1]
         q = self.q_proj(query).view(B, T_q, self.n_heads, self.head_dim).transpose(1, 2)
@@ -948,7 +833,6 @@ class MultiAttention(nn.Module):
         B: int,
         T_q: int,
     ) -> torch.Tensor:
-        """Merge heads and apply output projection stack."""
         # Apply head importance mask (before merging heads)
         out_bhtd = self._apply_head_importance_mask(out_bhtd)
 
@@ -965,7 +849,6 @@ class MultiAttention(nn.Module):
         device: torch.device,
         dtype: torch.dtype,
     ) -> PagedKVCache:
-        """Centralized wrapper around PagedKVCache.ensure."""
         return PagedKVCache.ensure(
             layer_state,
             batch_size=batch_size,
@@ -1031,10 +914,6 @@ class MultiAttention(nn.Module):
         k: torch.Tensor,
         seqlen_offset=0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Apply RoPE to q and k, with an optional per-batch seqlen_offset.
-        q, k: [B, H, T, D]
-        """
         from foreblocks.layers.embeddings.rotary import (
             apply_rotary_emb,  # keep as-is for API compatibility
         )
@@ -1132,9 +1011,6 @@ class MultiAttention(nn.Module):
         device: torch.device,
         is_causal: bool = True,
     ) -> torch.Tensor:
-        """
-        Boolean window mask: True means masked (disallowed).
-        """
         i = torch.arange(T_q, device=device).unsqueeze(1)  # [T_q, 1]
         j = torch.arange(T_k, device=device).unsqueeze(0)  # [1, T_k]
 
@@ -1151,10 +1027,6 @@ class MultiAttention(nn.Module):
         attn_mask: torch.Tensor | None,
         key_padding_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        """
-        Apply attn_mask and key_padding_mask with "True = masked" semantics.
-        scores: [B, H, T_q, T_k]
-        """
         B, H, T_q, T_k = scores.shape
 
         if attn_mask is not None:
@@ -1177,10 +1049,6 @@ class MultiAttention(nn.Module):
         T_q: int,
         T_k: int,
     ) -> torch.Tensor:
-        """
-        Normalize attn_mask to bool [B, H, T_q, T_k] (True = masked).
-        Supports [T_q,T_k], [B,T_q,T_k], [1,H,T_q,T_k], [B,H,T_q,T_k].
-        """
         return normalize_blocked_mask(
             attn_mask,
             batch_size=B,
@@ -1201,14 +1069,12 @@ class MultiAttention(nn.Module):
         T_q_full: int,
         T_k_full: int,
     ) -> torch.Tensor | None:
-        """Slice normalized attention mask for chunked attention regions."""
         if attn_mask is None:
             return None
         full = self._normalize_attn_mask(attn_mask, B, H, T_q_full, T_k_full)
         return full[:, :, q_start:q_end, k_start:k_end]
 
     def _dropout_weights(self, w: torch.Tensor) -> torch.Tensor:
-        """Single place for attention-weight dropout policy."""
         if self.training and self.dropout_p > 0:
             return F.dropout(w, p=self.dropout_p, training=True)
         return w
@@ -1356,7 +1222,7 @@ class MultiAttention(nn.Module):
     # --------------------------------------------------------------------- #
     # Plain full attention compute (prefill / cross)
     # --------------------------------------------------------------------- #
-    def _compute_attention(
+    def _compute_attention_direct(
         self,
         q: torch.Tensor,  # [B, H, T_q, D]
         k: torch.Tensor,  # [B, H, T_k, D]
@@ -1385,7 +1251,8 @@ class MultiAttention(nn.Module):
         )
         if backend.runner is not None:
             mask_builder = backend.mask_builder
-            assert mask_builder is not None
+            if mask_builder is None:
+                raise RuntimeError(f"backend {backend.name!r} has no mask builder")
             blocked = mask_builder(
                 query=q,
                 key_length=T_k,
@@ -1442,7 +1309,9 @@ class MultiAttention(nn.Module):
                 )
             except (RuntimeError, TypeError) as exc:
                 if self.attn_implementation == "sdpa":
-                    raise RuntimeError("requested SDPA attention backend failed") from exc
+                    raise RuntimeError(
+                        "requested SDPA attention backend failed"
+                    ) from exc
             else:
                 out = self._apply_subquery_norm(out)
                 out = self._apply_gated_attention(out)
@@ -1510,3 +1379,31 @@ class MultiAttention(nn.Module):
         out = self._apply_subquery_norm(out)
         out = self._apply_gated_attention(out)
         return out, (weights if need_weights else None)
+
+    def _compute_attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        attn_mask: torch.Tensor | None,
+        key_padding_mask: torch.Tensor | None,
+        is_causal: bool,
+        need_weights: bool,
+        q_start_pos: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        return self.kernel_dispatcher.compute(
+            q,
+            k,
+            v,
+            attn_mask,
+            key_padding_mask,
+            is_causal,
+            need_weights,
+            q_start_pos,
+        )
+
+    @classmethod
+    def from_config(cls, config: MultiAttentionConfig, **overrides) -> "MultiAttention":
+        kwargs = config.to_legacy_kwargs()
+        kwargs.update(overrides)
+        return cls(**kwargs)

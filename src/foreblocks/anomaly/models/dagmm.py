@@ -33,8 +33,6 @@ class DAGMMForward:
 
 
 class DAGMM(nn.Module):
-    """Deep autoencoding Gaussian mixture model for window density scoring."""
-
     def __init__(
         self,
         n_features: int,

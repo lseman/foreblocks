@@ -21,8 +21,6 @@ from foreblocks.anomaly.models.base import ForeblocksEncoderStack, choose_heads
 
 
 class TransformerForecaster(nn.Module):
-    """Forecasting-based anomaly model that predicts the final window step."""
-
     def __init__(
         self,
         n_features: int,

@@ -1,4 +1,4 @@
-"""foreblocks.layers.graph.layers.gat.
+"""foreblocks.layers.graph.conv.gat.
 
 GAT convolution layer implementation.
 
@@ -19,7 +19,7 @@ from foreblocks.layers.graph.common import (
     is_batched_adj,
     xavier_zero_bias,
 )
-from foreblocks.layers.graph.layers.message_passing import GraphConvBase, MessagePassing
+from foreblocks.layers.graph.conv.message_passing import GraphConvBase, MessagePassing
 
 
 def _attention_bias_from_adj(
@@ -180,8 +180,6 @@ class GATConv(GraphConvBase, MessagePassing):
 
 
 class GATv2Conv(GATConv):
-    """GATv2 convolution with query-conditioned dynamic attention."""
-
     def __init__(self, *args, **kwargs):
         kwargs["use_gatv2"] = True
         super().__init__(*args, **kwargs)

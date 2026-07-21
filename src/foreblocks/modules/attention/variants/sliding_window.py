@@ -17,8 +17,6 @@ import torch.nn.functional as F
 
 
 class SlidingWindowAttentionImpl:
-    """Sliding-window (local) attention implementation (see module docstring)."""
-
     def __init__(self, parent):
         self.parent = parent
 

@@ -33,7 +33,6 @@ _ACT = {
 
 
 def _interpolate(coeff: torch.Tensor, out_len: int, mode: str) -> torch.Tensor:
-    """Interpolate ``coeff`` [B, K] up to length ``out_len`` along the last dim."""
     if coeff.shape[-1] == out_len:
         return coeff
     x = coeff.unsqueeze(1)  # [B, 1, K]
@@ -52,12 +51,6 @@ def _interpolate(coeff: torch.Tensor, out_len: int, mode: str) -> torch.Tensor:
 
 
 class NHiTSBlock(nn.Module):
-    """One N-HiTS block: MaxPool → MLP → (backcast, forecast) via interpolation.
-
-    Operates on a single flattened channel stream: input ``[N, L]`` → returns
-    ``(backcast [N, L], forecast [N, H])``.
-    """
-
     def __init__(
         self,
         input_size: int,  # L (lookback)
@@ -112,25 +105,6 @@ class NHiTSBlock(nn.Module):
 
 
 class NHiTS(nn.Module):
-    """N-HiTS forecasting head.
-
-    Input : x [B, L, C]
-    Output: y [B, pred_len, C]
-
-    Args
-    ----
-    pred_len: int                       # horizon H
-    input_size: int                     # lookback L (must match x at runtime)
-    stacks: int                         # number of stacks
-    blocks_per_stack: int               # blocks within each stack (shared structure)
-    n_pool_kernels: list[int] | None    # per-stack MaxPool size (multi-rate). Default
-                                        #   geometric, coarse→fine, e.g. [8, 4, 1].
-    n_freq_downsample: list[int] | None # per-stack horizon expressivity. Default mirrors
-                                        #   pooling, coarse→fine, e.g. [24, 12, 1].
-    mlp_units: list[int]                # MLP hidden sizes per block
-    dropout, activation, interpolation_mode
-    """
-
     def __init__(
         self,
         pred_len: int,

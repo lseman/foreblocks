@@ -33,7 +33,7 @@ _LOG2E = 1.4426950408889634
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _build_fwd(
     batch,
     heads,
@@ -47,19 +47,6 @@ def _build_fwd(
     dtype_key,
     log2_scale,
 ):
-    """Build and cache the flash-attention forward kernel.
-
-    Pattern from ``example_mha_fwd_bhsd.py`` / ``flashattn_fwd``:
-      1. Load Q block once, initialise (acc_o=0, logsum=0, scores_max=-inf)
-      2. For each K/V column tile (pipelined):
-         a. Load K, apply causal mask
-         b. GEMM Q @ K^T → acc_s
-         c. Load V (overlap)
-         d. Online softmax: update scores_max, rescale acc_o, compute P
-         e. GEMM P @ V → acc_o, accumulate logsum
-      3. Divide acc_o by logsum, store to Output
-      4. Compute LSE = log2(logsum) + scores_max * scale
-    """
     dtype = T.float16 if dtype_key == "fp16" else T.bfloat16
     accum_dtype = T.float32
     shape = [batch, heads, seq_len, dim]
@@ -198,7 +185,6 @@ def _build_fwd(
 
 
 def _select_config(n_ctx, d_head, causal):
-    """Select block/tile sizes. Optimized for Ada (RTX 4090)."""
     if d_head <= 32:
         return 128, 128, 2, 128
     if d_head == 64:
@@ -213,18 +199,6 @@ def _select_config(n_ctx, d_head, causal):
 
 
 def tilelang_flash_fwd(q, k, v, causal=False, softmax_scale=None):
-    """Flash attention forward via TileLang.
-
-    Args:
-        q, k, v: tensors of shape ``[B, H, N, D]``.
-        causal: causal masking.
-        softmax_scale: defaults to ``1/sqrt(D)``.
-
-    Returns:
-        out: ``[B, H, N, D]`` attention output.
-        lse: ``[B, H, N]`` **natural-log** LSE (matches Triton forward
-            format; use ``lse / ln(2)`` to convert to log2-domain).
-    """
     n_ctx = q.shape[-2]
     d_head = q.shape[-1]
     softmax_scale = softmax_scale if softmax_scale is not None else d_head**-0.5
@@ -252,15 +226,6 @@ def tilelang_flash_fwd(q, k, v, causal=False, softmax_scale=None):
 
 
 def can_use_tilelang_fwd(q):
-    """Check whether the TileLang forward kernel can handle *q*.
-
-    Requirements:
-      - CUDA device with TileLang installed
-      - fp16 / bf16
-      - head dim ∈ {16, 32, 64, 128, 256}
-      - Ada GPU (sm_89+) for tensor-core paths
-      - sequence length divisible by block_M (64)
-    """
     if not _HAVE_TILELANG:
         return False
     if not q.is_cuda:

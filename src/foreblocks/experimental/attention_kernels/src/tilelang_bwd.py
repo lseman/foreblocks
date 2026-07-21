@@ -40,7 +40,7 @@ def make_dq_layout(dQ):
     )
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _build_prep(batch, heads, seq_len, dim, dtype_key):
     dtype = T.float16 if dtype_key == "fp16" else T.bfloat16
     accum_dtype = T.float32
@@ -81,7 +81,7 @@ def _build_prep(batch, heads, seq_len, dim, dtype_key):
     return build()
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _build_post(batch, heads, seq_len, dim, dtype_key):
     dtype = T.float16 if dtype_key == "fp16" else T.bfloat16
     accum_dtype = T.float32
@@ -113,12 +113,10 @@ def _build_post(batch, heads, seq_len, dim, dtype_key):
     return build()
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _build_bwd(
     batch, heads, seq_len, dim, is_causal, block_M, block_N, scale, dtype_key
 ):
-    """scale is the natural softmax scale (1/sqrt(d) or custom). The kernel uses
-    scale*log2(e) internally because LSE is fed in log2 domain."""
     dtype = T.float16 if dtype_key == "fp16" else T.bfloat16
     accum_dtype = T.float32
     shape = [batch, heads, seq_len, dim]
@@ -229,10 +227,6 @@ def can_use_tilelang_bwd(q):
 
 
 def tilelang_flash_bwd(grad_out, q, k, v, out, lse, causal=False, softmax_scale=None):
-    """Backward via tilelang. Signature mirrors ``triton_flash_bwd``.
-
-    ``lse`` is the package's natural-log LSE; converted to log2 domain here.
-    """
     B, H, N, D = q.shape
     scale = softmax_scale if softmax_scale is not None else D**-0.5
     dtype_key = "fp16" if q.dtype == torch.float16 else "bf16"

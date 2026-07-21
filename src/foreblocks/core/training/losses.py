@@ -24,8 +24,6 @@ from foreblocks.config import TrainingConfig
 
 
 class LossComputer:
-    """Handles all loss computation logic."""
-
     def __init__(
         self,
         model: nn.Module,

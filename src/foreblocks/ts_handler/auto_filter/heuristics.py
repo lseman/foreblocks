@@ -10,12 +10,10 @@ from typing import Any, Literal, overload
 
 import numpy as np
 import pandas as pd
-import torch
 from scipy import signal
 
 from foreblocks.ts_handler.auto_filter.filters import (
     _autocorr,
-    _safe_corr,
 )
 from foreblocks.ts_handler.auto_filter.filters.utils import _valid_odd_window
 from foreblocks.ts_handler.auto_filter.metrics import ScoringWeights
@@ -34,7 +32,6 @@ def _softmax_simplex(
     cap: float = 0.60,
     temperature: float = 1.0,
 ) -> np.ndarray:
-    """Map diagnostic logits to a stable simplex with floors and soft caps."""
     logits = np.asarray(logits, dtype=float)
     logits = np.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
     logits = logits / max(float(temperature), 1e-6)
@@ -70,7 +67,6 @@ def _enforce_smoothing_share(
     trend: float,
     periodicity: float,
 ) -> np.ndarray:
-    """Shift weight mass toward denoising criteria when noise pressure is high."""
     weights = np.asarray(raw, dtype=float).copy()
     smoothing_bias = _clip01(
         0.55 * smoothing_pressure
@@ -245,7 +241,6 @@ def _clip01(value: float) -> float:
 
 
 def _robust_scale(x: np.ndarray) -> float:
-    """MAD-based scale with a std fallback for near-constant signals."""
     x = np.asarray(x, dtype=float)
     mad = float(np.median(np.abs(x - np.median(x))))
     scale = 1.4826 * mad
@@ -264,7 +259,6 @@ def _clean_signal_values(ts: pd.Series) -> np.ndarray:
 
 
 def _signal_characteristics(x: np.ndarray) -> dict[str, float]:
-    """Robust, cheap signal diagnostics used by ``suggest_weights``."""
     x = np.asarray(x, dtype=float).reshape(-1)
     n = len(x)
     if n < 4 or _robust_scale(x) <= 1e-12:
@@ -397,7 +391,6 @@ def suggest_weights(
 def suggest_weights(
     ts: pd.Series, *, explain: bool = False
 ) -> ScoringWeights | tuple[ScoringWeights, dict[str, Any]]:
-    """Heuristically suggest :class:`ScoringWeights` from signal characteristics."""
     x = _clean_signal_values(ts)
     c = _signal_characteristics(x)
     noise = c["noise"]

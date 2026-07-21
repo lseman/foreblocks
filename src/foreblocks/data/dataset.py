@@ -21,8 +21,6 @@ from torch.utils.data import DataLoader, Dataset
 
 
 class TimeSeriesDataset(Dataset):
-    """Clean dataset for time series data."""
-
     def __init__(
         self,
         X: np.ndarray,

@@ -57,11 +57,6 @@ def apply_rotary_emb_torch(
     sin: Tensor,
     interleaved: bool = False,
 ) -> Tensor:
-    """
-    x:   (batch_size, seqlen, nheads, headdim)
-    cos: (seqlen, rotary_dim / 2) or (batch_size, seqlen, rotary_dim / 2)
-    sin: same as cos
-    """
     ro_dim = cos.shape[-1] * 2
     assert ro_dim <= x.shape[-1]
 
@@ -95,23 +90,6 @@ def apply_rotary(
     inplace: bool = False,
     conjugate: bool = False,
 ) -> Tensor:
-    """
-    Arguments:
-        x: (batch_size, seqlen, nheads, headdim) if cu_seqlens is None
-           else (total_seqlen, nheads, headdim)
-        cos, sin: (seqlen_rotary, rotary_dim / 2)
-                  or (batch_size, seqlen_rotary, rotary_dim / 2)
-        interleaved: if True, rotate pairs of even/odd dims (GPT-J style)
-                     instead of [0:D/2] vs [D/2:D] (GPT-NeoX style).
-        inplace:     if True, modify x in-place.
-        seqlen_offsets: int or (batch_size,), used for KV cache offset.
-        cu_seqlens:  (batch + 1,) or None
-        max_seqlen:  int, upper bound for rotary cache
-        conjugate:   if True, use inverse rotation (for backward).
-
-    Returns:
-        out: same shape as x
-    """
     ro_dim = cos.shape[-1] * 2
     assert ro_dim <= x.shape[-1]
 
@@ -152,10 +130,6 @@ def _prepare_cos_sin_batch(
     max_seqlen: int | None,
     device: torch.device,
 ) -> tuple[Tensor, Tensor]:
-    """
-    Normalize cos/sin to shape (batch, seqlen, rotary_dim / 2)
-    for the standard batched case (no cu_seqlens).
-    """
     if cos.dim() == 2:
         # cos/sin: (seqlen_rotary, rotary_dim/2)
         if max_seqlen is None:
@@ -219,7 +193,6 @@ def _apply_rotary_batch(
     inplace: bool,
     conjugate: bool,
 ) -> Tensor:
-    """Optimized rotary embedding for standard batched input."""
     batch, seqlen, nheads, headdim = x.shape
     device = x.device
 
@@ -329,7 +302,6 @@ def _apply_rotary_cu_seqlens(
     inplace: bool,
     conjugate: bool,
 ) -> Tensor:
-    """Rotary embedding for variable-length sequences (packed with cu_seqlens)."""
     total_seqlen, nheads, headdim = x.shape
     assert cu_seqlens.dim() == 1 and cu_seqlens.dtype in (torch.int32, torch.int64)
     batch = cu_seqlens.shape[0] - 1
@@ -475,9 +447,6 @@ def apply_rotary_emb(
     cu_seqlens: Tensor | None = None,
     max_seqlen: int | None = None,
 ) -> Tensor:
-    """
-    Public entry point: same signature as original Tri Dao function.
-    """
     return ApplyRotaryEmb.apply(
         x,
         cos,
@@ -638,15 +607,6 @@ def apply_rotary_emb_qkv_(
     seqlen_offsets: int | Tensor = 0,
     num_heads_q: int | None = None,
 ) -> Tensor:
-    """
-    Arguments:
-        qkv: (batch, seqlen, 3, nheads, headdim)
-             or (batch, seqlen, num_heads_q + 2 * num_heads_k, headdim)
-        cos, sin: (seqlen, rotary_dim / 2)
-        cos_k, sin_k: optional (seqlen, rotary_dim / 2) for XPos-style scaling.
-    Returns:
-        qkv with rotary applied in-place to Q and K.
-    """
     return ApplyRotaryEmbQKV_.apply(
         qkv,
         cos,
@@ -715,13 +675,6 @@ def apply_rotary_emb_kv_(
     interleaved: bool = False,
     seqlen_offsets: int | Tensor = 0,
 ) -> Tensor:
-    """
-    Arguments:
-        kv:  (batch_size, seqlen, 2, nheads, headdim)
-        cos, sin: (seqlen, rotary_dim / 2)
-    Returns:
-        kv: same shape, with rotary applied in-place to K.
-    """
     return ApplyRotaryEmbKV_.apply(kv, cos, sin, interleaved, seqlen_offsets)
 
 
@@ -731,15 +684,6 @@ def apply_rotary_emb_kv_(
 
 
 class RotaryEmbedding(torch.nn.Module):
-    """
-    Rotary position embeddings (RoFormer / GPT-NeoX) with optional XPos scaling.
-
-    RoPE: Su et al., "RoFormer: Enhanced Transformer with Rotary Position
-    Embedding" (https://arxiv.org/abs/2104.09864).
-    If scale_base is not None, this implements XPos: Sun et al., "A Length-
-    Extrapolatable Transformer" (https://arxiv.org/abs/2212.10554).
-    """
-
     def __init__(
         self,
         dim: int,
@@ -747,9 +691,9 @@ class RotaryEmbedding(torch.nn.Module):
         interleaved: bool = False,
         scale_base: float | None = None,
         device=None,
-        # NEW: Dynamic RoPE scaling (YaRN / NTK variants)
+        # ── Dynamic RoPE scaling (YaRN / NTK / linear) ─────────────
         scaling_type: str = "none",  # "none" | "yarn" | "ntk" | "linear"
-        scaling_factor: float = 1.0,  # context scaling for dynamic freqs
+        scaling_factor: float = 1.0,  # context scaling factor for frequency rotation
     ):
         super().__init__()
         self.dim = dim
@@ -795,17 +739,6 @@ class RotaryEmbedding(torch.nn.Module):
         freqs: Tensor,
         seqlen: int,
     ) -> Tensor:
-        """
-        Apply dynamic RoPE frequency scaling (YaRN / NTK / linear variants).
-        freqs: [seqlen, dim/2]
-        Returns: scaled freqs [seqlen, dim/2]
-
-        YaRN (Yet another RoPE extension) from Llama 3:
-        - Computes a scaling factor m = scaling_factor^(dim / (dim - 2))
-        - Scales base frequency by m: base_yarn = base * m
-        - Frequencies are then: inv_freq = 1.0 / (base_yarn ** (arange / dim))
-        - This preserves the relative frequency structure while extending context.
-        """
         if self.scaling_type == "none" or self.scaling_factor == 1.0:
             return freqs
 
@@ -913,19 +846,6 @@ class RotaryEmbedding(torch.nn.Module):
         max_seqlen: int | None = None,
         num_heads_q: int | None = None,
     ) -> Tensor | tuple[Tensor, Tensor]:
-        """
-        qkv:
-          - If kv is None:
-              (batch, seqlen, 3, nheads, headdim)
-              or (batch, seqlen, num_heads_q + 2 * num_heads_k, headdim)
-            If MQA/GQA layout, num_heads_q must be provided.
-          - If kv is not None:
-              qkv = q: (batch, seqlen, nheads, headdim)
-              kv:      (batch, seqlen, 2, nheads, headdim)
-
-        seqlen_offset: int or (batch,)
-        max_seqlen:    used to grow cache when working with KV cache.
-        """
         seqlen = qkv.shape[1]
         if max_seqlen is not None:
             self._update_cos_sin_cache(

@@ -224,14 +224,12 @@ class GeluTritonFunction(torch.autograd.Function):
 
 
 def gelu_fallback(x: torch.Tensor) -> torch.Tensor:
-    """Apply GELU using native PyTorch operations."""
-    return torch.nn.functional.gelu(x, approximate='tanh')
+    return torch.nn.functional.gelu(x, approximate="tanh")
 
 
 def triton_gelu(
     x: torch.Tensor,
 ) -> torch.Tensor:
-    """Apply GELU using Triton when supported, otherwise use PyTorch."""
     if _should_use_triton_gelu(x):
         return GeluTritonFunction.apply(x)
     return gelu_fallback(x)

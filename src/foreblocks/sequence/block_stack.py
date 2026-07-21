@@ -30,13 +30,6 @@ BLOCK_TYPES = ("mamba2", "mamba3", "attn", "moe")
 
 
 class _Residual(nn.Module):
-    """Pre-norm residual wrapper: ``x + dropout(sublayer(norm(x)))``.
-
-    ``kind`` selects how the wrapped sub-block is called and whether it emits an
-    auxiliary loss (MoE). The forward returns ``(out, aux)`` where ``aux`` is a
-    scalar tensor (zero for non-MoE blocks).
-    """
-
     def __init__(self, kind: str, sublayer: nn.Module, d_model: int, dropout: float):
         super().__init__()
         self.kind = kind
@@ -58,33 +51,11 @@ class _Residual(nn.Module):
                 if attention_mask is None
                 else ~attention_mask.to(device=x.device, dtype=torch.bool)
             )
-            out, aux = self.sublayer(
-                h, return_aux_loss=True, padding_mask=padding_mask
-            )
+            out, aux = self.sublayer(h, return_aux_loss=True, padding_mask=padding_mask)
         return x + self.drop(out), aux
 
 
 class BlockStack(nn.Module):
-    """Sequential stack of heterogeneous block types.
-
-    Parameters
-    ----------
-    d_model : int
-        Model width; the output feature dim and the width every block runs at.
-    spec : list[str]
-        Flat list of block types. Each entry becomes one pre-norm residual
-        sub-block. Repeat a pattern to make layers, e.g.
-        ``["mamba2", "attn", "moe"] * 4``.
-    input_size : int, optional
-        Feature dim of the input. If different from ``d_model`` a linear
-        projection maps the input up to ``d_model``. Defaults to ``d_model``.
-    dropout : float
-        Residual dropout applied to every sub-block output.
-    mamba_kwargs, attn_kwargs, moe_kwargs : dict, optional
-        Extra keyword args forwarded to the respective block constructors.
-        ``d_model`` is supplied automatically and must not be repeated here.
-    """
-
     def __init__(
         self,
         d_model: int,

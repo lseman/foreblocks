@@ -29,10 +29,6 @@ from foreblocks.ui.node_spec import node
     color="bg-gradient-to-br from-indigo-700 to-indigo-800",
 )
 class CSVSource:
-    """
-    Loads data from a CSV file and automatically detects dimensions.
-    """
-
     def __init__(
         self,
         file_path: str = "",
@@ -56,9 +52,6 @@ class CSVSource:
         self._output_size = 0
 
     def load_and_analyze(self) -> dict[str, Any]:
-        """
-        Loads the CSV and returns metadata for the UI (auto-detect dimensions).
-        """
         if not self.file_path:
             return {"error": "No file path provided"}
 
@@ -102,9 +95,6 @@ class CSVSource:
         tuple[np.ndarray, np.ndarray, np.ndarray | None],
         PortOutBundle("X", "y", "time_features"),
     ]:
-        """
-        Returns the processed arrays.
-        """
         if self._df is None:
             res = self.load_and_analyze()
             if "error" in res:
@@ -133,7 +123,6 @@ class CSVSource:
         return X, y, time_features
 
     def py_spec(self):
-        """Custom codegen for the CSV source"""
         return {
             "imports": ["from foreblocks.data.csv import CSVSource"],
             "ctor": "CSVSource",

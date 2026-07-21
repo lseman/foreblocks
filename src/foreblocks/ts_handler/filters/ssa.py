@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from foreblocks.ts_handler.filters.utils import _as_2d, _nan_interp_1d, _odd_at_least
+from foreblocks.ts_handler.filters.utils import _as_2d, _nan_interp_1d
 
 
 def ssa_filter(
@@ -18,12 +18,6 @@ def ssa_filter(
     *,
     fill_nans_for_filter: bool = True,
 ) -> np.ndarray:
-    """
-    SOTA Singular Spectrum Analysis (SSA) filter.
-    Decomposes the time series into a trajectory matrix, performs SVD,
-    and reconstructs the signal using only the top `n_components`
-    (assumed to be trend + dominant oscillations, discarding noise).
-    """
     x = _as_2d(data)
     T, F = x.shape
     out = np.full_like(x, np.nan)

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -25,12 +25,14 @@ import torch.nn.functional as F
 
 from foreblocks.layers.embeddings import InformerTimeEmbedding
 from foreblocks.models.transformer.config import TransformerConfig
-from foreblocks.models.transformer.features.mhc import mhc_init_streams
-from foreblocks.models.transformer.runtime.outputs import TransformerEncoderOutput
-from foreblocks.models.transformer.features.patching import PatchInfo, patchify_padding_mask
 from foreblocks.models.transformer.core.base import (
     BaseTransformer,
     BaseTransformerLayer,
+)
+from foreblocks.models.transformer.features.mhc import mhc_init_streams
+from foreblocks.models.transformer.features.patching import (
+    PatchInfo,
+    patchify_padding_mask,
 )
 from foreblocks.models.transformer.runtime.execution import (
     LazyAttentionBackendMixin,
@@ -39,6 +41,7 @@ from foreblocks.models.transformer.runtime.execution import (
     ResidualBlockMixin,
     _ModelLayerInvokeStrategy,
 )
+from foreblocks.models.transformer.runtime.outputs import TransformerEncoderOutput
 from foreblocks.models.transformer.runtime.residual_state import (
     _init_attention_residual_state,
 )
@@ -62,15 +65,6 @@ from foreblocks.ui.node_spec import node
 class TransformerEncoderLayer(
     ResidualBlockMixin, MHCBlockMixin, LazyAttentionBackendMixin, BaseTransformerLayer
 ):
-    """
-    Encoder layer with:
-      - MultiAttention / LinearAttention / KimiAttention
-      - Optional MoE FFN
-      - Optional GateSkip on both attention and FFN
-      - Pre-/Post-norm via NormWrapper
-      - Optional mHC stream mixing (Sinkhorn doubly-stochastic)
-    """
-
     def __init__(
         self,
         d_model: int | TransformerConfig | None = None,
@@ -131,10 +125,18 @@ class TransformerEncoderLayer(
         self._pos_encoding_type = str(config.pos_encoding_type)
 
         self.attn_norm = NormWrapper.make(
-            d_model, config.custom_norm, config.norm_strategy, dropout, config.layer_norm_eps
+            d_model,
+            config.custom_norm,
+            config.norm_strategy,
+            dropout,
+            config.layer_norm_eps,
         )
         self.ff_norm = NormWrapper.make(
-            d_model, config.custom_norm, config.norm_strategy, dropout, config.layer_norm_eps
+            d_model,
+            config.custom_norm,
+            config.norm_strategy,
+            dropout,
+            config.layer_norm_eps,
         )
 
         self.gate_attn = ResidualGate(d_model)
@@ -600,6 +602,7 @@ class TransformerEncoder(BaseTransformer):
 
         for i in range(self.num_layers):
             if self.use_mod:
+
                 def gather_and_invoke(layer, routed_indices, routed_slots):
                     nonlocal streams
                     x_routed = _gather_sequence_tokens(x, routed_indices)
@@ -620,8 +623,13 @@ class TransformerEncoder(BaseTransformer):
                     return x_routed, x_routed_out
 
                 x, was_used = _run_mod_layer(
-                    self, i, x, gateskip_active_mask, all_hidden_states,
-                    router_states, gather_and_invoke,
+                    self,
+                    i,
+                    x,
+                    gateskip_active_mask,
+                    all_hidden_states,
+                    router_states,
+                    gather_and_invoke,
                 )
                 if was_used:
                     used_indices.append(i)

@@ -45,7 +45,6 @@ from foreblocks.modules.moe.experts.dispatchers import (
     DroplessPackedDispatcher,
     ExpertChoiceDispatcher,
 )
-
 from foreblocks.modules.moe.experts.expert_blocks import (
     MoE_FFNExpert,
     MoE_SwiGLUExpert,
@@ -54,10 +53,16 @@ from foreblocks.modules.moe.experts.expert_blocks import (
 )
 from foreblocks.modules.moe.experts.moe_utils import (
     autocast_bf16_enabled as _autocast_bf16_enabled,
+)
+from foreblocks.modules.moe.experts.moe_utils import (
     eager_topk_routing,
     maybe_compile,
     optimized_topk_routing,
+)
+from foreblocks.modules.moe.experts.moe_utils import (
     should_fallback_router_topk as _should_fallback_router_topk,
+)
+from foreblocks.modules.moe.experts.moe_utils import (
     supports_grouped_prepacked as _supports_grouped_prepacked,
 )
 from foreblocks.modules.moe.experts.routers import (
@@ -75,8 +80,6 @@ from foreblocks.modules.moe.experts.routers import (
 
 @dataclass(frozen=True)
 class MoERoutingState:
-    """Structured routing output for diagnostics and auxiliary objectives."""
-
     logits: torch.Tensor
     indices: torch.Tensor
     weights: torch.Tensor | None
@@ -85,6 +88,7 @@ class MoERoutingState:
     valid_token_indices: torch.Tensor | None = None
     per_token_k: torch.Tensor | None = None
     entropy: torch.Tensor | float = 0.0
+
 
 # Optional import: adjust to your package path
 try:
@@ -95,8 +99,8 @@ except Exception:
 # Optional grouped kernel path (can accept prepacked B* if your wrapper supports)
 try:
     # Prefer a wrapper that accepts B12_cat_prepacked / B3_cat_prepacked
-    from foreblocks.modules.moe.kernels.kernels import fused_router_topk  # type: ignore
     from foreblocks.modules.moe.kernels.kernels import (
+        fused_router_topk,  # type: ignore
         grouped_mlp_swiglu,
     )
 except Exception:
@@ -283,9 +287,8 @@ class MoEFeedForwardDMoE(nn.Module):
             )
         else:
             resolved_aux_weight = float(moe_aux_loss_weight)
-            if (
-                load_balance_weight is not None
-                and not math.isclose(float(load_balance_weight), resolved_aux_weight)
+            if load_balance_weight is not None and not math.isclose(
+                float(load_balance_weight), resolved_aux_weight
             ):
                 raise ValueError(
                     "load_balance_weight and moe_aux_loss_weight are aliases; "
@@ -658,7 +661,6 @@ class MoEFeedForwardDMoE(nn.Module):
         self._packed_step = step
 
     def get_packed_expert_weights(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return canonical ``[E, ...]`` expert parameters without copies."""
         return self.experts.w12, self.experts.w3
 
     def invalidate_packed_weights(self):
@@ -667,7 +669,6 @@ class MoEFeedForwardDMoE(nn.Module):
         self._B3_cat = None
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
-        """Upgrade legacy per-expert checkpoints to the packed bank layout."""
         packed_w12 = prefix + "experts.w12"
         packed_w3 = prefix + "experts.w3"
         if packed_w12 not in state_dict:
@@ -682,7 +683,9 @@ class MoEFeedForwardDMoE(nn.Module):
                     prefix + f"experts.{idx}.fc2.weight",
                 )
                 up_key = next((key for key in up_candidates if key in state_dict), None)
-                down_key = next((key for key in down_candidates if key in state_dict), None)
+                down_key = next(
+                    (key for key in down_candidates if key in state_dict), None
+                )
                 if up_key is None or down_key is None:
                     break
                 old_w12.append(state_dict[up_key].t().contiguous())
@@ -707,16 +710,6 @@ class MoEFeedForwardDMoE(nn.Module):
         torch.Tensor | None,
         Tensor | float,
     ]:
-        """
-        Unified router output parser.
-        Always calls the router with return_raw_logits=True and extracts
-        named fields from the RouterOutput dataclass.  Falls back to the
-        old tuple path only when torch.compile wraps the module and the
-        output deviates from the contract.
-
-        Returns:
-          logits, per_token_k, k_logits, k_probs, precomputed_top_p, precomputed_top_i, router_entropy
-        """
         out = self.router(x_flat, return_raw_logits=True, tau=tau)
 
         # --- Prefer named fields from RouterOutput ---
@@ -788,24 +781,14 @@ class MoEFeedForwardDMoE(nn.Module):
     def _get_router_expert_bias(self) -> torch.Tensor | None:
         r = self.router
         if hasattr(r, "expert_bias"):
-            return getattr(r, "expert_bias")
+            return r.expert_bias
         # torch.compile wrappers often keep original module here
         orig = getattr(r, "_orig_mod", None)
         if orig is not None and hasattr(orig, "expert_bias"):
-            return getattr(orig, "expert_bias")
+            return orig.expert_bias
         return None
 
     def _maybe_update_router_bias(self):
-        """Update per-expert router bias toward uniform based on usage EMA.
-
-        This is an auxiliary-loss-free load balancing mechanism: when an expert
-        is under-utilized relative to uniform, its bias increases (making the
-        router more likely to pick it next time).  When over-utilized, bias
-        decreases.  The bias is clamped to [-clip, +clip] to prevent runaway.
-
-        Works independently of ``moe_aux_loss_weight`` — you can disable the
-        aux loss entirely and still get balanced load via bias terms alone.
-        """
         if not self.moe_router_bias_balance:
             return
         if (not self.training) or self.router_bias_update_rate <= 0:
@@ -994,15 +977,14 @@ class MoEFeedForwardDMoE(nn.Module):
                         self.num_shared, T_flat, self.d_model
                     )  # [num_shared, T, D]
                     shared_out = (
-                        shared_chunks * self.shared_scale.view(self.num_shared, 1, 1)
+                        shared_chunks
+                        * self.shared_scale.view(self.num_shared, 1, 1)
                         * (
                             shared_gates.t().unsqueeze(-1)
                             if shared_gates is not None
                             else 1.0
                         )
-                    ).sum(
-                        0
-                    )  # [T, D]
+                    ).sum(0)  # [T, D]
                     shared_cat = None
                 else:
                     shared_out = torch.zeros_like(x_flat)
@@ -1033,9 +1015,7 @@ class MoEFeedForwardDMoE(nn.Module):
                 _router_top_p,
                 _router_top_i,
                 router_entropy,
-            ) = self._compute_router_outputs(
-                routed_x, tau=tau
-            )  # [T, E]
+            ) = self._compute_router_outputs(routed_x, tau=tau)  # [T, E]
             if self.routing_mode == "expert_choice":
                 self.last_per_token_k = None
                 self.last_log_prob_k = None
@@ -1162,9 +1142,7 @@ class MoEFeedForwardDMoE(nn.Module):
                 state = self._make_routing_state(
                     logits=logits,
                     indices=top_i,
-                    weights=(
-                        top_p if self.routing_mode == "token_choice" else None
-                    ),
+                    weights=(top_p if self.routing_mode == "token_choice" else None),
                     aux=aux,
                     dropped=dropped,
                     valid_indices=valid_indices,
@@ -1264,7 +1242,9 @@ class MoEFeedForwardDMoE(nn.Module):
                 experts_seq,
                 num_assignments=self._last_num_assignments,
                 routing_indices=top_i,
-                routing_weights=(top_p if self.routing_mode == "token_choice" else None),
+                routing_weights=(
+                    top_p if self.routing_mode == "token_choice" else None
+                ),
             )
             if valid_indices is not None and mtp_targets is not None:
                 target_shape = mtp_targets.shape
@@ -1272,7 +1252,9 @@ class MoEFeedForwardDMoE(nn.Module):
                     mtp_targets = mtp_targets.reshape(
                         -1, target_shape[-2], target_shape[-1]
                     ).index_select(0, valid_indices)
-                elif mtp_targets.dim() == 3 and mtp_targets.size(0) == all_x_flat.size(0):
+                elif mtp_targets.dim() == 3 and mtp_targets.size(0) == all_x_flat.size(
+                    0
+                ):
                     mtp_targets = mtp_targets.index_select(0, valid_indices)
             mtp_loss = self._compute_mtp_loss(out_flat, mtp_targets)
             aux = aux + mtp_loss
@@ -1398,9 +1380,12 @@ class MoEFeedForwardDMoE(nn.Module):
                 aux = aux + self.moe_aux_loss_weight * num_routed * group_aux
             else:
                 # Standard (global) load-balancing loss
-                aux = aux + self.moe_aux_loss_weight * num_routed * (
-                    expert_freq * avg_gate
-                ).sum()
+                aux = (
+                    aux
+                    + self.moe_aux_loss_weight
+                    * num_routed
+                    * (expert_freq * avg_gate).sum()
+                )
 
         # ── 3. Router entropy regularization (encourages diverse routing) ─
         if self.moe_entropy_reg_weight > 0:

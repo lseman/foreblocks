@@ -19,13 +19,6 @@ import torch.nn.functional as F
 
 
 class LearnablePositionalEncoding(nn.Module):
-    """Learnable positional encoding with optional low-rank factors.
-
-    Learned absolute position embeddings as used by BERT (Devlin et al., 2019,
-    https://arxiv.org/abs/1810.04805) and GPT, here with an optional low-rank
-    ``U @ V`` factorization of the position table to reduce parameters.
-    """
-
     def __init__(
         self,
         d_model: int,

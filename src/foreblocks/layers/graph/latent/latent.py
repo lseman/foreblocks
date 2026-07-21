@@ -28,8 +28,6 @@ from foreblocks.layers.graph.norms import GraphNorm
 
 
 class AdaptiveEdgeSparsifier(nn.Module):
-    """Keep only the strongest edges during training."""
-
     def __init__(self, sparsity_ratio: float = 0.3, learnable: bool = True):
         super().__init__()
         self.sparsity_ratio = sparsity_ratio
@@ -76,8 +74,6 @@ class CorrelationConfig:
 
 
 class LatentCorrelationLearner(nn.Module):
-    """Learn a stable latent graph from data and parameters."""
-
     def __init__(self, cfg: CorrelationConfig):
         super().__init__()
         self.cfg = cfg

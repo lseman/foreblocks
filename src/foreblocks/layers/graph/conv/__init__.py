@@ -1,4 +1,4 @@
-"""foreblocks.layers.graph.layers.
+"""foreblocks.layers.graph.conv.
 
 Standard graph convolution layer implementations.
 
@@ -19,18 +19,18 @@ Core API:
 
 """
 
-from foreblocks.layers.graph.layers.edge_cond import EdgeCondGCN
-from foreblocks.layers.graph.layers.gat import GATConv, GATv2Conv
-from foreblocks.layers.graph.layers.gcn import GCNConv
-from foreblocks.layers.graph.layers.gin import GINConv, GINEConv
-from foreblocks.layers.graph.layers.jump_knowledge import JumpKnowledge
-from foreblocks.layers.graph.layers.message_passing import (
+from foreblocks.layers.graph.conv.edge_cond import EdgeCondGCN
+from foreblocks.layers.graph.conv.gat import GATConv, GATv2Conv
+from foreblocks.layers.graph.conv.gcn import GCNConv
+from foreblocks.layers.graph.conv.gin import GINConv, GINEConv
+from foreblocks.layers.graph.conv.jump_knowledge import JumpKnowledge
+from foreblocks.layers.graph.conv.message_passing import (
     CachedNorm,
     GraphConvBase,
     MessagePassing,
 )
-from foreblocks.layers.graph.layers.sage import SAGEConv
-from foreblocks.layers.graph.layers.stochastic_depth import StochasticDepth
+from foreblocks.layers.graph.conv.sage import SAGEConv
+from foreblocks.layers.graph.conv.stochastic_depth import StochasticDepth
 
 __all__ = [
     "CachedNorm",

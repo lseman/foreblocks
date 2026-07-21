@@ -16,7 +16,6 @@ from foreblocks.ts_handler.auto_filter.registry import register_filter
 
 
 def _diff_matrix(n: int, order: int) -> sparse.csc_matrix:
-    """Sparse order-``order`` finite-difference operator (n-order × n)."""
     D = sparse.eye(n, format="csc")
     for _ in range(order):
         D = D[1:] - D[:-1]
@@ -25,19 +24,6 @@ def _diff_matrix(n: int, order: int) -> sparse.csc_matrix:
 
 @register_filter("Whittaker-Eilers")
 def whittaker_smoother(ts: pd.Series, lam: float = 1600.0, order: int = 2) -> pd.Series:
-    """Whittaker-Eilers penalized-least-squares smoother (Eilers 2003).
-
-    Solves  min_z ‖y − z‖² + λ‖Dᵏ z‖²,  with Dᵏ the k-th difference operator.
-    A single banded sparse solve — fast and SOTA for trend/baseline smoothing;
-    the modern replacement for spline and Hodrick-Prescott smoothing.
-
-    Parameters
-    ----------
-    lam:
-        Smoothing strength λ. Higher → smoother. (HP's λ=1600 is comparable.)
-    order:
-        Penalty difference order k. 2 (default) penalises curvature.
-    """
     y = ts.values.astype(float)
     n = len(y)
     if n <= order + 1:
@@ -50,7 +36,6 @@ def whittaker_smoother(ts: pd.Series, lam: float = 1600.0, order: int = 2) -> pd
 
 @register_filter("Hodrick-Prescott")
 def hp_filter(ts: pd.Series, lamb: float = 1600.0) -> pd.Series:
-    """Hodrick-Prescott trend smoother."""
     return whittaker_smoother(ts, lam=lamb, order=2).rename("hp")
 
 
@@ -58,20 +43,6 @@ def hp_filter(ts: pd.Series, lamb: float = 1600.0) -> pd.Series:
 def l1_trend_filter(
     ts: pd.Series, lam: float = 1.0, max_iter: int = 200, rho: float = 1.0
 ) -> pd.Series:
-    """ℓ₁ trend filtering (Kim, Koh, Boyd & Gorinevsky 2009).
-
-    Solves  min_z ½‖y − z‖² + λ‖D² z‖₁,  whose ℓ₁ curvature penalty yields a
-    piecewise-linear trend with a small number of kinks — the principled
-    generalisation of total-variation denoising to trends. Solved here with a
-    light ADMM iteration (no external solver dependency).
-
-    Parameters
-    ----------
-    lam:
-        Regularisation weight λ. Higher → fewer kinks, straighter trend.
-    max_iter, rho:
-        ADMM iteration budget and penalty parameter.
-    """
     y = ts.values.astype(float)
     n = len(y)
     if n < 4:

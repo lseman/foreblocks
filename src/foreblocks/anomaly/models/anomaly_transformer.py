@@ -34,8 +34,12 @@ class AnomalyTransformerForward:
 
 class _AssociationAttention(nn.Module):
     def __init__(
-        self, d_model: int, n_heads: int, window_size: int, dropout: float
-    ) -> None:
+        self,
+        d_model: int,
+        n_heads: int,
+        window_size: int,
+        dropout: float = 0.1,
+    ):
         super().__init__()
         self.d_model = int(d_model)
         self.n_heads = int(n_heads)
@@ -81,8 +85,8 @@ class _AnomalyTransformerLayer(nn.Module):
         n_heads: int,
         window_size: int,
         dim_feedforward: int,
-        dropout: float,
-    ) -> None:
+        dropout: float = 0.1,
+    ):
         super().__init__()
         self.attn = _AssociationAttention(d_model, n_heads, window_size, dropout)
         self.norm1 = nn.LayerNorm(d_model)
@@ -105,8 +109,6 @@ class _AnomalyTransformerLayer(nn.Module):
 
 
 class AnomalyTransformer(nn.Module):
-    """Association-discrepancy transformer for reconstruction anomaly scoring."""
-
     def __init__(
         self,
         n_features: int,

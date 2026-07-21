@@ -37,11 +37,6 @@ except Exception:  # pragma: no cover
 
 
 class _GroupedMMVarMFunction(torch.autograd.Function):
-    """
-    Triton forward for grouped variable-M GEMM with manual backward.
-    Backward is computed with torch matmuls per expert segment.
-    """
-
     @staticmethod
     def forward(ctx, A_packed, offsets, B_cat, use_fp16_acc: bool):
         if not TRITON_AVAILABLE:
@@ -232,7 +227,6 @@ if TRITON_AVAILABLE:
         BLOCK_K: tl.constexpr,
         ACC_DTYPE: tl.constexpr,
     ):
-        """One program per (group g, m-tile, n-tile). Computes a C_g tile."""
         g = tl.program_id(0)
         pid_m = tl.program_id(1)
         pid_n = tl.program_id(2)
@@ -323,7 +317,6 @@ if TRITON_AVAILABLE:
         BLOCK_M: tl.constexpr,
         ACC_DTYPE: tl.constexpr,
     ):
-        """One program per (group g, k-tile, n-tile). Tile of grad_B[g]=A_g.T @ dC_g."""
         g = tl.program_id(0)
         pid_k = tl.program_id(1)
         pid_n = tl.program_id(2)
@@ -373,7 +366,6 @@ if TRITON_AVAILABLE:
 
 
 def _split_by_offsets(x: torch.Tensor, offsets: torch.Tensor) -> list[torch.Tensor]:
-    """Return a list of E views: x[start:end] for each expert."""
     out: list[torch.Tensor] = []
     for e in range(offsets.numel() - 1):
         s = int(offsets[e].item())
@@ -386,7 +378,6 @@ def _foreach_mm(
     A_blocks: list[torch.Tensor],
     B_blocks: list[torch.Tensor],
 ) -> list[torch.Tensor]:
-    """Portable fallback (no Triton): per-group matmul with autograd."""
     Y: list[torch.Tensor] = []
     for A, B in zip(A_blocks, B_blocks):
         if A.numel() == 0:
@@ -410,14 +401,6 @@ def grouped_mm_varM(
     use_shared_b: bool = False,
     allow_triton_training: bool = True,
 ) -> torch.Tensor:
-    """
-    Compute concatenated C = concat_e (A_e @ B_e) with variable M_e.
-
-    A_packed: concat_e A_e along M, shape [S, K]
-    offsets: starts/ends per expert in A_packed/C_packed, shape [E+1]
-    B_per_expert: list of [K, N] or prepacked tensor [E, K, N]
-    Returns C_packed: [S, N]
-    """
     global __SHARED_B_WARNED
 
     device = A_packed.device

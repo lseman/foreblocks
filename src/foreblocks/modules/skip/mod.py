@@ -68,12 +68,6 @@ class MoDRouter(nn.Module):
                 nn.init.constant_(last.bias, init_bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B,T,D]
-        returns scores:
-          token => [B,T,1]
-          seq   => [B,1,1]
-        """
         x = self.norm(x)
         if self.mode == "seq":
             x = x.mean(dim=1, keepdim=True)  # [B,1,D]
@@ -113,27 +107,6 @@ def mod_topk_mask(
     keep_rate: float,
     active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Expert-choice top-k routing (MoD).  [Ritter et al., 2024, §3.3]
-
-    Returns a boolean keep mask ``[B,T]`` with exactly
-    ``ceil(keep_rate * n_active)`` routed positions per sample, selected by
-    the highest router scores.  Unlike fixed-capacity MoE dispatching this
-    does not drop tokens — it simply routes fewer to deeper layers.
-
-    Parameters
-    ----------
-    logits : torch.Tensor
-        Router scores ``[B,T,1]`` or ``[B,T]``.
-    keep_rate : float
-        Fraction of active tokens to route forward (0..1).
-    active_mask : torch.Tensor | None
-        Optional ``[B,T]`` bool mask; only ``True`` positions participate.
-
-    Returns
-    -------
-    torch.Tensor
-        Boolean keep mask ``[B,T]``, ``True`` for tokens routed to this layer.
-    """
     scores = logits.squeeze(-1) if logits.dim() == 3 else logits
     active_mask = _normalize_active_mask(scores, active_mask)
 
@@ -161,10 +134,6 @@ def mod_topk_mask(
 def mod_capacity(
     keep_mask: torch.Tensor,
 ) -> int:
-    """Return the fixed routed capacity for the current batch.
-
-    Equal to ``max_b ceil(keep_rate * n_active_b)``.
-    """
     if keep_mask.dim() != 2:
         raise ValueError(f"keep_mask must be [B,T], got {tuple(keep_mask.shape)}")
     if keep_mask.numel() == 0:
@@ -176,24 +145,6 @@ def mod_routed_indices(
     keep_mask: torch.Tensor,
     capacity: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Convert a keep mask ``[B,T]`` into sorted routed indices ``[B,C]`` and slot mask ``[B,C]``.
-
-    Useful for gathering routed token embeddings before passing them through
-    the deeper layer.
-
-    Parameters
-    ----------
-    keep_mask : torch.Tensor
-        Boolean keep mask ``[B,T]``.
-    capacity : int | None
-        Fixed capacity.  If ``None``, uses ``mod_capacity(keep_mask)``.
-
-    Returns
-    -------
-    tuple[torch.Tensor, torch.Tensor]
-        ``(indices, slot_mask)`` where ``indices[b,c]`` holds the original
-        token position and ``slot_mask[b,c]`` indicates a valid slot.
-    """
     if keep_mask.dim() != 2:
         raise ValueError(f"keep_mask must be [B,T], got {tuple(keep_mask.shape)}")
     B, T = keep_mask.shape
@@ -223,26 +174,6 @@ def mod_router_aux_loss(
     keep_mask: torch.Tensor,
     active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """BCE auxiliary loss for training the MoD causal router [Ritter et al., 2024, §3.5].
-
-    The predictor is a causal (autoregressive) MLP, but the top-k mask is
-    computed non-causally (over the whole sequence).  This auxiliary loss
-    trains the causal predictor to match the non-causal expert-choice mask.
-
-    Parameters
-    ----------
-    logits : torch.Tensor
-        Raw predictor scores ``[B,T,1]`` or ``[B,T]``.
-    keep_mask : torch.Tensor
-        Target boolean mask ``[B,T]`` (from non-causal top-k).
-    active_mask : torch.Tensor | None
-        Optional active token mask.
-
-    Returns
-    -------
-    torch.Tensor
-        Scalar BCE loss over active positions.
-    """
     scores = logits.squeeze(-1) if logits.dim() == 3 else logits
     active_mask = _normalize_active_mask(scores, active_mask)
     targets = keep_mask.to(dtype=scores.dtype)
@@ -300,22 +231,8 @@ class LayerDropoutSchedule:
     profile: str = "flat"
 
     def get_dropout(self, layer_idx: int) -> float:
-        """Get the dropout rate for a specific layer.
-
-        Parameters
-        ----------
-        layer_idx : int
-            Layer index (0-indexed, 0 is the first/shallowest layer).
-
-        Returns
-        -------
-        float
-            Dropout rate (clamped to [0, 1]).
-        """
         if not 0 <= layer_idx < self.num_layers:
-            raise IndexError(
-                f"layer_idx={layer_idx} outside [0, {self.num_layers})"
-            )
+            raise IndexError(f"layer_idx={layer_idx} outside [0, {self.num_layers})")
         if self.max_dropout is None or self.profile == "flat":
             return float(max(0.0, min(1.0, self.base_dropout)))
 

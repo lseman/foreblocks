@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import optuna
@@ -25,7 +24,6 @@ from foreblocks.ts_handler.auto_filter.filters import (
     l1_trend_filter,
     lowess_filter,
     non_local_means_filter,
-    robust_loess_filter,
     savgol_filter,
     ssa_filter,
     stl_residual_denoise,
@@ -42,8 +40,6 @@ from foreblocks.ts_handler.auto_filter.registry import _FILTER_REGISTRY, _SLOW_F
 
 @dataclass
 class TuneFilterResult:
-    """Result of :func:`tune_filter`."""
-
     name: str
     params: dict[str, float | int]
     series: pd.Series
@@ -288,7 +284,6 @@ def _suggest_filter_and_params(
 
 
 def _bounded_unit(value: float) -> float:
-    """Compress non-negative diagnostics to [0, 1) without rank context."""
     value = max(float(value), 0.0)
     return value / (1.0 + value)
 
@@ -317,7 +312,6 @@ def _band_penalty(
     *,
     target: dict[str, float],
 ) -> tuple[float, dict[str, float]]:
-    """Notebook-style band penalty: keep the filter inside a fidelity/smoothness window."""
     o = original.values.astype(float)
     d = winner.values.astype(float)
     residual = o - d
@@ -366,7 +360,6 @@ def _unsupervised_proxy(
     original: pd.Series,
     candidates: dict[str, pd.Series],
 ) -> float:
-    """Target-band quality proxy for the winning filter (lower is better)."""
     lags = min(20, len(original) // 5)
     lb_stats: list[float] = []
 
@@ -436,7 +429,6 @@ def _oversmoothing_penalty(
     min_roughness_ratio: float | None = None,
     max_roughness_ratio: float | None = None,
 ) -> float:
-    """Penalty term that keeps the winner inside a fidelity/smoothness band."""
     penalty = 0.0
 
     if min_derivative_corr is not None:
@@ -476,7 +468,6 @@ def tune_weights(
     min_roughness_ratio: float | None = 0.35,
     max_roughness_ratio: float | None = 0.92,
 ) -> ScoringWeights:
-    """Auto-tune :class:`ScoringWeights` using Optuna (Bayesian TPE, unsupervised)."""
     if not verbose:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -589,7 +580,6 @@ def tune_filter(
     roughness_ratio_band: tuple[float, float] = (0.35, 0.92),
     min_derivative_corr: float = 0.90,
 ) -> TuneFilterResult:
-    """Search filter family and per-filter hyperparameters jointly with Optuna."""
     if not verbose:
         optuna.logging.set_verbosity(optuna.logging.WARNING)
 

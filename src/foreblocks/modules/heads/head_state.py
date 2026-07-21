@@ -27,13 +27,6 @@ from foreblocks.modules.heads.head_types import ActiveHead, AlphaWeights, HeadSp
 
 
 class HeadStateManager(nn.Module):
-    """
-    Centralize mutable per-head state:
-      - NAS alpha parameters
-      - enable/disable masks
-      - hardened architecture decisions
-    """
-
     _EPS: float = 1e-6
 
     def __init__(

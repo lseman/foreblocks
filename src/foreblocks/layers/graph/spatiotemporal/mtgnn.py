@@ -57,11 +57,6 @@ def _row_normalize_adjacency(
 
 
 def _node_propagate(x: Tensor, adj: Tensor) -> Tensor:
-    """
-    x: [B, T, N, F]
-    adj: [N, N] or [B, N, N]
-    returns: [B, T, N, F]
-    """
     if is_batched_adj(adj):
         if adj.size(0) != x.size(0):
             raise ValueError("Batched adjacency must match x.size(0).")
@@ -76,12 +71,6 @@ def _conv2d_xavier(module: nn.Conv2d) -> None:
 
 
 class MTGNNGraphConstructor(nn.Module):
-    """
-    Adaptive sparse graph learner from MTGNN-style node embeddings.
-
-    Returns a directed adjacency over the selected node subset.
-    """
-
     def __init__(
         self,
         num_nodes: int,
@@ -159,10 +148,6 @@ class MTGNNGraphConstructor(nn.Module):
 
 
 class MTGNNProp(nn.Module):
-    """
-    Single-state MTGNN propagation operator.
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -189,10 +174,6 @@ class MTGNNProp(nn.Module):
 
 
 class MTGNNMixProp(nn.Module):
-    """
-    Mix-hop propagation from MTGNN, adapted to [B, T, N, F] tensors.
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -221,12 +202,6 @@ class MTGNNMixProp(nn.Module):
 
 
 class MTGNNDilatedInception(nn.Module):
-    """
-    Multi-kernel temporal convolution block from MTGNN.
-
-    Input/output shape: [B, T, N, F]
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -285,10 +260,6 @@ class MTGNNDilatedInception(nn.Module):
 
 
 class MTGNNTemporalGatedUnit(nn.Module):
-    """
-    MTGNN temporal filter/gate pair.
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -322,14 +293,6 @@ class MTGNNTemporalGatedUnit(nn.Module):
 
 
 class MTGNNBlock(nn.Module):
-    """
-    Reusable MTGNN spatiotemporal residual block.
-
-    The block keeps MTGNN's temporal gated unit and bidirectional mix-hop graph
-    propagation, but uses repo-native [B, T, N, F] tensors and a simpler
-    feature-only normalization step so it can be composed more freely.
-    """
-
     def __init__(
         self,
         channels: int,

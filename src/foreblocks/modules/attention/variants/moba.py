@@ -75,12 +75,6 @@ def _exclusive_cu_seqlens(lengths: torch.Tensor) -> torch.Tensor:
 
 
 class MoBAAttentionImpl:
-    """Mixture of Block Attention (MoBA) variant.
-
-    Reference: "MoBA: Mixture of Block Attention for Long-Context LLMs"
-    (arXiv:2502.13189).
-    """
-
     def __init__(self, parent):
         self.parent = parent
 

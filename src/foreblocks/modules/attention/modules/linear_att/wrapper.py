@@ -45,39 +45,6 @@ _BACKEND_MAP = {
 
 
 class ModernLinearAttention(nn.Module):
-    """
-    Modular linear attention with swappable backends.
-
-    Parameters
-    ----------
-    d_model : int
-    n_heads : int
-    dropout : float
-    backend : str
-        One of "rda", "gla", "deltanet", "gated_delta", "gated_deltanet",
-        "gated_deltanet2", "gdn2", "kimi".
-    state : str, optional
-        Feature map for "rda" backend: "elu", "relu", "silu", "leaky_relu",
-        "rff", "tanh", "cos_cos". Default: "elu".
-        For "gated_delta", accepts "mamba" / "mamba2" or "legacy" / "sigmoid".
-        For "gated_deltanet2", accepts "neg_eigval" boolean.
-    mode : str, optional
-        Computation mode for backends that support it: "chunk" (parallel) or
-        "recurrent" (exact sequential). Default: "chunk".
-    chunk_size : int, optional
-        Chunk size for chunk-mode backends. Default: 64.
-    **backend_kwargs :
-        Extra kwargs forwarded to the backend constructor.
-
-    Example
-    -------
-    >>> attn = ModernLinearAttention(
-    ...     d_model=256, n_heads=8, dropout=0.1,
-    ...     backend="gated_deltanet2", chunk_size=64
-    ... )
-    >>> out, _, state = attn(q, k, v, is_causal=True, layer_state=None)
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -208,7 +175,6 @@ class ModernLinearAttention(nn.Module):
 
     @property
     def state_key(self) -> str:
-        """Key used in layer_state dict for this backend's recurrent state."""
         if self.backend_name in {"gated_delta", "gated_deltanet"}:
             return "gdn_state"
         if self.backend_name in {"gated_deltanet2", "gdn2"}:
@@ -234,5 +200,4 @@ class ModernLinearAttention(nn.Module):
         )
 
     def reset_state(self, layer_state: dict) -> None:
-        """Clear recurrent state for this backend."""
         layer_state.pop(self.state_key, None)

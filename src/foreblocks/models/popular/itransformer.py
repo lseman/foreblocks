@@ -28,15 +28,6 @@ from foreblocks.modules.attention.multi_att import MultiAttention
 
 
 class _TemporalCompressor(nn.Module):
-    """
-    Compress each variable's full history [T] into a D-dim token.
-    Two options:
-      - 'linear': a single Linear(T -> D)
-      - 'conv': 1D Conv over time with global pooling (lightweight, shift-aware)
-    Input:  x [B, T, C]
-    Output: tok [B, C, D]
-    """
-
     def __init__(
         self,
         T: int,
@@ -91,11 +82,6 @@ class _TemporalCompressor(nn.Module):
 
 
 class VariableTokenEncoder(nn.Module):
-    """
-    Encoder stack over variable tokens, reusing your custom TransformerEncoderLayer.
-    Expects [B, Nv, D] (Nv = #variables = channels).
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -155,20 +141,6 @@ class VariableTokenEncoder(nn.Module):
 
 
 class ITransformer(nn.Module):
-    """
-    iTransformer-style head using your own Transformer blocks.
-
-    Steps:
-      1) Temporal compress per variable: x[B,T,C] -> var tokens h[B,C,D]
-      2) Optional [CLS] and variable positional encoding on tokens
-      3) Encode with VariableTokenEncoder (custom TransformerEncoderLayer / MultiAttention)
-      4) Output mixing:
-         - "pooled": pool tokens ("mean" | "last" | "cls") -> MLP -> [T_pred]
-         - "nonpool_linear": learn A in R^{T_pred x N_eff}, H = A @ tokens -> per-horizon linear
-         - "nonpool_attn": learned horizon queries Q in R^{T_pred x D}, cross-attend over tokens
-      5) Per-variable outputs -> [B, T_pred, C]; optional channel_mixer maps C->C_out
-    """
-
     def __init__(
         self,
         input_len: int,
@@ -345,11 +317,6 @@ class ITransformer(nn.Module):
     def _maybe_instance_norm_time(
         self, x: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-        """
-        Optional instance normalization over time per variable.
-        x: [B, T, C]
-        Returns x_norm, mu, sigma (to optionally denorm outside if needed).
-        """
         if not self.instance_norm_time:
             return x, None, None
         mu = x.mean(dim=1, keepdim=True)  # [B,1,C]
@@ -374,11 +341,6 @@ class ITransformer(nn.Module):
 
     # ---------- forward ----------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, T_in, C_in]
-        Returns:
-            y: [B, pred_len, C_out]  (C_out=C_in if channel_mixer is None)
-        """
         if x.dim() != 3:
             raise ValueError(f"Expected x [B, T, C], got {tuple(x.shape)}")
         B, T, C = x.shape

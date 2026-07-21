@@ -31,11 +31,6 @@ from foreblocks.modules.attention.modules.frequency_att import FourierBlock
 
 
 class SeriesDecomp(nn.Module):
-    """
-    Moving-average decomposition: x = seasonal + trend
-    Trend = MA(x, kernel_size), Seasonal = x - Trend.
-    """
-
     def __init__(self, kernel_size: int):
         super().__init__()
         assert kernel_size % 2 == 1, "kernel_size should be odd"
@@ -53,10 +48,6 @@ class SeriesDecomp(nn.Module):
         nn.init.constant_(self.avg.weight, 1.0 / kernel_size)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        x: [B, T, C]
-        Returns: seasonal [B, T, C], trend [B, T, C]
-        """
         B, T, C = x.shape
         # apply independently per channel via view+conv
         u = x.permute(0, 2, 1).contiguous().view(B * C, 1, T)  # [B*C,1,T]
@@ -119,11 +110,6 @@ class FEDEncoderLayer(nn.Module):
 
 
 class FEDDecoderLayer(nn.Module):
-    """
-    Decoder layer uses Fourier mix on the target side + cross-frequency gating.
-    For simplicity, we do: y = Freq(dec) + linear cross from memory.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -146,10 +132,6 @@ class FEDDecoderLayer(nn.Module):
         self.normx = create_norm_layer(custom_norm, d_model, eps)
 
     def forward(self, tgt: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
-        """
-        tgt:    [B, T_out, C]
-        memory: [B, T_in,  C]  (encoded seasonal context)
-        """
         # Simple memory pooling (mean) — FEDformer uses cross decomposed info
         m = memory.mean(dim=1, keepdim=True).expand_as(tgt)  # [B,T_out,C]
         m = self.cross_proj(self.normx(m))  # [B,T_out,C]
@@ -168,17 +150,6 @@ class FEDDecoderLayer(nn.Module):
 
 
 class FEDformer(nn.Module):
-    """
-    Minimal, faithful FEDformer head with seasonal–trend decomposition and
-    frequency-enhanced encoder/decoder mixing.
-
-    Input:
-      x: [B, L_in, C_in]
-
-    Output:
-      y: [B, pred_len, C_out]
-    """
-
     def __init__(
         self,
         pred_len: int,
@@ -291,9 +262,6 @@ class FEDformer(nn.Module):
 
     # -------- forward --------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, L_in, C_in]
-        """
         if x.dim() != 3:
             raise ValueError(f"Expected [B, L, C], got {tuple(x.shape)}")
         B, L, Cin = x.shape
@@ -338,9 +306,6 @@ class FEDformer(nn.Module):
 
     # Convenience splitter for quantile outputs if configured
     def split_quantiles(self, y: torch.Tensor):
-        """
-        y: [B, H, C_out * Q] -> {q: [B, H, C_out]}
-        """
         assert self.quantiles is not None
         Q = len(self.quantiles)
         B, H, _ = y.shape

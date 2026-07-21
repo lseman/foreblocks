@@ -19,8 +19,6 @@ from dataclasses import dataclass
 
 @dataclass
 class ModelConfig:
-    """Configuration for the sequence-to-sequence model architecture."""
-
     model_type: str = "lstm"
     input_size: int = 1
     output_size: int = 1
@@ -42,8 +40,6 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
-    """Type-safe training configuration with NAS + conformal support."""
-
     seed: int | None = None
     deterministic: bool = False
     num_epochs: int = 100
@@ -79,9 +75,9 @@ class TrainingConfig:
     moe_condition_name: str | None = None
     moe_condition_cardinality: int | None = None
 
-    # ── NEW: NAS training toggles ──
+    # NAS (Neural Architecture Search) training
     train_nas: bool = False  # Enable two-step NAS optimization
-    nas_alpha_lr: float = 3e-4  # Learning rate for α parameters
+    nas_alpha_lr: float = 3e-4  # Learning rate for architecture α parameters
     nas_alpha_weight_decay: float = 1e-3  # Weight decay for α
     nas_warmup_epochs: int = 5  # Epochs before starting α optimization
     nas_alternate_steps: int = 1  # Steps of α opt per weight opt step

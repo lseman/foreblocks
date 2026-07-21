@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any
+from collections.abc import Iterable, Mapping
 
 import torch
 
@@ -10,14 +11,8 @@ from foreblocks.modules.attention.cache.base import KVCacheProtocol
 
 
 class AttentionCacheState(dict[str, Any]):
-    """State owned by one attention sublayer.
-
-    It remains a ``dict`` so existing attention backends can migrate one at a
-    time, while callers gain canonical accessors for cache and position state.
-    """
-
     @classmethod
-    def from_legacy(cls, value: Mapping[str, Any] | None) -> "AttentionCacheState":
+    def from_legacy(cls, value: Mapping[str, Any] | None) -> AttentionCacheState:
         return value if isinstance(value, cls) else cls(value or {})
 
     @property
@@ -55,7 +50,7 @@ class AttentionCacheState(dict[str, Any]):
 
 class DecoderLayerState(dict[str, AttentionCacheState]):
     @classmethod
-    def from_legacy(cls, value: Mapping[str, Any] | None) -> "DecoderLayerState":
+    def from_legacy(cls, value: Mapping[str, Any] | None) -> DecoderLayerState:
         value = value or {}
         return cls(
             self_attn=AttentionCacheState.from_legacy(value.get("self_attn")),
@@ -78,7 +73,7 @@ class DecoderState(dict[str, Any]):
         value: Mapping[str, Any] | None,
         *,
         num_layers: int,
-    ) -> "DecoderState":
+    ) -> DecoderState:
         raw = dict(value or {})
         raw_layers: Iterable[Mapping[str, Any] | None] = raw.get("layers") or ()
         parsed_layers = [DecoderLayerState.from_legacy(item) for item in raw_layers]
@@ -87,7 +82,9 @@ class DecoderState(dict[str, Any]):
                 f"decoder state has {len(parsed_layers)} layers; expected {num_layers}"
             )
         if not parsed_layers:
-            parsed_layers = [DecoderLayerState.from_legacy(None) for _ in range(num_layers)]
+            parsed_layers = [
+                DecoderLayerState.from_legacy(None) for _ in range(num_layers)
+            ]
         raw["layers"] = parsed_layers
         return cls(raw)
 

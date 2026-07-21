@@ -27,8 +27,6 @@ from foreblocks.anomaly.models.tranad import TranAD
 
 
 class TranADDataset(TensorDataset):
-    """Memory-efficient dataset that creates sequences on-the-fly."""
-
     def __init__(self, data, seq_len):
         self.data = data
         self.seq_len = seq_len
@@ -42,7 +40,6 @@ class TranADDataset(TensorDataset):
 
 
 def create_sequences_vectorized(data: np.ndarray, seq_len: int) -> torch.Tensor:
-    """Optimized sequence creation using vectorized operations."""
     if data.ndim == 1:
         data = data[:, None]
 

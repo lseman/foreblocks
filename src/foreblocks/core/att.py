@@ -38,20 +38,6 @@ except ImportError:
 
 
 class AttentionLayer(nn.Module):
-    """
-    Enhanced multi-method attention layer with safe SDPA + modern backend support.
-
-    Supports:
-    - Full MHA / GQA / MQA
-    - Multiscale (dilated)
-    - ProbSparse (Informer-style)
-    - Linear attention (kernel approximation)
-    - Sliding window (local)
-    - LSH (basic Reformer-style)
-
-    Backends: torch (SDPA), xformers, flash-attn
-    """
-
     _VALID_METHODS = frozenset(
         {
             "dot",
@@ -88,7 +74,7 @@ class AttentionLayer(nn.Module):
         large_batch_limit: int = 65536,
         compile_if_possible: bool = False,
         verbose: bool = False,
-    ):
+    ) -> None:
         super().__init__()
 
         self._validate(method, attention_backend, decoder_hidden_size, nhead)
@@ -155,7 +141,7 @@ class AttentionLayer(nn.Module):
         if backend == "xformers" and not HAS_XFORMERS:
             raise ImportError("xformers not installed")
 
-    def _build_projections(self, use_swiglu: bool):
+    def _build_projections(self, use_swiglu: bool) -> None:
         if use_swiglu:
             self.combined_layer = nn.Sequential(
                 nn.Linear(
@@ -200,7 +186,7 @@ class AttentionLayer(nn.Module):
                 self.decoder_hidden_size, self.decoder_hidden_size, bias=False
             )
 
-    def _build_method_specific(self, num_scales: int):
+    def _build_method_specific(self, num_scales: int) -> None:
         if self.method == "multiscale":
             self.scale_projections = nn.ModuleList(
                 [
@@ -229,7 +215,7 @@ class AttentionLayer(nn.Module):
                 torch.randn(self.n_hashes, self.head_dim, self.head_dim // 2),
             )
 
-    def _print_config(self):
+    def _print_config(self) -> None:
         gqa = f"GQA ({self.nhead}q / {self.n_kv_heads}kv)" if self.n_rep > 1 else "MHA"
         print(f"[AttentionLayer] {gqa} | method={self.method} | backend={self.backend}")
         print(f"  head_dim={self.head_dim} | dropout={self.dropout_p:.2f}")

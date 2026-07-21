@@ -17,10 +17,10 @@ from foreblocks.modules.attention.utils.residuals import (
 )
 
 __all__ = [
-    "AttentionMatchingConfig",
     "AttentionMatchingCompactor",
-    "PositionEncodingApplier",
+    "AttentionMatchingConfig",
     "AttentionResidual",
     "BlockAttentionResidual",
+    "PositionEncodingApplier",
     "normalize_attention_residual_mode",
 ]

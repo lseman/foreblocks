@@ -32,15 +32,6 @@ from foreblocks.ui.node_spec import node
 
 
 class _ScaleFFTFilter(nn.Module):
-    """
-    Per-scale learnable spectral filter:
-      y = irfft(rfft(x) * H)
-    where H is complex-valued learnable weights over frequency bins per feature.
-
-    x: [B, T, F]
-    returns: [B, T, F]
-    """
-
     def __init__(self, feature_dim: int, seq_len: int, init: str = "identity"):
         super().__init__()
         self.feature_dim = int(feature_dim)
@@ -67,7 +58,7 @@ class _ScaleFFTFilter(nn.Module):
         # x: [B,T,F]
         B, T, Fdim = x.shape
         assert Fdim == self.feature_dim, (Fdim, self.feature_dim)
-        assert T == self.seq_len, (T, self.seq_len)
+        assert self.seq_len == T, (T, self.seq_len)
 
         # rFFT along time dimension
         X = fft.rfft(x, dim=1, norm="ortho")  # [B, freq_bins, F]
@@ -82,12 +73,6 @@ class _ScaleFFTFilter(nn.Module):
 
 
 class _ChannelwiseProj(nn.Module):
-    """
-    Lightweight channel-wise projection used in hierarchical fusion.
-    Keeps channels independent (groups=F) like the paper's "channel independent" fusion spirit.
-    Operates on [B, F, T].
-    """
-
     def __init__(self, feature_dim: int, dropout: float = 0.0):
         super().__init__()
         self.dw1x1 = nn.Conv1d(
@@ -105,15 +90,6 @@ class _ChannelwiseProj(nn.Module):
 
 
 class _ChannelMixer(nn.Module):
-    """
-    Parallel feature/channel mixer that runs on x in parallel to decomposition.
-
-    Input/Output: [B, T, F]
-    Two lightweight implementations:
-      - type="mlp": LN + (F -> hidden -> F) per time step
-      - type="conv1x1": 1x1 Conv over channels in [B,F,T] space
-    """
-
     def __init__(
         self,
         feature_dim: int,
@@ -177,13 +153,6 @@ class _ChannelMixer(nn.Module):
 
 
 class _ResidualRefinementBlock(nn.Module):
-    """
-    NHITS-like residual refinement on top of an interpolated coarse base.
-
-    The coarse path is treated as the current top-down estimate, and the block
-    predicts a correction from the tuple (fine, coarse, fine - coarse).
-    """
-
     def __init__(
         self,
         feature_dim: int,
@@ -215,22 +184,6 @@ class _ResidualRefinementBlock(nn.Module):
 
 
 class MultiScalePyramid(nn.Module):
-    """
-    MSFMoE-like multiscale pyramid head (preprocessing):
-      - Recursive AvgPool downsampling to build scales
-      - (Optional) per-scale FFT filtering
-      - Coarse-to-fine hierarchical fusion with residuals
-    - (Optional) NHITS-like coarse interpolation + residual refinement
-      - (Optional) Parallel channel mixer branch summed at the end
-
-    Input:  x  [B, T, F]
-    Output: y  [B, T, F]
-
-    Notes:
-      - This is a *feature* head (same length out), not a predictor head.
-      - Fusion uses upsampling (linear) + channel-wise 1x1 projection + residual add.
-    """
-
     def __init__(
         self,
         feature_dim: int,
@@ -365,9 +318,6 @@ class MultiScalePyramid(nn.Module):
         return yt.transpose(1, 2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B,T,F]
-        """
         if x.ndim != 3:
             raise ValueError(f"Expected x as [B,T,F], got {tuple(x.shape)}")
         B, T, Fdim = x.shape
@@ -434,11 +384,6 @@ class MultiScalePyramid(nn.Module):
     color="bg-gradient-to-r from-indigo-500 to-cyan-500",
 )
 class MultiScalePyramidHead(BaseHead):
-    """
-    BaseHead wrapper for MultiScalePyramid.
-    Forward: [B,T,F] -> [B,T,F]
-    """
-
     def __init__(
         self,
         feature_dim: int,

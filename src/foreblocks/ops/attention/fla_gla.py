@@ -59,17 +59,6 @@ def fla_gla_forward(
     scale: float,
     mode: str = "chunk",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run upstream FLA GLA with Foreblocks [B, H, T, D] layout.
-
-    Args:
-        q, k, v, g: query, key, value, and gate tensors [B, H, T, D].
-        initial_state: per-head state tensor [B, H, D, D].
-        scale: attention scale factor.
-        mode: "chunk" (default) or "recurrent".
-
-    Returns:
-        (output, final_state): both [B, H, T, D] and [B, H, D, D].
-    """
     if not can_use_fla_gla(q, k, v, g, initial_state):
         raise RuntimeError("FLA GLA is not available for these tensors")
     q_fla = q.transpose(1, 2).contiguous()

@@ -20,13 +20,6 @@ def lowess_filter(
     delta: float = 0.0,
     min_points: int = 10,
 ) -> np.ndarray:
-    """
-    Apply LOWESS smoother to each feature.
-
-    Improvements:
-      - preserves NaNs
-      - exposes robust iterations (it) + delta
-    """
     x = _as_2d(data)
     T, F = x.shape
     out = np.full_like(x, np.nan)

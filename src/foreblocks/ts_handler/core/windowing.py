@@ -17,12 +17,6 @@ def _create_sequences(
     feats: list[int] | None = None,
     time_feats: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-    """
-    Fast windowing:
-      X: [N, window, D]
-      y: [N, horizon, |feats|]
-      time_f: [N, window, F] or None
-    """
     x = np.asarray(data, dtype=float)
     if x.ndim != 2:
         raise ValueError(f"data must be 2D [T,D], got {x.shape}")
@@ -50,9 +44,7 @@ def _create_sequences(
             if tf2.ndim != 2 or tf2.shape[0] != T:
                 raise ValueError(f"time_feats must be [T,F], got {tf2.shape}")
             tf_all = sliding_window_view(tf2, window_shape=window_size, axis=0)
-            tf = np.ascontiguousarray(
-                np.transpose(tf_all[:max_idx, :, :], (0, 2, 1))
-            )
+            tf = np.ascontiguousarray(np.transpose(tf_all[:max_idx, :, :], (0, 2, 1)))
 
         return (
             np.asarray(X),
@@ -67,11 +59,7 @@ def _create_sequences(
 
         for i in range(max_idx):
             X_list.append(x[i : i + window_size])
-            y_list.append(
-                x[i + window_size : i + window_size + horizon][
-                    :, feats_idx
-                ]
-            )
+            y_list.append(x[i + window_size : i + window_size + horizon][:, feats_idx])
             if time_feats is not None:
                 tf_list.append(time_feats[i : i + window_size])
 

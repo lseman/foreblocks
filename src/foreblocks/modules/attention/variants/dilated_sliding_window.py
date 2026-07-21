@@ -17,8 +17,6 @@ import torch.nn.functional as F
 
 
 class DilatedSlidingWindowAttentionImpl:
-    """Local attention plus dilated long-range keys."""
-
     def __init__(self, parent):
         self.parent = parent
 

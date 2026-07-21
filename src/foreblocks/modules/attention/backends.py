@@ -117,14 +117,20 @@ def register_attention_backend(
     )
 
 
-def _flash_attention_runner(q, k, v, *, attention_mask=None, dropout_p=0.0, scale=None, **_):
-    """FlashAttention adapter with an SDPA fallback for arbitrary dense masks."""
+def _flash_attention_runner(
+    q, k, v, *, attention_mask=None, dropout_p=0.0, scale=None, **_
+):
     if attention_mask is not None:
         additive = torch.zeros_like(attention_mask, dtype=q.dtype).masked_fill(
             attention_mask, float("-inf")
         )
         return F.scaled_dot_product_attention(
-            q, k, v, attn_mask=additive, dropout_p=dropout_p, scale=scale,
+            q,
+            k,
+            v,
+            attn_mask=additive,
+            dropout_p=dropout_p,
+            scale=scale,
             enable_gqa=q.size(1) != k.size(1),
         )
     from flash_attn import flash_attn_func
@@ -144,14 +150,20 @@ def _flex_attention_runner(q, k, v, *, attention_mask=None, scale=None, **_):
 
     score_mod = None
     if attention_mask is not None:
+
         def score_mod(score, b, h, q_idx, kv_idx):
             return torch.where(
                 attention_mask[b, h, q_idx, kv_idx],
                 torch.full_like(score, float("-inf")),
                 score,
             )
+
     return flex_attention(
-        q, k, v, score_mod=score_mod, scale=scale,
+        q,
+        k,
+        v,
+        score_mod=score_mod,
+        scale=scale,
         enable_gqa=q.size(1) != k.size(1),
     )
 
@@ -178,7 +190,9 @@ else:
     )
 
 try:
-    from torch.nn.attention.flex_attention import flex_attention as _flex_available  # noqa: F401
+    from torch.nn.attention.flex_attention import (
+        flex_attention as _flex_available,  # noqa: F401
+    )
 except ImportError:
     ATTENTION_BACKENDS.register(
         "flex_attention",

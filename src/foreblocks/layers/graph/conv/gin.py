@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.layers.graph.common import ActivationType, ensure_adj, is_batched_adj
-from foreblocks.layers.graph.layers.message_passing import (
+from foreblocks.layers.graph.conv.message_passing import (
     GraphConvBase,
     MessagePassing,
     _check_edge_index,
@@ -19,8 +19,6 @@ from foreblocks.layers.graph.layers.message_passing import (
 
 
 class GINConv(GraphConvBase, MessagePassing):
-    """GIN sum aggregation followed by a two-layer MLP."""
-
     def __init__(
         self,
         in_channels: int,
@@ -104,8 +102,6 @@ class GINConv(GraphConvBase, MessagePassing):
 
 
 class GINEConv(GINConv):
-    """GIN convolution whose messages incorporate vector edge features."""
-
     def __init__(self, in_channels: int, out_channels: int, edge_dim: int, **kwargs):
         super().__init__(in_channels, out_channels, **kwargs)
         self.edge_encoder = nn.Linear(edge_dim, in_channels)

@@ -31,8 +31,6 @@ except ImportError:
 
 
 class NASHelper:
-    """Detects HeadComposer modules and manages alpha optimization."""
-
     def __init__(self, model: nn.Module, config: TrainingConfig):
         self.model = model
         self.config = config

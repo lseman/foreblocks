@@ -23,8 +23,6 @@ from foreblocks.ui.node_spec import node
 
 
 class _RoPE1D(nn.Module):
-    """Vectorized 1D rotary positional embedding over last dim (head_dim must be even)."""
-
     def __init__(self, head_dim: int, base: float = 10_000.0):
         super().__init__()
         head_dim = int(head_dim)
@@ -35,9 +33,6 @@ class _RoPE1D(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [N, T, H] where H=head_dim
-        """
         N, T, H = x.shape
         t = torch.arange(T, device=x.device, dtype=self.inv_freq.dtype)
         freqs = torch.einsum("t,d->td", t, self.inv_freq)  # [T, H/2]
@@ -52,18 +47,6 @@ class _RoPE1D(nn.Module):
 
 
 class TimeAttention(nn.Module):
-    """
-    Per-feature Transformer block over time:
-      - treats each feature f as its own sequence (length T)
-      - attention is computed over time independently per feature stream
-      - maps back to [B,T,F] via learned scalar projection + residual
-
-    This is "channel-independent" in the sense that features do not attend to each other;
-    each feature attends over its own history.
-
-    NOTE: This head is shape-preserving but increases compute by F (batch becomes B*F).
-    """
-
     def __init__(
         self,
         feature_dim: int,
@@ -174,14 +157,11 @@ class TimeAttention(nn.Module):
         return q, k
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B,T,F] -> y: [B,T,F]
-        """
         if x.dim() != 3:
             raise ValueError(f"TimeAttention expects [B,T,F], got {tuple(x.shape)}")
 
         B, T, F_ = x.shape
-        if F_ != self.feature_dim:
+        if self.feature_dim != F_:
             raise RuntimeError(
                 f"Input F={F_} != configured feature_dim={self.feature_dim}"
             )
@@ -225,8 +205,6 @@ class TimeAttention(nn.Module):
     color="bg-gradient-to-r from-indigo-400 to-cyan-500",
 )
 class TimeAttentionHead(BaseHead):
-    """BaseHead wrapper for TimeAttention. Forward -> [B,T,F]."""
-
     def __init__(
         self,
         feature_dim: int,

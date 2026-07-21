@@ -22,8 +22,6 @@ from foreblocks.models.transformer.transformer import TransformerEncoder
 
 
 class Informer(nn.Module):
-    """Minimal Informer-style forecasting head."""
-
     def __init__(
         self,
         pred_len: int,

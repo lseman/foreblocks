@@ -11,7 +11,6 @@ import warnings
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from typing import Any, Literal
 
-import numpy as np
 import pandas as pd
 
 from foreblocks.ts_handler.auto_filter.metrics import (
@@ -87,7 +86,6 @@ def auto_filter(
     use_mc_gcv: bool = True,
     progress: bool = False,
 ) -> tuple[str, pd.Series, pd.DataFrame]:
-    """Run all registered filters, score them, and return the best."""
     if weights is None:
         weights = ScoringWeights()
     if target_band is None:

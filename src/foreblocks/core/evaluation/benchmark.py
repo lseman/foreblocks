@@ -77,7 +77,6 @@ warnings.filterwarnings("ignore")
 
 
 def _ffill_numpy_colwise(arr: np.ndarray) -> np.ndarray:
-    """Simple forward-fill per column for NaNs (in-place-safe copy)."""
     out = arr.copy()
     T, N = out.shape
     for j in range(N):
@@ -173,10 +172,6 @@ class NPTimeseriesNFBenchmark:
         step_size: int | None = None,
         verbose: bool = True,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """
-        Trains/evaluates all models with NeuralForecast cross_validation.
-        Returns (metrics_normalized_df, metrics_original_df)
-        """
         if models is None:
             models = self.default_models()
 
@@ -279,7 +274,6 @@ class NPTimeseriesNFBenchmark:
         return self.metrics_normalized, self.metrics_original
 
     def summarize(self) -> None:
-        """Pretty-print both tables + brief best-model summary."""
         if self.metrics_normalized is None or self.metrics_original is None:
             print("Run the benchmark first with .run().")
             return
@@ -312,7 +306,6 @@ class NPTimeseriesNFBenchmark:
             pass
 
     def latex_table_original(self) -> str:
-        """Return a LaTeX table string for original-scale results."""
         if self.metrics_original is None or self.metrics_original.empty:
             return "% Run the benchmark first."
         df = self.metrics_original.copy()
@@ -334,7 +327,6 @@ class NPTimeseriesNFBenchmark:
     # ──────────────────────────────────────────────────────────────────────────
     @staticmethod
     def default_models() -> list[tuple[type, str]]:
-        """Safe default list: include what’s available in this environment."""
         base = [
             (TiDE, "TiDE"),
             (NHITS, "NHITS"),
@@ -481,7 +473,6 @@ class NPTimeseriesNFBenchmark:
         return ModelClass(**kwargs)
 
     def _denorm_row_pred(self, uid: str, ds: pd.Timestamp, y_pred_norm: float) -> float:
-        """Inverse transform a single prediction using stored params and its time index."""
         p = self._norm_params[uid]
         val = float(y_pred_norm)
 

@@ -34,13 +34,6 @@ def _safe_minmax(x: Tensor, dim: int, eps: float = 1e-8) -> Tensor:
 
 
 def _ols_detrend(x: Tensor, eps: float = 1e-8) -> tuple[Tensor, Tensor]:
-    """
-    Global linear detrending per sample & channel:
-      xtrend(t) = w * t + b
-      xdetrend = x - xtrend
-    x: [B, L, C]
-    Returns: xdetrend [B, L, C], xtrend [B, L, C]
-    """
     B, L, C = x.shape
     device = x.device
     dtype = x.dtype
@@ -64,11 +57,6 @@ def _ols_detrend(x: Tensor, eps: float = 1e-8) -> tuple[Tensor, Tensor]:
 
 
 def _spectral_flatness(a: Tensor, eps: float = 1e-8) -> Tensor:
-    """
-    Spectral Flatness Measure (SFM).
-    a: nonnegative amplitude spectrum, shape [B, F, C]
-    Returns: [B, C]
-    """
     a = a.clamp_min(eps)
     geo = torch.exp(torch.mean(torch.log(a), dim=1))  # [B,C]
     arith = torch.mean(a, dim=1).clamp_min(eps)  # [B,C]
@@ -79,11 +67,6 @@ def _spectral_flatness(a: Tensor, eps: float = 1e-8) -> Tensor:
 # Spectral Noise Scorer
 # ----------------------------
 class SpectralNoiseScorer(nn.Module):
-    """
-    Estimate per-sample noise:
-      detrend -> rFFT -> log-norm -> SFM-anchored soft mask -> iFFT -> residual MAE.
-    """
-
     def __init__(
         self,
         alpha_init: float = 10.0,  # mask sharpness (softplus(alpha))
@@ -99,12 +82,6 @@ class SpectralNoiseScorer(nn.Module):
         self.eps = eps
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        """
-        x: [B, L, C]
-        Returns:
-          s: [B] noise score (residual MAE)
-          p_debug: dict-like Tensor pack (optional usage) -> here we return Ahat.mean for quick debugging
-        """
         assert x.dim() == 3, "Expected x as [B, L, C]"
         B, L, C = x.shape
 
@@ -143,14 +120,6 @@ class SpectralNoiseScorer(nn.Module):
 # Sample-Adaptive Dropout (STE)
 # ----------------------------
 class SampleAdaptiveDropout(nn.Module):
-    """
-    Implements Sec 4.2:
-      - batch-wise min-max normalize s -> ŝ in [0,1]
-      - sensitivity curve: s~ = tanh(ŝ * softplus(gamma))
-      - p = pmin + (pmax-pmin)*s~
-      - STE Bernoulli mask and inverted-dropout rescale
-    """
-
     def __init__(
         self,
         p_min: float = 0.05,
@@ -166,10 +135,6 @@ class SampleAdaptiveDropout(nn.Module):
         self.eps = eps
 
     def map_score_to_p(self, s: Tensor) -> Tensor:
-        """
-        s: [B] positive
-        returns p: [B] in [pmin, pmax]
-        """
         # Batch min-max.
         s_min = s.min()
         s_max = s.max()
@@ -184,12 +149,6 @@ class SampleAdaptiveDropout(nn.Module):
         return p.clamp(self.p_min, self.p_max)
 
     def forward(self, h: Tensor, p: Tensor) -> Tensor:
-        """
-        Apply adaptive dropout to feature map h using per-sample dropout prob p.
-        h: [B, ...] any shape with batch dim first
-        p: [B]
-        Returns: same shape as h
-        """
         if not self.training:
             return h
 
@@ -221,14 +180,6 @@ class DropoutTSOutput:
 
 
 class DropoutTS(nn.Module):
-    """
-    End-to-end DropoutTS plugin:
-      - Given raw input window x: [B,L,C], compute noise score s
-      - Map to per-sample dropout prob p
-      - Provide an `apply(h, p)` that you can use wherever you'd normally call nn.Dropout
-    This keeps the task objective unchanged and backprops through p via STE.
-    """
-
     def __init__(
         self,
         p_min: float = 0.05,
@@ -249,25 +200,15 @@ class DropoutTS(nn.Module):
 
     @torch.no_grad()
     def infer_p(self, x: Tensor) -> Tensor:
-        """
-        Convenience: compute p in eval mode (no dropout applied anyway).
-        """
         s, _ = self.scorer(x)
         return self.adrop.map_score_to_p(s)
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        """
-        x: [B,L,C]
-        Returns: (p, s, debug)
-        """
         s, debug = self.scorer(x)
         p = self.adrop.map_score_to_p(s)
         return p, s, debug
 
     def apply(self, h: Tensor, p: Tensor) -> Tensor:
-        """
-        Apply sample-adaptive dropout to any feature map h (batch-first).
-        """
         return self.adrop(h, p)
 
 
@@ -275,12 +216,6 @@ class DropoutTS(nn.Module):
 # Example integration pattern
 # ----------------------------
 class ExampleBackboneWithDropoutTS(nn.Module):
-    """
-    Minimal example showing how to "replace default dropout with DropoutTS":
-      - compute p from the *input window* x
-      - pass p to each dropout site
-    """
-
     def __init__(
         self, in_channels: int, hidden: int, out_horizon: int, p_min=0.05, p_max=0.5
     ):
@@ -293,10 +228,6 @@ class ExampleBackboneWithDropoutTS(nn.Module):
         self.in_channels = in_channels
 
     def forward(self, x: Tensor) -> DropoutTSOutput:
-        """
-        x: [B,L,C]
-        y: [B,H,C]
-        """
         B, L, C = x.shape
         p, s, debug = self.dt(x)  # p per sample from spectral scorer
 

@@ -51,13 +51,6 @@ def _to_tensor(x, device: str) -> torch.Tensor:
 
 
 def _ensure_3d_pred(x: torch.Tensor) -> torch.Tensor:
-    """
-    Normalize predictions to [N,H,D].
-    Accepts:
-      [N]         -> [N,1,1]
-      [N,H]       -> [N,H,1]
-      [N,H,D]     -> unchanged
-    """
     if x.ndim == 1:
         return x[:, None, None]
     if x.ndim == 2:
@@ -70,13 +63,6 @@ def _ensure_3d_pred(x: torch.Tensor) -> torch.Tensor:
 
 
 def _ensure_3d_y(y: torch.Tensor, like_pred: torch.Tensor) -> torch.Tensor:
-    """
-    Normalize y to [N,H,D] compatible with like_pred [N,H,D].
-    Accepts:
-      [N]         -> [N,1,1]
-      [N,H]       -> [N,H,1]
-      [N,H,D]     -> unchanged
-    """
     y3 = _ensure_3d_pred(y)
     # Broadcast D if needed and safe:
     if y3.shape[2] == 1 and like_pred.shape[2] > 1:
@@ -94,28 +80,16 @@ def _softmax_if_logits(z: torch.Tensor) -> torch.Tensor:
 
 
 def _conformal_quantile_level(n: int, alpha: float) -> float:
-    """
-    Finite-sample split conformal quantile level:
-      q = min(1.0, ceil((n+1)*(1-alpha)) / n)
-    """
     return min(1.0, float(np.ceil((n + 1) * (1 - alpha)) / n))
 
 
 def _finite_q_level(n: int, q: float) -> float:
-    """
-    Finite-sample quantile level for general q in [0,1]:
-      q_fs = min(1.0, ceil((n+1)*q) / n)
-    """
     return min(1.0, float(np.ceil((n + 1) * q) / n))
 
 
 def _exact_quantile_higher(
     values: torch.Tensor, q: float, dim: int = 0
 ) -> torch.Tensor:
-    """
-    Quantile using 'higher' interpolation via sorting:
-    returns the smallest value v such that CDF(v) >= q.
-    """
     if not (0.0 <= q <= 1.0):
         raise ValueError("q must be in [0,1]")
     v = values
@@ -132,9 +106,6 @@ def _exact_quantile_higher(
 def _exact_quantile_higher_np(
     values: np.ndarray, q: float, axis: int = 0
 ) -> np.ndarray:
-    """
-    NumPy version of `_exact_quantile_higher` using the empirical CDF definition.
-    """
     if not (0.0 <= q <= 1.0):
         raise ValueError("q must be in [0,1]")
     v = np.asarray(values)
@@ -150,11 +121,6 @@ def _exact_quantile_higher_np(
 def weighted_quantile(
     values: torch.Tensor, q: float, weights: torch.Tensor | None, dim: int = 0
 ) -> torch.Tensor:
-    """
-    Weighted quantile along `dim` (non-differentiable; suitable for conformal).
-    If weights is None -> torch.quantile (linear interpolation).
-    If weights provided -> weighted CDF with mid-point correction.
-    """
     if weights is None:
         return _exact_quantile_higher(values, q, dim=dim)
 
@@ -219,12 +185,6 @@ def _rolling_clip(t: torch.Tensor, maxlen: int) -> torch.Tensor:
 
 
 class DefaultFeatureExtractor(nn.Module):
-    """
-    Feature extractor for time series with temporal awareness.
-    x: [N, seq_len, features] -> [N, feature_dim]
-       otherwise flattened MLP -> [N, feature_dim]
-    """
-
     def __init__(
         self,
         input_dim: int,
@@ -295,27 +255,6 @@ class DefaultFeatureExtractor(nn.Module):
 
 
 class ConformalPredictionEngine:
-    """
-    State-of-the-art Conformal Prediction Engine supporting multiple methods.
-
-    Methods:
-        - split: Standard split conformal (global radius)
-        - local: KNN-based local conformal
-        - jackknife: CV+/Jackknife+ with leave-one-out residuals
-        - quantile: Conformalized Quantile Regression (CQR)
-        - tsp: Time-Series Partition with exponential weighting
-        - rolling: Rolling conformal with ACI (Adaptive Conformal Inference)
-        - agaci: Aggregated Adaptive CI with multiple learning rates
-        - enbpi: Ensemble Batch Prediction Intervals
-        - cptc: Conformal Prediction under Temporal Covariate shift
-        - afocp: Attention-based Feature-weighted Online Conformal Prediction
-
-    Key Features:
-        - Sequential vs batch update modes for ACI methods
-        - Proper finite-sample quantile correction
-        - Multi-horizon support [N, H, D]
-    """
-
     def __init__(
         self,
         method: Literal[
@@ -958,22 +897,6 @@ class ConformalPredictionEngine:
         state_model: Callable | None = None,
         feature_extractor: nn.Module | None = None,
     ):
-        """
-        Online update for adaptive conformal methods.
-
-        Args:
-            model: The forecasting model
-            X_new: New input features [B, ...]
-            y_new: New ground truth labels [B, H] or [B, H, D]
-            device: Computation device
-            batch_size: Batch size for model inference
-            sequential: If True, update point-by-point (required for exact ACI).
-                       If None, auto-enables for rolling/agaci methods.
-                       If False, use batch update (faster but approximate for ACI).
-            enbpi_member_models: Ensemble models for EnbPI-consistent update
-            state_model: State model for CPTC (uses stored if None)
-            feature_extractor: Feature extractor for AFOCP (uses stored if None)
-        """
         supported = ["rolling", "agaci", "enbpi", "cptc", "afocp", "local", "tsp"]
         if self.method not in supported:
             warnings.warn(f"Online update not supported for '{self.method}'.")
@@ -1031,19 +954,6 @@ class ConformalPredictionEngine:
         device: str,
         batch_size: int,
     ):
-        """
-        Single-point ACI update for rolling/agaci methods.
-
-        Implements the true sequential ACI update:
-            α_{t+1} = α_t + γ * (α_target - err_t)
-
-        where α_target = 1 - q is the fixed target miscoverage rate.
-
-        When we miss (err_t=1), α decreases, which increases the quantile level (1-α),
-        giving larger radii and wider intervals to reduce future misses.
-
-        Each sample uses its own α to compute intervals, then updates α.
-        """
         # Get interval with CURRENT alpha
         _, lower, upper = self.predict(
             model, X_single.cpu().numpy(), device, batch_size
@@ -1114,9 +1024,6 @@ class ConformalPredictionEngine:
         state_model: Callable | None = None,
         feature_extractor: Callable | None = None,
     ):
-        """
-        Batch update for non-ACI methods or when sequential=False.
-        """
         B, H, D = new_residuals.shape
 
         # Coverage tracking for batch ACI (approximate)
@@ -1404,11 +1311,9 @@ class ConformalPredictionEngine:
         return upper - lower
 
     def get_current_alpha(self) -> float:
-        """Get the current miscoverage level (useful for ACI methods)."""
         return self.alpha
 
     def get_expert_alphas(self) -> dict[float, float] | None:
-        """Get current alpha values for each AgACI expert."""
         if self.agaci_experts is None:
             return None
         return {e["gamma"]: e["alpha"] for e in self.agaci_experts}
@@ -1518,7 +1423,6 @@ class ConformalPredictionEngine:
         self._afocp_opt = None
 
     def reset(self):
-        """Reset all state variables to allow recalibration."""
         self.radii = None
         self.cal_X_feat = None
         self.local_residuals = None

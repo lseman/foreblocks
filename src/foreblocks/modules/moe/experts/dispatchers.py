@@ -22,15 +22,6 @@ import torch
 
 
 class DroplessPackedDispatcher:
-    """
-    Packs every token-choice assignment by expert without capacity pruning.
-
-    Capacity arguments remain accepted for API compatibility, but this dispatcher
-    is deliberately dropless. Capacity-limited routing belongs in a separately
-    named dispatcher so callers can rely on this class's contract.
-    Returns packed_x / packed_w and (experts_seq, tokens_seq, offsets, dropped).
-    """
-
     def __init__(self, num_experts: int, top_k: int, capacity_factor: float = 1.25):
         self.num_experts = int(num_experts)
         self.top_k = int(top_k)
@@ -133,8 +124,6 @@ class DroplessPackedDispatcher:
 
 
 class ConfidenceCapacityDispatcher(DroplessPackedDispatcher):
-    """Capacity-limited dispatcher that keeps the strongest routes per expert."""
-
     def pack(
         self,
         x_flat: torch.Tensor,
@@ -181,9 +170,9 @@ class ConfidenceCapacityDispatcher(DroplessPackedDispatcher):
             if capacity == 0:
                 continue
             local_weights = packed_w[start:end, 0]
-            strongest = torch.topk(
-                local_weights, k=capacity, sorted=False
-            ).indices.add(start)
+            strongest = torch.topk(local_weights, k=capacity, sorted=False).indices.add(
+                start
+            )
             kept_parts.append(strongest)
 
         kept = torch.cat(kept_parts) if kept_parts else experts.new_empty((0,))
@@ -192,9 +181,7 @@ class ConfidenceCapacityDispatcher(DroplessPackedDispatcher):
         packed_x = packed_x.index_select(0, kept)
         packed_w = packed_w.index_select(0, kept)
         counts = torch.bincount(experts, minlength=self.num_experts)
-        offsets = torch.cumsum(
-            torch.cat([counts.new_zeros(1), counts]), dim=0
-        )
+        offsets = torch.cumsum(torch.cat([counts.new_zeros(1), counts]), dim=0)
         return (
             packed_x,
             packed_w,
@@ -206,12 +193,6 @@ class ConfidenceCapacityDispatcher(DroplessPackedDispatcher):
 
 
 class ExpertChoiceDispatcher:
-    """
-    Expert-choice dispatcher:
-    each expert selects top tokens; token-wise probabilities are normalized
-    over selected experts for weighted scatter.
-    """
-
     def __init__(
         self,
         num_experts: int,

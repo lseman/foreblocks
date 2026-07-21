@@ -51,16 +51,6 @@ def forward_pass(
     amp_context: Any,
     device: torch.device,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
-    """Run a forward pass and return ``(outputs, aux_dict)``.
-
-    Handles three model signatures via graceful fallback:
-    1. ``model(X, y, time_feat, epoch, meta=…)``  – full signature
-    2. ``model(X, y, time_feat, epoch)``           – no meta
-    3. ``model(X)``                                 – bare
-
-    Also handles distillation-aware models that implement
-    ``get_distillation_info()`` and ``return_teacher_outputs``.
-    """
     aux: dict[str, Any] = {}
     graph_kwargs = graph_kwargs or {}
     meta = (
@@ -136,17 +126,6 @@ def backward_step(
     amp_enabled: bool,
     scheduler: Any = None,
 ) -> None:
-    """Execute the backward pass with gradient accumulation and clipping.
-
-    If AMP is enabled the loss is scaled before ``.backward()`` and the
-    optimizer is stepped via ``scaler.step()``.  Otherwise standard
-    ``loss.backward()`` + ``optimizer.step()`` is used.  The optimizer
-    is only stepped when the gradient-accumulation boundary is reached
-    or the last batch is processed.
-
-    If a step-level scheduler (e.g., WarmupCosineLR) is provided, it is
-    stepped immediately after the optimizer step.
-    """
     loss = loss / config.gradient_accumulation_steps
 
     clip_val = getattr(config, "gradient_clip_val", None)
@@ -154,9 +133,8 @@ def backward_step(
     if amp_enabled:
         scaler.scale(loss).backward()
         if (
-            (batch_idx + 1) % config.gradient_accumulation_steps == 0
-            or batch_idx + 1 == total_batches
-        ):
+            batch_idx + 1
+        ) % config.gradient_accumulation_steps == 0 or batch_idx + 1 == total_batches:
             scaler.unscale_(optimizer)
             if clip_val:
                 nn.utils.clip_grad_norm_(model.parameters(), clip_val)
@@ -168,9 +146,8 @@ def backward_step(
     else:
         loss.backward()
         if (
-            (batch_idx + 1) % config.gradient_accumulation_steps == 0
-            or batch_idx + 1 == total_batches
-        ):
+            batch_idx + 1
+        ) % config.gradient_accumulation_steps == 0 or batch_idx + 1 == total_batches:
             if clip_val:
                 nn.utils.clip_grad_norm_(model.parameters(), clip_val)
             optimizer.step()
@@ -203,10 +180,6 @@ def train_epoch(
     device: torch.device = torch.device("cpu"),
     scheduler: Any = None,
 ) -> tuple[float, dict[str, float], int]:
-    """Train for one epoch.  Returns ``(total_loss, avg_components, batch_idx)``.
-
-    Optionally performs NAS alpha-optimization warmup before the main loop.
-    """
     model.train()
     total_loss = 0.0
     all_components: dict[str, list[float]] = {}
@@ -306,7 +279,6 @@ def evaluate(
     moe_meta_builder: Any = None,
     forward_pass_fn: Any = forward_pass,
 ) -> float:
-    """Evaluate model on *dataloader* and return mean loss."""
     if dataloader is None:
         return float("nan")
     model.eval()
@@ -365,12 +337,6 @@ def _alpha_step(
     device: torch.device,
     forward_pass_fn: Any = forward_pass,
 ) -> float:
-    """Optimize NAS architecture parameters (alphas) for one step.
-
-    Freezes the weights (θ) and takes a gradient step on the architecture
-    parameters (α).  Includes extensive debug-fail-fast checks to surface
-    common NAS wiring issues early.
-    """
     if optimizer is None:
         raise ValueError("[NAS] alpha_optimizer is None.")
 

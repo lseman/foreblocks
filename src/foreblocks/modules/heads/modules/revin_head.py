@@ -24,12 +24,6 @@ from foreblocks.ui.node_spec import node
 
 
 class RevIN(nn.Module):
-    """
-    Reversible Instance Normalization (per-variable, over time).
-    Forward: returns (x_norm, ctx) where ctx has {mu, sigma}.
-    invert(x_hat, ctx) -> original scale.
-    """
-
     def __init__(self, num_features: int, affine: bool = True, eps: float = 1e-5):
         super().__init__()
         self.num_features = int(num_features)
@@ -69,8 +63,6 @@ class RevIN(nn.Module):
     color="bg-gradient-to-r from-yellow-400 to-red-500",
 )
 class RevINHead(BaseHead):
-    """BaseHead wrapper for RevIN. Forward -> (x_norm, ctx)."""
-
     def __init__(self, feature_dim: int, affine: bool = True, eps: float = 1e-5):
         super().__init__(
             module=RevIN(feature_dim, affine=affine, eps=eps), name="revin"

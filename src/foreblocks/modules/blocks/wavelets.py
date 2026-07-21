@@ -26,24 +26,18 @@ from sympy import Poly, Symbol, legendre
 
 
 def legendre_der(k: int, x: np.ndarray) -> np.ndarray:
-    """Derivative of Legendre polynomial (for quadrature weights)."""
     return (2 * k + 1) * eval_legendre(k, x)
 
 
 def phi_fn(
     coeff: np.ndarray, x: np.ndarray, lb: float = 0.0, ub: float = 1.0
 ) -> np.ndarray:
-    """Evaluate polynomial with domain mask."""
     poly = np.polynomial.polynomial.Polynomial(coeff)
     mask = ((x < lb) | (x > ub)).astype(np.float64)
     return poly(x) * (1.0 - mask)
 
 
 def get_phi_psi(k: int, base: str = "legendre") -> tuple[list, list, list]:
-    """
-    Compute scaling functions phi and wavelets psi1, psi2.
-    Returns list of callable polynomial functions (np.poly1d or partial).
-    """
     if base not in ["legendre", "chebyshev"]:
         raise ValueError(f"Unsupported base: {base}")
 
@@ -127,7 +121,6 @@ def get_phi_psi(k: int, base: str = "legendre") -> tuple[list, list, list]:
 
 
 def get_filter(base: str, k: int) -> tuple[np.ndarray, ...]:
-    """Compute filter matrices H0,H1,G0,G1 and reconstruction PHI0,PHI1."""
     phi, psi1, psi2 = get_phi_psi(k, base)
 
     H0 = np.zeros((k, k))
@@ -172,8 +165,6 @@ def get_filter(base: str, k: int) -> tuple[np.ndarray, ...]:
 
 
 class SparseKernelFT1d(nn.Module):
-    """Low-frequency Fourier kernel in coefficient space."""
-
     def __init__(self, k: int, modes: int, c: int = 16):
         super().__init__()
         self.modes = modes
@@ -207,8 +198,6 @@ class SparseKernelFT1d(nn.Module):
 
 
 class MWT_CZ1d(nn.Module):
-    """MultiWavelet Transform block (core operator layer)."""
-
     def __init__(
         self,
         k: int = 5,
@@ -248,10 +237,6 @@ class MWT_CZ1d(nn.Module):
         self.act = nn.GELU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, N, c, k]
-        Returns: [B, N, c, k]
-        """
         B, N_orig, _, _ = x.shape
         nl = 2 ** math.ceil(math.log2(max(N_orig, 1)))
         pad_len = nl - N_orig
@@ -282,14 +267,12 @@ class MWT_CZ1d(nn.Module):
         return x[..., :N_orig, :, :]
 
     def wavelet_transform(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """One level decomposition."""
         xa = torch.cat([x[:, ::2], x[:, 1::2]], dim=-1)
         d = xa @ self.ec_d
         s = xa @ self.ec_s
         return d, s
 
     def even_odd(self, x: torch.Tensor) -> torch.Tensor:
-        """Even-odd interleaving reconstruction."""
         x_e = x @ self.rc_e
         x_o = x @ self.rc_o
         out = torch.zeros(
@@ -306,11 +289,6 @@ class MWT_CZ1d(nn.Module):
 
 
 class MultiWaveletFeatureExtractor(nn.Module):
-    """
-    Multi-wavelet feature extractor / operator layer stack.
-    Input / output: [B, L, input_channels] ↔ [B, L, out_channels]
-    """
-
     def __init__(
         self,
         input_channels: int = 1,
@@ -338,10 +316,6 @@ class MultiWaveletFeatureExtractor(nn.Module):
         self.project_out = nn.Linear(self.c * self.k, self.out_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, L, input_channels]
-        Returns: [B, L, out_channels]
-        """
         B, L, Cin = x.shape
 
         x = self.project_in(x)  # → [B, L, c*k]

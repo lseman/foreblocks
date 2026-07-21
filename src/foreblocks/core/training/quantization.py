@@ -25,15 +25,6 @@ import torch.nn.functional as F
 
 
 class QuantizationConfig:
-    """
-    Simple config for manual (fake/static/dynamic) quantization.
-    - bit_width: 8 by default
-    - symmetric: if True -> qmin = -(2^(b-1)), qmax = 2^(b-1)-1, zp ~ 0
-                 if False -> qmin = 0, qmax = 2^b-1, zp in [qmin,qmax]
-    - per_channel: if True, weight quant params are per out_channel (dim=0)
-    - moving_avg_factor: if >0, use EMA for min/max updates (e.g., 0.1 for smoothing)
-    """
-
     def __init__(
         self,
         bit_width: int = 8,
@@ -52,15 +43,6 @@ class QuantizationConfig:
 
 
 class QuantizationObserver(nn.Module):
-    """
-    Min/max observer (per-tensor or per-outchannel for weights).
-    For Linear/Conv weights, "channel" is out_features/out_channels at dim=0.
-    Usage:
-      obs = QuantizationObserver(cfg)
-      obs._update_stats(tensor) # or call obs(tensor) while in training mode
-      scale, zp = obs.calculate_scale_zero_point()
-    """
-
     def __init__(self, config: QuantizationConfig):
         super().__init__()
         self.config = config
@@ -130,15 +112,6 @@ class QuantizationObserver(nn.Module):
 
 
 class QuantizedLinear(nn.Module):
-    """
-    Post-Training Quantized linear layer (static activations/weights).
-    - Weights stored as int8 with per-tensor or per-channel (out_features) qparams.
-    - Activations use fixed qparams (must be set from calibration).
-    - Bias stored as int32 with scale = input_scale * weight_scale.
-    - Performs: y = ( (x_int - x_zp) @ (w_int - w_zp)^T ) * (x_s * w_s) + bias_int * (x_s * w_s)
-      (uses float accumulation for simplicity)
-    """
-
     def __init__(
         self,
         in_features: int,
@@ -177,7 +150,6 @@ class QuantizedLinear(nn.Module):
         self.register_buffer("input_zero_point", torch.tensor(0, dtype=torch.long))
 
     def set_input_qparams(self, scale: torch.Tensor, zero_point: torch.Tensor):
-        """Set calibrated activation qparams (per-tensor)."""
         self.input_scale.copy_(scale.detach())
         self.input_zero_point.copy_(zero_point.detach())
 
@@ -222,11 +194,6 @@ class QuantizedLinear(nn.Module):
         config: QuantizationConfig = None,
         act_observer: QuantizationObserver = None,
     ):
-        """
-        Convert fp32 Linear to static quantized Linear.
-        Requires a calibrated activation observer for input qparams.
-        Weight quantization is symmetric by default (zp≈0).
-        """
         cfg = config or QuantizationConfig()
         q = cls(
             float_module.in_features,
@@ -280,14 +247,6 @@ class QuantizedLinear(nn.Module):
 
 
 class DynamicQuantizedLinear(nn.Module):
-    """
-    Dynamic quantization:
-      - Weights are int8 (PTQ) with fixed qparams.
-      - Activations are quantized per forward (per-tensor, asymmetric).
-      - Bias remains float and is added after dequant.
-      y = ( (x_int - x_zp) @ (w_int - w_zp)^T ) * (a_s * w_s) + bias_float
-    """
-
     def __init__(
         self,
         in_features: int,
@@ -388,13 +347,6 @@ class DynamicQuantizedLinear(nn.Module):
 
 
 class FakeQuantize(nn.Module):
-    """
-    Module for QAT-style fake quantization.
-    - Uses an internal observer to track ranges.
-    - If config.per_channel=True, treats the *last* dimension as channel for activations.
-      (Common for [B, D] activations from Linear layers.)
-    """
-
     def __init__(self, config: QuantizationConfig):
         super().__init__()
         self.config = config
@@ -444,8 +396,6 @@ class FakeQuantize(nn.Module):
 
 
 class StaticQuantizedLinear(QuantizedLinear):
-    """Alias to distinguish static from dynamic in codebases."""
-
     def __init__(
         self, in_features, out_features, bias=True, config: QuantizationConfig = None
     ):
@@ -453,14 +403,6 @@ class StaticQuantizedLinear(QuantizedLinear):
 
 
 class ManualQuantStub(nn.Module):
-    """
-    A simple activation fake-quant stub for QAT graphs.
-    Typically used like:
-        self.quant = ManualQuantStub(QuantizationConfig(per_channel=False))
-        self.dequant = ManualDeQuantStub()
-        x = self.quant(x); y = self.linear(x); y = self.dequant(y)
-    """
-
     def __init__(self, config: QuantizationConfig = None):
         super().__init__()
         self.config = config or QuantizationConfig()
@@ -471,8 +413,6 @@ class ManualQuantStub(nn.Module):
 
 
 class ManualDeQuantStub(nn.Module):
-    """No-op dequant stub to mirror standard FX/QAT APIs."""
-
     def __init__(self):
         super().__init__()
 

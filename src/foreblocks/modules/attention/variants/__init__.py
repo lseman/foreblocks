@@ -23,10 +23,10 @@ __all__ = [
     "AttentionImpl",
     "DilatedSlidingWindowAttentionImpl",
     "MoBAAttentionImpl",
-    "StandardAttentionImpl",
-    "ProbSparseAttentionImpl",
     "NSAImpl",
+    "ProbSparseAttentionImpl",
     "SlidingWindowAttentionImpl",
     "SoftpickAttentionImpl",
     "SpectralAttentionImpl",
+    "StandardAttentionImpl",
 ]

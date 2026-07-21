@@ -119,13 +119,6 @@ class _StandardFeedForwardBlock(nn.Module):
 
 
 class FeedForwardBlock(nn.Module):
-    """
-    Unified FFN wrapper.
-    - use_moe=True -> MoEFeedForwardDMoE (fast path)
-    - use_moe=False -> standard FFN (with optional SwiGLU)
-    - routing_mode='token_choice' (default) or 'expert_choice'
-    """
-
     def __init__(
         self,
         d_model: int,

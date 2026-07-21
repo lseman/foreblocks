@@ -14,8 +14,6 @@ from .kv import (
 
 
 class AttentionCacheSelector:
-    """Select a cache provider from typed or legacy attention state."""
-
     def __init__(self, attention) -> None:
         self.attention = attention
 
@@ -29,7 +27,9 @@ class AttentionCacheSelector:
         force_paged: bool | None = None,
     ) -> KVProvider:
         attn = self.attention
-        static_cache = layer_state.get("static_cache") if layer_state is not None else None
+        static_cache = (
+            layer_state.get("static_cache") if layer_state is not None else None
+        )
         if isinstance(static_cache, StaticKVCache):
             return StaticKVProvider(
                 static_cache,

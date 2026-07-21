@@ -82,17 +82,6 @@ def fused_rmsnorm_sigmoid_gate(
     weight: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Fused RMSNorm(x) * weight * gate for [B, H, T, D] tensors.
-
-    Args:
-        x: input tensor [B, H, T, D].
-        gate: sigmoid-activated gate values with the same shape as ``x``.
-        weight: per-head per-dimension RMS weights [H, D].
-        eps: RMSNorm epsilon.
-
-    Returns:
-        output [B, H, T, D].
-    """
     if not can_use_fused_rmsnorm_sigmoid_gate(x, gate, weight):
         raise RuntimeError("fused_rmsnorm_sigmoid_gate is not available")
     x = x.contiguous()

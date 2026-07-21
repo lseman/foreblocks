@@ -46,7 +46,6 @@ if FUSED_DT_TRITON_AVAILABLE:
         dt_max,
         BLOCK_DT: tl.constexpr,
     ):
-        """Forward: each thread handles one (b, t, h) output element."""
         pid = tl.program_id(0)
         stride = T * num_heads
         b = pid // stride
@@ -89,7 +88,6 @@ def fused_dt_fallback(
     dt_min: float = 1e-4,
     dt_max: float = 1.0,
 ) -> torch.Tensor:
-    """PyTorch reference. dt_proj_weight=None skips projection."""
     if dt_proj_weight is None:
         dt_raw = dt_hidden  # already [B, T, H]
     else:
@@ -107,7 +105,6 @@ def fused_dt_bwd_fallback(
     compute_w_grad: bool = True,
     compute_bias_grad: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-    """PyTorch reference backward. dt_proj_weight=None skips projection."""
     if dt_proj_weight is None:
         dt_raw = dt_hidden  # already [B, T, H]
     else:
@@ -137,7 +134,6 @@ def fused_dt_triton(
     dt_min: float = 1e-4,
     dt_max: float = 1.0,
 ) -> torch.Tensor:
-    """Triton forward. Falls back to PyTorch if dt_proj_weight is None."""
     if dt_proj_weight is None:
         return fused_dt_fallback(dt_hidden, None, dt_bias, dt_min, dt_max)
     if not (
@@ -182,7 +178,6 @@ def fused_dt_bwd_triton(
     compute_w_grad: bool = True,
     compute_bias_grad: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-    """Backward. Uses PyTorch — avoids atomic_add serialization in Triton bwd kernel."""
     return fused_dt_bwd_fallback(
         grad_out,
         dt_hidden,
@@ -233,11 +228,6 @@ def fused_dt(
     dt_min: float = 1e-4,
     dt_max: float = 1.0,
 ) -> torch.Tensor:
-    """Fused dt_proj + dt_prep: optional linear projection + softplus + clamp.
-
-    When dt_proj_weight is None, dt_hidden is treated as already projected [B, T, H].
-    This matches Mamba2's direct dt projection pattern (no low-rank bottleneck).
-    """
     if (
         dt_proj_weight is not None
         and FUSED_DT_TRITON_AVAILABLE

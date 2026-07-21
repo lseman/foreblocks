@@ -27,11 +27,6 @@ def stl_filter(
     return_component: str = "trend_seasonal",  # "trend", "seasonal", or "trend_seasonal"
     fill_nans_for_filter: bool = True,
 ) -> np.ndarray:
-    """
-    STL (Seasonal and Trend decomposition using Loess).
-    Filters the signal by isolating the Trend and/or Seasonal components,
-    effectively removing the 'Residual' noise.
-    """
     if STL is None:
         raise ImportError("statsmodels is required for STL")
 

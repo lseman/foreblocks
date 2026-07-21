@@ -26,8 +26,6 @@ from foreblocks.ops.norms_triton import (
 
 
 class FastLayerNorm(nn.Module):
-    """High-performance LayerNorm with Triton acceleration."""
-
     def __init__(
         self,
         normalized_shape: int | tuple[int, ...],
@@ -79,8 +77,6 @@ class FastLayerNorm(nn.Module):
 
 
 class AdaptiveLayerNorm(nn.Module):
-    """LayerNorm followed by learnable scale and bias."""
-
     def __init__(
         self,
         d_model: int,

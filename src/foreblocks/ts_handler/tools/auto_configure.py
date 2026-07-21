@@ -89,19 +89,23 @@ def _filter_eval_kwargs(method: str, stats: dict[str, Any]) -> dict[str, Any]:
     }
     if method == "stl":
         period = max(2, min(365, int(stats.get("dominant_period", 7) or 7)))
-        kwargs.update({
-            "period": period,
-            "seasonal": max(5, min(13, period if period % 2 == 1 else period + 1)),
-            "robust": True,
-        })
+        kwargs.update(
+            {
+                "period": period,
+                "seasonal": max(5, min(13, period if period % 2 == 1 else period + 1)),
+                "robust": True,
+            }
+        )
     elif method == "ssa":
-        kwargs.update({
-            "window_length": min(
-                max(7, stats.get("T_eval", 24) // 4),
-                max(7, stats.get("T_eval", 24) // 4),
-            ),
-            "n_components": 2,
-        })
+        kwargs.update(
+            {
+                "window_length": min(
+                    max(7, stats.get("T_eval", 24) // 4),
+                    max(7, stats.get("T_eval", 24) // 4),
+                ),
+                "n_components": 2,
+            }
+        )
     elif method == "lowess":
         kwargs.update({"frac": 0.05 if stats["T"] > 400 else 0.08})
     elif method == "wiener":

@@ -22,7 +22,6 @@ _SLOW_FILTERS: set[str] = set()
 
 
 def register_filter(name: str, *, slow: bool = False):
-    """Decorator that adds a filter function to the auto-selection registry."""
 
     def decorator(fn: Callable[[pd.Series], pd.Series]):
         _FILTER_REGISTRY[name] = fn

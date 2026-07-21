@@ -27,8 +27,6 @@ from foreblocks.anomaly.models.base import (
 
 
 class MLPVAE(nn.Module):
-    """Compact window VAE baseline for low-latency anomaly scoring."""
-
     def __init__(
         self,
         n_features: int,
@@ -83,8 +81,6 @@ class MLPVAE(nn.Module):
 
 
 class TransformerVAE(nn.Module):
-    """Window VAE with Foreblocks transformer encoder blocks."""
-
     def __init__(
         self,
         n_features: int,

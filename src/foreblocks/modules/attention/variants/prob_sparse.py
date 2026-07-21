@@ -21,8 +21,6 @@ import torch.nn.functional as F
 
 
 class ProbSparseAttentionImpl:
-    """ProbSparse self-attention implementation (see module docstring)."""
-
     def __init__(self, parent):
         self.parent = parent
 

@@ -4,7 +4,7 @@ import torch
 from foreblocks.config import TrainingConfig
 from foreblocks.core.training.trainer import Trainer
 from foreblocks.layers.graph.common import add_self_loops
-from foreblocks.layers.graph.layers import (
+from foreblocks.layers.graph.conv import (
     GATConv,
     GATv2Conv,
     GCNConv,

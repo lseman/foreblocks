@@ -28,8 +28,6 @@ from foreblocks.layers.norms import create_norm_layer
 # 1) Series decomposition (MA-based trend + seasonal)
 # =========================================================
 class SeriesDecomp1D(nn.Module):
-    """Moving-average trend + seasonal decomposition."""
-
     def __init__(self, kernel_size: int = 25):
         super().__init__()
         self.kernel_size = kernel_size
@@ -62,8 +60,6 @@ class SeriesDecomp1D(nn.Module):
 # 2) Downsampling / Upsampling (stride-2 with 1×1 conv)
 # =========================================================
 class DownSample(nn.Module):
-    """Stride-2 downsampling with local temporal mixing + norm."""
-
     def __init__(
         self,
         in_channels: int,
@@ -96,8 +92,6 @@ class DownSample(nn.Module):
 
 
 class UpSample(nn.Module):
-    """Stride-2 upsampling via repeat-interpolate + norm (matches DownSample)."""
-
     def __init__(
         self,
         d_model: int,
@@ -108,7 +102,6 @@ class UpSample(nn.Module):
         self.norm = create_norm_layer(norm_type, d_model, eps=eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Upsample by 2× via repeat, then normalize."""
         B, L, C = x.shape
         out = x.repeat_interleave(2, dim=1)  # [B, 2L, C]
         out = self.norm(out)
@@ -119,14 +112,6 @@ class UpSample(nn.Module):
 # 3) Temporal Mixing (MLP across time within a granularity)
 # =========================================================
 class TemporalMix(nn.Module):
-    """
-    Mixing across time dimension within one granularity.
-
-    Architecture:
-      x → linear_in → split → [x · σ(x)] → linear_out
-      with shortcut: res + out
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -168,12 +153,6 @@ class TemporalMix(nn.Module):
 # 4) Channel Mixing (MLP across channels)
 # =========================================================
 class ChannelMix(nn.Module):
-    """
-    Mixing across the channel dimension within one granularity.
-
-    Same structure as TemporalMix but applied across channels.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -205,9 +184,6 @@ class ChannelMix(nn.Module):
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, L, C]
-        """
         res = x
         x = self.norm(x)
         out = self.mlp(x)
@@ -218,13 +194,6 @@ class ChannelMix(nn.Module):
 # 5) PMS: Past-Mixer Stage (one granularity's processing block)
 # =========================================================
 class PMS(nn.Module):
-    """
-    Past-Mixer Stage — processes one granularity.
-
-    Sequence:
-      Input → [TemporalMix + ChannelMix] (×n_layers) → output
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -275,13 +244,6 @@ class PMS(nn.Module):
 # 6) PDM/FMM: multiscale decomposition, mixing, and prediction
 # =========================================================
 class PastDecomposableMixing(nn.Module):
-    """
-    Mix seasonal and trend components across scales in opposite directions.
-
-    Seasonal details move bottom-up from fine to coarse scales, while trend
-    information moves top-down from coarse to fine scales.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -372,8 +334,6 @@ class PastDecomposableMixing(nn.Module):
 
 
 class FutureMultipredictorMixing(nn.Module):
-    """Predict from every scale and learn an ensemble over scale forecasts."""
-
     def __init__(
         self,
         d_model: int,
@@ -421,7 +381,6 @@ class FutureMultipredictorMixing(nn.Module):
 # =========================================================
 @torch.no_grad()
 def _downsample_lengths(L: int, n_levels: int) -> list[int]:
-    """Compute the temporal lengths at each granularity level."""
     lengths = [L]
     for _ in range(n_levels - 1):
         lengths.append(max((lengths[-1] + 1) // 2, 1))
@@ -429,38 +388,6 @@ def _downsample_lengths(L: int, n_levels: int) -> list[int]:
 
 
 class TimeMixer(nn.Module):
-    """
-    TimeMixer forecasting head.
-
-    Multi-granularity architecture:
-      1. Create n_levels observations through average downsampling.
-      2. Process each scale with MLP mixers.
-      3. Decompose each scale and mix seasonal/trend components with PDM.
-      4. Predict from all scales and ensemble them with FMM.
-
-    Inputs:
-      x: [B, L_in, C_in]
-
-    Outputs:
-      y: [B, pred_len, C_out] (or C_out × Q if quantiles)
-
-    Args:
-      pred_len: forecast horizon
-      in_channels: number of input channels
-      out_channels: number of output channels
-      d_model: hidden dimension
-      n_levels: number of temporal granularities (downsample levels)
-      n_layers_pms: PMS mixing layers per granularity
-      dropout: dropout rate
-      expansion: MLP expansion ratio
-      activation: activation function ("gelu", "relu", "swish", "mish")
-      norm_type: normalization type (see layers.norms.create_norm_layer)
-      eps: epsilon for normalization
-      use_seasonal: whether to process seasonal component separately
-      use_trend: whether to process trend component separately
-      quantiles: optional quantile values for probabilistic output
-    """
-
     def __init__(
         self,
         pred_len: int,
@@ -552,7 +479,6 @@ class TimeMixer(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def _downsample(self, x: torch.Tensor, level: int) -> torch.Tensor:
-        """Downsample x by stride-2, applied `level` times."""
         out = x
         for _ in range(level):
             B, L, C = out.shape
@@ -564,7 +490,6 @@ class TimeMixer(nn.Module):
         return out
 
     def _upsample_to(self, x: torch.Tensor, target_L: int) -> torch.Tensor:
-        """Upsample x to target_L via nearest-neighbor repeat."""
         B, L, C = x.shape
         if L >= target_L:
             return x[:, :target_L, :]
@@ -576,9 +501,6 @@ class TimeMixer(nn.Module):
         return x_rep
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, L_in, C_in] → y: [B, pred_len, C_out]
-        """
         if x.dim() != 3 or x.size(-1) != self.in_channels:
             raise ValueError(
                 f"Expected x [B, L, C_in={self.in_channels}], got {tuple(x.shape)}"
@@ -602,7 +524,6 @@ class TimeMixer(nn.Module):
         return self.fmm(mixed_scales, self.pred_len)
 
     def split_quantiles(self, y: torch.Tensor) -> dict[float, torch.Tensor]:
-        """Split quantile outputs into a dict keyed by quantile value."""
         if self.quantiles is None:
             raise ValueError("No quantiles configured")
         Q = len(self.quantiles)

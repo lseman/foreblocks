@@ -60,8 +60,8 @@ from foreblocks.modules.heads.modules.time_attention_head import (
 )
 
 __all__ = [
-    "Chronos2EmbedHead",
     "DAIN",
+    "Chronos2EmbedHead",
     "DAINHead",
     "DecompositionBlock",
     "DecompositionHead",
@@ -74,9 +74,9 @@ __all__ = [
     "HaarWaveletTopKHead",
     "LearnableFourierSeasonal",
     "LearnableFourierSeasonalHead",
+    "MultiKernelConvHead",
     "MultiScaleConv",
     "MultiScaleConvHead",
-    "MultiKernelConvHead",
     "PatchEmbed",
     "PatchEmbedHead",
     "RevIN",

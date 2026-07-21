@@ -32,7 +32,6 @@ TransformerCache = KVCacheProtocol
 
 
 def map_cache_state(value, tensor_fn):
-    """Recursively transform tensors and cache objects in incremental state."""
     from foreblocks.modules.attention.cache.kv import StaticKVCache
     from foreblocks.modules.attention.cache.paged import PagedKVCache
 
@@ -50,7 +49,6 @@ def map_cache_state(value, tensor_fn):
 
 
 def cache_state_dict(value):
-    """Create a CPU-portable snapshot of nested decoder cache state."""
     from foreblocks.modules.attention.cache.kv import StaticKVCache
     from foreblocks.modules.attention.cache.paged import PagedKVCache
 
@@ -70,17 +68,21 @@ def cache_state_dict(value):
 
 
 def load_cache_state_dict(value, *, device=None):
-    """Restore a nested decoder cache snapshot on the requested device."""
     from foreblocks.modules.attention.cache.kv import StaticKVCache
     from foreblocks.modules.attention.cache.paged import PagedKVCache
 
     if isinstance(value, dict) and "__cache_type__" in value:
-        cache_cls = StaticKVCache if value["__cache_type__"] == "static" else PagedKVCache
+        cache_cls = (
+            StaticKVCache if value["__cache_type__"] == "static" else PagedKVCache
+        )
         return cache_cls.from_state_dict(value["state"], device=device)
     if isinstance(value, torch.Tensor):
         return value.to(device=device)
     if isinstance(value, dict):
-        return {key: load_cache_state_dict(item, device=device) for key, item in value.items()}
+        return {
+            key: load_cache_state_dict(item, device=device)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         return [load_cache_state_dict(item, device=device) for item in value]
     if isinstance(value, tuple):
@@ -89,6 +91,9 @@ def load_cache_state_dict(value, *, device=None):
 
 
 __all__ = [
-    "KVCacheProtocol", "TransformerCache", "cache_state_dict",
-    "load_cache_state_dict", "map_cache_state"
+    "KVCacheProtocol",
+    "TransformerCache",
+    "cache_state_dict",
+    "load_cache_state_dict",
+    "map_cache_state",
 ]

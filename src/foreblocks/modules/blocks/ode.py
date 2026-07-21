@@ -27,14 +27,6 @@ except ImportError:
 
 
 class NeuralODE(nn.Module):
-    """
-    Neural ODE layer for time-series modeling.
-    Supports both custom fixed/adaptive solvers and torchdiffeq (recommended).
-
-    Input:  [B, T, C] or [B, T, C] + times [T]
-    Output: [B, T, C]  (evaluated at the same time points)
-    """
-
     def __init__(
         self,
         input_size: int,
@@ -79,10 +71,6 @@ class NeuralODE(nn.Module):
         times: torch.Tensor | None = None,
         return_all: bool = True,
     ) -> torch.Tensor:
-        """
-        x:      [B, T, C] initial time series (y0 = x[:,0,:])
-        times:  [T] time points (increasing). If None → uniform [0,1]
-        """
         B, T, C = x.shape
         device, dtype = x.device, x.dtype
 

@@ -15,7 +15,7 @@ Core API:
 from __future__ import annotations
 
 from math import ceil
-from typing import Literal, Optional
+from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -26,16 +26,6 @@ from foreblocks.ops.attention import can_use_fla_gla, fla_gla_forward
 
 
 class GLABackend(RoPEMixin, nn.Module):
-    """
-    Gated Linear Attention (Yang et al. 2023).
-
-    Recurrence:
-        S_t = exp(g_t) · S_{t-1} + k_t · v_t^T
-        o_t = q_t · S_t
-
-    where g_t = logsigmoid(low_rank(x)) / τ  (per-channel decay gate).
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -43,7 +33,7 @@ class GLABackend(RoPEMixin, nn.Module):
         dropout: float,
         gate_logit_normalizer: float = 16.0,
         gate_low_rank_dim: int = 16,
-        clamp_min: Optional[float] = None,
+        clamp_min: float | None = None,
         use_output_gate: bool = True,
         mode: Literal["chunk", "recurrent"] = "chunk",
         chunk_size: int = 64,
@@ -57,8 +47,10 @@ class GLABackend(RoPEMixin, nn.Module):
         self.pos_encoding_type = pos_encoding_type
         self._init_pos_encoding()
 
-        assert d_model % n_heads == 0
-        assert mode in ("chunk", "recurrent")
+        if n_heads <= 0 or d_model % n_heads:
+            raise ValueError("n_heads must be positive and divide d_model")
+        if mode not in {"chunk", "recurrent"}:
+            raise ValueError("mode must be 'chunk' or 'recurrent'")
 
         self.gate_logit_normalizer = gate_logit_normalizer
         self.clamp_min = clamp_min
@@ -157,7 +149,7 @@ class GLABackend(RoPEMixin, nn.Module):
         gk: torch.Tensor,
         S: torch.Tensor,  # [B, H, D, D]
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        B, H, L, D = q.shape
+        _, _, L, _ = q.shape
         outputs = []
 
         for t in range(L):
@@ -243,4 +235,4 @@ class GLABackend(RoPEMixin, nn.Module):
         out = o.transpose(1, 2).contiguous().view(B, L, self.d_model)
         out = self.dropout(self.out_proj(out))
 
-        return out, None, {"gla_S": S_next} if is_causal else {"gla_S": S_next}
+        return out, None, {"gla_S": S_next}

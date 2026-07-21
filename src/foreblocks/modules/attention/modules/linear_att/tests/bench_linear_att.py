@@ -111,7 +111,7 @@ def _build_gated_delta(B, T, H, dk, dv, dtype, chunk_size=64):
         n_heads=H,
         d_key=dk,
         d_val=dv,
-        chunk_size=chunk_size if chunk_size and T > chunk_size else 0,
+        chunk_size=chunk_size if chunk_size and chunk_size < T else 0,
         use_short_conv=False,
         use_mamba_gate=True,
     ).to("cuda", dtype)
@@ -123,7 +123,7 @@ def _build_gdn2(B, T, H, dk, dv, dtype, chunk_size=64):
         n_heads=H,
         d_key=dk,
         d_val=dv,
-        chunk_size=chunk_size if chunk_size and T > chunk_size else 0,
+        chunk_size=chunk_size if chunk_size and chunk_size < T else 0,
         use_short_conv=False,
         eps=1e-6,
         allow_neg_eigval=False,
@@ -137,7 +137,7 @@ def _build_kimi(B, T, H, dk, dv, dtype, chunk_size=64):
         d_key=dk,
         d_val=dv,
         expand_v=1.0,
-        chunk_size=chunk_size if chunk_size and T > chunk_size else 0,
+        chunk_size=chunk_size if chunk_size and chunk_size < T else 0,
         shortconv_mode="off",
     ).to("cuda", dtype)
 
@@ -149,7 +149,6 @@ _STANDALONE = ("gated_delta", "gated_deltanet2")
 
 
 def _make_custom_fwd(model, backend_name, x, inputs):
-    """Return a forward-only callable for the custom model."""
     if backend_name in _STANDALONE:
 
         def fn():
@@ -166,7 +165,6 @@ def _make_custom_fwd(model, backend_name, x, inputs):
 
 
 def _make_custom_bwd(model, backend_name, x, inputs):
-    """Return a forward+backward callable for the custom model."""
     if backend_name in _STANDALONE:
 
         def fn():
@@ -268,11 +266,6 @@ def _extract_rda_fla(x, H, dk, dv):
 
 
 def _grad_tensors(fla_tensors):
-    """Clone the FLA input tuple with requires_grad on the floating q/k/v inputs.
-
-    Integer/state tensors and the fp32 initial_state are passed through detached;
-    enabling grad on q/k/v is enough to give the kernel output a grad path.
-    """
     out = []
     for i, t in enumerate(fla_tensors):
         if i < 3 and t.is_floating_point():  # q, k, v
@@ -398,7 +391,6 @@ def bench_case(
     check,
     no_fla,
 ):
-    """Run one benchmark case for one backend."""
     H = 8  # default; overridden from config
     device = "cuda"
 
@@ -410,13 +402,7 @@ def bench_case(
 
     # ── Generate inputs ──────────────────────────────────────────────────
     D = 8 * dk
-    if bname == "rda":
-        x = torch.randn(B, T, D, device=device, dtype=dtype)
-        inputs = {"query": x, "key": x, "value": x}
-    elif bname == "gla":
-        x = torch.randn(B, T, D, device=device, dtype=dtype)
-        inputs = {"query": x, "key": x, "value": x}
-    elif bname == "deltanet":
+    if bname == "rda" or bname == "gla" or bname == "deltanet":
         x = torch.randn(B, T, D, device=device, dtype=dtype)
         inputs = {"query": x, "key": x, "value": x}
     else:  # gated_delta, gated_deltanet2, kimi

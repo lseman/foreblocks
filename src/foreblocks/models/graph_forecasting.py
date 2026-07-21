@@ -24,7 +24,7 @@ import torch.nn as nn
 
 from foreblocks.layers.graph.common import Tensor, ensure_adj, xavier_zero_bias
 from foreblocks.layers.graph.latent import CorrelationConfig, LatentCorrelationLearner
-from foreblocks.layers.graph.layers import (
+from foreblocks.layers.graph.conv import (
     EdgeCondGCN,
     GATConv,
     GCNConv,
@@ -42,14 +42,6 @@ GraphOutputMode = Literal["sequence", "last", "mean", "flatten_nodes"]
 
 
 class GraphForecastingModel(nn.Module):
-    """
-    Generic graph forecasting/modeling stack over [B, T, N, F] tensors.
-
-    The model owns graph construction, graph convolution blocks, optional jumping
-    knowledge, and output readout. By default it learns a latent graph, runs
-    graph convolutions, and returns a [B, T, N, F_out] sequence.
-    """
-
     def __init__(
         self,
         num_nodes: int,
@@ -265,7 +257,7 @@ class GraphForecastingModel(nn.Module):
             return GATConv(in_channels, out_channels, heads=gat_heads, **common)
         raise ValueError(f"Unsupported graph convolution type: {conv_type}")
 
-    def set_static_adjacency(self, adj: Tensor | None) -> "GraphForecastingModel":
+    def set_static_adjacency(self, adj: Tensor | None) -> GraphForecastingModel:
         self.static_adjacency = None if adj is None else adj.detach().clone()
         return self
 

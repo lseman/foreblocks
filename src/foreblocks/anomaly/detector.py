@@ -25,15 +25,11 @@ from sklearn.preprocessing import MinMaxScaler, RobustScaler, StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 from foreblocks.anomaly.modes import (
-    AnomalyBlock,
     AnomalyBlockSpec,
     AnomalyBlockStack,
     AnomalyDecisionResult,
     DecisionConfig,
     fit_mode_state,
-    list_blocks,
-    register_block,
-    resolve_block,
     resolve_mode,
 )
 from foreblocks.anomaly.windows import (
@@ -46,8 +42,6 @@ from foreblocks.anomaly.windows import (
 
 @dataclass
 class AnomalyResult:
-    """Result from single-block anomaly detection."""
-
     scores: np.ndarray
     labels: np.ndarray
     threshold: float
@@ -110,8 +104,6 @@ class AnomalyDetectorConfig:
 
 
 class ForeblocksAnomalyDetector:
-    """Fit/predict neural anomaly detector for multivariate time-series windows."""
-
     def __init__(self, config: AnomalyDetectorConfig | None = None, **kwargs) -> None:
         if config is None:
             config = AnomalyDetectorConfig(**kwargs)
@@ -177,7 +169,7 @@ class ForeblocksAnomalyDetector:
 
     def fit(
         self, series: np.ndarray, validation_split: float = 0.1
-    ) -> "ForeblocksAnomalyDetector":
+    ) -> ForeblocksAnomalyDetector:
         if self.config.seed is not None:
             torch.manual_seed(int(self.config.seed))
             np.random.seed(int(self.config.seed))

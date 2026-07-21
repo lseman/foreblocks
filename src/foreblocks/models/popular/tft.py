@@ -44,14 +44,6 @@ class GLU(nn.Module):
 
 
 class GRN(nn.Module):
-    """
-    Gated Residual Network (TFT, Eq. 2-4).
-
-    η2 = ELU(W2·x + W3·c)   (context c added via its own projection, not concat)
-    η1 = W1·η2
-    out = LayerNorm(skip(x) + GLU(η1))
-    """
-
     def __init__(
         self,
         d_in: int,
@@ -75,10 +67,6 @@ class GRN(nn.Module):
         self.norm = create_norm_layer(custom_norm, d_out, eps)
 
     def forward(self, x: torch.Tensor, context: torch.Tensor | None = None):
-        """
-        x: [B, *, d_in]
-        context (optional): [B, *, d_context], broadcastable to x's leading dims.
-        """
         a = self.fc1(x)
         if context is not None:
             if self.ctx_proj is None:
@@ -90,12 +78,6 @@ class GRN(nn.Module):
 
 
 class VariableSelectionNetwork(nn.Module):
-    """
-    Per-time-step variable selection with learned embeddings per variable.
-    Follows TFT: computes importance weights and gated transformations for each variable,
-    then weighted sum across variables.
-    """
-
     def __init__(
         self,
         num_vars: int,
@@ -112,9 +94,9 @@ class VariableSelectionNetwork(nn.Module):
         self.name = name
 
         # Per-variable encoders map each var feature to d_model
-        self.var_encoders = nn.ModuleList([
-            nn.Linear(d_in_per_var, d_model) for _ in range(num_vars)
-        ])
+        self.var_encoders = nn.ModuleList(
+            [nn.Linear(d_in_per_var, d_model) for _ in range(num_vars)]
+        )
 
         # Gating: compute weights over variables
         # Aggregator input is concatenated encodings [B, T, num_vars * d_model]
@@ -138,12 +120,6 @@ class VariableSelectionNetwork(nn.Module):
         )
 
     def forward(self, x_vars: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        x_vars: [B, T, num_vars, d_in_per_var]
-        Returns:
-          z: [B, T, d_model] fused features
-          attn_w: [B, T, num_vars] variable weights (softmax)
-        """
         B, T, V, Dv = x_vars.shape
         assert V == self.num_vars
 
@@ -166,10 +142,6 @@ class VariableSelectionNetwork(nn.Module):
 
 
 class GateAddNorm(nn.Module):
-    """
-    Gated residual connection + normalization around a sublayer.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -192,30 +164,6 @@ class GateAddNorm(nn.Module):
 
 
 class TemporalFusionTransformer(nn.Module):
-    """
-    TFT-style forecasting head using your custom Transformer encoder/decoder backbone.
-
-    Inputs:
-      - x_hist_vars: dict with keys:
-          * "target":        [B, L_in, 1]              (required)
-          * "observed":      [B, L_in, V_obs, D_obs]   (optional, per-var features)
-          * "known":         [B, L_in, V_known_in, D_k] (optional, per-var features for encoder)
-      - x_fut_vars: dict with keys:
-          * "known":         [B, L_out, V_known_out, D_k] (future known covariates for decoder)
-      - x_static:            [B, V_static, D_s]        (optional, static feats per var)
-      - time_hist, time_fut: any (optional), passed to InformerTimeEmbedding if enabled.
-
-    Output:
-      - y_hat: [B, L_out, C_out]
-
-    Notes:
-      * Variable selection for (observed + known + target) on encoder side.
-      * Variable selection for (known + previous target) on decoder side.
-      * Static enrichment via GRN-conditioned context added to both sides.
-      * Fusion via Transformer cross-attention.
-      * Final projection to output channels.
-    """
-
     def __init__(
         self,
         pred_len: int,
@@ -387,13 +335,6 @@ class TemporalFusionTransformer(nn.Module):
     def _build_encoder_input(
         self, x_hist_vars: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Prepare encoder VSN input:
-          target:   [B, L_in, 1]
-          observed: [B, L_in, V_obs, D_obs] or None
-          known:    [B, L_in, V_known_in, D_k] or None
-        Returns fused enc_input [B, L_in, d_model] and selection weights [B, L_in, V_enc]
-        """
         x_target = x_hist_vars["target"]  # [B, L_in, 1]
         B, Lin, _ = x_target.shape
 
@@ -413,12 +354,6 @@ class TemporalFusionTransformer(nn.Module):
     def _build_decoder_input(
         self, x_fut_vars: dict[str, torch.Tensor], prev_target: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Prepare decoder VSN input:
-          prev_target: [B, L_out, 1]  (teacher forcing during train; shift(1))
-          known_out:   [B, L_out, V_known_out, D_k] or None
-        Returns fused dec_input [B, L_out, d_model] and selection weights [B, L_out, V_dec]
-        """
         xs = [prev_target.unsqueeze(2)]  # [B, L_out, 1, 1]
         if "known" in x_fut_vars and x_fut_vars["known"] is not None:
             xs.append(x_fut_vars["known"])  # [B, L_out, V_known_out, D_k]
@@ -427,9 +362,6 @@ class TemporalFusionTransformer(nn.Module):
         return z_dec, w_dec
 
     def _static_context(self, x_static: torch.Tensor | None) -> torch.Tensor | None:
-        """
-        x_static: [B, V_static, D_s] -> context c [B, 1, d_model]
-        """
         if x_static is None or self.num_static_vars == 0:
             return None
         # Mean over static vars -> project -> GRN
@@ -448,12 +380,6 @@ class TemporalFusionTransformer(nn.Module):
         teacher_forcing_target: torch.Tensor | None = None,
         return_selection: bool = False,
     ) -> dict[str, torch.Tensor]:
-        """
-        Returns:
-          dict with keys:
-            'y': [B, L_out, C_out] or [B, L_out, C_out*Q] if quantiles set
-            optional: 'w_enc', 'w_dec' (selection weights), 'context'
-        """
         # 1) VSN encoder (past)
         z_enc, w_enc = self._build_encoder_input(
             x_hist_vars
@@ -506,10 +432,6 @@ class TemporalFusionTransformer(nn.Module):
 
     # Optional convenience for quantile split at caller side
     def split_quantiles(self, y: torch.Tensor) -> dict[float, torch.Tensor]:
-        """
-        If quantiles were configured, split head output into {q: tensor}.
-        y: [B, L_out, C_out * Q]
-        """
         assert self.quantiles is not None, "No quantiles configured."
         Q = len(self.quantiles)
         B, T, _ = y.shape

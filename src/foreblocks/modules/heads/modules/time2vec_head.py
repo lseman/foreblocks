@@ -25,11 +25,6 @@ from foreblocks.core.model import BaseHead
 
 
 class Time2Vec(nn.Module):
-    """
-    Time2Vec-style periodic features per timestep, projected back to feature_dim.
-    Input/Output: [B,T,F]. Keeps dim invariant.
-    """
-
     def __init__(self, feature_dim: int, k: int = 8, periodic: bool = True):
         super().__init__()
         self.feature_dim = int(feature_dim)
@@ -42,7 +37,7 @@ class Time2Vec(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, F_ = x.shape
-        if F_ != self.feature_dim:
+        if self.feature_dim != F_:
             raise RuntimeError(f"Input F={F_} != feature_dim={self.feature_dim}")
         t = torch.linspace(0, 1, T, device=x.device, dtype=x.dtype).view(1, T, 1)
         parts = [x, t]
@@ -54,8 +49,6 @@ class Time2Vec(nn.Module):
 
 
 class Time2VecHead(BaseHead):
-    """BaseHead wrapper for Time2Vec. Forward -> [B,T,F]."""
-
     def __init__(self, feature_dim: int, k: int = 8, periodic: bool = True):
         super().__init__(module=Time2Vec(feature_dim, k, periodic), name="time2vec")
 

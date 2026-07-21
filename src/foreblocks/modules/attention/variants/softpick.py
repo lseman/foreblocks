@@ -18,8 +18,6 @@ import torch
 
 
 class SoftpickAttentionImpl:
-    """Softpick attention implementation (see module docstring)."""
-
     def __init__(self, parent):
         self.parent = parent
 

@@ -20,12 +20,6 @@ import torch.nn.functional as F
 
 
 class PositionalEncoding(nn.Module):
-    """Sinusoidal positional encoding with cache and optional explicit positions.
-
-    The fixed sine/cosine formulation from "Attention Is All You Need"
-    (Vaswani et al., NeurIPS 2017, https://arxiv.org/abs/1706.03762), Section 3.5.
-    """
-
     def __init__(
         self,
         d_model: int,

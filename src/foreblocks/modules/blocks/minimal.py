@@ -32,12 +32,6 @@ def _ensure_batch_adj(A, B):
 
 
 class GraphNorm(nn.Module):
-    """Graph-normalization layer for node features.
-
-    Normalizes node feature vectors across the node dimension, similar to
-    LayerNorm but preserving graph structure for each sample.
-    """
-
     def __init__(self, dim, eps=1e-5):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(dim))
@@ -53,11 +47,6 @@ class GraphNorm(nn.Module):
 
 
 class PreNorm(nn.Module):
-    """Pre-normalization wrapper for graph layers.
-
-    Applies GraphNorm or LayerNorm before executing the wrapped function.
-    """
-
     def __init__(self, dim, fn, use_graphnorm=True):
         super().__init__()
         self.norm = GraphNorm(dim) if use_graphnorm else nn.LayerNorm(dim)
@@ -68,12 +57,6 @@ class PreNorm(nn.Module):
 
 
 class ChebConv(nn.Module):
-    """Chebyshev convolutional layer for graph signal processing.
-
-    Implements a K-order spectral graph convolution with optional dynamic
-    adjacency construction when no graph matrix is provided.
-    """
-
     def __init__(
         self, in_dim, out_dim, K=3, bias=True, dynamic_if_none=True, topk: int = 0
     ):
@@ -137,12 +120,6 @@ class ChebConv(nn.Module):
 
 
 class GraphSAGE(nn.Module):
-    """GraphSAGE-style neighborhood aggregator for graph node features.
-
-    Aggregates neighbor features with mean pooling and concatenates them
-    with the original node representation.
-    """
-
     def __init__(self, in_dim, out_dim):
         super().__init__()
         self.lin = nn.Linear(in_dim * 2, out_dim)
@@ -290,15 +267,6 @@ class GraphBlock(nn.Module):
 
 
 class AdaptiveChebBlock(nn.Module):
-    """
-    Stabilized Chebyshev graph block with:
-    - dynamic cosine adjacency when A is None (learnable temperature)
-    - top-k sparsification
-    - renormalization + teleport (shrink toward I)
-    - residual gating (learnable scalar)
-    - light bottleneck MLP
-    """
-
     def __init__(
         self,
         in_dim,

@@ -45,8 +45,6 @@ from foreblocks.anomaly.models import (
 
 @dataclass
 class AnomalyDecisionResult:
-    """Result from anomaly detection with per-block scores and voting."""
-
     scores: np.ndarray
     labels: np.ndarray
     threshold: float
@@ -58,44 +56,25 @@ class AnomalyDecisionResult:
 
 @dataclass(frozen=True)
 class AnomalyBlockSpec:
-    """Declaration of one anomaly-detection block in a stack.
-
-    ``block`` selects the mode (``"reconstruction"``, ``"forecasting"``,
-    ``"representation"``, ``"hybrid"``).  Extra ``kwargs`` are merged
-    into the detector config so each block can carry its own hyper-params.
-    """
-
     block: str
     weights: dict[str, float] | None = None
     kwargs: dict = field(default_factory=dict)
 
 
 class AnomalyBlock(Protocol):
-    """Minimal interface for a composable anomaly-detection block."""
-
-    def build_model(self, config, n_features: int) -> torch.nn.Module:
-        """Return the torch.nn.Module for this block."""
-        ...
+    def build_model(self, config, n_features: int) -> torch.nn.Module: ...
 
     def loss(
         self, model: torch.nn.Module, batch: torch.Tensor, config, epoch: int
-    ) -> torch.Tensor:
-        """Compute the training loss."""
-        ...
+    ) -> torch.Tensor: ...
 
     def score_batch(
         self, model: torch.nn.Module, batch: torch.Tensor, config
-    ) -> np.ndarray:
-        """Compute per-sample anomaly scores for one batch."""
-        ...
+    ) -> np.ndarray: ...
 
-    def decide(self, scores: np.ndarray, contamination: float) -> np.ndarray:
-        """Return binary labels (0=normal, 1=anomaly) from raw scores."""
-        ...
+    def decide(self, scores: np.ndarray, contamination: float) -> np.ndarray: ...
 
-    def block_type(self) -> str:
-        """Return the human-readable block type name."""
-        ...
+    def block_type(self) -> str: ...
 
 
 # ── BlockRegistry ──
@@ -105,8 +84,6 @@ _BLOCK_REGISTRY: dict[str, AnomalyBlock] = {}
 
 
 def register_block(name: str):
-    """Decorator to register a block in the global registry."""
-    """Decorator to register a block in the global registry."""
 
     def decorator(cls: type) -> type:
         _BLOCK_REGISTRY[name] = cls()
@@ -116,14 +93,12 @@ def register_block(name: str):
 
 
 def resolve_block(name: str) -> AnomalyBlock:
-    """Resolve a block name to its implementation."""
     if name in _BLOCK_REGISTRY:
         return _BLOCK_REGISTRY[name]
     raise ValueError(f"unknown block '{name}'; valid: {list(_BLOCK_REGISTRY.keys())}")
 
 
 def list_blocks() -> list[str]:
-    """Return available block names."""
     return list(_BLOCK_REGISTRY.keys())
 
 
@@ -139,29 +114,12 @@ class VotingConfig:
 
 @dataclass(frozen=True)
 class DecisionConfig:
-    """How to combine decisions from multiple blocks."""
-
     strategy: str = "majority"  # majority | weighted | all | any
     weights: dict[str, float] | None = None  # block_name -> weight
     contamination: float = 0.01
 
 
 class AnomalyBlockStack:
-    """Compose multiple anomaly-detection blocks and combine their decisions.
-
-    Similar to :class:`BlockStack` in ``foreblocks.sequence.block_stack`` —
-    each block is trained independently on the same windows, then their
-    per-block decisions are combined via voting.
-
-    Example::
-
-        stack = AnomalyBlockStack(
-            blocks=["reconstruction", "forecasting", "representation"],
-            decision=DecisionConfig(strategy="majority"),
-        )
-        result = stack.fit_predict(windows, config)
-    """
-
     def __init__(
         self,
         blocks: list[str] | list[AnomalyBlockSpec],
@@ -182,7 +140,6 @@ class AnomalyBlockStack:
         return [name for name, _, _ in self._block_specs]
 
     def build_models(self, config, n_features: int) -> dict[str, torch.nn.Module]:
-        """Build one model per block."""
         models = {}
         for name, block, extra_kwargs in self._block_specs:
             merged = {**config.__dict__, **extra_kwargs}
@@ -207,8 +164,7 @@ class AnomalyBlockStack:
         use_mixed_precision: bool = True,
         gradient_clip: float = 1.0,
         num_workers: int = 0,
-    ) -> "AnomalyBlockStack":
-        """Fit all blocks independently."""
+    ) -> AnomalyBlockStack:
         if seed is not None:
             torch.manual_seed(int(seed))
             np.random.seed(int(seed))
@@ -262,8 +218,7 @@ class AnomalyBlockStack:
         models: dict[str, torch.nn.Module],
         windows: np.ndarray,
         config,
-    ) -> "AnomalyDecisionResult":
-        """Score all blocks and combine decisions."""
+    ) -> AnomalyDecisionResult:
         _dev = next(iter(models.values()))
         device = next(_dev.parameters(), torch.tensor(0.0)).device
         tensor = torch.from_numpy(windows.astype(np.float32, copy=False))
@@ -323,7 +278,6 @@ class AnomalyBlockStack:
         block_scores: list[np.ndarray],
         decision: DecisionConfig,
     ) -> tuple[np.ndarray, np.ndarray, dict]:
-        """Combine per-block labels into a final decision."""
         n_samples = block_labels[0].shape[0]
         n_blocks = len(block_labels)
         matrix = np.column_stack(block_labels)  # (n_samples, n_blocks)
@@ -388,10 +342,6 @@ class AnomalyBlockStack:
 
 
 def _default_decide(scores: np.ndarray, contamination: float) -> np.ndarray:
-    """Binary decision via contamination-based threshold (MAD method).
-
-    Handles 1D or 2D score arrays by reducing 2D scores to 1D via max reduction.
-    """
     arr = np.asarray(scores, dtype=np.float32)
     # Reduce 2D scores to 1D per sample via max
     if arr.ndim == 2:
@@ -790,7 +740,6 @@ for _mode_cls in (PatchMambaMode, iTransformerMode):
 
 
 def resolve_mode(config) -> AnomalyBlock:
-    """Resolve config.detection_mode to an AnomalyBlock instance."""
     mode = config.detection_mode
     if mode == "auto":
         if config.model_type == "tranad":

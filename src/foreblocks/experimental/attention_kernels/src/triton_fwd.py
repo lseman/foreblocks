@@ -215,7 +215,6 @@ def _flash_fwd_persistent_kernel(
     block_n: tl.constexpr,
     n_tiles: tl.constexpr,
 ):
-    """Persistent forward: each CTA processes multiple row-tiles with grid-stride loop."""
     tile_m = tl.program_id(0)
     pid_bh = tl.program_id(1)
     log2e = 1.4426950408889634
@@ -336,14 +335,6 @@ def _flash_fwd_persistent_kernel(
 
 
 def triton_flash_fwd(q, k, v, causal=False, softmax_scale=None, dropout_p=0.0):
-    """Flash attention forward.
-
-    Args:
-        q, k, v: tensors of shape [B, H, N, D]
-        causal: causal masking
-        softmax_scale: scale for attention scores
-        dropout_p: dropout probability (applied in Python after Triton forward)
-    """
     n_ctx = q.shape[-2]
     d_head = q.shape[-1]
     scale = softmax_scale if softmax_scale is not None else d_head**-0.5
@@ -403,7 +394,6 @@ def triton_flash_fwd(q, k, v, causal=False, softmax_scale=None, dropout_p=0.0):
 
 
 def _select_fwd_config(q, n_ctx, d_head, causal):
-    """FA2-style block size selection, extended for more head dims."""
     if _is_ada_or_newer(q):
         if d_head == 16:
             return 128, 128, 4, 4
@@ -435,7 +425,6 @@ def _select_fwd_config(q, n_ctx, d_head, causal):
 
 
 def _use_persistent_fwd(q, n_ctx, d_head, causal):
-    """Use persistent forward kernel when tile count would leave SMs idle."""
     if not _is_ada_or_newer(q):
         return False
     block_m = _select_fwd_config(q, n_ctx, d_head, causal)[0]
@@ -445,13 +434,6 @@ def _use_persistent_fwd(q, n_ctx, d_head, causal):
 
 
 def can_use_triton_fwd(q):
-    """Check if Triton forward kernel can handle this tensor.
-
-    Only power-of-two head dims are supported: the TMA ``make_tensor_descriptor``
-    block shape must be a power of two, which rules out ``D=96``, and ``D=256``
-    exceeds Ada shared memory with the selected tiles. Both fall back to the
-    reference path. ``D=16/32/64/128`` are validated to compile and fit.
-    """
     return (
         q.is_cuda
         and q.dtype in (torch.float16, torch.bfloat16)
@@ -573,8 +555,6 @@ def _flash_decode_reduce_kernel(
 
 
 def _decode_n_splits(seqlen, sm_count, bh):
-    """Pick the KV-split count: enough splits to fill the SMs, capped so each
-    split has reasonable work and the reduction stays cheap."""
     if seqlen <= 256:
         return 1
     target = max(1, (sm_count * 2) // max(bh, 1))
@@ -583,22 +563,6 @@ def _decode_n_splits(seqlen, sm_count, bh):
 
 
 def triton_flash_decode(q, k_cache, v_cache, seqlens, softmax_scale=None):
-    """Decode-only attention for single-token generation with KV cache.
-
-    Real flash-decoding Triton kernel: parallelizes a single decode step over
-    KV-history splits, then reduces the partial softmax states.
-
-    Args:
-        q: [B, H, 1, D] - single token queries
-        k_cache: [B*H, max_seqlen, D] - contiguous KV cache (batched layout)
-        v_cache: [B*H, max_seqlen, D] - contiguous value cache
-        seqlens: [B*H] - sequence lengths per (batch, head) group
-        softmax_scale: defaults to 1/sqrt(D)
-
-    Returns:
-        out: [B, H, 1, D] - attention outputs
-        lse: [B*H] - natural-log log-sum-exp over scaled scores
-    """
     B, H = q.shape[0], q.shape[1]
     bh = B * H
     d_head = q.shape[-1]
@@ -651,7 +615,6 @@ def triton_flash_decode(q, k_cache, v_cache, seqlens, softmax_scale=None):
 
 
 def can_use_triton_decode(q):
-    """Check if Triton decode kernel can handle this tensor."""
     return (
         q.is_cuda
         and q.dtype in (torch.float16, torch.bfloat16)

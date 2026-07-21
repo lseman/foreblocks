@@ -32,16 +32,6 @@ from foreblocks.layers.norms import create_norm_layer
 # 1) De-stationary Attention
 # =========================================================
 class DSAttention(nn.Module):
-    """De-stationary Attention.
-
-    Modulates the standard scaled-dot-product attention scores by
-    two learned factors:
-      tau  — per-channel scaling (exponential of a learned scalar)
-      delta — per-sequence shift (a vector of length seq_len)
-
-    scores = (QK^T / sqrt(d)) * tau + delta
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -70,11 +60,6 @@ class DSAttention(nn.Module):
         tau: torch.Tensor | None = None,
         delta: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """
-        q, k, v: [B, L, D]
-        tau:     [B, 1] or [B] positive per-batch scalar.
-        delta:   [B, S] per-key shift vector.
-        """
         B, L, _ = q.shape
         S = k.size(1)
         H = self.n_heads
@@ -149,15 +134,6 @@ class AttentionLayer(nn.Module):
 # 3) Tau/Delta Learner (Projector)
 # =========================================================
 class DeStationaryProjector(nn.Module):
-    """MLP to learn de-stationary factors from raw input statistics.
-
-    Architecture:
-      temporal convolution over the raw input + stats (mean/std)
-      → concat → MLP → output
-
-    Paper: https://openreview.net/pdf?id=ucNDIDRNjjv
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -206,11 +182,6 @@ class DeStationaryProjector(nn.Module):
         return self._series_convs[key](x)
 
     def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
-        """
-        x:   [B, L, C] raw input
-        stats: [B, 1, C] mean or std
-        Returns: [B, out_dim]
-        """
         B, _, _ = x.shape
         x_conv = self._series_conv(x)  # [B, 1, C]
         concat = torch.cat([x_conv, stats], dim=1)  # [B, 2, C] -> [B, 2C]
@@ -422,41 +393,6 @@ class NSFormerDecoder(nn.Module):
 # 5) Full NonStationary Transformer
 # =========================================================
 class NonStationaryTransformer(nn.Module):
-    """
-    Non-stationary Transformer forecasting head.
-
-    Architecture:
-      1. Normalize input: x̂ = (x - μ) / σ
-      2. Learn tau, delta from raw input stats via Projector MLPs
-      3. Encode with de-stationary transformer
-      4. Pool + linear readout → [B, pred_len, C_out]
-      5. Denormalize: ŷ = ŷ * σ + μ
-
-    Inputs:
-      x: [B, L_in, C_in]
-
-    Outputs:
-      y: [B, pred_len, C_out]  (or C_out × Q if quantiles)
-
-    Args:
-      pred_len: forecast horizon
-      in_channels: number of input channels
-      out_channels: number of output channels
-      d_model: hidden dimension
-      n_heads: number of attention heads
-      n_layers: encoder layers
-      d_layers: decoder layers
-      label_len: number of normalized history tokens fed to the decoder
-      dim_ff: feed-forward hidden dim
-      dropout: dropout rate
-      activation: activation function
-      norm_type: normalization type
-      quantiles: optional quantile values
-      p_hidden_dims: hidden dims for tau/delta projectors
-      p_hidden_layers: number of hidden layers in projectors
-      tau_threshold: clamping threshold for tau exp (prevent overflow)
-    """
-
     def __init__(
         self,
         pred_len: int,
@@ -573,9 +509,6 @@ class NonStationaryTransformer(nn.Module):
         return (yq * out_std + out_mean).view(y.size(0), y.size(1), -1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, L_in, C_in] → y: [B, pred_len, C_out]
-        """
         if x.dim() != 3 or x.size(-1) != self.in_channels:
             raise ValueError(
                 f"Expected x [B, L, C_in={self.in_channels}], got {tuple(x.shape)}"
@@ -637,25 +570,6 @@ class NonStationaryTransformer(nn.Module):
 # 6) NonStationary Wrapper — enhance any forecasting module
 # =========================================================
 class NonStationaryWrapper(nn.Module):
-    """
-    Enhance any existing transformer head with non-stationary framework.
-
-    Wraps a head so that:
-      1. Input is stationarized before passing to head
-      2. De-stationary factors (tau, delta) are learned and applied
-      3. Output is denormalized
-
-    The wrapped head receives normalized input and its attention layers
-    must accept (tau, delta) kwargs to receive the de-stationary modulation.
-
-    If the wrapped head does NOT support (tau, delta), the wrapper still
-    provides the stationarization + denormalization benefits.
-
-    Usage:
-      base_head = PatchTST(...)
-      ns_head = NonStationaryWrapper(base_head)
-    """
-
     def __init__(
         self,
         wrapped_head: nn.Module,

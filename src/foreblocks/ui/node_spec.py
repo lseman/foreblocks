@@ -36,10 +36,6 @@ def node(
     # Control whether we run auto-inference (default yes)
     infer: bool = True,
 ) -> Callable[[type], type]:
-    """
-    Decorate a class to participate in node discovery.
-    Only decorated classes are considered. Inference is run unless you override.
-    """
 
     def wrap(cls: type) -> type:
         setattr(cls, "__is_node__", True)  # <- discovery gate
@@ -59,7 +55,7 @@ def node(
                     "config": config,
                     "config_sources": config_sources or [],
                 },
-                "py": py,  # <── NEW: optional explicit codegen metadata
+                "py": py,  # explicit codegen metadata (overrides auto-inference)
                 "infer": infer,
             },
         )

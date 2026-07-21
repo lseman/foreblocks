@@ -31,22 +31,6 @@ from foreblocks.ui.node_spec import node
     color="bg-gradient-to-r from-sky-500 to-emerald-500",
 )
 class Chronos2EmbedHead(BaseHead):
-    """
-    Extract Chronos-2 embeddings and return a 3D sequence for downstream encoders.
-
-    IMPORTANT (optimizer safety):
-      This head lazily creates a projector (D -> F) on first forward when needed.
-      If you build the optimizer BEFORE the first forward, the projector params
-      will NOT be in the optimizer. Fix by calling:
-
-          head.warmup(sample_x)
-
-      once before creating the optimizer (or run one model forward pass).
-
-    Forward:
-      x: [B,T,F] -> returns [B,T,F_out] or [B,T+1,F] depending on attach.
-    """
-
     def __init__(
         self,
         pipeline,
@@ -74,7 +58,6 @@ class Chronos2EmbedHead(BaseHead):
 
     @torch.no_grad()
     def warmup(self, x: torch.Tensor) -> None:
-        """Run once to instantiate any lazy projector parameters (call before optimizer)."""
         _ = self.module(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -220,12 +203,6 @@ class _Chronos2EmbedderModule(nn.Module):
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B,T,F] -> returns sequence with embeddings integrated:
-          - attach='feature'    -> [B,T,F+D]
-          - attach='time_token' -> [B,T+1,F]  (D→F projected if proj_to_input_dim)
-          - attach='replace'    -> [B,T,D] (or [B,T,F] if projected)
-        """
         if x.dim() != 3:
             raise ValueError(f"x must be [B,T,F], got {tuple(x.shape)}")
         B, T, Fin = x.shape
@@ -248,9 +225,9 @@ class _Chronos2EmbedderModule(nn.Module):
             if self.proj_to_input_dim:
                 tok = proj_emb.unsqueeze(1)  # [B,1,Fin]
             else:
-                if D == Fin:
+                if Fin == D:
                     tok = emb.unsqueeze(1)
-                elif D > Fin:
+                elif Fin < D:
                     tok = emb[:, :Fin].unsqueeze(1)
                 else:
                     pad = torch.zeros(B, Fin - D, device=device, dtype=dtype)

@@ -29,11 +29,6 @@ from foreblocks.modules.attention.multi_att import MultiAttention
 
 
 def _patchify_1d(x: torch.Tensor, patch_len: int, stride: int) -> torch.Tensor:
-    """
-    x: [B, L] -> patches: [B, N, P]
-    If L < P, left-pad to make at least one patch.
-    Uses as_strided (view) for speed.
-    """
     B, L = x.shape
     if L < patch_len:
         x = F.pad(x, (patch_len - L, 0))  # left pad
@@ -44,13 +39,6 @@ def _patchify_1d(x: torch.Tensor, patch_len: int, stride: int) -> torch.Tensor:
 
 
 class PatchTokenEncoder(nn.Module):
-    """
-    A lightweight encoder stack for patch tokens that reuses your custom
-    TransformerEncoderLayer (MultiAttention + NormWrapper + FF/MoE).
-
-    Expects inputs: [B, N, D] (tokens).
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -110,26 +98,6 @@ class PatchTokenEncoder(nn.Module):
 
 
 class PatchTST(nn.Module):
-    """
-    PatchTST-style head built on your custom attention stack.
-
-    Input:
-        x : [B, L, C_in]
-    Output:
-        y : [B, pred_len, C_out]  (C_out=C_in if channel_mixer is None)
-
-    Steps per channel:
-      1) Patchify [B, L] -> [B, N, P]
-      2) Linear patch embedding [P] -> [D]
-      3) (Optional) prepend [CLS] then positional encoding over tokens
-      4) Encode with PatchTokenEncoder (uses your TransformerEncoderLayer + MultiAttention)
-      5) Output mixing (choose via `output_mode`):
-         - "pooled": pool tokens ("mean" | "last" | "cls"), then MLP -> [T]
-         - "nonpool_linear": learned A in R^{T x N_eff}, H=A@tokens -> per-horizon linear -> [T]
-         - "nonpool_attn": learned horizon queries Q in R^{T x D} with your MultiAttention (cross-attn)
-      6) Reshape back to [B, T, C_in]; optional channel_mixer maps C_in->C_out
-    """
-
     def __init__(
         self,
         pred_len: int,
@@ -288,14 +256,12 @@ class PatchTST(nn.Module):
     def _init_token_to_horizon(
         self, n_eff: int, device: torch.device, dtype: torch.dtype
     ):
-        """Initialize the learnable token-to-horizon projection matrix."""
         A = torch.empty(self.pred_len, n_eff, device=device, dtype=dtype)
         nn.init.xavier_uniform_(A)
         self.token_to_horizon = nn.Parameter(A)
         self._n_eff_cache = n_eff
 
     def _init_horizon_queries(self, device: torch.device, dtype: torch.dtype):
-        """Initialize the learnable horizon query embeddings."""
         Q = torch.randn(self.pred_len, self.d_model, device=device, dtype=dtype)
         Q = Q * (1.0 / self.d_model**0.5)
         self.horizon_queries = nn.Parameter(Q)

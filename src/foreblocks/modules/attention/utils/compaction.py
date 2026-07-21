@@ -31,14 +31,6 @@ class AttentionMatchingConfig:
 
 
 class AttentionMatchingCompactor:
-    """
-    Experimental KV compactor inspired by attention matching.
-
-    This first-pass implementation keeps a subset of KV slots, aggregates nearby
-    values into those retained slots, and stores a learned log-bias (`beta`) per
-    retained slot so decode can approximate the removed attention mass.
-    """
-
     def __init__(self, config: AttentionMatchingConfig):
         self.config = config
 

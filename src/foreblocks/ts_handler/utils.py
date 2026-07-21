@@ -166,12 +166,6 @@ def apply_log_transform(
     log_flags: list[bool],
     offsets: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Apply per-feature log transform with stable offsets.
-
-    - If offsets is None: compute offsets from data (fit-time).
-    - If offsets is given: use them (transform-time).
-    """
     x = np.asarray(data, dtype=float)
     if x.ndim != 2:
         raise ValueError(f"apply_log_transform expects 2D array, got shape {x.shape}")

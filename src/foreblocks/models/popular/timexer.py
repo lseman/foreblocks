@@ -33,7 +33,6 @@ def _num_patches(length: int, patch_len: int, stride: int) -> int:
 
 
 def _patchify(x: torch.Tensor, patch_len: int, stride: int) -> torch.Tensor:
-    """Return patches as [B, C, N, P]."""
     B, L, C = x.shape
     n_patches = _num_patches(L, patch_len, stride)
     target_len = (n_patches - 1) * stride + patch_len
@@ -43,8 +42,6 @@ def _patchify(x: torch.Tensor, patch_len: int, stride: int) -> torch.Tensor:
 
 
 class TimeXerBlock(nn.Module):
-    """Patch self-attention plus exogenous cross-attention through global tokens."""
-
     def __init__(
         self,
         d_model: int,
@@ -109,17 +106,6 @@ class TimeXerBlock(nn.Module):
 
 
 class TimeXer(nn.Module):
-    """
-    TimeXer forecasting model.
-
-    Args:
-        pred_len: Forecast horizon.
-        in_channels: Number of endogenous variables in x.
-        out_channels: Number of output channels.
-        exog_channels: Expected number of exogenous variables. Use 0 for optional
-            endogenous-only operation.
-    """
-
     def __init__(
         self,
         pred_len: int,
@@ -247,10 +233,6 @@ class TimeXer(nn.Module):
         exog: torch.Tensor | None = None,
         x_exog: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """
-        x: [B, L, C_in] endogenous variables.
-        exog/x_exog: optional [B, L, E] exogenous variables.
-        """
         if x.dim() != 3 or x.size(-1) != self.in_channels:
             raise ValueError(
                 f"Expected x [B, L, C_in={self.in_channels}], got {tuple(x.shape)}"
@@ -273,7 +255,6 @@ class TimeXer(nn.Module):
         return self.channel_mixer(per_var)
 
     def split_quantiles(self, y: torch.Tensor) -> dict[float, torch.Tensor]:
-        """Split quantile outputs into a dict keyed by quantile value."""
         if self.quantiles is None:
             raise ValueError("No quantiles configured")
         Q = len(self.quantiles)

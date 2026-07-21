@@ -40,26 +40,6 @@ import torch
 
 
 class MoELogger:
-    """
-    Collects per-step router statistics for later reporting.
-    Typical usage:
-        moe_log = MoELogger()
-        ...
-        with torch.no_grad():
-            probs = gate_logits.softmax(-1)            # [N, E]
-            moe_log.log_router(
-                step=global_step,
-                gate_logits=gate_logits,
-                topk_idx=topk_idx,                     # [N, K]
-                capacity_dropped=tokens_dropped,
-                aux_loss=aux,
-                latency_ms=latency,
-                meta={"hour": hours_tensor, "node_id": node_ids_tensor}
-            )
-    After training/eval, call moe_log.to_json("moe_log.json") or pass moe_log.state_dict()
-    to the plotting/report functions below.
-    """
-
     def __init__(self, max_buffer_steps: int | None = None) -> None:
         self.buff: dict[str, list[Any]] = {}
         self.max_buffer_steps = max_buffer_steps
@@ -157,14 +137,6 @@ class MoELogger:
 
 # Optional helper to attach a forward hook to your router module
 def attach_router_hook(module, moe_logger: MoELogger, step_getter):
-    """
-    Example usage:
-        hook = attach_router_hook(model.encoder.layers[0].moe.router, moe_log, lambda: global_step)
-        ...
-        hook.remove()
-    Expects the router module forward(...) to produce gate_logits and topk_idx somewhere.
-    Customize extraction below to match your implementation.
-    """
 
     def _hook(mod, inp, out):
         # Customize this based on your router outputs
@@ -414,10 +386,6 @@ def plot_horizon_wise_error(
 def pareto_accuracy_latency(
     points: list[dict[str, float]], title="Accuracy–Latency Pareto"
 ):
-    """
-    points: [{"name": "MoE", "metric": 0.13, "latency_ms": 7.5, "size_m": 120}, ...]
-    Lower metric is better (e.g., sMAPE, MASE, RMSE).
-    """
     fig, ax = plt.subplots(figsize=(5.5, 4.2))
     for p in points:
         size = 20 + 2 * float(p.get("size_m", 10))
@@ -444,10 +412,6 @@ def plot_attn_entropy_by_expert(
     E: int,
     title="Attention Entropy by Expert",
 ):
-    """
-    attn_entropy_per_token: [N] entropy values computed per token from your attention maps
-    primary_expert_per_token: [N] expert index for that token
-    """
     attn_entropy_per_token = np.asarray(attn_entropy_per_token, dtype=float)
     primary_expert_per_token = np.asarray(primary_expert_per_token, dtype=int)
     vals = [attn_entropy_per_token[primary_expert_per_token == e] for e in range(E)]
@@ -491,10 +455,6 @@ class ReportInputs:
 
 
 def _maybe_save(fig, outdir: str | None, name: str, close: bool = True) -> str | None:
-    """
-    Save a matplotlib Figure if it's not None.
-    Returns the saved path or None when there's nothing to save.
-    """
     if fig is None:
         return None
     if outdir:
@@ -512,10 +472,6 @@ def build_moe_report(
     ri: ReportInputs,
     outdir: str | None = None,
 ) -> dict[str, plt.Figure | None]:
-    """
-    Builds and (optionally) saves all core figures. Returns dict of figures.
-    Also prints a short manifest of what was saved or skipped.
-    """
     figs: dict[str, plt.Figure | None] = {}
     manifest: dict[str, str] = {}
 
@@ -639,13 +595,6 @@ def run_per_expert_ablation(
     eval_fn_disable_expert,  # callable: (e:int) -> metric_value (lower is better)
     E: int,
 ) -> list[float]:
-    """
-    Convenience wrapper to measure metric when each expert is disabled.
-    Example:
-        def eval_fn_disable_expert(e):
-            return evaluate_model(disable_expert=e)  # returns sMAPE or RMSE
-        results = run_per_expert_ablation(eval_fn_disable_expert, E)
-    """
     out = []
     for e in range(E):
         out.append(float(eval_fn_disable_expert(e)))
@@ -662,14 +611,6 @@ def make_reliability_proxy_from_contrib(
     delta_improvement_list: list[np.ndarray],
     threshold: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Build (confidence, correctness) arrays for reliability_diagram:
-    - top1_conf_list: list of arrays with top-1 gate probs per token.
-    - delta_improvement_list: list of arrays with improvement vs. a baseline
-      (e.g., per-token negative delta in loss when using routed expert vs. average).
-    - correctness: 1 if improvement >= threshold.
-    Returns flat arrays (conf, correctness).
-    """
     conf = np.concatenate([np.asarray(c).reshape(-1) for c in top1_conf_list], axis=0)
     imp = np.concatenate(
         [np.asarray(d).reshape(-1) for d in delta_improvement_list], axis=0

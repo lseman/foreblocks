@@ -14,7 +14,6 @@ from foreblocks.ts_handler.auto_filter.registry import register_filter
 
 
 def _estimate_noise_variances(x: np.ndarray) -> tuple[float, float]:
-    """Heuristic variance init from data statistics."""
     d2 = np.diff(np.diff(x))
     q = float(np.var(d2) / 4.0) + 1e-8
     r = float(np.var(x - np.convolve(x, np.ones(5) / 5, mode="same"))) + 1e-8
@@ -27,18 +26,6 @@ def kalman_rts_smoother(
     q: float | None = None,
     r: float | None = None,
 ) -> pd.Series:
-    """Rauch-Tung-Striebel (RTS) optimal smoother — local linear trend model.
-
-    State: [level, slope]ᵀ.  Transition: level_{t+1} = level_t + slope_t + w,
-    slope_{t+1} = slope_t + v.  Observation: y_t = level_t + e.
-
-    Parameters
-    ----------
-    q:
-        Process noise variance.  Auto-estimated from the series if None.
-    r:
-        Observation noise variance.  Auto-estimated if None.
-    """
     y = ts.values.astype(float)
     N = len(y)
     if N < 4:

@@ -1,4 +1,4 @@
-"""foreblocks.layers.graph.layers.stochastic_depth.
+"""foreblocks.layers.graph.conv.stochastic_depth.
 
 Stochastic depth layer implementation.
 

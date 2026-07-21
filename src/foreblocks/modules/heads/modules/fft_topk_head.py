@@ -23,11 +23,6 @@ from foreblocks.core.model import BaseHead
 
 
 class FFTTopK(nn.Module):
-    """
-    Keep top-K magnitudes in frequency domain as seasonal carry; residual is main.
-    Input/Output: [B,T,F]. Returns (main, seasonal).
-    """
-
     def __init__(self, topk: int = 8):
         super().__init__()
         self.topk = int(topk)
@@ -57,8 +52,6 @@ class FFTTopK(nn.Module):
 
 
 class FFTTopKHead(BaseHead):
-    """BaseHead wrapper for FFTTopK. Forward -> (main, seasonal)."""
-
     def __init__(self, topk: int = 8):
         super().__init__(module=FFTTopK(topk=topk), name="fft_topk")
 

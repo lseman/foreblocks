@@ -24,8 +24,6 @@ from foreblocks.models.transformer.transformer import TransformerEncoderLayer
 
 
 class ETSformer(nn.Module):
-    """ETSformer-style head with decomposition and transformer encoding."""
-
     def __init__(
         self,
         pred_len: int,

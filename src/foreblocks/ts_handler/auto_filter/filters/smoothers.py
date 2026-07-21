@@ -20,7 +20,6 @@ def gaussian_process_smoother(
     noise: float = 0.08,
     max_inducing: int = 256,
 ) -> pd.Series:
-    """Sparse RBF Gaussian-process posterior mean smoother."""
     y = ts.values.astype(float)
     n = len(y)
     if n < 4:
@@ -59,7 +58,6 @@ def non_local_means_filter(
     search_radius: int = 24,
     h: float | None = None,
 ) -> pd.Series:
-    """One-dimensional non-local means smoother."""
     y = ts.values.astype(float)
     n = len(y)
     if n < 4:

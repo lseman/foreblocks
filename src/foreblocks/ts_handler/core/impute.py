@@ -30,19 +30,6 @@ warnings.filterwarnings("ignore")
 def rolling_window_impute(
     series: np.ndarray, model_class, window_size=48, stride=24, model_kwargs=None
 ):
-    """
-    Rolling horizon imputation using overlapping windows and a pluggable model class.
-
-    Args:
-        series: np.ndarray of shape (T, D) with NaNs.
-        model_class: Imputer class with .fit() and .impute() methods (e.g. SAITSImputer).
-        window_size: Length of each window (rolling horizon).
-        stride: Step between consecutive windows.
-        model_kwargs: Optional dict of kwargs passed to model_class constructor.
-
-    Returns:
-        Imputed np.ndarray of shape (T, D).
-    """
     if series.ndim == 1:
         series = series[:, None]
     T, D = series.shape
@@ -91,13 +78,11 @@ def rolling_window_impute(
 
 # === Optimized Loss Functions ===
 def masked_mae_cal(inputs, target, mask):
-    """Vectorized masked MAE calculation"""
     diff = torch.abs(inputs - target) * mask
     return diff.sum() / (mask.sum() + 1e-9)
 
 
 def masked_mse_cal(inputs, target, mask):
-    """Vectorized masked MSE calculation"""
     diff = torch.square(inputs - target) * mask
     return diff.sum() / (mask.sum() + 1e-9)
 
@@ -238,14 +223,12 @@ class SAITS(nn.Module):
         self._init_weights()
 
     def _make_embedding_layer(self, input_size, d_model):
-        """Create embedding layer with proper initialization"""
         layer = nn.Linear(input_size, d_model)
         nn.init.xavier_uniform_(layer.weight)
         nn.init.zeros_(layer.bias)
         return layer
 
     def _init_weights(self):
-        """Initialize weights for better convergence"""
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
@@ -488,7 +471,6 @@ class SAITSImputer:
         self.input_size = None
 
     def _create_windows_vectorized(self, data):
-        """Vectorized window creation for better performance"""
         T, D = data.shape
         if T < self.seq_len:
             raise ValueError(
@@ -505,7 +487,6 @@ class SAITSImputer:
         return (~np.isnan(data)).astype(np.float32)
 
     def _get_scheduler(self, optimizer, num_training_steps):
-        """Create learning rate scheduler"""
         if self.lr_scheduler == "cosine":
             return torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=self.epochs

@@ -54,73 +54,6 @@ from foreblocks.ui.node_spec import node
     color="bg-gradient-to-r from-purple-400 to-pink-500",
 )
 class HeadComposer(nn.Module):
-    """
-    Compose preprocessing heads with configurable serial/parallel policies and optional
-    inverse mapping back to the original feature space.
-
-    Head behavior is controlled at two levels:
-      1) Per-head via `HeadSpec` (`combine`, `alpha_mode`, `alpha_mix_style`,
-         add-carry projection).
-      2) Per-stage via composer policies (parallel combine/align/project and serial
-         merge behavior for `combine='none'` outputs).
-
-    Alpha/combine rule:
-      - `alpha_mode` is orthogonal to `combine` except one restriction:
-        `alpha_mode='soft'` is invalid when a head resolves to `combine='invert'`.
-      - Therefore:
-          * `invert` supports `off` or `gate`
-          * `add` supports `off`, `gate`, or `soft`
-          * `none` supports `off`, `gate`, or `soft`
-
-    Modes:
-      - composer_mode="serial":
-          x -> h1 -> h2 -> ... -> x_out
-          Uses `HeadSpec.combine` for each head (`invert`/`add`/`none`).
-      - composer_mode="parallel":
-          y_i = head_i(x0) for each enabled head, then merge branches with
-          `parallel_combine`.
-          Parallel stage is forward-only (no inverse).
-      - composer_mode="hybrid":
-          x0 -> [parallel stage on x0] -> x_aug -> [serial stage on x_aug] -> x_out
-          Inverse only undoes the serial stage.
-
-    Parallel-stage policies:
-      - parallel_combine:
-          concat branches or fuse them with:
-          concat | sum | mean | weighted_sum | hypernetwork_mix |
-          attention_fusion | gated_fusion
-      - parallel_align_mode:
-          * "strict": reduction/fusion paths require exact branch shape match.
-          * "project": auto-align branch time/features via lazy learned projections.
-      - parallel_project / parallel_project_dim:
-          optional output projection after parallel merge.
-      - parallel_structured_outputs:
-          controls tuple outputs in parallel stage:
-          * "error": reject tuple outputs (legacy strict behavior)
-          * "main": use first tensor (e.g., y from (y,state))
-          * "main_add_second": when second is tensor, fuse main + second
-
-    Serial-stage policy for heads that resolve to combine="none":
-      - serial_none_merge:
-          * "replace": use head output as next tensor (legacy behavior).
-          * "add": residual add between current tensor and head output.
-          * "concat": concatenate current tensor and head output on feature dim.
-      - serial_none_project / serial_none_project_dim:
-          optional projection for the selected merge policy.
-
-    Inversion behavior:
-      - `combine="invert"`: calls `head.invert(...)` in reverse order.
-      - `combine="add"`: adds stored carry (optionally projected by `add_project`).
-      - `combine="none"` and parallel stage are not directly inverted.
-
-    Notes:
-      - Projections are created lazily. If you want all params materialized before
-        optimizer creation, call `warmup(example_x, example_y_like=...)`.
-      - Lazy projection/fusion modules are managed by a unified `ProjectionRegistry`.
-      - NAS alpha mixing applies per head (`alpha_mode`) and is compatible with
-        the stage-level policies above.
-    """
-
     _EPS: float = 1e-6
 
     def __init__(
@@ -446,9 +379,9 @@ class HeadComposer(nn.Module):
     @staticmethod
     def _align_time(x: torch.Tensor, target_T: int) -> torch.Tensor:
         B, T, F_ = x.shape
-        if T == target_T:
+        if target_T == T:
             return x
-        if T > target_T:
+        if target_T < T:
             return x[:, -target_T:, :]
         pad_len = target_T - T
         last = x[:, -1:, :].expand(B, pad_len, F_)
@@ -1547,7 +1480,7 @@ class HeadComposer(nn.Module):
         if not gate_on:
             return cur
 
-        if not hasattr(head, "invert") or not callable(getattr(head, "invert")):
+        if not hasattr(head, "invert") or not callable(head.invert):
             raise RuntimeError(
                 f"[{name}] combine='invert' but head {type(head).__name__} has no callable .invert()"
             )
@@ -1586,13 +1519,6 @@ class HeadComposer(nn.Module):
         example_x: torch.Tensor,
         example_y_like: torch.Tensor | None = None,
     ) -> None:
-        """
-        Dry run forward_pre + inverse_post to force creation/registration of:
-          - serial-stage add carry projections (if any)
-          - any internal head buffers depending on shape
-
-        Call once BEFORE creating the optimizer when using serial add_project=True.
-        """
         was_training = self.training
         try:
             self.eval()

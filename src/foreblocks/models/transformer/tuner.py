@@ -21,29 +21,26 @@ from typing import Any, Literal
 
 import numpy as np
 import torch
-from pydantic import BaseModel  # pip install pydantic
 from pydantic import (
+    BaseModel,  # pip install pydantic
     Field,
     field_validator,
 )
 
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
-    """Clamp value to [lower, upper]."""
     return max(lower, min(upper, value))
 
 
 def _choose_nearest_candidate(
     value: float, candidates: list[int], max_value: float = float("inf")
 ) -> int:
-    """Select the candidate closest to `value` without exceeding `max_value`."""
     viable = [c for c in candidates if c <= max_value]
     pool = viable if viable else candidates
     return min(pool, key=lambda c: abs(c - value))
 
 
 def _to_1d_array(series: Any) -> np.ndarray:
-    """Convert input (list, np.array, torch.Tensor) to 1D float64 array, handling multivariate by averaging."""
     if isinstance(series, torch.Tensor):
         arr = series.detach().cpu().numpy()
     else:
@@ -74,7 +71,6 @@ def _difference(values: np.ndarray) -> np.ndarray:
 
 
 def _linear_detrend(values: np.ndarray) -> tuple[np.ndarray, float]:
-    """Linear detrend + compute trend strength (R²-like)."""
     if values.size <= 2:
         return values - values.mean(), 0.0
 
@@ -88,7 +84,6 @@ def _linear_detrend(values: np.ndarray) -> tuple[np.ndarray, float]:
 
 
 def _autocorrelation(values: np.ndarray, max_lag: int) -> np.ndarray:
-    """Compute ACF up to max_lag."""
     centered = values - values.mean()
     variance = float(np.dot(centered, centered))
     if variance <= 1e-12:
@@ -101,7 +96,6 @@ def _autocorrelation(values: np.ndarray, max_lag: int) -> np.ndarray:
 
 
 def _find_acf_peaks(acf: np.ndarray, max_peaks: int = 6) -> list[tuple[int, float]]:
-    """Find local maxima in ACF above threshold."""
     peaks: list[tuple[int, float]] = []
     if acf.size <= 3:
         return peaks
@@ -118,7 +112,6 @@ def _find_acf_peaks(acf: np.ndarray, max_peaks: int = 6) -> list[tuple[int, floa
 
 
 def _spectral_entropy(normalized_power: np.ndarray) -> float:
-    """Shannon entropy of the power spectrum (higher = more unpredictable)."""
     if normalized_power.size == 0:
         return 1.0
     power = normalized_power[normalized_power > 0]
@@ -129,7 +122,6 @@ def _spectral_entropy(normalized_power: np.ndarray) -> float:
 
 
 def _lempel_ziv_complexity(values: np.ndarray, alphabet_size: int = 8) -> float:
-    """Lempel-Ziv compressibility on quantized signal. Lower = more structured, higher = more chaotic."""
     if values.size <= 2:
         return 0.5
 
@@ -137,9 +129,7 @@ def _lempel_ziv_complexity(values: np.ndarray, alphabet_size: int = 8) -> float:
     if max_v - min_v < 1e-12:
         return 0.0
 
-    symbols = np.digitize(
-        values, np.linspace(min_v, max_v, alphabet_size + 1)[:-1]
-    ) - 1
+    symbols = np.digitize(values, np.linspace(min_v, max_v, alphabet_size + 1)[:-1]) - 1
     symbols = np.clip(symbols, 0, alphabet_size - 1)
 
     seq_str = "".join(map(str, symbols))
@@ -166,15 +156,8 @@ def _lempel_ziv_complexity(values: np.ndarray, alphabet_size: int = 8) -> float:
 def _cwt_energy_profile(
     values: np.ndarray, scales: int = 16
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Continuous wavelet transform energy via Morlet wavelet across scales.
-
-    Returns (scale_energies, dominant_scale_index).
-    Detects multi-scale structure: peaky profile = coherent scales; flat = broadband.
-    """
     if values.size < 16:
-        return np.array([1.0] * scales, dtype=np.float64), np.array(
-            [0], dtype=np.int64
-        )
+        return np.array([1.0] * scales, dtype=np.float64), np.array([0], dtype=np.int64)
 
     centered = (values - values.mean()) / (np.std(values) + 1e-8)
     scale_list = np.logspace(0, 2, scales, base=2, dtype=np.float64)
@@ -200,8 +183,6 @@ def _cwt_energy_profile(
 
 @dataclass
 class TunerConfig:
-    """All tunable thresholds for ModernTransformerTuner heuristics."""
-
     # --- Patching score ---
     roughness_high: float = 1.05  # roughness above this → shrink base patch
     roughness_low: float = 0.55  # roughness below this → grow base patch
@@ -263,7 +244,9 @@ class TunerConfig:
     series_length_large: int = 768  # series length >= this → prefer linear/hybrid
 
     # --- Signal complexity (LZ + CWT) ---
-    lz_complexity_threshold: float = 0.55  # LZ >= this → random/chaotic; < this → structured
+    lz_complexity_threshold: float = (
+        0.55  # LZ >= this → random/chaotic; < this → structured
+    )
     cwt_peakiness_threshold: float = 0.40  # max(cwt_energies) >= this → coherent scales
     cwt_broadband_threshold: float = 0.25  # max(cwt_energies) <= this → broadband noise
 
@@ -287,8 +270,6 @@ class DecompositionRecommendation(BaseModel):
 
 
 class TransformerTuningReport(BaseModel):
-    """Modern Pydantic model for the tuning report (better serialization + validation)."""
-
     available: bool
     series_length: int
     context_length: int | None = None
@@ -339,12 +320,6 @@ class TransformerTuningReport(BaseModel):
 
 
 class ModernTransformerTuner:
-    """Analyze a time series and recommend modern transformer tokenization / preprocessing choices.
-
-    Designed to be lightweight (NumPy + Torch only) while providing heuristics inspired by
-    PatchTST, iTransformer, and recent dynamic patching research.
-    """
-
     DEFAULT_PATCH_LENGTHS: list[int] = [4, 6, 8, 12, 16, 24, 32, 48, 64]
     DEFAULT_STRIDES: list[int] = [1, 2, 4, 6, 8, 12, 16, 24, 32]
 
@@ -765,7 +740,9 @@ class ModernTransformerTuner:
         if lz_complexity >= self.config.lz_complexity_threshold:
             attention_mode = "linear"
         elif cwt_peakiness >= self.config.cwt_peakiness_threshold:
-            attention_mode = "hybrid" if multiscale_label in {"moderate", "high"} else "standard"
+            attention_mode = (
+                "hybrid" if multiscale_label in {"moderate", "high"} else "standard"
+            )
         elif n >= self.config.series_length_large and patching_label != "weak":
             attention_mode = (
                 "hybrid" if multiscale_label in {"moderate", "high"} else "linear"

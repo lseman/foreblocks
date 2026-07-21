@@ -35,12 +35,6 @@ class PatchTSTForward:
 
 
 class PatchTSTForecaster(nn.Module):
-    """Patch-based transformer forecaster for anomaly detection.
-
-    Splits windows into patches, encodes with transformer,
-    reconstructs or forecasts. Anomaly = per-patch reconstruction error.
-    """
-
     def __init__(
         self,
         n_features: int,
@@ -89,14 +83,12 @@ class PatchTSTForecaster(nn.Module):
         )
 
     def _to_patches(self, x: torch.Tensor) -> torch.Tensor:
-        """Split [batch, window, features] → [batch, n_patches, patch_size*features]."""
         bsz, window, feat = x.shape
         n_patches = window // self.patch_size
         patches = x.reshape(bsz, n_patches, self.patch_size, feat)
         return patches.reshape(bsz, n_patches, -1)
 
     def _from_patches(self, h: torch.Tensor, bsz: int) -> torch.Tensor:
-        """Reconstruct [batch, n_patches, d_model] → [batch, window, features]."""
         h = self.head(h)  # [batch, n_patches, patch_size*features]
         n_patches = h.shape[1]
         return h.reshape(bsz, n_patches, self.patch_size, self.n_features)
@@ -133,13 +125,6 @@ class PatchTSTForecaster(nn.Module):
 
 
 class CrossVarTransformer(nn.Module):
-    """Cross-attention transformer for multivariate anomaly detection.
-
-    Each variable gets its own embedding path; cross-attention
-    models variable interactions. Anomaly = which variables
-    deviate from joint distribution.
-    """
-
     def __init__(
         self,
         n_features: int,
@@ -227,13 +212,6 @@ class CrossVarTransformer(nn.Module):
 
 
 class MaskedForecaster(nn.Module):
-    """Masked autoencoder forecaster (MAE-style) for self-supervised learning.
-
-    Randomly masks portions of the input sequence, trains model to
-    reconstruct masked tokens. Anomaly = high reconstruction error
-    on masked tokens.
-    """
-
     def __init__(
         self,
         n_features: int,
@@ -287,7 +265,6 @@ class MaskedForecaster(nn.Module):
         self._mask_indices: torch.Tensor | None = None
 
     def _create_mask(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Create random mask. Returns (masked_x, mask_bool)."""
         bsz, seq, _ = x.shape
         n_masked = int(seq * self.mask_ratio)
         mask_bool = torch.zeros(bsz, seq, device=x.device, dtype=torch.bool)

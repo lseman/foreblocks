@@ -24,8 +24,6 @@ from foreblocks.layers.norms import create_norm_layer
 
 
 class FourierModeSelector(nn.Module):
-    """Select frequency modes in the FEDformer Fourier block style."""
-
     def __init__(
         self,
         modes: int = 32,
@@ -40,15 +38,6 @@ class FourierModeSelector(nn.Module):
         self.skip_dc = skip_dc
 
     def forward(self, spectrum: torch.Tensor) -> torch.Tensor:
-        """
-        Return selected frequency indices.
-
-        Args:
-            spectrum: Complex rFFT tensor with shape ``[B, F, C]``.
-
-        Returns:
-            Index tensor with shape ``[B, K]``.
-        """
         if spectrum.dim() != 3:
             raise ValueError("spectrum must have shape [B, F, C]")
 
@@ -67,14 +56,6 @@ class FourierModeSelector(nn.Module):
 
 
 class FourierBlock(nn.Module):
-    """
-    FEDformer-style frequency-domain mixing block.
-
-    This is the encoder-side Fourier block from FEDformer: rFFT over time,
-    select a small set of modes, apply learnable complex weights per selected
-    mode/channel, scatter back into the full spectrum, then irFFT.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -98,14 +79,10 @@ class FourierBlock(nn.Module):
         self.norm = create_norm_layer(custom_norm, d_model, eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Time-domain input with shape ``[B, T, C]``.
-        """
         if x.dim() != 3:
             raise ValueError("x must have shape [B, T, C]")
         B, T, C = x.shape
-        if C != self.d_model:
+        if self.d_model != C:
             raise ValueError(f"expected last dim {self.d_model}, got {C}")
 
         spectrum = torch.fft.rfft(x, dim=1)  # [B, F, C]
@@ -128,40 +105,6 @@ class FourierBlock(nn.Module):
 
 
 class FrequencyAttention(nn.Module):
-    """Frequency Enhanced Attention (FEA) in the frequency domain.
-
-    Faithful re-implementation of the ``FourierCrossAttention`` block from
-    FEDformer:
-
-        Zhou et al., "FEDformer: Frequency Enhanced Decomposed Transformer for
-        Long-term Series Forecasting", ICML 2022.
-        Paper:  https://arxiv.org/abs/2201.12740
-        Code:   https://github.com/MAZiqing/FEDformer
-                (``layers/FourierCorrelation.py`` → ``FourierCrossAttention``)
-
-    Algorithm (per head, feature dim E = head_dim, sequence length L)
-    ----------------------------------------------------------------
-    1. rFFT q, k, v along the time axis.
-    2. Select ``modes`` Fourier components (lowest frequencies, or a random
-       subset) from each of q and k.
-    3. Frequency-domain attention between modes (contracting the feature dim):
-           xqk[b,h,x,y] = Σ_e xq[b,h,e,x] · xk[b,h,e,y]
-       followed by ``tanh`` (default) or ``softmax(|xqk|)`` activation.
-    4. Mix with the value spectrum:
-           xqkv[b,h,e,x] = Σ_y xqk[b,h,x,y] · xv[b,h,e,y]
-    5. Per-head learnable complex spectral weights:
-           out[b,h,o,x] = Σ_e xqkv[b,h,e,x] · W[h,e,o,x]
-    6. Scatter back into the full spectrum and irFFT to time domain.
-
-    Notes
-    -----
-    * The official code multiplies the attention by ``xk`` again (not ``xv``)
-      in step 4 — that only matches the paper when q, k, v share a length.
-      Here we use ``xv`` so cross-attention (L_q ≠ L_k) is well defined; for
-      self-attention the two are identical.
-    * ``modes`` is clamped to the available frequency count of each tensor.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -172,7 +115,8 @@ class FrequencyAttention(nn.Module):
         mode_select: str = "low",
     ):
         super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        if n_heads <= 0 or d_model % n_heads:
+            raise ValueError("n_heads must be positive and divide d_model")
         if activation not in ("tanh", "softmax"):
             raise ValueError("activation must be 'tanh' or 'softmax'")
         if mode_select not in ("low", "fixed", "random"):
@@ -206,7 +150,6 @@ class FrequencyAttention(nn.Module):
         )  # last dim packs (real, imag); viewed as complex at use time
 
     def _select_modes(self, n_freq: int, device: torch.device) -> torch.Tensor:
-        """Return sorted indices of the Fourier modes to keep (≤ n_freq)."""
         modes = min(self.modes, n_freq)
         if self.mode_select == "random" and modes < n_freq:
             idx = torch.randperm(n_freq, device=device)[:modes]

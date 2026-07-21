@@ -250,15 +250,18 @@ class SoftmaxTritonFunction(torch.autograd.Function):
         dim = ctx.dim
         N = ctx.N
 
-        grad_output_flat = (
-            grad_output.movedim(dim, -1).reshape(-1, N).contiguous()
-        )
+        grad_output_flat = grad_output.movedim(dim, -1).reshape(-1, N).contiguous()
         M = grad_output_flat.shape[0]
 
         grad_input_flat = torch.empty_like(y_flat)
 
         BLOCK_SIZE = _block_size_for_num_cols(N, y_flat.element_size())
-        n_row_blocks = max(1, min(torch.cuda.get_device_properties(y_flat.device).multi_processor_count, M))
+        n_row_blocks = max(
+            1,
+            min(
+                torch.cuda.get_device_properties(y_flat.device).multi_processor_count, M
+            ),
+        )
         rows_per_program = triton.cdiv(M, n_row_blocks)
 
         softmax_bwd_kernel[(n_row_blocks,)](
@@ -283,7 +286,6 @@ class SoftmaxTritonFunction(torch.autograd.Function):
 
 
 def softmax_fallback(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """Apply softmax using native PyTorch operations."""
     return torch.softmax(x, dim=dim)
 
 
@@ -291,7 +293,6 @@ def triton_softmax(
     x: torch.Tensor,
     dim: int = -1,
 ) -> torch.Tensor:
-    """Apply row-wise softmax using Triton when supported, otherwise use PyTorch."""
     if _should_use_triton_softmax(x, dim=dim):
         return SoftmaxTritonFunction.apply(x, dim)
     return softmax_fallback(x, dim)

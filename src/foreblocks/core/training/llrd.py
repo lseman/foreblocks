@@ -2,15 +2,13 @@
 
 Layer-wise learning rate decay and warmup-cosine scheduling.
 
-    Implements LLRD for fine-tuning pre-trained sequence models, where early
-    layers receive lower learning rates and task-facing layers receive the base
-    LR. Provides WarmupCosineLR and ExponentialLR schedules compatible with
-    multi-param-group optimizers.
-Designed for transformer and Mamba-based models.
+Implements LLRD for fine-tuning pre-trained sequence models, where early
+layers receive lower learning rates and task-facing layers receive the base
+LR. Provides a WarmupCosineLR schedule compatible with multi-param-group
+optimizers. Designed for transformer and Mamba-based models.
 
 Core API:
 - WarmupCosineLR: linear warmup with cosine annealing to min LR
-- ExponentialLR: exponential decay scheduling
 - get_llrd_param_groups: create layer-wise LR-decayed param groups
 
 """
@@ -26,25 +24,6 @@ import torch.nn as nn
 
 @dataclass
 class WarmupCosineLR:
-    """
-    Linear warmup followed by cosine annealing to min_lr.
-
-    Works with multi-param-group optimizers (e.g., LLRD-grouped optimizers).
-    Step-level scheduler (call .step() after each optimizer.step()).
-
-    Parameters
-    ----------
-    optimizer : torch.optim.Optimizer
-        The optimizer to schedule.
-    warmup_steps : int
-        Number of steps during which LR ramps linearly from ~0 to base LR.
-    total_steps : int
-        Total training steps over which cosine annealing happens
-        (measured from the END of warmup).
-    min_lr_ratio : float, optional
-        Floor LR as a fraction of each param group's base LR (default 0.01).
-    """
-
     optimizer: torch.optim.Optimizer
     warmup_steps: int
     total_steps: int
@@ -53,7 +32,6 @@ class WarmupCosineLR:
     _base_lrs: list[float] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
-        """Capture base LR from each param group."""
         if self.warmup_steps < 0:
             raise ValueError("warmup_steps must be >= 0")
         if self.total_steps <= 0:
@@ -68,7 +46,6 @@ class WarmupCosineLR:
                 param_group["lr"] = 0.0
 
     def step(self) -> None:
-        """Advance the schedule and update optimizer param groups."""
         self._step += 1
         s = self._step
 
@@ -91,11 +68,9 @@ class WarmupCosineLR:
             param_group["lr"] = lr
 
     def get_last_lr(self) -> list[float]:
-        """Return the last set of LRs (for compatibility with torch API)."""
         return [g["lr"] for g in self.optimizer.param_groups]
 
     def state_dict(self) -> dict[str, Any]:
-        """Serialize scheduler state for checkpointing."""
         return {
             "warmup_steps": self.warmup_steps,
             "total_steps": self.total_steps,
@@ -105,7 +80,6 @@ class WarmupCosineLR:
         }
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
-        """Restore scheduler state from checkpoint."""
         self.warmup_steps = state_dict.get("warmup_steps", self.warmup_steps)
         self.total_steps = state_dict.get("total_steps", self.total_steps)
         self.min_lr_ratio = state_dict.get("min_lr_ratio", self.min_lr_ratio)
@@ -120,40 +94,6 @@ def get_llrd_param_groups(
     decay: float = 0.9,
     num_layers: int | None = None,
 ) -> list[dict[str, Any]]:
-    """
-    Build parameter groups with layer-wise LR decay (LLRD).
-
-    Detects transformer layer depth via the `.layers.<idx>.` naming pattern
-    in parameter names. Early layers get progressively lower LR.
-
-    Parameters
-    ----------
-    model : nn.Module
-        The model to extract parameters from.
-    base_lr : float
-        Base learning rate (for the last layer or non-layer params).
-    weight_decay : float
-        Weight decay; set to 0 for bias and norm weights per standard practice.
-    decay : float, optional
-        Multiplicative decay factor per layer (default 0.9). Earlier layers get
-        ``base_lr * decay ** depth_offset`` while the final layer gets ``base_lr``.
-    num_layers : int, optional
-        Expected number of layers (for validation). If None, inferred from
-        the deepest layer index found.
-
-    Returns
-    -------
-    list[dict]
-        List of param groups suitable for ``torch.optim.Optimizer(..., param_groups)``.
-
-    Notes
-    -----
-    - Non-layer params (embedding, input_adapter, final_norm, output head) get
-      ``base_lr`` unscaled (treated as depth 0).
-    - Bias and LayerNorm/BatchNorm weights get ``weight_decay=0``.
-    - If ``share_layers=True`` (single ``shared_layer``, not numbered ``.layers.<i>.``),
-      the function falls back to flat LR for that layer.
-    """
     param_groups: list[dict[str, Any]] = []
     pattern = re.compile(r"(?:^|\.)layers\.(\d+)\.")
     max_layer_idx = -1
@@ -202,5 +142,4 @@ def get_llrd_param_groups(
 
 
 def _is_no_decay_param(name: str) -> bool:
-    """Heuristic: no weight decay for bias and norm parameters."""
     return any(x in name for x in ["bias", "norm", "embedding"])

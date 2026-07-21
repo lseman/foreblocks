@@ -22,12 +22,6 @@ from foreblocks.core.model import BaseHead
 
 
 class DAIN(nn.Module):
-    """
-    Deep Adaptive Input Normalization (DAIN).
-    Applies adaptive shift, scale, and gating based on time summaries.
-    Input/Output: [B,T,F]
-    """
-
     def __init__(self, feature_dim: int):
         super().__init__()
         self.feature_dim = int(feature_dim)
@@ -39,7 +33,7 @@ class DAIN(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, F_ = x.shape
-        if F_ != self.feature_dim:
+        if self.feature_dim != F_:
             raise RuntimeError(f"Input F={F_} != feature_dim={self.feature_dim}.")
 
         a = x.mean(dim=1)  # [B,F]
@@ -57,8 +51,6 @@ class DAIN(nn.Module):
 
 
 class DAINHead(BaseHead):
-    """BaseHead wrapper for DAIN. Forward -> [B,T,F]."""
-
     def __init__(self, feature_dim: int):
         super().__init__(module=DAIN(feature_dim=feature_dim), name="dain")
 

@@ -23,16 +23,10 @@ import torch.nn as nn
 
 
 def get_lowest_modes(seq_len: int, num_modes: int) -> int:
-    """Return the actual number of modes to keep (lowest frequencies)."""
     return min(num_modes, (seq_len // 2) + 1)
 
 
 class SpectralConv1d(nn.Module):
-    """
-    1D Fourier layer. Does FFT -> linear transform in freq domain -> IFFT.
-    Keeps only the lowest `modes` frequencies (standard FNO behavior).
-    """
-
     def __init__(self, in_channels: int, out_channels: int, modes: int):
         super().__init__()
         self.in_channels = in_channels
@@ -70,14 +64,6 @@ class SpectralConv1d(nn.Module):
 
 
 class FNO1dLayer(nn.Module):
-    """
-    Standard FNO-style block with:
-    - Spectral convolution
-    - Skip connection (with 1×1 conv if channels change)
-    - LayerNorm + activation
-    Input & output are both [B, L, C]
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -124,12 +110,6 @@ class FNO1dLayer(nn.Module):
 
 
 class FourierFeatures(nn.Module):
-    """
-    Classical Fourier Feature Encoding (à la Tancik et al.)
-    for injecting high-frequency information into time-series / coordinate inputs.
-    Output shape: [B, L, output_size]
-    """
-
     def __init__(
         self,
         input_dim: int,

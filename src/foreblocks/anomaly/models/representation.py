@@ -23,8 +23,6 @@ from foreblocks.anomaly.models.base import ForeblocksEncoderStack, choose_heads
 
 
 class ContrastiveTransformerEncoder(nn.Module):
-    """Representation model trained with simple augmented-window contrast."""
-
     def __init__(
         self,
         n_features: int,

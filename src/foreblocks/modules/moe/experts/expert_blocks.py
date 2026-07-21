@@ -24,8 +24,6 @@ import torch.nn.functional as F
 
 
 class PackedExpertBank(nn.Module):
-    """Canonical expert-axis parameter storage for grouped MoE execution."""
-
     def __init__(
         self,
         num_experts: int,
@@ -127,8 +125,6 @@ class MoE_FFNExpert(nn.Module):
 
 
 class MTPHead(nn.Module):
-    """Simple multi-token/multi-horizon prediction head bank."""
-
     def __init__(self, d_model: int, n_extra: int = 3, init_scale: float = 0.02):
         super().__init__()
         self.n_extra = int(n_extra)

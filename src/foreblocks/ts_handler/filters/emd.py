@@ -27,19 +27,6 @@ def emd_filter(
     min_imfs: int = 1,
     min_points: int = 32,
 ) -> np.ndarray:
-    """
-    Empirical Mode Decomposition filter.
-
-    Behavior:
-      - skips columns with NaNs (same as your original)
-      - keeps a fraction of IMFs (low-index IMFs tend to be higher frequency in PyEMD)
-      - optional parallelism across features
-
-    NOTE:
-      IMFs ordering can vary by implementation; keeping "first k" is a heuristic.
-      If you want "denoise", often you keep *higher* index IMFs (trend-like). Your
-      original kept first k; we keep that default for backward compatibility.
-    """
     if EMD is None:
         raise ImportError("PyEMD not installed")
 

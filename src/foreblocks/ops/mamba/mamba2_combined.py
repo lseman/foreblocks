@@ -64,13 +64,6 @@ def mamba2_split_conv1d_scan_combined(
     use_triton_ssd: bool = True,
     activation: str = "silu",
 ) -> torch.Tensor:
-    """Combined Mamba2 block path following FLA's split/conv/scan layout.
-
-    This keeps the layer-level dataflow in one op boundary while reusing the
-    local Triton kernels for causal conv, dt prep, SSD, and gated RMSNorm.
-
-    When dt_proj_weight is None, dt_rank defaults to num_heads (no low-rank bottleneck).
-    """
     if dt_rank is None:
         dt_rank = num_heads
     z, conv_input, dt_hidden = torch.split(

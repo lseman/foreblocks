@@ -21,8 +21,6 @@ import torch.nn as nn
 
 
 class RMSNorm(nn.Module):
-    """Lite RMSNorm over last dim."""
-
     def __init__(self, d: int, eps: float = 1e-5, use_simple_rmsnorm: bool = False):
         super().__init__()
         self.eps = eps
@@ -36,7 +34,11 @@ class RMSNorm(nn.Module):
         # Simple RMSNorm: l2norm(x) * sqrt(d), no learned gamma
         if self.use_simple_rmsnorm:
             scale = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-            return x * scale * torch.sqrt(torch.tensor(x.shape[-1], dtype=x.dtype, device=x.device))
+            return (
+                x
+                * scale
+                * torch.sqrt(torch.tensor(x.shape[-1], dtype=x.dtype, device=x.device))
+            )
         scale = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
         return x * scale * self.weight
 
@@ -64,16 +66,6 @@ def _make_norm(kind: str, d: int):
 
 
 class GRN(nn.Module):
-    """
-    Gated Residual Network (TFT-style), improved:
-      - Fused GLU (nn.GLU) for clarity & speed
-      - Optional context with safe broadcasting
-      - Selectable activation: silu/gelu/elu
-      - Selectable norm: layer/rms/none
-      - Residual scaling to stabilize deep stacks
-      - TorchScript-friendly, works on any shape [..., D]
-    """
-
     def __init__(
         self,
         input_size: int,
@@ -155,15 +147,6 @@ class GRN(nn.Module):
     def forward(
         self, x: torch.Tensor, context: torch.Tensor | None = None
     ) -> torch.Tensor:
-        """
-        x: [..., input_size]
-        context (optional): broadcastable to x, last dim == context_size
-            Accepts shapes:
-              - [..., context_size]      (same prefix as x)
-              - [*, context_size]        (will broadcast across time/batch dims)
-              - [context_size]           (single global context)
-        returns: [..., output_size]
-        """
         residual = x
 
         h = self.fc1(x)  # [..., H]

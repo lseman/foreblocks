@@ -13,8 +13,6 @@ Core API:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 
@@ -38,15 +36,13 @@ except Exception:
 
 
 class RDABackend(RoPEMixin, nn.Module):
-    """RDA with configurable feature map + incremental recurrent decode."""
-
     def __init__(
         self,
         d_model: int,
         n_heads: int,
         dropout: float,
         feature_map: str = "elu",
-        num_features: Optional[int] = None,
+        num_features: int | None = None,
         pos_encoding_type: str = "sinusoidal",
     ):
         super().__init__()
@@ -57,7 +53,8 @@ class RDABackend(RoPEMixin, nn.Module):
         self.pos_encoding_type = pos_encoding_type
         self._init_pos_encoding()
 
-        assert d_model % n_heads == 0
+        if n_heads <= 0 or d_model % n_heads:
+            raise ValueError("n_heads must be positive and divide d_model")
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
         self.k_proj = nn.Linear(d_model, d_model, bias=False)

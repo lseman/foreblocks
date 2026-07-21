@@ -388,14 +388,6 @@ class RMSNormTritonFunction(torch.autograd.Function):
 
 
 class FusedAddRMSNormFunction(torch.autograd.Function):
-    """
-    Single-kernel fused (residual + update) + RMSNorm.
-
-    Saves one [*, D] intermediate tensor vs. the two-kernel sequence.
-    Only valid for CUDA dtypes in {float16, bfloat16, float32} and rows
-    that fit in Triton's 64KB fused-row limit.
-    """
-
     @staticmethod
     def forward(ctx, residual, update, weight, eps):
         if not TRITON_AVAILABLE:
@@ -494,7 +486,6 @@ def rms_norm_fallback(
     weight: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Apply RMSNorm using native PyTorch operations."""
     rms = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
     return x * rms * weight
 
@@ -504,7 +495,6 @@ def rms_norm(
     weight: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Apply RMSNorm using Triton when supported, otherwise use PyTorch."""
     if _should_use_triton(x) and weight.is_cuda:
         return RMSNormTritonFunction.apply(x, weight, eps)
     return rms_norm_fallback(x, weight, eps)
@@ -516,7 +506,6 @@ def fused_add_rmsnorm(
     weight: torch.Tensor,
     eps: float,
 ) -> torch.Tensor:
-    """Single-kernel fused (residual + update) + RMSNorm for supported CUDA row widths."""
     return FusedAddRMSNormFunction.apply(residual, update, weight, eps)
 
 

@@ -38,12 +38,6 @@ def compute_patch_num(
 
 
 class RevIN(nn.Module):
-    """Reversible instance normalization for time series.
-
-    Normalizes each series independently and supports reversing the transform
-    for forecast outputs.
-    """
-
     def __init__(
         self,
         num_features: int,
@@ -95,12 +89,6 @@ class RevIN(nn.Module):
 
 
 class KANModel(nn.Module):
-    """Core KAN forecasting model.
-
-    Builds a patch-based forecasting architecture with optional polynomial,
-    Jacobi, and wavelet basis components.
-    """
-
     def __init__(
         self,
         c_in: int,

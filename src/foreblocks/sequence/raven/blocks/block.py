@@ -23,8 +23,6 @@ from foreblocks.sequence.raven.blocks.raven import Raven
 
 
 class RavenBlock(nn.Module):
-    """Transformer-style Raven block with local structure and FLA-backed ops."""
-
     def __init__(self, config: Any, layer_idx: int):
         super().__init__()
 

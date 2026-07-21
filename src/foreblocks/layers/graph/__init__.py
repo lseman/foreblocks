@@ -19,7 +19,7 @@ from foreblocks.layers.graph.latent import (
     CorrelationConfig,
     LatentCorrelationLearner,
 )
-from foreblocks.layers.graph.layers import (
+from foreblocks.layers.graph.conv import (
     EdgeCondGCN,
     GATConv,
     GATv2Conv,

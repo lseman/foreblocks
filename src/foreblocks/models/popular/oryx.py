@@ -30,8 +30,6 @@ from foreblocks.modules.attention.multi_att import MultiAttention
 
 
 class _CausalDepthwiseConv(nn.Module):
-    """Causal depthwise 1D conv for short convolution on keys/values."""
-
     def __init__(self, d_model: int, kernel_size: int = 4) -> None:
         super().__init__()
         self.kernel_size = int(kernel_size)
@@ -58,20 +56,11 @@ class _CausalDepthwiseConv(nn.Module):
 
 
 class _NoOpConv(nn.Module):
-    """Identity module that accepts the activation keyword argument."""
-
     def forward(self, x: torch.Tensor, activation: str | None = None) -> torch.Tensor:
         return x
 
 
 class _GatedRMSNorm(nn.Module):
-    """Gated RMSNorm per the Oryx paper:
-    Y = GatedRMSNorm(O, G) W_O where G = activation(X @ W_G).
-
-    Applies RMS normalization to the mixer output and multiplies
-    element-wise by a learned gate (SiLU-activated projection of input).
-    """
-
     def __init__(self, d_model: int, eps: float = 1e-5) -> None:
         super().__init__()
         self.eps = eps
@@ -84,18 +73,6 @@ class _GatedRMSNorm(nn.Module):
 
 
 class OryxMixerBlock(nn.Module):
-    """
-    Oryx-style multi-mixer block combining shared key/value projections with
-    both quadratic softmax attention and a linear recurrent mixer.
-
-    Key design (per paper 2605.28769v1):
-      - Shared K/V projections across both mixers (>90% params shared)
-      - Mixer-specific Q projections for stronger per-mode readout
-      - Short conv on shared K/V only (not Q); activation depends on mixer
-      - GatedRMSNorm: Y = GatedRMSNorm(O, G) W_O  (gate + norm fused)
-      - GDN internal gate/norm disabled; Oryx applies GatedRMSNorm externally
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -190,12 +167,6 @@ class OryxMixerBlock(nn.Module):
         key_padding_mask: torch.Tensor | None = None,
         layer_state: dict[str, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
-        """Forward through the Oryx mixer block.
-
-        Args:
-            x: [B, T, C]
-            mode: 'attention' or 'gdn'
-        """
         if x.dim() != 3:
             raise ValueError(f"Expected x shape [B,T,C], got {tuple(x.shape)}")
 
@@ -248,8 +219,6 @@ class OryxMixerBlock(nn.Module):
 
 
 class OryxLayer(nn.Module):
-    """Residual transformer layer around a shared Oryx mixer block."""
-
     def __init__(
         self,
         d_model: int,
@@ -314,8 +283,6 @@ class OryxLayer(nn.Module):
 
 
 class OryxTransformer(nn.Module):
-    """Stacked Oryx transformer encoder with flexible mixer selection."""
-
     def __init__(
         self,
         num_layers: int,

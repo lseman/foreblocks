@@ -12,8 +12,6 @@ from foreblocks.models.transformer.runtime.state import DecoderState
 
 
 class TransformerOutput:
-    """Tuple-compatible base for structured model outputs."""
-
     def to_tuple(self) -> tuple[object, ...]:
         return tuple(
             value

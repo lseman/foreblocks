@@ -14,27 +14,27 @@ Core API:
 
 from __future__ import annotations
 
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.layers.embeddings import InformerTimeEmbedding
 from foreblocks.models.transformer.config import TransformerConfig
-from foreblocks.models.transformer.generation import GenerationConfig
-from foreblocks.models.transformer.features.mhc import mhc_init_streams
-from foreblocks.models.transformer.runtime.outputs import (
-    TransformerDecoderOutput,
-    TransformerGenerationOutput,
-)
-from foreblocks.models.transformer.runtime.state import (
-    AttentionCacheState,
-    DecoderLayerState,
-    DecoderState,
-)
 from foreblocks.models.transformer.core.base import (
     BaseTransformer,
     BaseTransformerLayer,
+)
+from foreblocks.models.transformer.features.mhc import mhc_init_streams
+from foreblocks.models.transformer.generation import GenerationConfig
+from foreblocks.models.transformer.runtime.decoder_forward import (
+    build_decoder_output,
+    coerce_decoder_state,
+    prepare_layer_states,
+    resolve_output_options,
+)
+from foreblocks.models.transformer.runtime.decoder_services import (
+    DecoderCacheManager,
+    GenerationEngine,
 )
 from foreblocks.models.transformer.runtime.execution import (
     LazyAttentionBackendMixin,
@@ -54,13 +54,13 @@ from foreblocks.models.transformer.runtime.routing import (
     _gather_square_mask,
     _run_mod_layer,
 )
-from foreblocks.modules.attention.multi_att import MultiAttention
-from foreblocks.modules.attention.cache.kv import StaticKVCache
-from foreblocks.modules.attention.cache.paged import PagedKVCache
-from foreblocks.modules.attention.cache.base import (
-    cache_state_dict,
-    load_cache_state_dict,
+from foreblocks.models.transformer.runtime.state import (
+    AttentionCacheState,
+    DecoderLayerState,
+    DecoderState,
 )
+from foreblocks.modules.attention.cache.kv import StaticKVCache
+from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.attention.utils.residuals import (
     AttentionResidual,
     BlockAttentionResidual,
@@ -73,15 +73,6 @@ from foreblocks.ui.node_spec import node
 class TransformerDecoderLayer(
     ResidualBlockMixin, MHCBlockMixin, LazyAttentionBackendMixin, BaseTransformerLayer
 ):
-    """
-    Decoder layer with:
-      - (Kimi|Linear|Multi) self-attention
-      - Multi cross-attention
-      - Optional GateSkip and MoE
-      - Incremental state for autoregressive decoding
-      - Optional mHC stream mixing (disabled when incremental_state is used)
-    """
-
     def __init__(
         self,
         d_model: int | TransformerConfig | None = None,
@@ -93,7 +84,9 @@ class TransformerDecoderLayer(
         informer_like: bool | None = None,
         **legacy_kwargs,
     ):
-        legacy_construction = not isinstance(d_model, TransformerConfig) and config is None
+        legacy_construction = (
+            not isinstance(d_model, TransformerConfig) and config is None
+        )
         if isinstance(d_model, TransformerConfig):
             if config is not None:
                 raise ValueError("pass TransformerConfig once")
@@ -162,13 +155,25 @@ class TransformerDecoderLayer(
         self.is_causal = not informer_like
 
         self.self_attn_norm = NormWrapper.make(
-            d_model, config.custom_norm, config.norm_strategy, dropout, config.layer_norm_eps
+            d_model,
+            config.custom_norm,
+            config.norm_strategy,
+            dropout,
+            config.layer_norm_eps,
         )
         self.cross_attn_norm = NormWrapper.make(
-            d_model, config.custom_norm, config.norm_strategy, dropout, config.layer_norm_eps
+            d_model,
+            config.custom_norm,
+            config.norm_strategy,
+            dropout,
+            config.layer_norm_eps,
         )
         self.ff_norm = NormWrapper.make(
-            d_model, config.custom_norm, config.norm_strategy, dropout, config.layer_norm_eps
+            d_model,
+            config.custom_norm,
+            config.norm_strategy,
+            dropout,
+            config.layer_norm_eps,
         )
 
         self.gate_self = ResidualGate(d_model)
@@ -528,6 +533,8 @@ class TransformerDecoder(BaseTransformer):
         if self.time_encoder is not None:
             self.time_encoder.apply(self._init_weights)
         self.output_projection.apply(self._init_weights)
+        self._cache_manager = DecoderCacheManager(self)
+        self._generation_engine = GenerationEngine(self, self._cache_manager)
 
     def init_static_cache(
         self,
@@ -537,7 +544,6 @@ class TransformerDecoder(BaseTransformer):
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
     ) -> dict:
-        """Preallocate one compile-friendly self-attention cache per layer."""
         reference = next(self.parameters())
         cache_device = reference.device if device is None else torch.device(device)
         cache_dtype = reference.dtype if dtype is None else dtype
@@ -560,9 +566,7 @@ class TransformerDecoder(BaseTransformer):
                     cross_attn=AttentionCacheState(),
                 )
             )
-        return DecoderState(
-            layers=layer_states, cache_implementation="static"
-        )
+        return DecoderState(layers=layer_states, cache_implementation="static")
 
     def _make_layer(
         self,
@@ -654,25 +658,16 @@ class TransformerDecoder(BaseTransformer):
         output_attentions: bool | None = None,
         return_dict: bool | None = None,
     ):
-        output_hidden_states = (
-            self.config.output_hidden_states
-            if output_hidden_states is None
-            else output_hidden_states
+        output_hidden_states, output_attentions, return_dict = resolve_output_options(
+            self.config, output_hidden_states, output_attentions, return_dict
         )
-        output_attentions = (
-            self.config.output_attentions
-            if output_attentions is None
-            else output_attentions
-        )
-        return_dict = self.config.return_dict if return_dict is None else return_dict
         B, T, _ = tgt.shape
         device = tgt.device
         user_tgt_key_padding_mask = tgt_key_padding_mask
 
-        if incremental_state is not None and not isinstance(incremental_state, DecoderState):
-            incremental_state = DecoderState.from_legacy(
-                incremental_state, num_layers=self.num_layers
-            )
+        incremental_state = coerce_decoder_state(
+            incremental_state, num_layers=self.num_layers
+        )
 
         if cache_position is None and incremental_state is not None:
             existing_layers = incremental_state.get("layers")
@@ -710,7 +705,11 @@ class TransformerDecoder(BaseTransformer):
         wants_static_cache = self.cache_implementation == "static" or (
             self.cache_implementation == "auto" and is_compiling
         )
-        if incremental_state is None and return_incremental_state and wants_static_cache:
+        if (
+            incremental_state is None
+            and return_incremental_state
+            and wants_static_cache
+        ):
             incremental_state = self.init_static_cache(
                 batch_size=B,
                 device=device,
@@ -821,26 +820,9 @@ class TransformerDecoder(BaseTransformer):
                 user_tgt_key_padding_mask
             )
 
-        if incremental_state is not None:
-            raw_layer_states = incremental_state.get("layers")
-            if raw_layer_states is None:
-                layer_states = [
-                    DecoderLayerState.from_legacy(None) for _ in range(self.num_layers)
-                ]
-            else:
-                layer_states = []
-                for layer_state in raw_layer_states:
-                    if layer_state is None:
-                        layer_states.append(DecoderLayerState.from_legacy(None))
-                    else:
-                        layer_states.append(DecoderLayerState.from_legacy(layer_state))
-                if len(layer_states) != self.num_layers:
-                    raise ValueError(
-                        f"incremental_state['layers'] length {len(layer_states)} "
-                        f"must equal num_layers={self.num_layers}"
-                    )
-        else:
-            layer_states = [None] * self.num_layers
+        layer_states = prepare_layer_states(
+            incremental_state, num_layers=self.num_layers
+        )
 
         if cache_position is not None:
             for layer_state in layer_states:
@@ -885,6 +867,7 @@ class TransformerDecoder(BaseTransformer):
             prev_state = layer_states[i - 1] if i > 0 else None
 
             if self.use_mod:
+
                 def gather_and_invoke(layer, routed_indices, routed_slots):
                     nonlocal streams
                     x_routed = _gather_sequence_tokens(x, routed_indices)
@@ -917,8 +900,13 @@ class TransformerDecoder(BaseTransformer):
                     return x_routed, x_routed_out
 
                 x, was_used = _run_mod_layer(
-                    self, i, x, gateskip_active_mask, all_hidden_states,
-                    router_states, gather_and_invoke,
+                    self,
+                    i,
+                    x,
+                    gateskip_active_mask,
+                    all_hidden_states,
+                    router_states,
+                    gather_and_invoke,
                 )
                 if was_used:
                     used_indices.append(i)
@@ -954,9 +942,7 @@ class TransformerDecoder(BaseTransformer):
             if router_state is not None:
                 router_states.append(router_state)
             self_weights = getattr(self_attention_module, "last_attn_weights", None)
-            cross_weights = getattr(
-                cross_attention_module, "last_attn_weights", None
-            )
+            cross_weights = getattr(cross_attention_module, "last_attn_weights", None)
             if self_weights is not None:
                 all_attentions.append(self_weights)
             if cross_weights is not None:
@@ -979,38 +965,26 @@ class TransformerDecoder(BaseTransformer):
                 )
             incremental_state["layers"] = layer_states
             if return_dict:
-                return TransformerDecoderOutput(
-                    last_hidden_state=out,
-                    hidden_states=(
-                        tuple(all_hidden_states)
-                        if all_hidden_states is not None
-                        else None
-                    ),
-                    past_key_values=incremental_state,
+                return build_decoder_output(
+                    out,
+                    hidden_states=all_hidden_states,
+                    state=incremental_state,
                     aux_loss=self.aux_loss,
-                    router_states=tuple(router_states) if router_states else None,
-                    attentions=tuple(all_attentions) if all_attentions else None,
-                    cross_attentions=(
-                        tuple(all_cross_attentions)
-                        if all_cross_attentions
-                        else None
-                    ),
+                    router_states=router_states,
+                    attentions=all_attentions,
+                    cross_attentions=all_cross_attentions,
                 )
             return out, incremental_state
 
         if return_dict:
-            return TransformerDecoderOutput(
-                last_hidden_state=out,
-                hidden_states=(
-                    tuple(all_hidden_states) if all_hidden_states is not None else None
-                ),
-                past_key_values=incremental_state,
+            return build_decoder_output(
+                out,
+                hidden_states=all_hidden_states,
+                state=incremental_state,
                 aux_loss=self.aux_loss,
-                router_states=tuple(router_states) if router_states else None,
-                attentions=tuple(all_attentions) if all_attentions else None,
-                cross_attentions=(
-                    tuple(all_cross_attentions) if all_cross_attentions else None
-                ),
+                router_states=router_states,
+                attentions=all_attentions,
+                cross_attentions=all_cross_attentions,
             )
         return out
 
@@ -1099,7 +1073,6 @@ class TransformerDecoder(BaseTransformer):
         memory: torch.Tensor,
         **kwargs,
     ):
-        """Execute the prompt graph and return output plus initialized cache."""
         kwargs.pop("incremental_state", None)
         kwargs.pop("return_incremental_state", None)
         return self.forward(
@@ -1118,7 +1091,6 @@ class TransformerDecoder(BaseTransformer):
         incremental_state: dict,
         **kwargs,
     ):
-        """Execute only the cached decode graph for one or more new tokens."""
         if incremental_state is None:
             raise ValueError("decode requires an initialized incremental_state")
         if tgt.size(1) > 1:
@@ -1139,7 +1111,6 @@ class TransformerDecoder(BaseTransformer):
         incremental_state: dict,
         **kwargs,
     ):
-        """Decode a chunk in one target-model invocation."""
         if tgt.dim() != 3 or tgt.size(1) < 1:
             raise ValueError("forward_multi_step expects tgt [B,T,C] with T>0")
         output, state = self.forward(
@@ -1156,41 +1127,22 @@ class TransformerDecoder(BaseTransformer):
     def reorder_incremental_state(
         self, incremental_state: dict, beam_idx: torch.LongTensor
     ) -> dict:
-        """Select, duplicate, or reorder batch rows for beam search."""
-        def select(value):
-            if isinstance(value, (StaticKVCache, PagedKVCache)):
-                return value.batch_select(beam_idx)
-            if isinstance(value, torch.Tensor) and value.ndim > 0:
-                if value.size(0) > int(beam_idx.max().item()):
-                    return value.index_select(0, beam_idx.to(value.device))
-                return value
-            if isinstance(value, dict):
-                return {key: select(item) for key, item in value.items()}
-            if isinstance(value, list):
-                return [select(item) for item in value]
-            if isinstance(value, tuple):
-                return tuple(select(item) for item in value)
-            return value
-        return select(incremental_state)
+        return self._cache_manager.reorder(incremental_state, beam_idx)
 
     def cache_state_dict(self, incremental_state: dict) -> dict:
-        return cache_state_dict(incremental_state)
+        return self._cache_manager.state_dict(incremental_state)
 
     def load_cache_state_dict(self, state: dict, *, device=None) -> dict:
-        if device is None:
-            device = next(self.parameters()).device
-        return load_cache_state_dict(state, device=device)
+        return self._cache_manager.load_state_dict(state, device=device)
 
     def offload_cache(self, incremental_state: dict) -> dict:
-        """Return a resumable CPU snapshot without mutating the live cache."""
-        return self.cache_state_dict(incremental_state)
+        return self._cache_manager.offload(incremental_state)
 
     def save_cache(self, incremental_state: dict, path) -> None:
-        torch.save(self.cache_state_dict(incremental_state), path)
+        self._cache_manager.save(incremental_state, path)
 
     def load_cache(self, path, *, device=None) -> dict:
-        snapshot = torch.load(path, map_location="cpu", weights_only=False)
-        return self.load_cache_state_dict(snapshot, device=device)
+        return self._cache_manager.load(path, device=device)
 
     def speculative_decode(
         self,
@@ -1201,38 +1153,19 @@ class TransformerDecoder(BaseTransformer):
         verifier_fn=None,
         **kwargs,
     ):
-        """Verify a drafted token chunk in one pass and roll back rejected suffixes."""
-        start_lengths = []
-        for layer_state in incremental_state.get("layers", []):
-            cache = (layer_state or {}).get("self_attn", {}).get("static_cache")
-            if cache is None:
-                cache = (layer_state or {}).get("self_attn", {}).get("paged_cache")
-            if cache is not None:
-                start_lengths.append(cache.get_seq_length())
-        output, state = self.forward_multi_step(
-            draft_tokens, memory, incremental_state, **kwargs
+        return self._generation_engine.speculative_decode(
+            draft_tokens,
+            memory,
+            incremental_state,
+            verifier_fn=verifier_fn,
+            **kwargs,
         )
-        accepted = (
-            int(verifier_fn(output, draft_tokens))
-            if verifier_fn is not None
-            else draft_tokens.size(1)
-        )
-        accepted = max(0, min(accepted, draft_tokens.size(1)))
-        if accepted != draft_tokens.size(1):
-            for start, layer_state in zip(start_lengths, state.get("layers", [])):
-                self_state = (layer_state or {}).get("self_attn", {})
-                cache = self_state.get("static_cache") or self_state.get("paged_cache")
-                if cache is not None:
-                    cache.crop(start + accepted)
-        return output[:, :accepted], state, accepted
 
     def compile_prefill(self, **compile_options):
-        """Compile the stable prompt execution entry point independently."""
-        return torch.compile(self.prefill, **compile_options)
+        return self._generation_engine.compile_prefill(**compile_options)
 
     def compile_decode(self, **compile_options):
-        """Compile the stable cached-decode entry point independently."""
-        return torch.compile(self.decode, **compile_options)
+        return self._generation_engine.compile_decode(**compile_options)
 
     @torch.no_grad()
     def generate(
@@ -1248,58 +1181,17 @@ class TransformerDecoder(BaseTransformer):
         memory_key_padding_mask: torch.Tensor | None = None,
         return_dict: bool | None = None,
     ):
-        """Autoregressively forecast values using the decoder cache."""
-        if generation_config is None:
-            generation_config = GenerationConfig(
-                max_new_tokens=1 if max_new_tokens is None else max_new_tokens
-            )
-        elif max_new_tokens is not None:
-            raise ValueError(
-                "max_new_tokens belongs to GenerationConfig; do not pass both"
-            )
-        max_new_tokens = generation_config.max_new_tokens
-        return_dict = (
-            generation_config.return_dict if return_dict is None else return_dict
+        return self._generation_engine.generate(
+            initial_tgt,
+            memory,
+            max_new_tokens,
+            generation_config=generation_config,
+            incremental_state=incremental_state,
+            feedback_fn=feedback_fn,
+            memory_mask=memory_mask,
+            memory_key_padding_mask=memory_key_padding_mask,
+            return_dict=return_dict,
         )
-        if feedback_fn is None and self.output_size != initial_tgt.size(-1):
-            raise ValueError(
-                "output_size must match the decoder input width unless feedback_fn is provided"
-            )
-        state = incremental_state
-        if max_new_tokens == 0:
-            sequences = initial_tgt.new_empty(
-                initial_tgt.size(0), 0, self.output_size
-            )
-        else:
-            output, state = self.forward_one_step(
-                initial_tgt,
-                memory,
-                incremental_state=state,
-                memory_mask=memory_mask,
-                memory_key_padding_mask=memory_key_padding_mask,
-            )
-            generated = []
-            for step in range(max_new_tokens):
-                prediction = output[:, -1:, :]
-                generated.append(prediction)
-                if step + 1 == max_new_tokens:
-                    break
-                next_input = (
-                    feedback_fn(prediction, step)
-                    if feedback_fn is not None
-                    else prediction
-                )
-                output, state = self.forward_one_step(
-                    next_input,
-                    memory,
-                    incremental_state=state,
-                    memory_mask=memory_mask,
-                    memory_key_padding_mask=memory_key_padding_mask,
-                )
-            sequences = torch.cat(generated, dim=1)
-        if return_dict:
-            return TransformerGenerationOutput(sequences, state)
-        return sequences
 
     @torch.no_grad()
     def beam_search(
@@ -1310,52 +1202,9 @@ class TransformerDecoder(BaseTransformer):
         num_beams: int,
         proposal_fn,
     ):
-        """Generic beam search for continuous or discrete decoder inputs.
-
-        ``proposal_fn(prediction, step)`` returns candidate inputs ``[N,K,C]``
-        and additive scores ``[N,K]``.
-        """
-        if num_beams < 1 or max_new_tokens < 1:
-            raise ValueError("num_beams and max_new_tokens must be positive")
-        batch_size = initial_tgt.size(0)
-        prediction, state = self.forward_one_step(initial_tgt, memory)
-        prediction = prediction[:, -1:, :]
-        beam_scores = prediction.new_zeros(batch_size, 1)
-        histories = None
-        beam_memory = memory
-        for step in range(max_new_tokens):
-            candidates, candidate_scores = proposal_fn(prediction, step)
-            if candidates.ndim != 3 or candidate_scores.shape != candidates.shape[:2]:
-                raise ValueError("proposal_fn must return [N,K,C] values and [N,K] scores")
-            current_beams, choices = beam_scores.size(1), candidates.size(1)
-            total = candidate_scores.view(batch_size, current_beams, choices)
-            total = total + beam_scores.unsqueeze(-1)
-            keep = min(num_beams, current_beams * choices)
-            beam_scores, flat_indices = total.flatten(1).topk(keep, dim=1)
-            parent = torch.div(flat_indices, choices, rounding_mode="floor")
-            choice = flat_indices.remainder(choices)
-            offsets = torch.arange(batch_size, device=parent.device)[:, None] * current_beams
-            parent_global = (parent + offsets).flatten()
-            candidate_rows = candidates.view(batch_size, current_beams, choices, -1)
-            batch_rows = torch.arange(batch_size, device=parent.device)[:, None]
-            selected = candidate_rows[batch_rows, parent, choice].reshape(
-                batch_size * keep, 1, -1
-            )
-            if histories is None:
-                histories = selected.view(batch_size, keep, 1, -1)
-            else:
-                histories = histories[batch_rows, parent]
-                histories = torch.cat(
-                    [histories, selected.view(batch_size, keep, 1, -1)], dim=2
-                )
-            state = self.reorder_incremental_state(state, parent_global)
-            beam_memory = beam_memory.index_select(0, parent_global.to(beam_memory.device))
-            if step + 1 < max_new_tokens:
-                prediction, state = self.forward_one_step(
-                    selected, beam_memory, incremental_state=state
-                )
-                prediction = prediction[:, -1:, :]
-        return histories[:, 0], beam_scores[:, 0], state
+        return self._generation_engine.beam_search(
+            initial_tgt, memory, max_new_tokens, num_beams, proposal_fn
+        )
 
 
 __all__ = ["TransformerDecoderLayer", "TransformerDecoder"]

@@ -16,8 +16,6 @@ import torch
 
 
 class SpectralAttentionImpl:
-    """Dispatcher to the parent's frequency/wavelet attention (see module docstring)."""
-
     def __init__(self, parent):
         self.parent = parent
 

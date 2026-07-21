@@ -19,10 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import datetime
 import random
-import tempfile
-import warnings
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -37,7 +34,6 @@ from tqdm import tqdm
 from foreblocks.config import TrainingConfig
 from foreblocks.core.evaluation.model_evaluator import ModelEvaluator
 from foreblocks.core.training import (
-    batch_io,
     conformal_trainer as _conf,
     logging as _log,
     training_loop,
@@ -78,18 +74,6 @@ except Exception:
 
 
 class Trainer:
-    """Unified training loop with NAS, conformal prediction, and MoE logging.
-
-    Public API
-    ----------
-    train() – full training loop with optional validation and early stopping
-    evaluate() – quick validation loss
-    save() / load() – checkpointing
-    calibrate_conformal() / predict_with_intervals() / compute_coverage()
-    metrics() / cv() – evaluation helpers
-    plot_prediction() / plot_intervals() – visualization
-    """
-
     # ── Device resolution ──────────────────────────────────────────────
 
     @staticmethod
@@ -104,7 +88,6 @@ class Trainer:
 
     @staticmethod
     def _seed_everything(seed: int | None, deterministic: bool = False) -> None:
-        """Seed training RNGs; model construction must be seeded by its caller."""
         if seed is not None:
             seed = int(seed)
             random.seed(seed)
@@ -134,42 +117,6 @@ class Trainer:
         mltracker_uri: str | None = None,
         auto_track: bool = True,
     ) -> None:
-        """Initialize the Trainer.
-
-        Parameters
-        ----------
-        model : nn.Module
-            The PyTorch model to train.
-        config : TrainingConfig | dict | None
-            Training configuration.  If a dict, it is converted to
-            ``TrainingConfig`` and updated with the given keys.
-        optimizer : torch.optim.Optimizer | None
-            Custom optimizer.  Created automatically (AdamW) if *None*.
-        criterion : Callable | None
-            Deprecated – use ``config.loss_function`` or set via
-            ``self.criterion = ...`` after construction.
-        scheduler : Any | None
-            Deprecated – use ``config.scheduler_type`` instead.
-        device : str | None
-            Device string ("cpu", "cuda", …).  Auto-detected if *None*.
-        use_wandb : bool
-            Deprecated – WandB support has been removed.
-        wandb_config : dict | None
-            Deprecated.
-        moe_meta_builder : callable | None
-            Custom MoE metadata builder.  The default reads ``time_feat``
-            to derive an ``"hour"`` feature.
-        alpha_optimizer : torch.optim.Optimizer | None
-            Deprecated – NAS alpha optimization is handled internally.
-        mltracker : Any | None
-            Pre-existing MLTracker instance.  If *None* and *auto_track* is
-            True, one is auto-created from the DB path.
-        mltracker_uri : str | None
-            Path to the MLTracker SQLite DB.  Defaults to
-            ``<project_root>/mltracker/mltracker_data``.
-        auto_track : bool
-            When True and no *mltracker* is provided, auto-create one.
-        """
         self.device = self._resolve_device(device)
         self.model = model.to(self.device)
         self.use_wandb = use_wandb
@@ -312,7 +259,6 @@ class Trainer:
     # ── Conformal engine factory ───────────────────────────────────────
 
     def _create_conformal_engine(self) -> Any:
-        """Create conformal engine with all method-specific parameters from config."""
         from foreblocks.core.training.conformal import ConformalPredictionEngine
 
         return ConformalPredictionEngine(
@@ -480,11 +426,6 @@ class Trainer:
             yield
 
     def _step_scheduler(self, train_loss: float, val_loss: float | None = None) -> None:
-        """Step scheduler using the correct API for metric-aware schedulers.
-
-        Note: WarmupCosineLR is a step-level scheduler (stepped after each optimizer step),
-        not epoch-level, so it is NOT stepped here.
-        """
         if self.scheduler is None:
             return
         # WarmupCosineLR is stepped per-optimizer-step, not per-epoch
@@ -506,7 +447,6 @@ class Trainer:
     # ── Alpha optimizer & parameter separation ─────────────────────────
 
     def _separate_alpha_optimizer(self) -> None:
-        """Separate architecture parameters (α) from weights (θ)."""
         if not self.nas_helper.has_nas:
             return
         self._alpha_optimizer, self._weight_params, self._alpha_params = (
@@ -514,7 +454,6 @@ class Trainer:
         )
 
     def _get_alpha_optimizer(self) -> torch.optim.Optimizer | None:
-        """Return the alpha optimizer (or the main optimizer if NAS is disabled)."""
         return getattr(self, "_alpha_optimizer", None) or self.optimizer
 
     @property
@@ -527,7 +466,6 @@ class Trainer:
 
     @property
     def alpha_optimizer(self) -> torch.optim.Optimizer | None:
-        """Return the NAS alpha optimizer, or the main optimizer if NAS is disabled."""
         return getattr(self, "_alpha_optimizer", None)
 
     @alpha_optimizer.setter
@@ -537,10 +475,6 @@ class Trainer:
     def train_epoch(
         self, train_loader: DataLoader, val_loader: DataLoader | None = None
     ) -> tuple[float, dict[str, float]]:
-        """Train for one epoch (thin wrapper around ``training_loop.train_epoch``).
-
-        Returns ``(total_loss, avg_components)``.
-        """
         _global_step = {"step": self.global_step}
         # Pass step-level scheduler (only WarmupCosineLR for now)
         from foreblocks.core.training.llrd import WarmupCosineLR
@@ -581,23 +515,6 @@ class Trainer:
         moe_report_outdir: str | None = None,
         run_name: str | None = None,
     ) -> TrainingHistory:
-        """Run the full training loop with optional validation and early stopping.
-
-        Parameters
-        ----------
-        train_loader : DataLoader
-            Training data loader.
-        val_loader : DataLoader | None
-            Optional validation loader.
-        callbacks : list[Any] | None
-            List of callback objects with ``on_epoch_begin`` / ``on_epoch_end``.
-        epochs : int | None
-            Override ``self.config.num_epochs``.
-        moe_report_outdir : str | None
-            Directory for MoE expert reports.
-        run_name : str | None
-            Optional name for the MLTracker run.
-        """
         callbacks = callbacks or []
         num_epochs = epochs if epochs is not None else self.config.num_epochs
 
@@ -748,7 +665,6 @@ class Trainer:
     # ── Evaluation ─────────────────────────────────────────────────────
 
     def evaluate(self, dataloader: DataLoader) -> float:
-        """Evaluate model on *dataloader* and return mean loss."""
         return training_loop.evaluate(
             self.model,
             dataloader,
@@ -770,7 +686,6 @@ class Trainer:
         enbpi_member_models: Any = None,
         enbpi_boot_indices: Any = None,
     ) -> None:
-        """Calibrate conformal engine with held-out calibration data."""
         _conf.calibrate_conformal(
             self,
             cal_loader,
@@ -790,7 +705,6 @@ class Trainer:
         feature_extractor: Any = None,
         sequential: bool = True,
     ) -> None:
-        """Online update for adaptive conformal methods."""
         _conf.update_conformal(
             self, X_new, y_new, state_model, feature_extractor, sequential
         )
@@ -803,7 +717,6 @@ class Trainer:
         tuple[np.ndarray, np.ndarray, np.ndarray]
         | tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ):
-        """Predict with conformal intervals."""
         return _conf.predict_with_intervals(self, X, return_tensors)
 
     def compute_coverage(
@@ -811,7 +724,6 @@ class Trainer:
         X: torch.Tensor,
         y: torch.Tensor,
     ) -> dict[str, float]:
-        """Empirical coverage and basic interval stats."""
         return _conf.compute_coverage(self, X, y)
 
     def predict_with_intervals_streaming(
@@ -821,7 +733,6 @@ class Trainer:
         return_numpy: bool = True,
         sequential: bool | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Streaming (rolling) prediction over a DataLoader."""
         return _conf.predict_with_intervals_streaming(
             self, dataloader, do_update, return_numpy, sequential
         )
@@ -832,13 +743,11 @@ class Trainer:
         do_update: bool = True,
         sequential: bool | None = None,
     ) -> dict[str, Any]:
-        """Coverage diagnostics for streaming/rolling evaluation."""
         return _conf.compute_coverage_streaming(self, dataloader, do_update, sequential)
 
     # ── Saving / loading ───────────────────────────────────────────────
 
     def save(self, path: str | Path) -> None:
-        """Save a checkpoint (model, optimizer, config, history, conformal state)."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         save_dict: dict[str, Any] = {
@@ -869,7 +778,6 @@ class Trainer:
         torch.save(save_dict, path)
 
     def load(self, path: str | Path) -> None:
-        """Load a checkpoint (model, optimizer, config, conformal state)."""
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model.to(self.device)
@@ -894,7 +802,6 @@ class Trainer:
 
     @staticmethod
     def _infer_num_experts(model: nn.Module) -> int | None:
-        """Walk the model tree to find the first ``num_experts`` attribute."""
         for m in model.modules():
             if hasattr(m, "num_experts"):
                 try:
@@ -914,7 +821,6 @@ class Trainer:
         batch_size: int = 256,
         graph_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, float]:
-        """Compute evaluation metrics via ``ModelEvaluator``."""
         evaluator = ModelEvaluator(self)
         result = evaluator.compute_metrics(
             X_val, y_val, batch_size, graph_kwargs=graph_kwargs
@@ -934,7 +840,6 @@ class Trainer:
         batch_size: int = 256,
         graph_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """K-fold cross-validation via ``ModelEvaluator``."""
         evaluator = ModelEvaluator(self)
         return evaluator.cross_validation(
             X, y, n_windows, horizon, step_size, batch_size, graph_kwargs=graph_kwargs
@@ -957,7 +862,6 @@ class Trainer:
         series_color: str = "blue",
         save_path: str | None = None,
     ) -> plt.Figure:  # type: ignore[name-defined]
-        """Plot model predictions against actual values."""
         _viz._require_matplotlib()
         fig = _viz.plot_prediction(
             self,
@@ -997,7 +901,6 @@ class Trainer:
         min_count: int = 1,
         do_update: bool = False,
     ) -> plt.Figure:  # type: ignore[name-defined]
-        """Plot predictions with conformal intervals."""
         _viz._require_matplotlib()
 
         if (
@@ -1243,7 +1146,6 @@ class Trainer:
         show: bool = True,
         sequential: bool | None = None,
     ) -> plt.Figure:  # type: ignore[name-defined]
-        """Heatmap of conformal misses (outside interval) for streaming evaluation."""
         _viz._require_matplotlib()
 
         if (

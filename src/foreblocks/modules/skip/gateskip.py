@@ -103,12 +103,6 @@ class ResidualGate(nn.Module):
         h_prev: torch.Tensor,
         active_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns gate values and scalar importance scores.
-
-        Returns:
-            g:    [B,T,gate_dim]
-            gbar: [B,T] token-level scalar importance
-        """
         g = torch.sigmoid(self.fc(h_prev))
 
         if self.gate_dim == 1:
@@ -133,7 +127,6 @@ def _normalize_active_mask(
     active_mask: torch.Tensor | None,
     ref: torch.Tensor,
 ) -> torch.Tensor:
-    """Normalise active_mask to ``[B,T]`` bool, defaulting to all-True."""
     B, T = ref.shape[:2]
     device = ref.device
     if active_mask is None:
@@ -152,25 +145,6 @@ def _exact_topk_keep_mask(
     keep: float,
     active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Exact per-row top-k keep mask using the gate importance scores.
-
-    For each batch row, selects the top ``round(keep * n_active)`` tokens
-    by ``gbar`` score among active positions.
-
-    Parameters
-    ----------
-    gbar : torch.Tensor
-        Token importance scores ``[B,T]`` (higher = keep).
-    keep : float
-        Fraction of active tokens to keep (0..1).
-    active_mask : torch.Tensor | None
-        Optional ``[B,T]`` bool; only True positions participate.
-
-    Returns
-    -------
-    torch.Tensor
-        Boolean keep mask ``[B,T]``, ``True`` for tokens passing the gate.
-    """
     B, T = gbar.shape
     device = gbar.device
 
@@ -218,12 +192,6 @@ def _compute_gate_smoothness(
     gbar: torch.Tensor,
     active_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Mean absolute temporal variation of gates over adjacent active positions.
-
-    Computes ``mean(|g[t] - g[t-1]|)`` over consecutive pairs where both
-    positions are active.  Low smoothness indicates stable gating across
-    adjacent tokens.
-    """
     B, T = gbar.shape
     if T <= 1:
         return gbar.new_zeros(())
@@ -242,24 +210,6 @@ def _compute_gate_stats(
     budget: float | None,
     active_mask: torch.Tensor | None = None,
 ) -> GateStats:
-    """Compute GateStats diagnostics from gate scores, keep mask, and budget.
-
-    Parameters
-    ----------
-    gbar : torch.Tensor
-        Token importance scores ``[B,T]``.
-    keep_mask : torch.Tensor | None
-        Optional keep mask ``[B,T]``.
-    budget : float | None
-        Target budget fraction.
-    active_mask : torch.Tensor | None
-        Optional active token mask.
-
-    Returns
-    -------
-    GateStats
-        Diagnostics dataclass with gate means, ratios, budget error, smoothness.
-    """
     active_mask = _normalize_active_mask(active_mask, gbar)
 
     denom_active = active_mask.sum().clamp_min(1)
@@ -305,60 +255,6 @@ def gateskip_apply(
     lambda_smooth: float = 0.0,
     warmup_soft_only: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None, GateStats]:
-    """Apply a gated skip connection with budget-constrained selection.
-
-    This is the core GateSkip primitive from Laitenberger et al. (2026,
-    §3).  It combines:
-
-    1. **Soft gating** — a learned gate ``g`` modulates the downstream
-       output ``o``, producing ``h_gated = h_prev + g ⊙ o``.
-    2. **Budget-constrained top-k** — if ``budget ∈ (0,1)``, only the
-       top-``budget`` fraction of tokens (by gate importance ``gbar``)
-       actually keep ``h_gated``; the rest copy ``h_prev`` directly.
-    3. **Auxiliary regularisation** — optional sparsity, budget-tracking,
-       and smoothness terms appended to ``aux_terms``.
-
-    Reference:
-        Laitenberger et al. (2026) — arXiv:2510.13876v3
-        "What Layers When: Learning to Skip Compute in LLMs with
-        Residual Gates."
-        See §3.1 (gating), §3.2 (training objective), §3.3 (token selection).
-
-    Parameters
-    ----------
-    enabled : bool
-        Whether gating is active.  If ``False``, returns plain residual.
-    h_prev : torch.Tensor
-        Residual input ``[B,T,D]``.
-    o : torch.Tensor
-        Downstream path output (e.g. FFN) ``[B,T,D]``.
-    gate : ResidualGate
-        Learned gate module.
-    budget : float | None
-        Target fraction of tokens kept.  ``None`` → soft gate only.
-        ``0.0`` → all skip.  ``1.0`` → all keep.
-    aux_terms : list[torch.Tensor]
-        Accumulator for auxiliary loss terms (appended in-place).
-    lambda_s : float
-        Sparsity weight → ``λ_s * L2(g)`` (mean of squared gate values).
-    active_mask : torch.Tensor | None
-        ``[B,T]`` bool mask for valid tokens.
-    lambda_budget : float
-        Budget-tracking weight → ``λ_budget * (keep_ratio − budget)²``.
-    lambda_smooth : float
-        Smoothness weight → ``λ_smooth * |Δg|`` (temporal variation).
-    warmup_soft_only : bool
-        If ``True``, ignores hard skipping even when budget is set.
-
-    Returns
-    -------
-    tuple[torch.Tensor, torch.Tensor | None, GateStats]
-        ``(h_out, skip_mask, stats)``
-        * ``h_out`` — ``[B,T,D]`` gated + budget-selected output.
-        * ``skip_mask`` — ``[B,T]`` bool, ``True`` where residual was copied
-          (``None`` when soft gate only).
-        * ``stats`` — ``GateStats`` diagnostics.
-    """
 
     active_mask = _normalize_active_mask(active_mask, h_prev)
 
@@ -428,39 +324,6 @@ def apply_skip_to_kv(
     prev_layer_state: dict[str, dict[str, torch.Tensor]] | None,
     attn_type: str,
 ) -> dict[str, torch.Tensor] | None:
-    """Copy KV cache entries from the previous layer for skipped tokens.
-
-    When a token is "skipped" by the gate (i.e. it copies the residual
-    directly), its attention KV pairs can also be copied from the
-    previous layer's cache instead of being recomputed.  This is a
-    cache-level compute saving complementary to the skip connection.
-
-    Shapes:
-        k, v  : ``[B, nh, T, hd]``
-        skip_mask : ``[B, T]`` bool  (``True`` = skip / copy-through)
-
-    Parameters
-    ----------
-    updated : dict[str, torch.Tensor] | None
-        KV tensors from the current layer (``{"k": ..., "v": ...}``).
-    skip_mask : torch.Tensor
-        ``[B,T]`` boolean mask; ``True`` positions copy from prev cache.
-    prev_layer_state : dict[str, dict[str, torch.Tensor]] | None
-        Previous layer cache: ``{attn_type: {"k": ..., "v": ...}}``.
-    attn_type : str
-        Attention type key used in ``prev_layer_state``.
-
-    Returns
-    -------
-    dict[str, torch.Tensor] | None
-        Updated KV dict (or ``None`` if no cache available).  Skipped
-        tokens' K and V are replaced with previous-layer values.
-
-    Note
-    ----
-    Some attention mechanisms may tolerate stale KV from earlier layers
-    better than others.  Validate per-attention-variant.
-    """
     if updated is None:
         return updated
     if prev_layer_state is None:

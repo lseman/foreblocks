@@ -7,7 +7,12 @@ Laguerre polynomials basis function.
 import torch
 from torch import Tensor, nn
 
-from foreblocks.models.kan.poly.utils import _init_coeffs, _reshape_in_out, _restore_shape, _tanh_to_positive
+from foreblocks.models.kan.poly.utils import (
+    _init_coeffs,
+    _reshape_in_out,
+    _restore_shape,
+    _tanh_to_positive,
+)
 
 
 class LaguerrePolynomials(nn.Module):

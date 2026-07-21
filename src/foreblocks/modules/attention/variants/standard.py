@@ -19,8 +19,6 @@ from foreblocks.modules.attention.cache.kv import PagedKVProvider, StaticKVCache
 
 
 class StandardAttentionImpl:
-    """Standard dense scaled dot-product attention (see module docstring)."""
-
     def __init__(self, parent):
         self.parent = parent
 
@@ -62,9 +60,7 @@ class StandardAttentionImpl:
 
     def _is_decode(self, *, layer_state, is_causal: bool) -> bool:
         return bool(
-            layer_state is not None
-            and not self.parent.cross_attention
-            and is_causal
+            layer_state is not None and not self.parent.cross_attention and is_causal
         )
 
     def prefill(
@@ -85,7 +81,13 @@ class StandardAttentionImpl:
             query, key, value, layer_state
         )
         out, weights = self.parent._compute_attention(
-            q, k, v, attn_mask, key_padding_mask, is_causal, need_weights,
+            q,
+            k,
+            v,
+            attn_mask,
+            key_padding_mask,
+            is_causal,
+            need_weights,
             q_start_pos=q_start_pos,
         )
         return self.parent._finalize_projected_output(out, B, T_q), weights, layer_state
@@ -304,9 +306,7 @@ class StandardAttentionImpl:
             query, key, value, layer_state
         )
         static_cache = (
-            layer_state.get("static_cache")
-            if isinstance(layer_state, dict)
-            else None
+            layer_state.get("static_cache") if isinstance(layer_state, dict) else None
         )
         if isinstance(static_cache, StaticKVCache):
             # The fixed cache has a wider key axis than the current query

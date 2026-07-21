@@ -8,9 +8,6 @@ from __future__ import annotations
 
 import numpy as np
 
-from foreblocks.ts_handler.plotting import _plot_comparison
-from foreblocks.ts_handler.transforms import _apply_log_stage, _apply_scaling_stage
-
 
 def _run_pipeline(
     x: np.ndarray,
@@ -40,13 +37,6 @@ def _run_pipeline(
     detrend: bool,
     diff_values: np.ndarray | None,
 ) -> np.ndarray:
-    """
-    Runs the preprocessing stages in a single place.
-
-    Rules:
-    - fit: may learn offsets/scaler/diff seed; uses auto_configure results.
-    - transform: reuses learned offsets/scaler; does NOT silently change configuration.
-    """
     processed = np.array(x, dtype=float, copy=True)
     vprint(f"Starting {mode} pipeline (shape: {x.shape})")
 

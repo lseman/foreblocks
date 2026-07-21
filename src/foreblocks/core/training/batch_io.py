@@ -17,16 +17,12 @@ Core API:
 
 from __future__ import annotations
 
-import contextlib
 from typing import Any
 
-import numpy as np
 import torch
-import torch.nn as nn
 
 
 def loader_len(dataloader: Any) -> int | None:
-    """Return the number of batches, or *None* if unavailable."""
     try:
         return len(dataloader)
     except TypeError:
@@ -43,12 +39,6 @@ _GRAPH_KEYS = {"adj", "edge_index", "edge_weight"}
 def unpack_batch(
     batch: Any,
 ) -> tuple[Any, Any | None, Any | None, dict[str, Any]]:
-    """Normalize batch formats to ``(X, y, time_feat, graph_kwargs)``.
-
-    Handles dict batches, tuple/list batches of length 2/3+, and bare
-    tensors.  ``graph_kwargs`` collects any adjacency / edge attributes
-    found in the batch.
-    """
     if isinstance(batch, dict):
         X = batch.get("X", batch.get("x", batch.get("src", batch.get("input"))))
         y = batch.get("y", batch.get("target", batch.get("targets")))
@@ -92,7 +82,6 @@ def unpack_batch(
 
 
 def to_device(value: Any, device: torch.device) -> Any:
-    """Move tensors or simple nested containers to *device*."""
     if torch.is_tensor(value):
         return value.to(device, non_blocking=True)
     if isinstance(value, dict):
@@ -111,7 +100,6 @@ def move_batch_to_device(
     graph_kwargs: dict[str, Any] | None = None,
     device: torch.device = torch.device("cpu"),
 ) -> tuple[Any, Any | None, Any | None, dict[str, Any]]:
-    """Move every tensor in a batch to the trainer device."""
     X = to_device(X, device)
     y = to_device(y, device)
     time_feat = to_device(time_feat, device)

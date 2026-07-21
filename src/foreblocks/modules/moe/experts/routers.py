@@ -34,12 +34,6 @@ import torch.nn.functional as F
 
 
 def _compute_router_entropy(logits: torch.Tensor) -> torch.Tensor:
-    """Mean per-token Shannon entropy of gate softmax probs (detached 0-dim tensor).
-
-    Returns a tensor rather than a python float so it does not force a device
-    sync (``.item()``) inside compiled router forwards — the sync is deferred to
-    the logging/reporting sites, which call ``float(...)`` on it.
-    """
     probs = F.softmax(logits, dim=-1)
     log_probs = F.log_softmax(logits, dim=-1)
     entropy = -(probs * log_probs).sum(dim=-1).mean()
@@ -48,12 +42,6 @@ def _compute_router_entropy(logits: torch.Tensor) -> torch.Tensor:
 
 @dataclass
 class RouterOutput:
-    """Unified return type for all routers.
-
-    Always returned regardless of ``return_raw_logits``.
-    Fields that are only populated in certain modes are ``None`` otherwise.
-    """
-
     logits: torch.Tensor
     raw_logits: torch.Tensor | None = None
     sparse_assignments: torch.Tensor | None = None
@@ -67,7 +55,6 @@ class RouterOutput:
     )
 
     def __iter__(self):
-        """Yield fields positionally for backward-compatible tuple unpacking."""
         yield self.logits
         yield self.raw_logits
         yield self.sparse_assignments
@@ -83,8 +70,6 @@ class RouterOutput:
 
 
 class Router(nn.Module, ABC):
-    """Abstract router contract for MoE gating modules."""
-
     def __init__(self, num_experts: int):
         super().__init__()
         self.num_experts = int(num_experts)
@@ -126,8 +111,6 @@ class Router(nn.Module, ABC):
 
 
 class LinearRouter(Router):
-    """Simple linear router baseline."""
-
     def __init__(self, d_model: int, num_experts: int, use_bias: bool = False):
         super().__init__(num_experts=num_experts)
         self.router = nn.Linear(d_model, num_experts, bias=use_bias)
@@ -308,8 +291,6 @@ class AdaptiveNoisyTopKRouter(NoisyTopKRouter):
 
 
 class StraightThroughTopKRouter(NoisyTopKRouter):
-    """Top-k sparse router with straight-through gradients."""
-
     def __init__(
         self,
         d_model: int,
@@ -371,8 +352,6 @@ class StraightThroughTopKRouter(NoisyTopKRouter):
 
 
 class ContinuousTopKRouter(NoisyTopKRouter):
-    """Continuous/soft top-k approximation with optional perturb-and-pick."""
-
     def __init__(
         self,
         d_model: int,
@@ -436,8 +415,6 @@ class ContinuousTopKRouter(NoisyTopKRouter):
 
 
 class HashTopKRouter(NoisyTopKRouter):
-    """Hash candidate routing with top-k selection inside hashed expert sets."""
-
     def __init__(
         self,
         d_model: int,
@@ -552,12 +529,6 @@ class HashTopKRouter(NoisyTopKRouter):
 
 
 class SoftDenseRouter(Router):
-    """Soft/dense MoE router — all experts run, continuous gate weights.
-
-    No top-k sparsity: every token sends fractional load to every expert.
-    Fully differentiable, no dropped tokens. Reference: Soft MoE (Puigcerver 2023).
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -620,16 +591,6 @@ class SoftDenseRouter(Router):
 
 
 class AuxiliaryTokenRouter(Router):
-    """Auxiliary-token router — learnable query tokens act as expert proxies.
-
-    Decouples routing from token identity: a set of learnable aux tokens
-    ([num_aux, d_model]) are projected to expert logits per token via
-    an optional linear. Each expert gets routing scores from dot-product
-    (or learned projection) against the aux-token manifold.
-
-    Reference: Soft MoE slot-based routing.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -706,14 +667,14 @@ class AuxiliaryTokenRouter(Router):
 
 
 __all__ = [
-    "Router",
-    "RouterOutput",
-    "LinearRouter",
-    "NoisyTopKRouter",
     "AdaptiveNoisyTopKRouter",
-    "StraightThroughTopKRouter",
+    "AuxiliaryTokenRouter",
     "ContinuousTopKRouter",
     "HashTopKRouter",
+    "LinearRouter",
+    "NoisyTopKRouter",
+    "Router",
+    "RouterOutput",
     "SoftDenseRouter",
-    "AuxiliaryTokenRouter",
+    "StraightThroughTopKRouter",
 ]

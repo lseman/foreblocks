@@ -23,7 +23,6 @@ import os
 import pkgutil
 from collections.abc import Iterable
 
-# NEW: use the unified spec builder (handles inputs/outputs/config + py)
 from foreblocks.ui.auto_spec import build_node_spec
 
 ALLOWED_PACKAGES = [
@@ -40,7 +39,6 @@ ALLOWED_PACKAGES = [
 
 
 def _iter_modules(package_name: str) -> Iterable[str]:
-    """Yield module names under a package or just the module itself if not a package."""
     pkg = importlib.import_module(package_name)
     if hasattr(pkg, "__path__"):
         for mod in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
@@ -50,7 +48,6 @@ def _iter_modules(package_name: str) -> Iterable[str]:
 
 
 def _all_candidate_classes() -> Iterable[type]:
-    """Yield all classes found under allowed packages/modules."""
     seen_modules: set[str] = set()
     seen_classes: set[tuple[str, str]] = set()
     for root in ALLOWED_PACKAGES:
@@ -72,10 +69,6 @@ def _all_candidate_classes() -> Iterable[type]:
 
 
 def _discover_node_specs() -> dict[str, dict]:
-    """
-    Discover decorated node classes and build normalized specs using build_node_spec().
-    Returns a dict: {type_id: full_spec}
-    """
     out: dict[str, dict] = {}
     for cls in _all_candidate_classes():
         # Only include classes that have been explicitly decorated (not inherited)
@@ -119,10 +112,6 @@ def categories_map(nodes: dict[str, dict]) -> dict[str, list[str]]:
 
 # ── Back-compat function: preserve original signature if other code expects it
 def discover_nodes() -> dict[str, dict]:
-    """
-    Back-compat: return a simplified map for callers that don't need categories.
-    Each node dict contains name/category/inputs/outputs/config/subtypes/color/py.
-    """
     specs = _discover_node_specs()
     # Shape similar to before, but now includes 'py'
     simplified = {}
@@ -143,10 +132,6 @@ def discover_nodes() -> dict[str, dict]:
 
 # ── Preferred endpoint payload for /nodes
 def discover_nodes_payload() -> dict[str, dict]:
-    """
-    Return the full payload expected by the frontend:
-      { "nodes": {type_id: {...}}, "categories": {category: [type_ids...] } }
-    """
     specs = _discover_node_specs()
     # Strip to the fields the frontend cares about
     nodes_payload = {

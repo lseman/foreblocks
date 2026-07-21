@@ -79,9 +79,6 @@ def fast_quantile_outlier_removal(
 
 @njit(parallel=True)
 def fast_zscore_outlier_removal(x: np.ndarray, threshold: float) -> np.ndarray:
-    """
-    Numba-accelerated Z-score outlier removal.
-    """
     mean = np.nanmean(x)
     std = np.nanstd(x) + 1e-8
     n = x.shape[0]
@@ -96,9 +93,6 @@ def fast_zscore_outlier_removal(x: np.ndarray, threshold: float) -> np.ndarray:
 
 @njit(parallel=True)
 def fast_iqr_outlier_removal(x: np.ndarray, threshold: float) -> np.ndarray:
-    """
-    Numba-accelerated IQR outlier removal.
-    """
     q1 = np.percentile(x[~np.isnan(x)], 25)
     q3 = np.percentile(x[~np.isnan(x)], 75)
     iqr = q3 - q1 + 1e-8
@@ -113,7 +107,6 @@ def fast_iqr_outlier_removal(x: np.ndarray, threshold: float) -> np.ndarray:
 
 
 def _hbos_outlier_removal(x: np.ndarray, threshold: float) -> np.ndarray:
-    """Histogram-based Outlier Scoring for univariate or multivariate series."""
     valid = ~np.isnan(x)
     if np.sum(valid) < 5:
         return x
@@ -164,19 +157,6 @@ def _hbos_outlier_removal(x: np.ndarray, threshold: float) -> np.ndarray:
 def _remove_outliers(
     data_col: np.ndarray, method: str, threshold: float, **kwargs
 ) -> np.ndarray:
-    """
-    Remove outliers from a univariate or multivariate time series using the specified method.
-    Replaces detected outliers with np.nan.
-
-    Parameters:
-        data_col: np.ndarray of shape (T,) or (T, D)
-        method: One of ["zscore", "iqr", "mad", "hbos", "quantile", "isolation_forest", "lof", "ecod", "tranad"]
-        threshold: method-dependent threshold (e.g. contamination fraction for HBOS and ECOD, 0.95 for percentile methods)
-        **kwargs: Optional method-specific config (e.g. seq_len, epochs for tranad)
-
-    Returns:
-        np.ndarray of same shape as input, with outliers replaced by np.nan
-    """
     data_col = np.asarray(data_col)
     is_multivariate = data_col.ndim == 2
     x = data_col.copy().astype(np.float64)
@@ -295,7 +275,6 @@ def _remove_outliers(
 
 
 def _remove_outliers_wrapper(args):
-    """Wrapper function for parallel outlier removal."""
     i, col, method, threshold = args
     cleaned = _remove_outliers(col, method, threshold)
     return i, cleaned

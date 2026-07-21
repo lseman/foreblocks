@@ -22,11 +22,11 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 
-from foreblocks.ts_handler.auto_configure import (
+from foreblocks.ts_handler.tools.auto_configure import (
     _auto_select_filter_method,
     summarize_configuration,
 )
-from foreblocks.ts_handler.diagnostics import (
+from foreblocks.ts_handler.tools.diagnostics import (
     _get_iterative_imputer_class,
     analyze_signal_quality,
     detect_seasonality,
@@ -43,16 +43,19 @@ from foreblocks.ts_handler.filters import (
     stl_filter,
     wiener_filter,
 )
-from foreblocks.ts_handler.ewt import apply_ewt_and_detrend_parallel
-from foreblocks.ts_handler.impute import SAITSImputer
-from foreblocks.ts_handler.outlier import _remove_outliers, _remove_outliers_parallel
-from foreblocks.ts_handler.plotting import _plot_comparison, set_plot_style
-from foreblocks.ts_handler.time_features import (
+from foreblocks.ts_handler.transforms.ewt import apply_ewt_and_detrend_parallel
+from foreblocks.ts_handler.core.impute import SAITSImputer
+from foreblocks.ts_handler.core.outlier import (
+    _remove_outliers,
+    _remove_outliers_parallel,
+)
+from foreblocks.ts_handler.tools.plotting import _plot_comparison, set_plot_style
+from foreblocks.ts_handler.transforms.time_features import (
     _generate_time_features,
     _infer_timestamp_frequency,
     _maybe_make_time_features,
 )
-from foreblocks.ts_handler.transforms import (
+from foreblocks.ts_handler.transforms.transforms import (
     _apply_log_stage,
     _apply_scaling_stage,
     _centered,
@@ -69,7 +72,7 @@ from foreblocks.ts_handler.utils import (
     _select_diagnostic_features,
     compute_basic_stats,
 )
-from foreblocks.ts_handler.windowing import _create_sequences
+from foreblocks.ts_handler.core.windowing import _create_sequences
 
 # ---- local deps (explicit) ---------------------------------------------------
 Mode = Literal["fit", "transform"]
@@ -961,13 +964,6 @@ class TimeSeriesHandler:
     def _run_pipeline(
         self, x: np.ndarray, *, mode: str, time_stamps: np.ndarray | None
     ) -> np.ndarray:
-        """
-        Runs the preprocessing stages in a single place.
-
-        Rules:
-        - fit: may learn offsets/scaler/diff seed; uses auto_configure results.
-        - transform: reuses learned offsets/scaler; does NOT silently change configuration.
-        """
         processed = np.array(x, dtype=float, copy=True)
         self._vprint(f"Starting {mode} pipeline (shape: {x.shape})")
 
@@ -984,14 +980,21 @@ class TimeSeriesHandler:
 
         # 2) Log transform (fit learns offsets; transform uses learned)
         processed = _apply_log_stage(
-            self, processed, mode, self.log_transform, self.log_transform_flags, self._vprint
+            self,
+            processed,
+            mode,
+            self.log_transform,
+            self.log_transform_flags,
+            self._vprint,
         )
 
         # 3) Outliers (kept: user-controlled; beware leakage but you already chose this)
         if self.remove_outliers:
             self._vprint(f"Applying outlier removal ({self.outlier_method})")
             processed = self._parallel_outlier_clean(processed)
-            self._maybe_plot(processed, "After Outlier Removal", time_stamps, original=x)
+            self._maybe_plot(
+                processed, "After Outlier Removal", time_stamps, original=x
+            )
             if np.any(np.isnan(processed)) and self.apply_imputation:
                 self._vprint("Re-applying imputation after outlier removal")
                 processed = self._impute_missing(processed)
@@ -1074,7 +1077,11 @@ class TimeSeriesHandler:
         max_features: int | None = None,
     ) -> None:
         _plot_comparison(
-            original, cleaned, title=title, time_stamps=time_stamps, max_features=max_features
+            original,
+            cleaned,
+            title=title,
+            time_stamps=time_stamps,
+            max_features=max_features,
         )
 
     def _centered(self, data: np.ndarray, means: np.ndarray) -> np.ndarray:

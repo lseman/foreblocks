@@ -44,7 +44,6 @@ if HAS_TRITON:
         num_edges,
         BLOCK_F: tl.constexpr,  # type: ignore
     ):
-        """Scatter-add: out[b, t, dst, :] += src[b, t, edge, :] indexed by index_ptr."""
         pid = tl.program_id(0)
         edge_idx = pid
 
@@ -84,11 +83,6 @@ if HAS_TRITON:
         num_edges,
         BLOCK_F: tl.constexpr,  # type: ignore
     ):
-        """Fused gather-scatter-add for message passing.
-
-        msg[b, t, edge, :] = x[b, t, src[edge], :] * edge_weight[edge]
-        out[b, t, dst[edge], :] += msg[b, t, edge, :]
-        """
         pid = tl.program_id(0)
         edge_idx = pid
 
@@ -140,7 +134,6 @@ if HAS_TRITON:
         num_edges,
         BLOCK_F: tl.constexpr,  # type: ignore
     ):
-        """Scatter-mean: computes sum and counts for mean aggregation."""
         pid = tl.program_id(0)
         edge_idx = pid
 
@@ -180,7 +173,6 @@ def triton_scatter_add(
     steps: int,
     F: int,
 ) -> torch.Tensor:
-    """Triton scatter-add: out[b, t, dst, :] += src[b, t, edge, :]."""
     if not (HAS_TRITON and src.is_cuda and index.is_cuda):
         return _scatter_add_fallback(src, index, dim_size)
 
@@ -215,7 +207,6 @@ def triton_scatter_mean(
     steps: int,
     F: int,
 ) -> torch.Tensor:
-    """Triton scatter-mean: out[b, t, dst, :] += src[b, t, edge, :]."""
     if not (HAS_TRITON and src.is_cuda and index.is_cuda):
         return _scatter_mean_fallback(src, index, dim_size)
 
@@ -253,11 +244,6 @@ def triton_message_passing(
     edge_index_dst: torch.Tensor,
     edge_weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Fused gather-scatter-add message passing.
-
-    msg[b, t, edge, :] = x[b, t, src[edge], :] * edge_weight[edge]
-    out[b, t, dst[edge], :] += msg[b, t, edge, :]
-    """
     if not (
         HAS_TRITON and x.is_cuda and edge_index_src.is_cuda and edge_index_dst.is_cuda
     ):
@@ -291,7 +277,6 @@ def triton_message_passing(
 def _scatter_add_fallback(
     src: torch.Tensor, index: torch.Tensor, dim_size: int
 ) -> torch.Tensor:
-    """Fallback scatter-add using PyTorch scatter_add."""
     B, T, E, F = src.shape
     out = torch.zeros(B, T, dim_size, F, dtype=src.dtype, device=src.device)
     expanded_index = index.view(1, 1, -1, 1).expand_as(src)
@@ -302,7 +287,6 @@ def _scatter_add_fallback(
 def _scatter_mean_fallback(
     src: torch.Tensor, index: torch.Tensor, dim_size: int
 ) -> torch.Tensor:
-    """Fallback scatter-mean using PyTorch scatter_add."""
     B, T, E, F = src.shape
     out = torch.zeros(B, T, dim_size, F, dtype=src.dtype, device=src.device)
     expanded_index = index.view(1, 1, -1, 1).expand_as(src)
@@ -321,7 +305,6 @@ def _message_passing_fallback(
     edge_index_dst: torch.Tensor,
     edge_weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Fallback message passing using PyTorch indexing."""
     B, T, N, F = x.shape
     num_edges = edge_index_src.numel()
 

@@ -29,15 +29,10 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin, get_typ
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class PortIn:
-    """Marker for input ports in forward(...) annotations via Annotated[..., PortIn]."""
-
-    ...
+class PortIn: ...
 
 
 class PortOutBundle:
-    """Marker to declare multiple output port names in the return type via Annotated[..., PortOutBundle('a','b',...)]"""
-
     def __init__(self, *names: str) -> None:
         self.names = names
 
@@ -79,10 +74,6 @@ def _ann_is_callable(tp) -> bool:
 
 
 def _ann_is_module_like(tp) -> bool:
-    """
-    True if annotation is nn.Module or a subclass (optionally Optional[...] / Union[..., None]).
-    Import torch.nn lazily so this file works without torch installed until needed.
-    """
     base = _unwrap_annotated(tp)
     origin = get_origin(base)
     args = get_args(base)
@@ -126,10 +117,6 @@ def _ann_is_module_like(tp) -> bool:
 
 
 def _safe_default_for_annotation(ann):
-    """
-    Produce a JSON-safe default based on a typing annotation.
-    Falls back to None if we cannot infer safely.
-    """
     if ann is inspect._empty:
         return None
 
@@ -176,7 +163,6 @@ def _safe_default_for_annotation(ann):
 
 
 def _safe_default_for_param(p: inspect.Parameter) -> Any:
-    """Decide a safe default for a required __init__ parameter."""
     return _safe_default_for_annotation(p.annotation)
 
 
@@ -214,14 +200,6 @@ def _collect_config_from_signature(sig: inspect.Signature) -> dict[str, Any]:
 
 
 def _collect_config_from_init(cls) -> dict[str, Any]:
-    """
-    Include ALL non-variadic __init__ parameters (except self), including
-    inherited constructor parameters from parent classes.
-
-    This matters for nodes like TransformerEncoder/TransformerDecoder that
-    expose most of their configurable surface through ``**kwargs`` forwarded
-    into a richer base class constructor.
-    """
     cfg: dict[str, Any] = {}
     mro = [base for base in reversed(cls.mro()) if base not in (object,)]
     for base in mro:
@@ -237,11 +215,6 @@ def _collect_config_from_init(cls) -> dict[str, Any]:
 
 
 def infer_config(cls, extra_sources: list[type] | None = None) -> dict[str, Any]:
-    """
-    Order:
-      - If inner class `Config` exists: try dataclass → try pydantic v2
-      - Else fall back to __init__ signature (now includes safe defaults)
-    """
     merged: dict[str, Any] = {}
 
     def _infer_single(source_cls: type) -> dict[str, Any]:
@@ -315,12 +288,6 @@ _WHITELIST_INIT_INPUTS: set[str] = {
 
 
 def _looks_like_init_input(name: str, ann) -> bool:
-    """
-    Heuristic: treat as an input port if either:
-      - Name is whitelisted (common component names), OR
-      - Annotation is nn.Module or subclass (optionally Optional[...] / Union[..., None]), OR
-      - Annotation is Callable (optionally Optional[...] / Union[..., None]).
-    """
     if name in _WHITELIST_INIT_INPUTS:
         return True
     if _ann_is_module_like(ann):
@@ -338,15 +305,6 @@ def _looks_like_init_input(name: str, ann) -> bool:
 
 
 def infer_inputs(cls) -> list[str]:
-    """
-    STRICT-STRICT + INIT-COMPONENTS:
-      - If class defines __inputs__, use that.
-      - Else:
-          * Scan forward(...) parameters: ONLY Annotated[..., PortIn]
-          * ALSO scan __init__ parameters: treat component-like params as inputs
-            (nn.Module-like, Callable-like, or whitelisted names).
-      - We DO NOT treat `torch.Tensor` (or any other type) as implicit inputs.
-    """
     if hasattr(cls, "__inputs__"):
         return list(getattr(cls, "__inputs__"))
 
@@ -395,7 +353,6 @@ def infer_inputs(cls) -> list[str]:
 
 
 def infer_optional_inputs(cls, inputs: list[str]) -> list[str]:
-    """Infer which discovered input ports are optional constructor hooks."""
     if hasattr(cls, "__optional_inputs__"):
         return [name for name in getattr(cls, "__optional_inputs__") if name in inputs]
 
@@ -420,14 +377,6 @@ def infer_optional_inputs(cls, inputs: list[str]) -> list[str]:
 
 
 def infer_outputs(cls) -> list[str]:
-    """
-    - If class defines __outputs__, use that.
-    - Else inspect forward(...) return annotation:
-        * NamedTuple subclass → its _fields
-        * TypedDict → keys
-        * Annotated[..., PortOutBundle(...)] → names
-        * Else try example_io() probe hook (optional)
-    """
     if hasattr(cls, "__outputs__"):
         return list(getattr(cls, "__outputs__"))
 
@@ -484,19 +433,6 @@ def infer_outputs(cls) -> list[str]:
 def _infer_ctor_and_bindings(
     cls: type, inputs: list[str], cfg: dict[str, Any]
 ) -> dict[str, Any]:
-    """
-    Heuristic for building a default 'py' spec when authors don't provide one.
-
-    - ctor  := cls.__name__
-    - imports := ["from {cls.__module__} import {cls.__name__}"]
-    - var_prefix := lowercased class name (safe default)
-    - bind.kwargs:
-        For each __init__ parameter (excluding self/variadics):
-          - if param name in inputs → "@input:<name>"
-          - elif param name in cfg  → "@config:<name>"
-          - else: skip (user can override in decorator or __py__/py_spec)
-    - output_map: omitted → frontend will default each output port to "@self"
-    """
     kwargs: dict[str, Any] = {}
     try:
         sig = inspect.signature(cls.__init__)
@@ -524,16 +460,6 @@ def _infer_ctor_and_bindings(
 
 
 def build_node_spec(cls: type, options: dict[str, Any]) -> dict[str, Any]:
-    """
-    Merge:
-      - decorator overrides
-      - inferred ports & config
-      - explicit or inferred 'py' codegen spec
-    into a single dict ready to be serialized by /nodes.
-
-    Precedence for 'py':
-      decorator.py  >  cls.__py__  >  cls.py_spec()  >  inferred default
-    """
     # 1) Gather overrides and perform inference (if allowed)
     ov = options.get("overrides", {}) or {}
     do_infer = options.get("infer", True)

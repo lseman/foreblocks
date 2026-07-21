@@ -51,8 +51,6 @@ def _max_offset(seqlen_offset: int | torch.Tensor) -> int:
 
 
 class Raven(nn.Module):
-    """Raven sequence mixer with local layer ownership and FLA-backed ops."""
-
     def __init__(
         self,
         mode: str = "chunk",

@@ -24,7 +24,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
 if TYPE_CHECKING:
@@ -37,7 +36,6 @@ if TYPE_CHECKING:
 
 
 def _as_numpy(x: Any) -> np.ndarray:
-    """Convert *x* to a NumPy array (handles tensors, lists, scalars)."""
     if isinstance(x, np.ndarray):
         return x
     if torch.is_tensor(x):
@@ -46,11 +44,6 @@ def _as_numpy(x: Any) -> np.ndarray:
 
 
 def _ensure_y_shape_like_intervals(y_np: np.ndarray, lower: np.ndarray) -> np.ndarray:
-    """Make *y* shape match ``[N, H, D]`` like *lower* / *upper*.
-
-    Accepts y as ``[N, H]``, ``[N, H, 1]``, or ``[N, H, D]``.
-    Broadcasts a singleton last-dimension to match *lower*.
-    """
     if y_np.ndim == 2:
         y_np = y_np[:, :, None]  # [N,H,1]
     if y_np.ndim != 3:
@@ -63,7 +56,6 @@ def _ensure_y_shape_like_intervals(y_np: np.ndarray, lower: np.ndarray) -> np.nd
 
 
 def _collect_xy_from_loader(cal_loader: DataLoader) -> tuple[np.ndarray, np.ndarray]:
-    """Collect (X, y) from a calibration DataLoader."""
     Xc, Yc = [], []
     for batch in cal_loader:
         if not isinstance(batch, (list, tuple)) or len(batch) < 2:
@@ -91,7 +83,6 @@ def coverage_summary(
     *,
     include_breakdowns: bool = False,
 ) -> dict[str, Any]:
-    """Compute shared conformal coverage statistics."""
     covered = (y_true >= lower) & (y_true <= upper)
     joint_covered = covered.all(axis=(1, 2))
     widths = upper - lower
@@ -125,7 +116,7 @@ def coverage_summary(
 
 
 def calibrate_conformal(
-    trainer: "Trainer",
+    trainer: Trainer,
     cal_loader: DataLoader,
     state_model: Any = None,
     feature_extractor: Any = None,
@@ -134,12 +125,6 @@ def calibrate_conformal(
     enbpi_member_models: Any = None,
     enbpi_boot_indices: Any = None,
 ) -> None:
-    """Calibrate conformal engine with held-out calibration data.
-
-    Contract:
-    - ``self.model`` must support ``forward(X)`` for inference.
-    - Output must be ``[N, H, D]`` (or ``[N, H]``, which engine handles).
-    """
     engine = trainer.conformal_engine
     if engine is None:
         raise RuntimeError("Conformal prediction not enabled in config.")
@@ -187,20 +172,13 @@ def calibrate_conformal(
 
 
 def update_conformal(
-    trainer: "Trainer",
+    trainer: Trainer,
     X_new: torch.Tensor,
     y_new: torch.Tensor,
     state_model: Any = None,
     feature_extractor: Any = None,
     sequential: bool = True,
 ) -> None:
-    """Online update for adaptive conformal methods.
-
-    Args:
-        sequential: If True, update point-by-point within the batch (required
-            for ACI/AgACI correctness). If False, batch update (faster but
-            may be approximate for adaptive methods).
-    """
     engine = trainer.conformal_engine
     if engine is None:
         raise RuntimeError("Conformal prediction not enabled in config.")
@@ -239,18 +217,13 @@ def update_conformal(
 
 
 def predict_with_intervals(
-    trainer: "Trainer",
+    trainer: Trainer,
     X: torch.Tensor,
     return_tensors: bool = False,
 ) -> (
     tuple[np.ndarray, np.ndarray, np.ndarray]
     | tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 ):
-    """Predict with conformal intervals.
-
-    Returns ``(preds, lower, upper)`` with shape ``[N, H, D]`` (or ``[N, H, 1]``
-    if single target dim).  If *return_tensors* is True, returns PyTorch tensors.
-    """
     engine = trainer.conformal_engine
     if engine is None:
         raise RuntimeError("Conformal prediction not enabled in config.")
@@ -281,16 +254,10 @@ def predict_with_intervals(
 
 
 def compute_coverage(
-    trainer: "Trainer",
+    trainer: Trainer,
     X: torch.Tensor,
     y: torch.Tensor,
 ) -> dict[str, float]:
-    """Empirical coverage and basic interval stats.
-
-    ``coverage`` is elementwise over all ``[N, H, D]`` entries.  Also exposes
-    ``joint_coverage`` (a sample is covered only if *every* horizon/target is
-    inside its interval).
-    """
     _, lower, upper = predict_with_intervals(trainer, X, return_tensors=False)
     y_np = _as_numpy(y)
     y_np = _ensure_y_shape_like_intervals(y_np, lower)
@@ -304,7 +271,7 @@ def compute_coverage(
 
 
 def predict_with_intervals_streaming(
-    trainer: "Trainer",
+    trainer: Trainer,
     dataloader: DataLoader,
     do_update: bool = True,
     return_numpy: bool = True,
@@ -313,15 +280,6 @@ def predict_with_intervals_streaming(
     tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
     | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
 ):
-    """Streaming (rolling) prediction over a DataLoader.
-
-    - Assumes dataloader yields ``(X, y)`` or ``(X, y, ...)``
-    - Predicts intervals batch-by-batch in chronological order.
-    - If *do_update* is True, performs online update AFTER predicting each batch.
-    - If *sequential* is None, auto-enables for ACI methods (rolling/agaci).
-
-    Returns ``(preds, lower, upper, y_true)`` all concatenated with shape ``[N, H, D]``.
-    """
     engine = trainer.conformal_engine
     if engine is None or engine.radii is None:
         raise RuntimeError(
@@ -365,15 +323,11 @@ def predict_with_intervals_streaming(
 
 
 def compute_coverage_streaming(
-    trainer: "Trainer",
+    trainer: Trainer,
     dataloader: DataLoader,
     do_update: bool = True,
     sequential: bool | None = None,
 ) -> dict[str, Any]:
-    """Coverage diagnostics for streaming/rolling evaluation.
-
-    Returns elementwise ``coverage`` and ``joint_coverage`` with breakdowns.
-    """
     _, lower, upper, y_true = predict_with_intervals_streaming(
         trainer,
         dataloader,

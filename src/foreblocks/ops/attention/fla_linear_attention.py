@@ -49,15 +49,6 @@ def fla_recurrent_linear_attn_forward(
     v: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Run upstream FLA fused recurrent linear attention with [B, H, T, D] layout.
-
-    Args:
-        q, k, v: query, key, value tensors [B, H, T, D].
-        eps: normalisation epsilon.
-
-    Returns:
-        output [B, H, T, D].
-    """
     if not can_use_fla_linear_attn(q, k, v):
         raise RuntimeError("FLA fused recurrent linear attention is not available")
     fn = fla_fused_recurrent_linear_attn()

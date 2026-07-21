@@ -41,9 +41,6 @@ class SeriesDecomp(nn.Module):
         nn.init.constant_(self.avg.weight, 1.0 / kernel_size)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        x: [B, T, C]  ->  seasonal, trend: [B, T, C]
-        """
         B, T, C = x.shape
         u = x.permute(0, 2, 1).contiguous().view(B * C, 1, T)  # [B*C,1,T]
         t = self.avg(u).view(B, C, T).permute(0, 2, 1).contiguous()
@@ -99,10 +96,6 @@ class AutoformerEncoderLayer(nn.Module):
         self.norm2 = create_norm_layer(norm_type, d_model, eps=eps)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        x: [B, L, D]
-        returns: seasonal_out, trend_residual
-        """
         s, t = self.decomp(x)  # [B,L,D] each
         h = self.norm1(s)
         s = s + self.drop(self.attn(h, h, h)[0])
@@ -141,11 +134,6 @@ class AutoformerDecoderLayer(nn.Module):
     def forward(
         self, x: torch.Tensor, mem: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        x:   seasonal input [B, Ld, D]
-        mem: encoder seasonal memory [B, Le, D]
-        returns: seasonal_out, trend_residual
-        """
         s, t = self.decomp(x)
         h = self.norm1(s)
         s = s + self.drop(self.self_attn(h, h, h)[0])
@@ -160,20 +148,6 @@ class AutoformerDecoderLayer(nn.Module):
 # 4) Full Autoformer Head
 # =========================================================
 class Autoformer(nn.Module):
-    """
-    Autoformer forecasting head.
-
-    Inputs:
-      x: [B, L_in, C_in]
-
-    Hyperparams of interest:
-      label_len: length of decoder warm-up (uses last part of encoder input)
-      pred_len:  forecast horizon
-
-    Output:
-      y: [B, pred_len, C_out]  (or C_out * Q if quantiles)
-    """
-
     def __init__(
         self,
         pred_len: int,
@@ -256,12 +230,6 @@ class Autoformer(nn.Module):
     def _build_decoder_inputs(
         self, s_enc: torch.Tensor, t_enc: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        s_enc, t_enc: [B, L_in, D]
-        Returns:
-          s_dec: seasonal input  = last label_len seasonal + zeros(pred_len)
-          t_dec: trend input     = last label_len trend + repeat(last trend) over pred_len
-        """
         B, Lin, D = s_enc.shape
         Lc = min(self.label_len, Lin)
         s_label = s_enc[:, -Lc:, :]
@@ -276,9 +244,6 @@ class Autoformer(nn.Module):
 
     # ---------------- forward ----------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: [B, L_in, C_in] -> y: [B, H, C_out]
-        """
         if x.dim() != 3 or x.size(-1) != self.in_channels:
             raise ValueError(
                 f"Expected x [B, L, C_in={self.in_channels}], got {tuple(x.shape)}"

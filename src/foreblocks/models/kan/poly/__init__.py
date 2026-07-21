@@ -24,7 +24,12 @@ from foreblocks.models.kan.poly.hahn import HahnPolynomials
 from foreblocks.models.kan.poly.hermite import ProbHermitePolynomials
 from foreblocks.models.kan.poly.jacobi import JacobiPolynomials
 from foreblocks.models.kan.poly.laguerre import LaguerrePolynomials
-from foreblocks.models.kan.poly.types import DEFAULT_POLY_FAMILIES, POLY_FAMILIES, PolyFamily, PolyLayerConfig
+from foreblocks.models.kan.poly.types import (
+    DEFAULT_POLY_FAMILIES,
+    POLY_FAMILIES,
+    PolyFamily,
+    PolyLayerConfig,
+)
 from foreblocks.models.kan.poly.utils import _resolve_family_name
 from foreblocks.models.kan.poly.wavelet import WaveletKAN
 

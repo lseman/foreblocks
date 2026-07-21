@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
 
 import numpy as np
 import torch
@@ -36,12 +36,6 @@ import torch.nn as nn
 
 
 class EMAStatistics:
-    """Exponential moving average for online threshold/score adaptation.
-
-    Maintains running mean and std of scores with configurable decay.
-    Supports percentile computation for adaptive thresholding.
-    """
-
     def __init__(self, decay: float = 0.99, max_len: int = 10000) -> None:
         self.decay = decay
         self.max_len = max_len
@@ -51,7 +45,6 @@ class EMAStatistics:
         self._n = 0
 
     def update(self, score: float) -> None:
-        """Update statistics with new score."""
         if not np.isfinite(score):
             return
         self._values.append(float(score))
@@ -74,11 +67,9 @@ class EMAStatistics:
         return self._std
 
     def adaptive_threshold(self, z: float = 3.0) -> float:
-        """Adaptive threshold based on EMA stats."""
         return self._mean + z * self._std
 
     def percentile(self, p: float) -> float:
-        """Approximate percentile from stored values."""
         if len(self._values) < 10:
             return float("inf")  # type: ignore[return-value]
         return float(np.percentile(list(self._values), p))
@@ -88,12 +79,6 @@ class EMAStatistics:
 
 
 class BatchNormAdapter:
-    """Adapts batch normalization layers at test time.
-
-    Updates running mean/var of BN layers with test batch statistics.
-    Supports partial adaptation (mix with pre-trained stats).
-    """
-
     def __init__(self, model: nn.Module, adapt_rate: float = 0.01) -> None:
         self.model = model
         self.adapt_rate = adapt_rate
@@ -104,7 +89,6 @@ class BatchNormAdapter:
         ]
 
     def adapt(self, batch: torch.Tensor) -> None:
-        """Update BN statistics with current batch."""
         rate = self.adapt_rate
         omr = 1.0 - rate
         for bn in self._bn_modules:
@@ -124,12 +108,6 @@ class BatchNormAdapter:
 
 
 class TENTAdapter:
-    """Test-time adaptation via entropy minimization.
-
-    Fine-tunes the last layer (or all layers) of a pre-trained model
-    by minimizing prediction entropy on test batches.
-    """
-
     def __init__(
         self,
         model: nn.Module,
@@ -167,7 +145,6 @@ class TENTAdapter:
         self.optimizer = torch.optim.Adam(self._update_params, lr=lr)
 
     def adapt(self, batch: torch.Tensor) -> float:
-        """Run one adaptation step. Returns entropy."""
         self.model.train()
         total_entropy = 0.0
 
@@ -200,8 +177,6 @@ class TENTAdapter:
 
 @dataclass
 class StreamingResult:
-    """Result from streaming anomaly detection."""
-
     score: float
     is_anomaly: bool
     threshold: float
@@ -211,12 +186,6 @@ class StreamingResult:
 
 
 class StreamingAnomalyDetector:
-    """Online anomaly detector with adaptive threshold and EMA scoring.
-
-    Scores individual samples (or mini-batches) and adapts the threshold
-    based on recent score distribution. Designed for real-time monitoring.
-    """
-
     def __init__(
         self,
         detector: Any,  # ForeblocksAnomalyDetector or similar
@@ -236,7 +205,6 @@ class StreamingAnomalyDetector:
         self._baseline_threshold = initial_threshold
 
     def score(self, sample: np.ndarray) -> StreamingResult:
-        """Score a single sample (or batch [T, D]) and adapt threshold."""
         self._sample_count += 1
 
         # Get score from underlying detector
@@ -304,7 +272,6 @@ class StreamingAnomalyDetector:
         )
 
     def _default_score(self, sample: np.ndarray) -> float:
-        """Default scoring: sum of z-scores per feature."""
         x = np.asarray(sample, dtype=np.float64)
         if x.ndim == 1:
             x = x[:, None]
@@ -321,11 +288,6 @@ class StreamingAnomalyDetector:
 
 
 class BNAdaptiveWrapper:
-    """Wraps any ForeblocksAnomalyDetector with batch norm adaptation.
-
-    At each predict() call, adapts BN layers before scoring.
-    """
-
     def __init__(
         self,
         detector: Any,
@@ -340,7 +302,6 @@ class BNAdaptiveWrapper:
         self.n_adapt_steps = n_adapt_steps
 
     def predict(self, series: np.ndarray) -> Any:
-        """Adapt BN stats on first few samples, then predict."""
         if self.detector.model is None:
             raise RuntimeError("Detector is not fitted.")
 

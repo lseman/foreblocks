@@ -55,9 +55,7 @@ def _plot_comparison(
     time_stamps: np.ndarray | None = None,
     max_features: int | None = None,
 ) -> None:
-    max_features = (
-        max_features if max_features is not None else 8
-    )
+    max_features = max_features if max_features is not None else 8
 
     original = np.atleast_2d(original)
     cleaned = np.atleast_2d(cleaned)
@@ -73,9 +71,7 @@ def _plot_comparison(
 
     x = time_stamps if time_stamps is not None else np.arange(original.shape[0])
     if len(x) != original.shape[0]:
-        raise ValueError(
-            f"Length of x ({len(x)}) != n_samples ({original.shape[0]})"
-        )
+        raise ValueError(f"Length of x ({len(x)}) != n_samples ({original.shape[0]})")
 
     d = original.shape[1]
     idx = list(range(min(d, max_features)))

@@ -31,14 +31,6 @@ from foreblocks.layers.graph.norms import make_feature_norm
 
 
 class DiffusionConv(nn.Module):
-    """Diffusion-style graph convolution from GraphWaveNet.
-
-    Computes:
-    h^{(l+1)} = α * P * h^{(l)} + (1-α) * P^T * h^{(l)}
-
-    Where P is the row-normalized adjacency matrix.
-    """
-
     def __init__(
         self,
         in_channels: int,
@@ -81,13 +73,13 @@ class DiffusionConv(nn.Module):
         a = self._row_normalize_adjacency(adj)
         h = x
         for _ in range(self.gcn_depth):
-            h = self.prop_alpha * x + (1.0 - self.prop_alpha) * self._node_propagate(h, a)
+            h = self.prop_alpha * x + (1.0 - self.prop_alpha) * self._node_propagate(
+                h, a
+            )
         return self.dropout(self.proj(h))
 
 
 class BackwardDiffusionConv(nn.Module):
-    """Backward diffusion graph convolution (transpose adjacency)."""
-
     def __init__(
         self,
         in_channels: int,
@@ -131,13 +123,13 @@ class BackwardDiffusionConv(nn.Module):
         a = self._row_normalize_adjacency(adj.transpose(-1, -2))
         h = x
         for _ in range(self.gcn_depth):
-            h = self.prop_alpha * x + (1.0 - self.prop_alpha) * self._node_propagate(h, a)
+            h = self.prop_alpha * x + (1.0 - self.prop_alpha) * self._node_propagate(
+                h, a
+            )
         return self.dropout(self.proj(h))
 
 
 class GraphWaveNetTemporalConv(nn.Module):
-    """Gated temporal convolution with dilated causal convolutions."""
-
     def __init__(
         self,
         in_channels: int,
@@ -201,7 +193,9 @@ class GraphWaveNetTemporalConv(nn.Module):
         filter_outs: list[Tensor] = []
         gate_outs: list[Tensor] = []
 
-        for kernel, f_conv, g_conv in zip(self.kernel_set, self.filter_convs, self.gate_convs):
+        for kernel, f_conv, g_conv in zip(
+            self.kernel_set, self.filter_convs, self.gate_convs
+        ):
             if self.preserve_length:
                 pad_t = self.dilation_factor * (kernel - 1)
                 x_in = F.pad(x_cf, (pad_t, 0, 0, 0))
@@ -227,14 +221,6 @@ class GraphWaveNetTemporalConv(nn.Module):
 
 
 class GraphWaveNetBlock(nn.Module):
-    """
-    Real GraphWaveNet-style residual block over [B, T, N, F] tensors.
-
-    The block combines a gated temporal convolution with diffusion-style
-    graph propagation (forward and backward diffusion) and can fall back
-    to a learned adaptive adjacency when no graph is provided at call time.
-    """
-
     def __init__(
         self,
         num_nodes: int,
@@ -325,10 +311,16 @@ class GraphWaveNetBlock(nn.Module):
         num_nodes = self.num_nodes
         node_idx = torch.arange(num_nodes, device=device, dtype=torch.long)
 
-        nodevec1 = F.tanh(self.adaptive_alpha * self.lin_forward(self.emb_forward(node_idx)))
-        nodevec2 = F.tanh(self.adaptive_alpha * self.lin_backward(self.emb_backward(node_idx)))
+        nodevec1 = F.tanh(
+            self.adaptive_alpha * self.lin_forward(self.emb_forward(node_idx))
+        )
+        nodevec2 = F.tanh(
+            self.adaptive_alpha * self.lin_backward(self.emb_backward(node_idx))
+        )
 
-        score = nodevec1 @ nodevec2.transpose(0, 1) - nodevec2 @ nodevec1.transpose(0, 1)
+        score = nodevec1 @ nodevec2.transpose(0, 1) - nodevec2 @ nodevec1.transpose(
+            0, 1
+        )
         adj = F.relu(torch.tanh(self.adaptive_alpha * score))
 
         if self.adaptive_k <= 0 or self.adaptive_k >= num_nodes:

@@ -31,12 +31,6 @@ from foreblocks.ui.node_spec import node
     color="bg-gradient-to-r from-green-400 to-blue-500",
 )
 class DecompositionHead(nn.Module):
-    """
-    Series decomposition head for trend-seasonal separation.
-    Inspired by Autoformer: learnable moving average (depthwise Conv1d) per feature.
-    Forward: (seasonal, trend)  with shape [B,T,F].
-    """
-
     def __init__(
         self,
         kernel_size: int = 25,
@@ -113,8 +107,6 @@ class DecompositionHead(nn.Module):
 
 
 class DecompositionBlock(BaseHead):
-    """BaseHead wrapper for DecompositionHead."""
-
     def __init__(
         self,
         kernel_size: int = 25,

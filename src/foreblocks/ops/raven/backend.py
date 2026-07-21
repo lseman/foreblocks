@@ -23,7 +23,7 @@ from functools import lru_cache
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
-from typing import Iterator
+from collections.abc import Iterator
 
 
 def fla_path() -> Path:

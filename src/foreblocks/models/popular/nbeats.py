@@ -33,19 +33,6 @@ from foreblocks.ui.node_spec import node
     category="Popular",
 )
 class NBEATSBlock(nn.Module):
-    """
-    Canonical N-BEATS generic block (single block).
-
-    - Fully-connected MLP stack
-    - Produces backcast (reconstruction of input) and forecast
-    - Optional weight sharing across hidden layers
-
-    Shapes (univariate case):
-        x:        [B, input_size]
-        backcast: [B, input_size]
-        forecast: [B, basis_size]   # usually = forecast horizon
-    """
-
     def __init__(
         self,
         input_size: int,
@@ -117,6 +104,7 @@ class NBEATSBlock(nn.Module):
         return nn.ReLU()  # fallback
 
     def reset_parameters(self):
+
         # He/Kaiming init — standard for ReLU-family activations
         def init_linear(m):
             if isinstance(m, nn.Linear):
@@ -135,13 +123,6 @@ class NBEATSBlock(nn.Module):
         nn.init.xavier_uniform_(self.forecast_basis.weight, gain=1.0)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            x: [B, input_size]
-        Returns:
-            backcast:  [B, input_size]
-            forecast:  [B, basis_size]
-        """
         h = self.act_fn(self.fc_in(x))
 
         # Hidden stack
@@ -168,13 +149,6 @@ class NBEATSBlock(nn.Module):
     color="bg-gradient-to-br from-orange-600 to-orange-800",
 )
 class NBEATS(nn.Module):
-    """
-    Minimal canonical N-BEATS model:
-    - Stacks multiple generic blocks
-    - Residual connection: subtract backcast from running input
-    - Sum all block forecasts
-    """
-
     def __init__(
         self,
         input_size: int,  # lookback / context length
@@ -211,12 +185,6 @@ class NBEATS(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: [B, input_size]  (univariate lookback)
-        Returns:
-            forecast: [B, horizon]
-        """
         residual = x
         # Naive1 level: start from the last observed value (else from zero).
         forecast = x[:, -1:] if self.naive_level else x.new_zeros(x.shape[0], 1)
@@ -246,13 +214,6 @@ def _mlp_stack(
 
 
 class _InterpretableBlock(nn.Module):
-    """N-BEATS interpretable block with a fixed (non-learned) basis.
-
-    FC stack → separate θ^b / θ^f heads → fixed basis matrices give backcast and
-    forecast.  ``backcast_basis`` is [input_size, theta_b] and ``forecast_basis``
-    is [horizon, theta_f]; both are registered buffers (not trained).
-    """
-
     def __init__(
         self,
         input_size: int,
@@ -281,15 +242,11 @@ class _InterpretableBlock(nn.Module):
 
 
 def _trend_basis(length: int, degree: int) -> torch.Tensor:
-    """Polynomial trend basis: ``[length, degree+1]`` with column i = (t)^i,
-    t = [0, 1, ..., length-1] / length."""
     t = torch.arange(length, dtype=torch.float32) / max(length, 1)
     return torch.stack([t**i for i in range(degree + 1)], dim=1)  # [length, degree+1]
 
 
 def _seasonality_basis(length: int, n_harmonics: int) -> torch.Tensor:
-    """Fourier seasonality basis: ``[length, 2*H]`` of cos/sin harmonics,
-    H = min(n_harmonics, length//2)."""
     t = torch.arange(length, dtype=torch.float32) / max(length, 1)
     H = max(1, min(n_harmonics, length // 2))
     freqs = torch.arange(1, H + 1, dtype=torch.float32)  # harmonics 1..H
@@ -304,21 +261,6 @@ def _seasonality_basis(length: int, n_harmonics: int) -> torch.Tensor:
     color="bg-gradient-to-br from-orange-600 to-amber-700",
 )
 class NBEATSInterpretable(nn.Module):
-    """Interpretable N-BEATS: a trend stack followed by a seasonality stack.
-
-    - Trend stack: ``trend_blocks`` blocks with a shared polynomial basis
-      (degree ``trend_degree``).
-    - Seasonality stack: ``season_blocks`` blocks with a shared Fourier basis
-      (``n_harmonics`` harmonics).
-    Doubly-residual across all blocks; forecasts summed.
-
-    Input : x [B, input_size]
-    Output: forecast [B, horizon]
-
-    ``trend_forecast`` / ``seasonality_forecast`` are exposed via
-    :meth:`decompose` for interpretability.
-    """
-
     def __init__(
         self,
         input_size: int,
@@ -383,7 +325,6 @@ class NBEATSInterpretable(nn.Module):
 
     @torch.no_grad()
     def decompose(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Return the trend and seasonality forecast components."""
         total, trend, season = self._run(x)
         return {"forecast": total, "trend": trend, "seasonality": season}
 
@@ -397,12 +338,6 @@ class NBEATSInterpretable(nn.Module):
 
 
 class _ExogTCN(nn.Module):
-    """Small causal-TCN encoder over exogenous covariates → ``n_filters`` channels.
-
-    Maps exog ``[B, n_exog, T]`` → basis ``[B, n_filters, T]`` (NBEATSx-W/wavelet
-    flavour). Stacked dilated causal convs preserve the time length T.
-    """
-
     def __init__(
         self,
         n_exog: int,
@@ -437,20 +372,6 @@ class _ExogTCN(nn.Module):
 
 
 class _ExogBlock(nn.Module):
-    """N-BEATSx exogenous block.
-
-    The MLP consumes ``[y_lookback, exog_insample(flat), exog_outsample(flat)]``
-    and emits coefficients ``θ`` that are combined with an exogenous *basis*:
-
-      * ``mode="linear"`` (NBEATSx-G): basis = the exog covariates themselves;
-        ``forecast = sum_e θ_e * exog_out[:, e, :]``  (θ size = n_exog).
-      * ``mode="tcn"`` (NBEATSx-W): a shared causal-TCN encodes the exog into
-        ``n_filters`` channels first; θ size = n_filters.
-
-    Backcast uses the insample exog with the same θ-basis contraction so the
-    block stays doubly-residual on ``y``.
-    """
-
     def __init__(
         self,
         input_size: int,  # L
@@ -517,23 +438,6 @@ class _ExogBlock(nn.Module):
     color="bg-gradient-to-br from-amber-600 to-yellow-700",
 )
 class NBEATSx(nn.Module):
-    """N-BEATS with exogenous variables.
-
-    Stacks (each doubly-residual on the target ``y``):
-      * trend stack       — polynomial basis (target only)
-      * seasonality stack — Fourier basis (target only)
-      * exogenous stack   — ``exog_blocks`` :class:`_ExogBlock` (linear or TCN)
-
-    Input
-    -----
-    y         : [B, input_size]                 lookback target
-    exog_in   : [B, input_size, n_exog]         insample exogenous (or None)
-    exog_out  : [B, horizon, n_exog]            future exogenous (or None)
-
-    Output: forecast [B, horizon].  With ``n_exog=0`` this reduces to interpretable
-    N-BEATS. :meth:`decompose` returns the per-stack forecast components.
-    """
-
     def __init__(
         self,
         input_size: int,

@@ -18,8 +18,6 @@ from foreblocks.ts_handler.utils import apply_log_transform, compute_basic_stats
 
 
 class _TransformState:
-    """Container for transform state (log flags, scaler, log offset, diff values, trend component)."""
-
     log_transform_flags: list[bool] | None = None
     scaler: any | None = None
     log_offset: np.ndarray | None = None
@@ -53,8 +51,7 @@ def _ensure_log_flags(state: _TransformState, data: np.ndarray) -> None:
         return
     _, _, _, skews, kurts = compute_basic_stats(data)
     flags = [
-        _should_log_transform(float(sk), float(ku))
-        for sk, ku in zip(skews, kurts)
+        _should_log_transform(float(sk), float(ku)) for sk, ku in zip(skews, kurts)
     ]
     state.log_transform_flags = flags
 

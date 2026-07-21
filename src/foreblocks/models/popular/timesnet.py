@@ -51,13 +51,6 @@ def _topk_periods_amplitude(
     max_period: int | None = None,
     max_period_frac: float = 0.5,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    x: [B, L, C]
-    Returns:
-        periods [B, k] (int64), selected from dominant FFT amplitudes.
-        amps    [B, k] (float), the (per-sample) amplitude of each selected
-                 frequency — used for the paper's softmax-amplitude aggregation.
-    """
     B, L, C = x.shape
     if k <= 0:
         return (
@@ -109,12 +102,6 @@ def _topk_periods_autocorr(
     max_period: int | None = None,
     max_period_frac: float = 0.5,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    x: [B, L, C]
-    Returns:
-        periods [B, k] (int64), selected from FFT-based autocorrelation peaks.
-        amps    [B, k] (float), the autocorrelation peak height (aggregation weight).
-    """
     B, L, C = x.shape
     if k <= 0:
         return (
@@ -156,8 +143,6 @@ def _topk_periods(
     max_period_frac: float = 0.5,
     method: str = "amplitude",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Returns (periods [B, k], amps [B, k]); amps are the per-sample selection
-    strengths used for the paper's softmax-amplitude aggregation."""
     if method == "amplitude":
         return _topk_periods_amplitude(
             x,
@@ -218,8 +203,6 @@ def _topk_periods(
 # ------------------------------------------------------------
 class Inception2D(nn.Module):
     class _ChannelFirstNorm2D(nn.Module):
-        """Apply channel-last norm layers to [B, C, H, W] tensors."""
-
         def __init__(self, norm_type: str, channels: int, eps: float):
             super().__init__()
             self.norm = create_norm_layer(norm_type, channels, eps=eps)
@@ -534,9 +517,9 @@ class TimesNet(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, Cin = x.shape
-        assert (
-            Cin == self.in_channels
-        ), f"Expected {self.in_channels} channels, got {Cin}"
+        assert Cin == self.in_channels, (
+            f"Expected {self.in_channels} channels, got {Cin}"
+        )
 
         z = self.enc_in(x)
 

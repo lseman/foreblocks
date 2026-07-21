@@ -22,12 +22,6 @@ import torch.nn as nn
 
 
 class ProjectionRegistry(nn.Module):
-    """
-    Unified factory/registry for projection and fusion helper modules.
-
-    Keys are structured by `(category, name, in_dim, out_dim, proj_type, kwargs...)`.
-    """
-
     def __init__(self) -> None:
         super().__init__()
         self.registry = nn.ModuleDict()

@@ -20,37 +20,6 @@ from foreblocks.ts_handler.auto_filter.filters import (
 
 @dataclass
 class ScoringWeights:
-    """Weights for the composite filter score (must sum to 1).
-
-    Seven axes covering complementary aspects of denoising quality:
-
-    fidelity_mse
-        Raw MSE between output and input. Cheap anchor, but rewards filters
-        that barely touch the signal.
-    gcv
-        Generalized Cross-Validation score (Craven & Wahba 1979):
-        MSE / (1 − df/n)², with effective degrees of freedom df estimated by
-        Monte-Carlo divergence probing (Ramani et al. 2008). The standard
-        automatic smoothing-parameter selector — bias-aware, so it penalises
-        both over-smoothing (high residual energy) and under-smoothing
-        (high df) without needing the clean signal.
-    roughness
-        Relative curvature: std(diff²(out)) / std(diff²(in)). Scale-free,
-        outlier-robust smoothness measure. Lower → smoother relative to input.
-    residual_autocorr
-        Ljung-Box Q-statistic at lag 20 on the residual. Lower Q → whiter
-        residual → less signal left behind.
-    spectral_distance
-        Symmetric KL divergence between Welch-PSD of output and input. Catches
-        filters with acceptable MSE that kill a seasonal peak.
-    residual_iid
-        Heteroskedasticity + non-Gaussianity of the residual. Lower → the
-        removed component is closer to iid noise (not structured signal).
-    derivative_corr
-        |corr| of first-differences input vs output. Higher → better local
-        shape preservation.
-    """
-
     fidelity_mse: float = 0.16
     gcv: float = 0.18
     roughness: float = 0.10
@@ -74,7 +43,6 @@ class ScoringWeights:
 
 
 def _ljung_box_stat(residual: np.ndarray, lags: int) -> float:
-    """Ljung-Box Q-statistic. Lower Q → whiter residual."""
     if len(residual) < lags + 2:
         return 0.0
     try:
@@ -89,7 +57,6 @@ def _ljung_box_stat(residual: np.ndarray, lags: int) -> float:
 
 
 def _noise_var(original: np.ndarray) -> float:
-    """Robust additive-noise variance estimate (MAD of first differences)."""
     if len(original) < 3:
         return float(np.var(original)) + 1e-12
     return float(np.median(np.abs(np.diff(original))) / 0.6745) ** 2 + 1e-12
@@ -105,7 +72,6 @@ def _mc_divergence(
     seed: int = 42,
     n_probes: int = 1,
 ) -> float | None:
-    """Monte-Carlo estimate of the effective degrees of freedom div_x(f)."""
     n = len(original)
     eps = max(0.1 * sigma, 1e-8)
     rng = np.random.default_rng(seed)
@@ -130,7 +96,6 @@ def _gcv_estimate(
     seed: int = 42,
     n_probes: int = 1,
 ) -> float:
-    """Generalized Cross-Validation score (Craven & Wahba 1979). Lower is better."""
     n = len(original)
     if n < 8:
         return float(np.mean((original - denoised) ** 2))
@@ -155,7 +120,6 @@ def _gcv_estimate(
 
 
 def _relative_curvature(denoised: np.ndarray, original: np.ndarray) -> float:
-    """Output curvature relative to input curvature (scale-free smoothness)."""
     if len(denoised) < 3 or len(original) < 3:
         return 1.0
     d2_out = float(np.std(np.diff(denoised, n=2)))
@@ -164,7 +128,6 @@ def _relative_curvature(denoised: np.ndarray, original: np.ndarray) -> float:
 
 
 def _residual_iid_defect(residual: np.ndarray) -> float:
-    """How far the residual is from iid Gaussian noise (lower is better)."""
     n = len(residual)
     if n < 16:
         return 0.0
@@ -187,7 +150,6 @@ def _residual_iid_defect(residual: np.ndarray) -> float:
 
 
 def _spectral_distance(denoised: np.ndarray, original: np.ndarray) -> float:
-    """Symmetric KL divergence between Welch power spectra."""
     n = min(len(denoised), len(original))
     if n < 32:
         return 0.0
@@ -211,7 +173,6 @@ def filter_metrics(
     *,
     use_mc_gcv: bool = True,
 ) -> dict[str, float]:
-    """Compute seven quality metrics for a denoised series."""
     d = denoised.values.astype(float)
     o = original.values.astype(float)
     residual = o - d
@@ -232,7 +193,6 @@ def filter_metrics(
 
 
 def _rank_normalize(values: np.ndarray, invert: bool = False) -> np.ndarray:
-    """Rank-based normalization to [0, 1] — robust to outliers."""
     n = len(values)
     if n == 1:
         return np.array([0.5])
@@ -275,7 +235,6 @@ def _candidate_band_penalties(
     candidates: dict[str, pd.Series],
     target: dict[str, float],
 ) -> pd.Series:
-    """Per-candidate hinge penalty for being outside the fidelity/smoothness band."""
     penalties: dict[str, float] = {}
     for name, series in candidates.items():
         penalty, _ = _band_penalty(series, original, target=target)
@@ -289,16 +248,11 @@ def _band_penalty(
     *,
     target: dict[str, float],
 ) -> tuple[float, dict[str, float]]:
-    """Measure violations of the configured fidelity/smoothness band."""
     o = original.to_numpy(dtype=float)
     d = winner.to_numpy(dtype=float)
     residual = o - d
-    rel_mae = float(np.mean(np.abs(residual))) / max(
-        float(np.mean(np.abs(o))), 1e-12
-    )
-    roughness_ratio = float(np.std(np.diff(d))) / max(
-        float(np.std(np.diff(o))), 1e-12
-    )
+    rel_mae = float(np.mean(np.abs(residual))) / max(float(np.mean(np.abs(o))), 1e-12)
+    roughness_ratio = float(np.std(np.diff(d))) / max(float(np.std(np.diff(o))), 1e-12)
     derivative_corr = abs(_safe_corr(np.diff(d), np.diff(o)))
     penalty = (
         4.0 * max(target["rel_mae_min"] - rel_mae, 0.0)
@@ -324,7 +278,6 @@ def _safe_ratio(num: float, den: float) -> float:
 
 
 def _robust_scale(x: np.ndarray) -> float:
-    """MAD-based scale with a std fallback for near-constant signals."""
     x = np.asarray(x, dtype=float)
     mad = float(np.median(np.abs(x - np.median(x))))
     scale = 1.4826 * mad

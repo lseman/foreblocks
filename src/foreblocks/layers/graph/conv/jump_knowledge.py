@@ -1,4 +1,4 @@
-"""foreblocks.layers.graph.layers.jump_knowledge.
+"""foreblocks.layers.graph.conv.jump_knowledge.
 
 Jump Knowledge layer implementation.
 

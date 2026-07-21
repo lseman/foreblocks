@@ -26,10 +26,6 @@ from foreblocks.ui.node_spec import node
     color="bg-gradient-to-br from-amber-600 to-amber-700",
 )
 class ScheduledSampling:
-    """
-    Node that provides a scheduled sampling function for teacher forcing.
-    """
-
     def __init__(
         self,
         strategy: str = "linear",
@@ -43,6 +39,7 @@ class ScheduledSampling:
         self.decay_steps = decay_steps
 
     def forward(self) -> Callable[[int | None], float]:
+
         def sampling_fn(epoch: int | None) -> float:
             if epoch is None:
                 return self.start_ratio

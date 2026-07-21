@@ -17,8 +17,6 @@ import torch.nn.functional as F
 
 
 class ChannelLastGroupNorm(nn.Module):
-    """GroupNorm for channel-last tensors [B, ..., C]."""
-
     def __init__(
         self,
         num_groups: int,

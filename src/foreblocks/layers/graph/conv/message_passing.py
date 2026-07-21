@@ -1,4 +1,4 @@
-"""foreblocks.layers.graph.layers.message_passing.
+"""foreblocks.layers.graph.conv.message_passing.
 
 Message passing infrastructure and base graph convolution classes.
 
@@ -317,8 +317,6 @@ def _normalize_row_edge_weight(
 
 
 class MessagePassing(nn.Module):
-    """PyG-style message passing over tensors shaped [B, T, N, F]."""
-
     def __init__(self, aggr: AggType = "add"):
         super().__init__()
         if aggr not in ("add", "mean", "max"):

@@ -36,7 +36,6 @@ def fused_out_2d(
     norm_weight: torch.Tensor,
     eps: float = 1e-5,
 ) -> torch.Tensor:
-    """RMSNormGated for 2-D tensors: rms_norm(y, w) * silu(z). Matches official Mamba2."""
     rms = torch.rsqrt((y * y).mean(-1, keepdim=True) + eps)
     return y * rms * norm_weight * F.silu(z)
 
@@ -47,7 +46,6 @@ def conv_step(
     weight: torch.Tensor,
     bias: torch.Tensor | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """One step of a causal depthwise conv from a ring buffer."""
     full = torch.cat([state_conv, u_raw.unsqueeze(-1)], dim=-1)
     u = (full * weight.unsqueeze(0)).sum(-1)
     if bias is not None:

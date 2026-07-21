@@ -20,25 +20,6 @@ import torch.nn as nn
 
 
 class AutoCorrelation(nn.Module):
-    """Auto-Correlation mechanism from Autoformer.
-
-    Based on:
-        Wu et al., "Autoformer: Decomposition Transformers with Auto-Correlation
-        for Long-Term Series Forecasting", NeurIPS 2021.
-        Paper: https://arxiv.org/abs/2106.13008
-        Code:  https://github.com/thuml/Autoformer
-               (``layers/AutoCorrelation.py``)
-
-    Discovers period-based dependencies by computing the autocorrelation of
-    queries and keys via FFT, selects the top-k delays (k = factor·log L), and
-    aggregates the value series rolled by those delays, weighted by the
-    softmax-normalised correlation.
-
-    This is a vectorised re-implementation of ``time_delay_agg_training``: the
-    batched ``gather`` reproduces ``torch.roll(values, -delay)`` exactly (the
-    delayed series at position t reads from (t + delay) mod L).
-    """
-
     def __init__(
         self,
         mask_flag=True,
@@ -54,11 +35,6 @@ class AutoCorrelation(nn.Module):
         self.output_attention = output_attention
 
     def time_delay_agg(self, values: torch.Tensor, corr: torch.Tensor) -> torch.Tensor:
-        """
-        Vectorized time delay aggregation using batched gather.
-        values: [B, H, D, L]
-        corr:   [B, L, H, D]
-        """
         B, H, D, L = values.shape
         device = values.device
         top_k = max(1, min(int(self.factor * math.log(L)), L))
@@ -87,10 +63,7 @@ class AutoCorrelation(nn.Module):
         return weighted.sum(dim=0)
 
     def _safe_fft_operations(self, queries, keys):
-        """
-        Fixed FFT operations with proper length specification and tensor handling.
-        """
-        B, L, H, E = queries.shape
+        _, L, _, _ = queries.shape
         original_dtype = queries.dtype
         device = queries.device
 
@@ -119,8 +92,8 @@ class AutoCorrelation(nn.Module):
         return corr
 
     def forward(self, queries, keys, values, attn_mask):
-        B, L, H, E = queries.shape
-        _, S, _, D = values.shape
+        _, L, _, _ = queries.shape
+        _, S, _, _ = values.shape
 
         if L > S:
             zeros = torch.zeros_like(queries[:, : (L - S), :, :])
@@ -143,8 +116,6 @@ class AutoCorrelation(nn.Module):
 
 
 class AutoCorrelationLayer(nn.Module):
-    """AutoCorrelation layer with projections."""
-
     def __init__(self, correlation, d_model, n_heads, d_keys=None, d_values=None):
         super().__init__()
 

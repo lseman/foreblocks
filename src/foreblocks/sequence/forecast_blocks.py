@@ -26,8 +26,6 @@ from foreblocks.ui.node_spec import node
 
 
 class _SequenceModelBlock(nn.Module):
-    """Base wrapper for sequence mixers used as ForecastingModel backbones."""
-
     def __init__(
         self,
         *,

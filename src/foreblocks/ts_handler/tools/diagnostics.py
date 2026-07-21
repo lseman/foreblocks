@@ -6,12 +6,11 @@ Diagnostic and statistical analysis functions for time-series preprocessing.
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import numpy as np
 from scipy.signal import find_peaks, welch
-from scipy.stats import entropy, jarque_bera
+from scipy.stats import entropy
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tsa.stattools import acf, adfuller, pacf
 
@@ -105,7 +104,6 @@ def analyze_signal_quality(data: np.ndarray, D: int) -> tuple[list[float], list[
 
 
 def score_ljung_box(data: np.ndarray, D: int) -> list[float]:
-    """Formal test for whether the series is structurally autoregressive vs white noise."""
     pvals: list[float] = []
     for i in range(D):
         clean, _ = _prepare_series_for_diagnostics(data[:, i], max_points=2048)

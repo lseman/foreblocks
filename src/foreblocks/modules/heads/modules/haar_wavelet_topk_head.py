@@ -26,11 +26,6 @@ from foreblocks.core.model import BaseHead
 
 
 class HaarWaveletTopK(nn.Module):
-    """
-    1-level Haar wavelet analysis with Top-K keep on detail coefficients.
-    Returns (main, detail_sparse) with shape [B,T,F].
-    """
-
     def __init__(self, topk: int = 8):
         super().__init__()
         self.topk = int(topk)

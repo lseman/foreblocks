@@ -16,41 +16,14 @@ Core API:
 import torch
 from torch import Tensor
 
+from foreblocks.modules.attention.cache.storage import (
+    DensePagedStorage,
+    LatentPagedStorage,
+)
+
 
 class PagedKVCache:
-    """
-
     is_compileable = False
-    Fixed-page KV cache for autoregressive self-attention (torch-only).
-
-    Block-based paging follows vLLM's PagedAttention: KV is stored in fixed-size
-    blocks drawn from a shared pool, and a per-sequence block table maps logical
-    token positions to physical blocks, so memory grows in block_size chunks
-    rather than one contiguous buffer per sequence.
-
-    References:
-        - Kwon et al., "Efficient Memory Management for Large Language Model
-          Serving with PagedAttention" (vLLM), SOSP 2023:
-          https://arxiv.org/abs/2309.06180
-        - vLLM block manager:
-          https://github.com/vllm-project/vllm/blob/main/vllm/core/block_manager.py
-
-    Layout
-    ------
-    storage_k/v: [B, Hkv, max_blocks, block_size, D] (standard mode)
-    storage_latent: [B, max_blocks, block_size, L] (MLA latent mode)
-    Per sequence (batch index `b`) we keep:
-      - block_table[b]: list[int]
-            Global block ids (indices into dim=2 of storage).
-      - write_pos[b]: tuple[int, int]
-            (idx_in_table, offset_in_block).
-      - seq_len[b]: physical cached tokens currently stored for that sequence.
-      - logical_seq_len[b]: logical prefix length represented by the cache.
-    This class is intentionally dumb and local:
-      - No cross-layer sharing; you typically call `PagedKVCache.ensure()`
-        per layer_state dict.
-      - No cross-batch resizing; `B` is fixed at construction.
-    """
 
     def __init__(
         self,
@@ -83,30 +56,31 @@ class PagedKVCache:
         self.latent_dim = int(latent_dim) if latent_dim is not None else None
         self.use_latent_cache = self.latent_dim is not None
 
-        if self.use_latent_cache:
-            self.storage_k = None
-            self.storage_v = None
-            self.storage_beta = None
-            self.storage_latent = torch.empty(
-                (self.B, self.max_blocks, self.block_size, self.latent_dim),
+        storage = (
+            LatentPagedStorage.allocate(
+                self.B,
+                self.max_blocks,
+                self.block_size,
+                self.latent_dim,
                 device=self.device,
                 dtype=self.dtype,
             )
-        else:
-            shape = (self.B, self.Hkv, self.max_blocks, self.block_size, self.D)
-            self.storage_k = torch.empty(shape, device=self.device, dtype=self.dtype)
-            self.storage_v = torch.empty(shape, device=self.device, dtype=self.dtype)
-            self.storage_beta = torch.zeros(
-                (self.B, self.Hkv, self.max_blocks, self.block_size),
+            if self.use_latent_cache
+            else DensePagedStorage.allocate(
+                self.B,
+                self.Hkv,
+                self.max_blocks,
+                self.block_size,
+                self.D,
                 device=self.device,
                 dtype=self.dtype,
             )
-            self.storage_latent = None
-        self.storage_pos = torch.empty(
-            (self.B, self.max_blocks, self.block_size),
-            device=self.device,
-            dtype=torch.long,
         )
+        self.storage_k = storage.key
+        self.storage_v = storage.value
+        self.storage_beta = storage.beta
+        self.storage_latent = storage.latent
+        self.storage_pos = storage.position
         # Per-sequence metadata
         self.block_table: list[list[int]] = [[] for _ in range(self.B)]
         self.write_pos: list[tuple[int, int]] = [
@@ -135,12 +109,7 @@ class PagedKVCache:
         dtype: torch.dtype,
         max_blocks: int = 1024,
     ) -> "PagedKVCache":
-        """
-        Get or create a PagedKVCache stored inside a per-layer `layer_state` dict.
-        This is the recommended entrypoint from your Transformer layer:
-            cache = PagedKVCache.ensure(layer_state, B, Hkv, D, block_size, device, dtype)
-        """
-        cache = layer_state.get("paged_cache", None)
+        cache = layer_state.get("paged_cache")
         if cache is None:
             cache = PagedKVCache(
                 batch_size=batch_size,
@@ -156,9 +125,9 @@ class PagedKVCache:
         else:
             # Optional sanity check: if shapes change, hard-reset to avoid UB.
             if (
-                cache.B != batch_size
+                batch_size != cache.B
                 or cache.Hkv != n_kv_heads
-                or cache.D != head_dim
+                or head_dim != cache.D
                 or cache.latent_dim
                 != (int(latent_dim) if latent_dim is not None else None)
                 or cache.block_size != block_size
@@ -312,18 +281,6 @@ class PagedKVCache:
     # ---------------------------------------------------------------------
 
     def append(self, k_bhdt: Tensor, v_bhdt: Tensor) -> None:
-        """
-        Append new tokens for all sequences in the batch.
-        Parameters
-        ----------
-        k_bhdt, v_bhdt : Tensor
-            Shape [B, Hkv, T_new, D]. Must match the cache's (B, Hkv, D).
-        Notes
-        -----
-        - Assumes all sequences append the same T_new tokens.
-        - For uneven lengths, pad or call per-sequence.
-        - This is batched for efficiency.
-        """
         if self.use_latent_cache:
             raise RuntimeError(
                 "PagedKVCache is in latent mode; use append_latent/append_step_latent."
@@ -362,7 +319,6 @@ class PagedKVCache:
             self.logical_seq_len[b] += T_new
 
     def append_step(self, k_htd: Tensor, v_htd: Tensor, b: int) -> None:
-        """Append one chunk for a single sequence b. k/v shapes: [Hkv,T,D] or [Hkv,D]."""
         if self.use_latent_cache:
             raise RuntimeError(
                 "PagedKVCache is in latent mode; use append_step_latent instead."
@@ -393,7 +349,6 @@ class PagedKVCache:
         self.logical_seq_len[b] += k_htd.size(1)
 
     def append_latent(self, latent_btl: Tensor) -> None:
-        """Append latent chunks for all sequences. Shape: [B,T,L]."""
         if not self.use_latent_cache:
             raise RuntimeError("PagedKVCache is not in latent mode.")
         if latent_btl.ndim != 3:
@@ -413,7 +368,6 @@ class PagedKVCache:
             self.append_step_latent(latent_btl[b], b)
 
     def append_step_latent(self, latent_tl: Tensor, b: int) -> None:
-        """Append one latent chunk for a single sequence b. Shapes: [T,L] or [L]."""
         if not self.use_latent_cache:
             raise RuntimeError("PagedKVCache is not in latent mode.")
         self._check_batch_index(b)
@@ -445,10 +399,6 @@ class PagedKVCache:
         beta_ht: Tensor | None = None,
         logical_seq_len: int | None = None,
     ) -> None:
-        """
-        Replace sequence `b` with a compacted dense representation.
-        `positions_t` stores the original logical positions represented by each slot.
-        """
         if self.use_latent_cache:
             raise RuntimeError("Dense rewrite is unavailable in latent cache mode.")
         if logical_seq_len is None:
@@ -485,11 +435,6 @@ class PagedKVCache:
     # Your fast decode path can operate directly on storage + block_table.
 
     def gather_kv_batched(self) -> tuple[Tensor, Tensor]:
-        """
-        Gather all cached tokens into contiguous [B, Hkv, T_max, D] tensors.
-        This is a convenience / debug method. For fast decode, you likely want
-        to operate directly on `storage_k/v` using `block_table` and `seq_len`.
-        """
         if self.use_latent_cache:
             raise RuntimeError("KV tensors are not stored in latent mode.")
         max_len = int(self.seq_len.max().item())
@@ -535,10 +480,6 @@ class PagedKVCache:
         return k_out, v_out
 
     def gather_kv_for_seq(self, b: int) -> tuple[Tensor, Tensor]:
-        """
-        Gather KV for a single sequence b into contiguous [Hkv, T, D] tensors.
-        Useful when you only decode one sequence at a time.
-        """
         if self.use_latent_cache:
             raise RuntimeError("KV tensors are not stored in latent mode.")
         self._check_batch_index(b)
@@ -570,7 +511,6 @@ class PagedKVCache:
         return k_flat, v_flat
 
     def gather_positions_for_seq(self, b: int) -> Tensor:
-        """Gather absolute logical positions for one sequence into contiguous [T]."""
         self._check_batch_index(b)
         seq_len = int(self.seq_len[b].item())
         if seq_len == 0 or not self.block_table[b]:
@@ -592,7 +532,6 @@ class PagedKVCache:
         return torch.cat(parts, dim=0)
 
     def gather_beta_for_seq(self, b: int) -> Tensor:
-        """Gather attention-matching bias terms for one sequence into [Hkv, T]."""
         if self.use_latent_cache:
             raise RuntimeError("Beta terms are only stored in dense KV mode.")
         self._check_batch_index(b)
@@ -616,7 +555,6 @@ class PagedKVCache:
         return torch.cat(parts, dim=1)
 
     def gather_latent_batched(self) -> Tensor:
-        """Gather latent cache into contiguous [B, T_max, L] tensor."""
         if not self.use_latent_cache:
             raise RuntimeError("Latent tensors are not stored in standard KV mode.")
         max_len = int(self.seq_len.max().item())
@@ -652,7 +590,6 @@ class PagedKVCache:
         return out
 
     def gather_latent_for_seq(self, b: int) -> Tensor:
-        """Gather latent cache for one sequence into contiguous [T, L]."""
         if not self.use_latent_cache:
             raise RuntimeError("Latent tensors are not stored in standard KV mode.")
         self._check_batch_index(b)
@@ -680,9 +617,6 @@ class PagedKVCache:
     # ---------------------------------------------------------------------
 
     def reset_seq(self, b: int, reset_logical: bool = True) -> None:
-        """
-        Reset a single sequence `b`, returning its blocks to the free pool.
-        """
         self._check_batch_index(b)
         for blk in self.block_table[b]:
             self._free_blocks.append(blk)
@@ -693,9 +627,6 @@ class PagedKVCache:
             self.logical_seq_len[b] = 0
 
     def reset_all(self) -> None:
-        """
-        Reset all sequences and reclaim all blocks.
-        """
         self._free_blocks = list(range(self.max_blocks))
         for b in range(self.B):
             self.block_table[b].clear()
@@ -737,7 +668,6 @@ class PagedKVCache:
         self.logical_seq_len.copy_(self.logical_seq_len.index_select(0, indices))
 
     def crop(self, max_length: int) -> None:
-        """Truncate every sequence to an absolute logical prefix length."""
         if max_length < 0:
             max_length = max(0, self.max_logical_seq_len() + max_length)
         for b in range(self.B):
@@ -746,7 +676,10 @@ class PagedKVCache:
             if self.use_latent_cache:
                 latent = self.gather_latent_for_seq(b)[:, :]
                 self.rewrite_seq_latent(
-                    b, latent[keep], positions[keep], min(max_length, self.get_seq_length(b))
+                    b,
+                    latent[keep],
+                    positions[keep],
+                    min(max_length, self.get_seq_length(b)),
                 )
             else:
                 k, v = self.gather_kv_for_seq(b)
@@ -761,7 +694,6 @@ class PagedKVCache:
                 )
 
     def evict_to_window(self, window_size: int) -> None:
-        """Keep only the newest physical KV slots while preserving absolute positions."""
         if window_size < 0:
             raise ValueError("window_size must be non-negative")
         for b in range(self.B):
@@ -785,7 +717,6 @@ class PagedKVCache:
                 )
 
     def state_dict(self) -> dict:
-        """Return a portable cache snapshot suitable for ``torch.save``."""
         sequences = []
         for b in range(self.B):
             item = {
@@ -796,7 +727,9 @@ class PagedKVCache:
                 item["latent"] = self.gather_latent_for_seq(b).cpu()
             else:
                 k, v = self.gather_kv_for_seq(b)
-                item.update(k=k.cpu(), v=v.cpu(), beta=self.gather_beta_for_seq(b).cpu())
+                item.update(
+                    k=k.cpu(), v=v.cpu(), beta=self.gather_beta_for_seq(b).cpu()
+                )
             sequences.append(item)
         return {
             "config": {
@@ -820,7 +753,9 @@ class PagedKVCache:
             positions = item["positions"].to(cache.storage_pos.device)
             if cache.use_latent_cache:
                 cache.rewrite_seq_latent(
-                    b, item["latent"].to(device=device, dtype=cache.dtype), positions,
+                    b,
+                    item["latent"].to(device=device, dtype=cache.dtype),
+                    positions,
                     item["logical_seq_len"],
                 )
             else:

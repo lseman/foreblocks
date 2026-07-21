@@ -107,7 +107,6 @@ def can_use_fused_recurrent_linear_attn(
     k: torch.Tensor,
     v: torch.Tensor,
 ) -> bool:
-    """Guard for the fused Triton causal linear-attention forward path."""
     if not HAS_TRITON:
         return False
     if os.environ.get("FOREBLOCKS_DISABLE_TRITON_LINEAR_ATTN", "") == "1":
@@ -134,10 +133,6 @@ def fused_recurrent_causal_linear_attn(
     v: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Fused recurrent causal linear attention forward for inference.
-
-    Inputs use [B, H, T, *] layout and match ``chunked_causal_linear_attn``.
-    """
     if not can_use_fused_recurrent_linear_attn(q, k, v):
         raise RuntimeError("fused_recurrent_causal_linear_attn is not available")
 
@@ -181,17 +176,6 @@ def chunked_causal_linear_attn(
     chunk_size: int = 128,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    """Chunk-parallel causal linear attention.
-
-    Args:
-        q, k: [B, H, T, F] already feature-mapped positive tensors.
-        v: [B, H, T, Dh].
-        chunk_size: chunk length C; T is split into ceil(T / C) chunks.
-        eps: denominator stabilizer.
-
-    Returns:
-        [B, H, T, Dh].
-    """
     # The fused kernel is recurrent (sequential over T), so it only wins for
     # short sequences / decode; the chunk-parallel path wins for prefill.
     # Crossover measured at T~64-128 (fused 2x slower by T=512).

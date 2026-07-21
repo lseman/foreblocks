@@ -7,8 +7,6 @@ import torch.nn.functional as F
 
 
 class QKVPipeline:
-    """Prepare projected Q/K/V without owning attention-kernel dispatch."""
-
     def __init__(self, attention) -> None:
         self.attention = attention
 

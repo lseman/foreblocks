@@ -16,32 +16,64 @@ _ATTENTION_ALIASES: dict[str, str] = {
 }
 
 _ATTENTION_MODES: set[str] = {
-    "standard", "linear", "sype", "hybrid", "kimi", "hybrid_kimi",
-    "kimi_3to1", "gated_delta", "hybrid_gdn", "gdn_3to1", "gla",
-    "gla_hybrid", "gla_3to1", "deltanet", "deltanet_hybrid",
-    "deltanet_3to1", "gated_deltanet", "gated_deltanet_hybrid",
+    "standard",
+    "linear",
+    "sype",
+    "hybrid",
+    "kimi",
+    "hybrid_kimi",
+    "kimi_3to1",
+    "gated_delta",
+    "hybrid_gdn",
+    "gdn_3to1",
+    "gla",
+    "gla_hybrid",
+    "gla_3to1",
+    "deltanet",
+    "deltanet_hybrid",
+    "deltanet_3to1",
+    "gated_deltanet",
+    "gated_deltanet_hybrid",
     "gated_deltanet_3to1",
 }
 
 _SUPPORTED_OPTIONS: set[str] = {
-    "pos_encoder", "mod_budget_scheduler", "layer_dropout_schedule",
+    "pos_encoder",
+    "mod_budget_scheduler",
+    "layer_dropout_schedule",
 }
 
 
 def _resolve_attention_mode(mode: str) -> str:
-    """Normalize legacy attention-mode aliases to canonical names."""
     return _ATTENTION_ALIASES.get(mode, mode)
 
 
 @dataclass(frozen=True)
 class AttentionConfig:
     architecture: Literal[
-        "standard", "linear", "sype", "hybrid", "kimi", "gated_delta",
-        "gla", "deltanet", "gated_deltanet", "kimi_hybrid", "hybrid_kimi",
-        "hybrid_gdn", "gdn_hybrid", "gla_hybrid", "hybrid_gla",
-        "deltanet_hybrid", "hybrid_deltanet",
-        "gated_deltanet_hybrid", "hybrid_gated_deltanet",
-        "kimi_3to1", "gdn_3to1", "gla_3to1", "deltanet_3to1",
+        "standard",
+        "linear",
+        "sype",
+        "hybrid",
+        "kimi",
+        "gated_delta",
+        "gla",
+        "deltanet",
+        "gated_deltanet",
+        "kimi_hybrid",
+        "hybrid_kimi",
+        "hybrid_gdn",
+        "gdn_hybrid",
+        "gla_hybrid",
+        "hybrid_gla",
+        "deltanet_hybrid",
+        "hybrid_deltanet",
+        "gated_deltanet_hybrid",
+        "hybrid_gated_deltanet",
+        "kimi_3to1",
+        "gdn_3to1",
+        "gla_3to1",
+        "deltanet_3to1",
         "gated_deltanet_3to1",
     ]
     backend: Literal["auto", "sdpa", "flash", "cudnn"]
@@ -62,17 +94,6 @@ class CacheConfig:
 
 @dataclass
 class TransformerConfig:
-    """Single source of truth for encoder and decoder construction.
-
-    Less common experimental options remain supported through ``options`` while
-    stable architecture and output controls have first-class fields.
-
-    Attention-mode aliases are resolved in ``__post_init__`` before validation,
-    so both direct
-    construction (``TransformerConfig(...)``) and ``from_dict()``
-    produce canonical values.
-    """
-
     input_size: int = 1
     output_size: int = 1
     d_model: int = 256
@@ -230,11 +251,9 @@ class TransformerConfig:
         return CacheConfig(self.cache_implementation)
 
     def option(self, name: str, default: Any = None) -> Any:
-        """Read an experimental option without leaking the options mapping."""
         return self.options.get(name, default)
 
     def validate_compatibility(self, *, role: str | None = None) -> None:
-        """Reject unsupported feature combinations before model execution."""
         attention_residual = self.use_attention_residual
         mod_mode = self.mod_mode
         if attention_residual and self.use_gateskip:
@@ -245,29 +264,28 @@ class TransformerConfig:
             raise ValueError("use_attention_residual is incompatible with use_mod")
         if self.use_gradient_checkpointing and attention_residual:
             raise ValueError(
-                "use_gradient_checkpointing is incompatible with "
-                "use_attention_residual"
+                "use_gradient_checkpointing is incompatible with use_attention_residual"
             )
         if self.use_gradient_checkpointing and self.use_mhc:
-            raise ValueError(
-                "use_gradient_checkpointing is incompatible with use_mhc"
-            )
+            raise ValueError("use_gradient_checkpointing is incompatible with use_mhc")
         if self.use_mod and self.use_gateskip:
             raise ValueError("use_mod is incompatible with use_gateskip")
         if self.use_mod and self.use_mhc:
             raise ValueError("use_mod is incompatible with use_mhc")
         if self.use_mod and mod_mode != "token":
             raise ValueError("use_mod currently requires mod_mode='token'")
-        if role == "decoder" and self.use_mhc and self.cache_implementation in {
-            "static", "paged"
-        }:
+        if (
+            role == "decoder"
+            and self.use_mhc
+            and self.cache_implementation in {"static", "paged"}
+        ):
             raise ValueError(
                 "decoder use_mhc does not support static/paged KV caching; "
                 "use dynamic full-sequence execution"
             )
 
     @classmethod
-    def from_kwargs(cls, **kwargs: Any) -> "TransformerConfig":
+    def from_kwargs(cls, **kwargs: Any) -> TransformerConfig:
         known = {item.name for item in fields(cls)} - {"options"}
         values = {key: value for key, value in kwargs.items() if key in known}
         values["options"] = {
@@ -278,8 +296,7 @@ class TransformerConfig:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-    def with_overrides(self, **overrides: Any) -> "TransformerConfig":
-        """Return a new config with legacy keyword overrides applied."""
+    def with_overrides(self, **overrides: Any) -> TransformerConfig:
         values = {
             item.name: getattr(self, item.name)
             for item in fields(self)
@@ -291,8 +308,7 @@ class TransformerConfig:
         return type(self).from_kwargs(**values)
 
     @classmethod
-    def from_dict(cls, values: dict[str, Any]) -> "TransformerConfig":
-        """Load from a dict, resolving attention-mode aliases first."""
+    def from_dict(cls, values: dict[str, Any]) -> TransformerConfig:
         values = dict(values)
         options = dict(values.get("options", {}))
         known = {item.name for item in fields(cls)} - {"options"}
@@ -305,11 +321,22 @@ class TransformerConfig:
 
     def model_kwargs(self) -> dict[str, Any]:
         excluded = {
-            "input_size", "output_size", "model_type", "label_len",
-            "informer_like", "use_time_encoding", "cache_implementation",
-            "ct_patchtst", "ct_patch_len", "ct_patch_stride", "ct_patch_pad_end",
+            "input_size",
+            "output_size",
+            "model_type",
+            "label_len",
+            "informer_like",
+            "use_time_encoding",
+            "cache_implementation",
+            "ct_patchtst",
+            "ct_patch_len",
+            "ct_patch_stride",
+            "ct_patch_pad_end",
             "ct_patch_fuse",
-            "output_hidden_states", "output_attentions", "return_dict", "options",
+            "output_hidden_states",
+            "output_attentions",
+            "return_dict",
+            "options",
         }
         values = self.to_dict()
         kwargs = {key: value for key, value in values.items() if key not in excluded}
@@ -317,6 +344,4 @@ class TransformerConfig:
         return kwargs
 
 
-__all__ = [
-    "AttentionConfig", "CacheConfig", "ResidualConfig", "TransformerConfig"
-]
+__all__ = ["AttentionConfig", "CacheConfig", "ResidualConfig", "TransformerConfig"]

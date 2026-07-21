@@ -47,7 +47,6 @@ def build_attention_mask(
     cache_position: torch.Tensor | None = None,
     key_lengths: torch.Tensor | None = None,
 ) -> torch.Tensor | None:
-    """Return a boolean mask with ``True = blocked`` semantics."""
     batch_size, num_heads, query_length, _ = query.shape
     blocked = None
     if attention_mask is not None:

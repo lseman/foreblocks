@@ -22,11 +22,6 @@ from foreblocks.ui.node_spec import node
 
 
 class MultiKernelConv(nn.Module):
-    """
-    Depthwise separable multi-kernel convs per variable, fused by 1x1 conv.
-    Input/Output: [B,T,F]. Returns residual x + y.
-    """
-
     def __init__(
         self,
         feature_dim: int,
@@ -82,8 +77,6 @@ class MultiKernelConv(nn.Module):
     color="bg-gradient-to-r from-pink-400 to-yellow-500",
 )
 class MultiKernelConvHead(BaseHead):
-    """BaseHead wrapper for MultiKernelConv. Forward -> [B,T,F]."""
-
     def __init__(
         self,
         feature_dim: int,

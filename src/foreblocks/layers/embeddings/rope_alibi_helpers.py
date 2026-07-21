@@ -24,18 +24,6 @@ def apply_rope_qkv(
     rotary_emb: nn.Module,
     seqlen_offset: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Apply rotary position embeddings to Q and K tensors.
-
-    Args:
-        q: Query tensor [B, H, L, D]
-        k: Key tensor [B, H, L, D]
-        rotary_emb: RotaryEmbedding module
-        seqlen_offset: Offset for KV cache decoding
-
-    Returns:
-        (q_rotated, k_rotated) same shapes as input
-    """
     B, H, L, D = q.shape
 
     # RotaryEmbedding expects [B, L, H, D] format
@@ -65,7 +53,6 @@ def apply_rope_qkv(
 
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
-    """Rotate every pair of dimensions by 90 degrees."""
     x1, x2 = x.chunk(2, dim=-1)
     return torch.cat((-x2, x1), dim=-1)
 
@@ -74,16 +61,6 @@ def apply_alibi_bias(
     attn_scores: torch.Tensor,
     alibi_bias: nn.Module,
 ) -> torch.Tensor:
-    """
-    Add ALiBi positional bias to attention scores.
-
-    Args:
-        attn_scores: Attention scores [B, H, Lq, Lk]
-        alibi_bias: ALiBiPositionalBias module
-
-    Returns:
-        attn_scores with bias added [B, H, Lq, Lk]
-    """
     B, H, Lq, Lk = attn_scores.shape
     bias = alibi_bias(Lq, Lk, device=attn_scores.device)
     return attn_scores + bias
@@ -94,17 +71,6 @@ def create_rotary_embedding(
     max_seq_len: int = 4096,
     base: float = 10000.0,
 ) -> nn.Module:
-    """
-    Create a RotaryEmbedding module.
-
-    Args:
-        head_dim: Per-head dimension
-        max_seq_len: Maximum sequence length
-        base: Base frequency for RoPE
-
-    Returns:
-        RotaryEmbedding module
-    """
     # Import here to avoid circular imports
     from foreblocks.layers.embeddings.rotary import RotaryEmbedding
 
@@ -115,16 +81,6 @@ def create_alibi_bias(
     num_heads: int,
     max_seq_len: int = 4096,
 ) -> nn.Module:
-    """
-    Create an ALiBiPositionalBias module.
-
-    Args:
-        num_heads: Number of attention heads
-        max_seq_len: Maximum sequence length
-
-    Returns:
-        ALiBiPositionalBias module
-    """
     from foreblocks.layers.embeddings.alibi_bias import ALiBiPositionalBias
 
     return ALiBiPositionalBias(num_heads=num_heads, max_seq_len=max_seq_len)

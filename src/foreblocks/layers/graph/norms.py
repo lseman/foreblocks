@@ -27,10 +27,6 @@ NormStrategy = Literal["pre_norm", "post_norm", "sandwich_norm", "none"]
 
 
 class GraphNorm(nn.Module):
-    """
-    Normalize across the node dimension for tensors shaped [B, T, N, F].
-    """
-
     def __init__(self, num_features: int, eps: float = 1e-5):
         super().__init__()
         self.eps = eps

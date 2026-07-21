@@ -37,15 +37,15 @@ from foreblocks.modules.attention.modules.linear_att.wrapper import (
 )
 
 __all__ = [
-    "FeatureMapRegistry",
-    "RoPEMixin",
-    "RDABackend",
-    "GLABackend",
     "DeltaNetBackend",
+    "FeatureMapRegistry",
+    "GLABackend",
     "GatedDeltaBackend",
     "GatedDeltaNet",
     "GatedDeltaNet2",
-    "KimiBackend",
     "KimiAttention",
+    "KimiBackend",
     "ModernLinearAttention",
+    "RDABackend",
+    "RoPEMixin",
 ]

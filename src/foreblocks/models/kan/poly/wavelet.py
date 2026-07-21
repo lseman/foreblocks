@@ -7,7 +7,12 @@ Wavelet KAN basis function.
 import torch
 from torch import Tensor, nn
 
-from foreblocks.models.kan.poly.utils import _init_coeffs, _reshape_in_out, _restore_shape, _tanh_to_unit
+from foreblocks.models.kan.poly.utils import (
+    _init_coeffs,
+    _reshape_in_out,
+    _restore_shape,
+    _tanh_to_unit,
+)
 
 
 class WaveletKAN(nn.Module):

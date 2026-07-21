@@ -22,11 +22,6 @@ from foreblocks.core.model import BaseHead
 
 
 class Differencing(nn.Module):
-    """
-    First-order differencing along time with length preservation.
-    Forward: (delta, ctx) where delta[:,0,:]=0 and ctx['x0']=first step.
-    """
-
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         delta = x.clone()
         delta[:, 1:, :] = x[:, 1:, :] - x[:, :-1, :]
@@ -42,8 +37,6 @@ class Differencing(nn.Module):
 
 
 class DifferencingHead(BaseHead):
-    """BaseHead wrapper for Differencing. Forward -> (delta, ctx)."""
-
     def __init__(self):
         super().__init__(module=Differencing(), name="diff")
 

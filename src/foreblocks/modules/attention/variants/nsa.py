@@ -25,14 +25,6 @@ from foreblocks.modules.attention.variants.sliding_window import (
 
 
 class NSAImpl:
-    """Native Sparse Attention implementation (see module docstring).
-
-    Wraps a parent multi-head attention module, reusing its projections,
-    scale, masking helpers and output gating. ``parent.nsa_gate_proj`` is the
-    ``Linear(head_dim, 3)`` producing the three branch gate logits; when it is
-    ``None`` the layer falls back to the parent's dense attention.
-    """
-
     def __init__(self, parent):
         self.parent = parent
 

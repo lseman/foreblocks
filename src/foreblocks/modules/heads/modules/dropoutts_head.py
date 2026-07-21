@@ -30,16 +30,6 @@ from foreblocks.ui.node_spec import node
     color="bg-gradient-to-r from-zinc-500 to-slate-700",
 )
 class DropoutTSHead(BaseHead):
-    """
-    Training-only DropoutTS head for time series.
-
-    Modes:
-      - "timestep": drop individual timesteps (token dropout)
-      - "span":     drop contiguous spans along time
-      - "feature":  drop whole features (channels)
-      - "mixed":    timestep + feature (and optional spans)
-    """
-
     def __init__(
         self,
         p_time: float = 0.1,

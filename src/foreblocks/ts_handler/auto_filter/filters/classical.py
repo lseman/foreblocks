@@ -21,22 +21,12 @@ from foreblocks.ts_handler.auto_filter.registry import register_filter
 
 
 def moving_average(ts: pd.Series, window: int = 7) -> pd.Series:
-    """Centred moving average. Internal fallback only (not a ranked candidate)."""
     window = _valid_odd_window(len(ts), window, minimum=3)
     return ts.rolling(window=window, center=True, min_periods=1).mean()
 
 
 @register_filter("Gaussian")
 def gaussian_filter(ts: pd.Series, sigma: float = 2.0) -> pd.Series:
-    """Gaussian kernel smoother via scipy.ndimage.
-
-    Parameters
-    ----------
-    sigma:
-        Standard deviation of the Gaussian kernel in samples.
-        Larger values → more smoothing.  Default 2.0 is intentionally
-        light-handed to preserve local structure.
-    """
     sigma = max(float(sigma), 0.1)
     values = gaussian_filter1d(ts.values.astype(float), sigma=sigma)
     return _as_series(values, ts.index, name="gaussian")

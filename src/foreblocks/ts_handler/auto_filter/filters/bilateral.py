@@ -19,20 +19,6 @@ def bilateral_filter(
     sigma_t: float = 5.0,
     sigma_v: float | None = None,
 ) -> pd.Series:
-    """Edge-preserving 1-D bilateral filter.
-
-    Combines a Gaussian spatial (time-domain) kernel with a Gaussian range
-    (value-domain) kernel.  Unlike a pure Gaussian, it suppresses noise while
-    preserving abrupt level shifts and local extrema.
-
-    Parameters
-    ----------
-    sigma_t:
-        Temporal kernel width in samples.
-    sigma_v:
-        Value-range kernel width.  Defaults to the MAD-based noise estimate
-        of the series (auto-scaled per signal).
-    """
     y = ts.values.astype(float)
     N = len(y)
 

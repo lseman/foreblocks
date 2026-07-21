@@ -12,32 +12,12 @@ Core API:
 
 """
 
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class DWTAttention(nn.Module):
-    """Attention in the wavelet-coefficient domain.
-
-    A spectral attention analogous to :class:`FrequencyAttention`, but using a
-    single-level orthogonal **Haar** discrete wavelet transform instead of the
-    FFT. The Haar DWT splits the sequence into an approximation (low-pass) and
-    a detail (high-pass) band; attention is then computed over the leading
-    wavelet coefficients and mapped back to the time domain via the inverse
-    transform.
-
-    The Haar transform is implemented directly (no external dependency) and is
-    fully differentiable; its analysis/synthesis pair is exactly invertible.
-
-    Parameters
-    ----------
-    modes : int
-        Number of leading wavelet coefficients to attend over.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -46,7 +26,8 @@ class DWTAttention(nn.Module):
         modes: int = 32,
     ):
         super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        if n_heads <= 0 or d_model % n_heads:
+            raise ValueError("n_heads must be positive and divide d_model")
 
         self.d_model = d_model
         self.n_heads = n_heads
@@ -66,11 +47,6 @@ class DWTAttention(nn.Module):
         )
 
     def _haar_dwt(self, x: torch.Tensor) -> torch.Tensor:
-        """Single-level Haar DWT along the time axis. x: [B, H, L, D].
-
-        Returns coefficients [approx; detail] concatenated along the time axis,
-        each of length ceil(L/2). Odd-length inputs are reflect-padded.
-        """
         L = x.size(2)
         if L % 2 != 0:
             x = F.pad(x, (0, 0, 0, 1), mode="reflect")
@@ -79,7 +55,6 @@ class DWTAttention(nn.Module):
         return torch.cat([approx, detail], dim=2)
 
     def _haar_idwt(self, coeffs: torch.Tensor, target_len: int) -> torch.Tensor:
-        """Inverse of :meth:`_haar_dwt`. coeffs: [B, H, L, D] → [B, H, target_len, D]."""
         half_L = coeffs.size(2) // 2
         approx = coeffs[:, :, :half_L, :]
         detail = coeffs[:, :, half_L:, :]

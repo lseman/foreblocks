@@ -23,18 +23,26 @@ from foreblocks.modules.attention.cache.kv import (
     StaticKVProvider,
 )
 from foreblocks.modules.attention.cache.paged import PagedKVCache
+from foreblocks.modules.attention.cache.storage import (
+    DensePagedStorage,
+    LatentPagedStorage,
+    PagedStorage,
+)
 
 __all__ = [
-    "paged_stream_decode_standard",
-    "KVCacheProtocol",
     "DenseKVProvider",
+    "DensePagedStorage",
+    "KVCacheProtocol",
     "KVProvider",
-    "PagedKVProvider",
+    "LatentPagedStorage",
     "PagedKVCache",
+    "PagedKVProvider",
+    "PagedStorage",
     "StaticKVCache",
     "StaticKVProvider",
     "TransformerCache",
     "cache_state_dict",
     "load_cache_state_dict",
     "map_cache_state",
+    "paged_stream_decode_standard",
 ]

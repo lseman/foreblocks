@@ -16,10 +16,6 @@ import torch.nn as nn
 
 
 class TemporalNorm(nn.Module):
-    """
-    Temporal normalization for [B, T, D] tensors.
-    """
-
     def __init__(
         self,
         d_model: int,

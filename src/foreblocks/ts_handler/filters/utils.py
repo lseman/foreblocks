@@ -26,7 +26,6 @@ def _odd_at_least(n: int, min_odd: int) -> int:
 
 
 def _nan_interp_1d(x: np.ndarray) -> np.ndarray:
-    """Linear interpolate NaNs (1D). If too few points, returns copy."""
     x = np.asarray(x, dtype=float)
     if x.ndim != 1:
         raise ValueError("_nan_interp_1d expects 1D")

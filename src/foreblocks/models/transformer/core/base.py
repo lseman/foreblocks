@@ -23,7 +23,8 @@ from __future__ import annotations
 import math
 import warnings
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Callable, Literal
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Literal
 
 import torch
 import torch.nn as nn
@@ -31,19 +32,19 @@ import torch.nn as nn
 from foreblocks.layers.embeddings import LearnablePositionalEncoding, PositionalEncoding
 from foreblocks.layers.norms import RMSNorm, create_norm_layer
 from foreblocks.models.transformer.config import TransformerConfig
-from foreblocks.models.transformer.runtime.execution import (
-    MHCBlockMixin,
-    NormWrapper,
-    ResidualBlockMixin,
-    ResidualRunCfg,
-    _LayerExecutionStrategy,
-)
 from foreblocks.models.transformer.features.mhc import (
     MHCHyperConnection,
     mhc_init_streams,
 )
 from foreblocks.models.transformer.features.patching import (
     PatchTokenizer,
+)
+from foreblocks.models.transformer.runtime.execution import (
+    MHCBlockMixin,
+    NormWrapper,
+    ResidualBlockMixin,
+    ResidualRunCfg,
+    _LayerExecutionStrategy,
 )
 from foreblocks.models.transformer.runtime.residual_state import (
     _attention_residual_values,
@@ -76,10 +77,6 @@ if TYPE_CHECKING:
 # Shared transformer layer base
 # ──────────────────────────────────────────────────────────────────────────────
 class BaseTransformerLayer(nn.Module):
-    """
-    Base layer with a FeedForwardBlock + MoE/GateSkip plumbing and aux_loss buffer.
-    """
-
     def __init__(
         self,
         config: TransformerConfig,
@@ -135,7 +132,6 @@ class BaseTransformerLayer(nn.Module):
             self._aux_loss += val
 
     def _record_aux_loss_device(self, device: torch.device) -> None:
-        """Call once per forward pass to pin the device for aggregation."""
         self._aux_loss_device = device
 
     def _make_exec_strategy(
@@ -189,12 +185,6 @@ class BaseTransformerLayer(nn.Module):
         mhc_sinkhorn_iters: int | None,
         mhc_collapse: str | None,
     ) -> None:
-        """Reject explicit runtime overrides that conflict with configured values.
-
-        Only checks parameters *passed to forward()*, not the model's own
-        attributes.  The model setters (set_use_mhc / set_mhc_params) are
-        deprecated — configure everything at construction time instead.
-        """
         requested = {
             "use_mhc": use_mhc,
             "mhc_n_streams": mhc_n_streams,
@@ -208,7 +198,8 @@ class BaseTransformerLayer(nn.Module):
             "mhc_collapse": self.mhc_collapse,
         }
         conflicts = [
-            name for name, value in requested.items()
+            name
+            for name, value in requested.items()
             if value is not None and value != configured[name]
         ]
         if conflicts:
@@ -226,7 +217,6 @@ class BaseTransformerLayer(nn.Module):
         gate_lambda: float | None,
         training: bool,
     ) -> ResidualRunCfg:
-        """Resolve runtime GateSkip knobs into a single config object."""
         _use_gk = self.use_gateskip if use_gateskip is None else bool(use_gateskip)
         _budget = self.gate_budget if gate_budget is None else gate_budget
         _lambda = self.gate_lambda if gate_lambda is None else float(gate_lambda)
@@ -240,9 +230,8 @@ class BaseTransformerLayer(nn.Module):
     def _finalize_gateskip_aux(
         self,
         cfg: ResidualRunCfg,
-        aux_l2_terms: List[torch.Tensor],
+        aux_l2_terms: list[torch.Tensor],
     ) -> None:
-        """Accumulate GateSkip regularization term once per layer forward."""
         if cfg.use_gateskip and cfg.gate_lambda > 0 and aux_l2_terms:
             self._update_aux_loss(cfg.gate_lambda * torch.stack(aux_l2_terms).mean())
 
@@ -252,7 +241,6 @@ class BaseTransformerLayer(nn.Module):
         mtp_targets: torch.Tensor | None = None,
         padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Shared FFN / MoE forward with auxiliary loss accounting."""
         if self.use_moe:
             out, aux = self.feed_forward(
                 x,
@@ -282,20 +270,6 @@ class BaseTransformerLayer(nn.Module):
 # Base transformer
 # ──────────────────────────────────────────────────────────────────────────────
 class BaseTransformer(nn.Module, ABC):
-    """
-    Base class shared by TransformerEncoder and TransformerDecoder.
-
-    Handles:
-      - input projection + positional / time embedding hook
-      - layer construction with attention_mode routing
-      - GateSkip runtime knobs and BudgetScheduler
-      - gradient checkpointing (per-layer)
-      - aux_loss aggregation (FIXED: uses executed layer indices)
-      - Optional mHC knobs and stream propagation
-      - Optional PatchTST-style patching knobs
-      - Optional Mixture-of-Depths / Dynamic Layer Skipping
-    """
-
     def __init__(
         self,
         input_size: int,
@@ -304,7 +278,7 @@ class BaseTransformer(nn.Module, ABC):
         informer_like: bool = False,
         pos_encoder: nn.Module | None = None,
         mod_budget_scheduler: MoDBudgetScheduler | None = None,
-        layer_dropout_schedule: "LayerDropoutSchedule" | None = None,
+        layer_dropout_schedule: LayerDropoutSchedule | None = None,
     ):
         super().__init__()
         self.config = config
@@ -352,9 +326,7 @@ class BaseTransformer(nn.Module, ABC):
         self.attention_residual_mode = normalize_attention_residual_mode(
             config.attn_residual_type
         )
-        self.attention_residual_block_size = int(
-            config.attention_residual_block_size
-        )
+        self.attention_residual_block_size = int(config.attention_residual_block_size)
         if self.attention_residual_block_size <= 0:
             raise ValueError("attention_residual_block_size must be > 0")
         self.output_attention_residual = (
@@ -663,7 +635,6 @@ class BaseTransformer(nn.Module, ABC):
             nn.init.normal_(m.weight, mean=0.0, std=self.initializer_range)
 
     def _apply_depth_scaled_initialization(self) -> None:
-        """Scale residual-output projections according to transformer depth."""
         if not self.depth_scaled_init or self.num_layers <= 0:
             return
         residual_std = self.initializer_range / math.sqrt(2.0 * self.num_layers)
@@ -726,7 +697,6 @@ class BaseTransformer(nn.Module, ABC):
 
     # FIX: aggregate aux loss over executed layer indices (supports skipping)
     def _aggregate_aux_loss(self, used_indices: list[int]) -> None:
-        """Aggregate per-layer aux losses into a single tensor."""
         total_aux: float = 0.0
         device: torch.device | None = None
         for i in used_indices:
@@ -817,15 +787,6 @@ class BaseTransformer(nn.Module, ABC):
         )
 
     def _materialize_configured_attention_backends(self) -> None:
-        """
-        Build the attention modules required by this model's routing schedule.
-
-        Encoder/decoder layers instantiate their currently selected backend at
-        construction time. Full models also call this hook so shared-layer
-        schedules can materialize every backend they will route through. A
-        parameter created during the first forward would otherwise be invisible
-        to the optimizer and omitted from checkpoints created before warmup.
-        """
         if self.shared_layer is not None:
             layer = self.shared_layer
             materialize = getattr(layer, "materialize_attention_type", None)
@@ -868,13 +829,12 @@ class BaseTransformer(nn.Module, ABC):
             active_mask=active_mask,
         )
         if self.training and self.mod_lambda > 0:
-            self.mod_aux_loss += (
-                self.mod_lambda
-                * float(mod_router_aux_loss(
+            self.mod_aux_loss += self.mod_lambda * float(
+                mod_router_aux_loss(
                     router_logits,
                     keep_mask,
                     active_mask=active_mask,
-                ).detach())
+                ).detach()
             )
 
         capacity = mod_capacity(keep_mask)

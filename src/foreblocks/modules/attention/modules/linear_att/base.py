@@ -16,34 +16,18 @@ Core API:
 
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 class RoPEMixin:
-    """
-    Per-backend RoPE on Q/K (applied after projection, on [B, H, L, d_head]).
-
-    ALiBi is intentionally a no-op for linear attention: there is no explicit
-    [B, H, Lq, Lk] score matrix to add a bias to, and materialising one would
-    forfeit the O(L·d²) cost. ``pos_encoding_type="alibi"`` is accepted (so the
-    config does not crash) but has no effect — matching LinearAttention.
-
-    Mixin contract: the host module must set ``self.pos_encoding_type`` and
-    ``self.d_head`` in ``__init__``; ``_init_pos_encoding()`` sets up the lazy
-    state holders.
-    """
-
     def _init_pos_encoding(self) -> None:
         self._rotary_emb: nn.Module | None = None
 
     def _apply_rope(
         self, q: torch.Tensor, k: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Apply RoPE to q, k of shape [B, H, L, d_head]. No-op unless enabled."""
         if getattr(self, "pos_encoding_type", "sinusoidal") != "rope":
             return q, k
 
@@ -74,7 +58,6 @@ class RoPEMixin:
 def _causal_conv1d(
     x: torch.Tensor, conv: nn.Conv1d, activation: nn.Module, kernel_size: int
 ) -> torch.Tensor:
-    """Causal depthwise/pointwise Conv1d + activation, crop to original length."""
     T0 = x.size(1)
     x = x.transpose(1, 2).contiguous()  # [B, D, T]
     x = conv(x)[:, :, :T0].contiguous()  # crop causal padding
@@ -87,10 +70,8 @@ def _causal_conv1d(
 
 
 class FeatureMapRegistry:
-    """Factory for linear-attention feature maps."""
-
     @staticmethod
-    def make(name: str, d_head: int, num_features: Optional[int] = None):
+    def make(name: str, d_head: int, num_features: int | None = None):
         if name == "elu":
             return lambda x: F.elu(x) + 1.0
         if name == "relu":

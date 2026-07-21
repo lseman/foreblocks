@@ -77,14 +77,10 @@ def _triton_fwd_enabled():
 
 
 def _tilelang_fwd_enabled():
-    """TileLang forward is ~1.6-1.8× faster than Triton on Ada (RTX 4090).
-    Preferred when available; falls back to Triton then reference.
-    """
     return os.environ.get("CUSTOM_ATT_DISABLE_TILELANG_FWD") != "1"
 
 
 def _tilelang_bwd_enabled():
-    """TileLang backward is preferred (faster on Ada+)."""
     return os.environ.get("CUSTOM_ATT_DISABLE_TILELANG_BWD") != "1"
 
 
@@ -165,18 +161,10 @@ class CustomAttFunction(torch.autograd.Function):
 
 
 def flash_attn_func(q, k, v, causal=False, softmax_scale=None):
-    """Exact attention with Triton-first forward/backward and torch fallbacks.
-
-    Args:
-        q,k,v: contiguous or strided tensors of shape [B,H,N,D]. D in {16,32,64,96,128,256}.
-        causal: lower-triangular causal masking.
-        softmax_scale: defaults to 1/sqrt(D).
-    """
     return CustomAttFunction.apply(q, k, v, causal, softmax_scale)
 
 
 def flash_attn_forward(q, k, v, causal=False, softmax_scale=None):
-    """Forward-only pass. Prefers TileLang > Triton > torch ref."""
     scale = 0.0 if softmax_scale is None else float(softmax_scale)
     q = q.contiguous()
     k = k.contiguous()
@@ -203,7 +191,6 @@ def flash_attn_forward(q, k, v, causal=False, softmax_scale=None):
 
 
 def flash_attn_forward_backend(q):
-    """Return which forward backend ``flash_attn_func`` will use."""
     if _tilelang_fwd_enabled() and can_use_tilelang_fwd(q):
         return "tilelang"
     if _triton_fwd_enabled() and can_use_triton_fwd(q):
@@ -212,12 +199,10 @@ def flash_attn_forward_backend(q):
 
 
 def flash_attn_uses_cuda_backward(q):
-    """Retained for compatibility; custom_att no longer ships a CUDA extension."""
     return False
 
 
 def flash_attn_backward_backend(q):
-    """Return which backward backend ``flash_attn_func(...).backward`` will use."""
     if _tilelang_bwd_enabled() and can_use_tilelang_bwd(q):
         return "tilelang"
     if _triton_bwd_enabled() and can_use_triton_bwd(q):
@@ -235,8 +220,6 @@ def _triton_dropout_fwd_enabled():
 
 
 class CustomAttDropoutFunction(torch.autograd.Function):
-    """Attention with FA2-style dropout (forward only; backward uses reference)."""
-
     @staticmethod
     def forward(ctx, q, k, v, causal=False, softmax_scale=None, dropout_p=0.0):
         if dropout_p == 0.0:
@@ -283,14 +266,6 @@ class CustomAttDropoutFunction(torch.autograd.Function):
 
 
 def flash_attn_dropout_func(q, k, v, causal=False, softmax_scale=None, dropout_p=0.0):
-    """Attention with FA2-style dropout.
-
-    Args:
-        q, k, v: tensors of shape [B, H, N, D]
-        causal: causal masking
-        softmax_scale: defaults to 1/sqrt(D)
-        dropout_p: dropout probability (0.0 = no dropout)
-    """
     return CustomAttDropoutFunction.apply(q, k, v, causal, softmax_scale, dropout_p)
 
 
@@ -304,21 +279,6 @@ def _triton_decode_enabled():
 
 
 def flash_attn_decode(q, k_cache, v_cache, seqlens, softmax_scale=None):
-    """Decode-only attention for single-token generation with KV cache.
-
-    Optimized for the decoding phase where q has sequence length 1.
-
-    Args:
-        q: [B, H, 1, D] - single token queries
-        k_cache: [B*H, max_seqlen, D] - contiguous KV cache (batched layout)
-        v_cache: [B*H, max_seqlen, D] - contiguous value cache
-        seqlens: [B*H] - sequence lengths per (batch, head) group
-        softmax_scale: defaults to 1/sqrt(D)
-
-    Returns:
-        out: [B, H, 1, D] - attention outputs
-        lse: [B, H] - log-sum-exp for gradient computation
-    """
     q = q.contiguous()
     k_cache = k_cache.contiguous()
     v_cache = v_cache.contiguous()
@@ -350,8 +310,6 @@ def flash_attn_decode(q, k_cache, v_cache, seqlens, softmax_scale=None):
 
 
 class RMSNorm(nn.Module):
-    """Root Mean Square Layer Normalization - compatible with PyTorch 2.x."""
-
     def __init__(self, dim, eps=1e-6):
         super().__init__()
         self.eps = eps
@@ -362,20 +320,6 @@ class RMSNorm(nn.Module):
 
 
 class FlashAttnRMSNorm(nn.Module):
-    """Fused attention + RMSNorm module.
-
-    Common pattern in modern LLMs: normalize inputs, run attention, normalize outputs.
-    This module fuses the forward pass for memory efficiency.
-
-    Args:
-        dim: hidden dimension
-        n_heads: number of attention heads
-        eps: RMSNorm epsilon
-        causal: causal masking
-        softmax_scale: attention scale (defaults to 1/sqrt(head_dim))
-        dropout_p: dropout probability
-    """
-
     def __init__(
         self, dim, n_heads, eps=1e-6, causal=False, softmax_scale=None, dropout_p=0.0
     ):
@@ -400,13 +344,6 @@ class FlashAttnRMSNorm(nn.Module):
         return self
 
     def forward(self, x, seqlens=None):
-        """
-        Args:
-            x: [B, N, D] - input sequence
-            seqlens: optional [B] for variable-length sequences (pad with attention mask)
-        Returns:
-            out: [B, N, D] - attention output with residual
-        """
         B, N, D = x.shape
         residual = x
 
@@ -438,11 +375,6 @@ class FlashAttnRMSNorm(nn.Module):
 
 
 class FlashDecodeModule(nn.Module):
-    """Fused attention + RMSNorm for decoding with KV cache.
-
-    Optimized for single-token generation.
-    """
-
     def __init__(self, dim, n_heads, eps=1e-6, softmax_scale=None, max_seqlen=2048):
         super().__init__()
         self.n_heads = n_heads
@@ -452,16 +384,6 @@ class FlashDecodeModule(nn.Module):
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=False)
 
     def forward(self, x, k_cache, v_cache, seqlens):
-        """
-        Args:
-            x: [B, 1, D] - single token input
-            k_cache: [B*H, max_seqlen, D]
-            v_cache: [B*H, max_seqlen, D]
-            seqlens: [B*H] - sequence lengths
-        Returns:
-            out: [B, 1, D] - attention output
-            lse: [B, H] - log-sum-exp
-        """
         B = x.shape[0]
         x_norm = self.attn_norm(x)  # [B, 1, D]
         qkv = self.qkv_proj(x_norm)  # [B, 1, 3*D]

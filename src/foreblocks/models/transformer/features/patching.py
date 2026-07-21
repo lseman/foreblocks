@@ -50,7 +50,6 @@ if _TRITON_AVAILABLE:
         stride_ot,
         BLOCK_D: tl.constexpr,
     ):
-        """For each (b, t): gather contributing patches, average, store."""
         pid_b = tl.program_id(0)
         pid_t = tl.program_id(1)
         pid_d = tl.program_id(2)
@@ -98,7 +97,6 @@ if _TRITON_AVAILABLE:
         stride_gp_p,
         BLOCK_D: tl.constexpr,
     ):
-        """For each (b, np, p): grad_patches = grad_out[b, np*S+p, :] / count(np*S+p)."""
         pid_b = tl.program_id(0)
         pid_np = tl.program_id(1)
         pid_d = tl.program_id(2)
@@ -227,13 +225,6 @@ def patchify_padding_mask(
     stride: int,
     pad_end: bool = True,
 ) -> torch.Tensor | None:
-    """
-    Convert timestep key-padding-mask [B,T] to patch-token mask [B,Np].
-    Heuristic: a patch token is "padded" if ALL timesteps inside that patch are padded.
-    This is conservative and works well for right-padding masks.
-
-    If kpm is None, returns None.
-    """
     if kpm is None:
         return None
     if kpm.dim() != 2 or kpm.shape[1] != T:
@@ -252,11 +243,6 @@ def patchify_padding_mask(
 
 
 class PatchTokenizer(nn.Module):
-    """
-    Patchify + embed:
-      x: [B, T, D] -> tokens: [B, Np, D]
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -304,12 +290,6 @@ class PatchTokenizer(nn.Module):
 
 
 class PatchDetokenizer(nn.Module):
-    """
-    Optional unpatch (only needed if you patch the decoder and want per-timestep output):
-      tokens: [B,Np,D] -> x: [B,T_orig,D]
-    Uses overlap-add folding with count normalization.
-    """
-
     def __init__(self, d_model: int, patch_len: int, stride: int, bias: bool = True):
         super().__init__()
         self.d_model = int(d_model)

@@ -24,11 +24,6 @@ from foreblocks.core.model import BaseHead
 
 
 class LearnableFourierSeasonal(nn.Module):
-    """
-    Learnable per-channel seasonal component via Fourier bases (sin/cos up to K).
-    seasonal = B @ W, main = x - seasonal. Shapes [B,T,F].
-    """
-
     def __init__(self, feature_dim: int, K: int = 8, share_weights: bool = False):
         super().__init__()
         self.feature_dim = int(feature_dim)
@@ -50,7 +45,7 @@ class LearnableFourierSeasonal(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         B, T, F_ = x.shape
-        if F_ != self.feature_dim:
+        if self.feature_dim != F_:
             raise RuntimeError(f"Input F={F_} != feature_dim={self.feature_dim}")
         Bx = self._bases(T, x.device, x.dtype)  # [T,2K]
         W = self.W.expand(F_, -1) if self.W.size(0) == 1 else self.W  # [F,2K]
@@ -60,8 +55,6 @@ class LearnableFourierSeasonal(nn.Module):
 
 
 class LearnableFourierSeasonalHead(BaseHead):
-    """BaseHead wrapper for LearnableFourierSeasonal. Forward -> (main, seasonal)."""
-
     def __init__(self, feature_dim: int, K: int = 8, share_weights: bool = False):
         super().__init__(
             module=LearnableFourierSeasonal(feature_dim, K, share_weights),

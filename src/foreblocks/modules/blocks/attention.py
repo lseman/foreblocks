@@ -32,16 +32,6 @@ from foreblocks.ui.node_spec import node
     color="bg-gradient-to-br from-indigo-600 to-indigo-800",
 )
 class HierarchicalAttention(nn.Module):
-    """
-    Hierarchical attention for time series modeling.
-
-    Processes time series at multiple time scales using a hierarchical structure.
-    This approach is particularly effective for capturing both short-term and
-    long-term dependencies in time series.
-
-    Inspired by hierarchical architectures in natural language processing.
-    """
-
     def __init__(
         self,
         input_size: int,
@@ -53,17 +43,6 @@ class HierarchicalAttention(nn.Module):
         activation: str = "gelu",
         positional_encoding: bool = True,
     ):
-        """
-        Args:
-            input_size: Input feature dimension
-            hidden_size: Hidden feature dimension
-            num_heads: Number of attention heads
-            num_levels: Number of hierarchical levels
-            pooling_kernel: Kernel size for downsampling between levels
-            dropout: Dropout probability
-            activation: Activation function
-            positional_encoding: Whether to use positional encodings
-        """
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -128,7 +107,6 @@ class HierarchicalAttention(nn.Module):
         )
 
     def _get_activation(self, activation: str) -> nn.Module:
-        """Get activation function by name"""
         return {
             "relu": nn.ReLU(),
             "gelu": nn.GELU(),
@@ -137,7 +115,6 @@ class HierarchicalAttention(nn.Module):
         }.get(activation.lower(), nn.GELU())
 
     def _downsample(self, x: torch.Tensor) -> torch.Tensor:
-        """Downsample sequence using average pooling"""
         # x shape: [batch, seq_len, hidden_size]
         # Transpose to [batch, hidden_size, seq_len]
         x_trans = x.transpose(1, 2)
@@ -153,14 +130,6 @@ class HierarchicalAttention(nn.Module):
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
-        """
-        Args:
-            x: Input tensor [batch_size, seq_len, input_size]
-            mask: Optional padding mask [batch_size, seq_len]
-
-        Returns:
-            Output tensor [batch_size, seq_len, hidden_size]
-        """
         batch_size, seq_len, _ = x.shape
 
         # Project input to hidden dimension

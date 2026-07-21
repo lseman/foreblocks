@@ -23,7 +23,6 @@ from foreblocks.ops.mamba import (
     chunked_ssd_forward,
     dt_prep,
     fused_out,
-    mamba2_split_conv1d_scan_combined,
 )
 from foreblocks.sequence.mamba.conv import CausalDepthwiseConv1d
 from foreblocks.sequence.mamba.norms import RMSNormWeightOnly
@@ -31,28 +30,6 @@ from foreblocks.sequence.mamba.utils import conv_step, fused_out_2d
 
 
 class Mamba2Block(nn.Module):
-    """Mamba2-style block (diagonal A, chunked scan).
-
-    Parameters
-    ----------
-    d_model : int
-        Input / output dimension.
-    d_state : int, default 16
-        State dimension *per head* (``N`` in the Mamba2 paper).
-    d_conv : int, default 4
-        Width of the causal depthwise convolution.
-    head_dim : int, default 64
-        Dimension per attention head.  ``num_heads = d_inner // head_dim``.
-    n_groups : int, default 1
-        Number of B / C groups.  Heads in the same group share B and C.
-    chunk_size : int, default 64
-        Chunk size for the SSD scan.  Set to ``None`` to disable chunking.
-    dt_min / dt_max : float
-        Clamp range for the softplus(dt) output.
-    A_init_range : tuple[float, float], default (1, 16)
-        Uniform range for initial ``A_log`` values.
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -222,7 +199,6 @@ class Mamba2Block(nn.Module):
     # ── helpers ───────────────────────────────────────────────────────
 
     def _split_conv_out(self, conv_out: torch.Tensor):
-        """Unpack convolved [u, B, C] activations."""
         D = self.d_inner
         N = self.d_state
         ng = self.n_groups
@@ -281,7 +257,6 @@ class Mamba2Block(nn.Module):
         }
 
     def step(self, x: torch.Tensor, state: dict) -> torch.Tensor:
-        """Single-token autoregressive step (no chunking)."""
         B = x.shape[0]
         x_normed = self.pre_norm(x)
         p = self.in_proj(x_normed)

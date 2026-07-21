@@ -33,8 +33,6 @@ class FrequencyAnomalyForward:
 
 
 class FourierEncoder(nn.Module):
-    """Learned frequency encoder using complex-valued projections."""
-
     def __init__(
         self,
         n_features: int,
@@ -84,8 +82,6 @@ class FourierEncoder(nn.Module):
 
 
 class InverseTransformer(nn.Module):
-    """Inverse: learned frequency → time reconstruction."""
-
     def __init__(
         self,
         n_features: int,
@@ -117,15 +113,6 @@ class InverseTransformer(nn.Module):
 
 
 class FrequencyAnomaly(nn.Module):
-    """Frequency-domain anomaly detector.
-
-    Learns mapping between time and frequency domains.
-    Anomaly score combines:
-    - Time-domain reconstruction error
-    - Frequency-domain spectral error
-    - Spectral ratio (deviation from normal frequency profile)
-    """
-
     def __init__(
         self,
         n_features: int,
@@ -167,7 +154,6 @@ class FrequencyAnomaly(nn.Module):
         return fft.irfft(X, dim=1, n=self.window_size)
 
     def _wavelet_transform(self, x: torch.Tensor) -> torch.Tensor:
-        """Simple Haar-like wavelet approximation via downsampling."""
         low = (x[:, ::2] + x[:, 1::2]) / 2.0
         high = (x[:, ::2] - x[:, 1::2]) / 2.0
         return torch.cat([low, high], dim=-1)
@@ -208,7 +194,6 @@ class FrequencyAnomaly(nn.Module):
         return 0.5 * out.time_error + 0.3 * out.freq_error + 0.2 * out.spectral_ratio
 
     def train_step(self, x: torch.Tensor) -> torch.Tensor:
-        """Train: minimize time + freq reconstruction error."""
         out = self(x)
         return out.time_error.mean() + 0.5 * out.freq_error.mean()
 
@@ -235,7 +220,6 @@ class FrequencyAnomaly(nn.Module):
             )
 
     def _spectral_deviation(self, x: torch.Tensor) -> torch.Tensor:
-        """Maha-like distance of spectral profile from normal."""
         if self.normal_spectral_mean_ is None:
             return torch.zeros(x.shape[0], device=x.device)
 
@@ -251,12 +235,6 @@ class FrequencyAnomaly(nn.Module):
 
 
 class LogFreqAnomaly(nn.Module):
-    """Log-frequency variant: focuses on log-scaled spectral features.
-
-    More robust to scale differences. Inspired by LogFT paper.
-    Uses log-frequency spectrogram for better resolution at low frequencies.
-    """
-
     def __init__(
         self,
         n_features: int,
@@ -286,7 +264,6 @@ class LogFreqAnomaly(nn.Module):
 
     @staticmethod
     def _log_freq_grid(window_size: int, n_bins: int) -> torch.Tensor:
-        """Create log-spaced frequency-to-bin interpolation weights."""
         fft_bins = window_size // 2 + 1
         freqs = torch.linspace(0.0, 1.0, fft_bins)
         log_freqs = torch.log1p(10.0 * freqs) / torch.log1p(torch.tensor(10.0))

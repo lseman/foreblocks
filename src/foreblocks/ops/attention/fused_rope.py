@@ -265,13 +265,6 @@ def triton_apply_rope_bthd(
     inplace: bool = False,
     conjugate: bool = False,
 ) -> torch.Tensor:
-    """
-    Apply RoPE to x in [B, T, H, D] layout using stride remapping — no transpose.
-
-    The underlying kernel is launched with grid (B, H, T_blocks) and the
-    time/head strides are swapped relative to the BHTD variant, avoiding
-    any extra memory copies.
-    """
     if not _TRITON_AVAILABLE:
         raise RuntimeError("Triton is not available")
     if not x.is_cuda:

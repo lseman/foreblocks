@@ -1,4 +1,4 @@
-"""foreblocks.layers.graph.layers.edge_cond.
+"""foreblocks.layers.graph.conv.edge_cond.
 
 Edge-conditioned GCN layer implementation.
 
@@ -10,7 +10,6 @@ from typing import Literal
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from foreblocks.layers.graph.common import is_batched_adj, xavier_zero_bias
 from foreblocks.layers.graph.norms import make_activation, make_norm_pair
