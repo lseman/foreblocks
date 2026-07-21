@@ -24,7 +24,7 @@ import math
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import torch
 import torch.nn as nn
@@ -482,7 +482,9 @@ class BaseTransformer(nn.Module, ABC):
     # Routing tables define which backend each layer uses.
     # pattern="all" → single backend; "hybrid" → early layers use secondary,
     # last layer uses primary; "3to1" → every group of 4 uses secondary 3 times.
-    _ATTN_ROUTES: dict[str, tuple[str, str, Literal["all", "hybrid", "3to1"]]] = {
+    _ATTN_ROUTES: ClassVar[
+        dict[str, tuple[str, str, Literal["all", "hybrid", "3to1"]]]
+    ] = {
         "standard": ("standard", "standard", "all"),
         "linear": ("linear", "linear", "all"),
         "sype": ("sype", "sype", "all"),

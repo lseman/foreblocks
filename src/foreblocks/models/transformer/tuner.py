@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import numpy as np
 import torch
@@ -318,11 +318,11 @@ class TransformerTuningReport(BaseModel):
 
 
 class ModernTransformerTuner:
-    DEFAULT_PATCH_LENGTHS: list[int] = [4, 6, 8, 12, 16, 24, 32, 48, 64]
-    DEFAULT_STRIDES: list[int] = [1, 2, 4, 6, 8, 12, 16, 24, 32]
+    DEFAULT_PATCH_LENGTHS: ClassVar[list[int]] = [4, 6, 8, 12, 16, 24, 32, 48, 64]
+    DEFAULT_STRIDES: ClassVar[list[int]] = [1, 2, 4, 6, 8, 12, 16, 24, 32]
 
     # Scoring weights for patching score formula
-    PATCHING_WEIGHTS: dict[str, float] = {
+    PATCHING_WEIGHTS: ClassVar[dict[str, float]] = {
         "peak": 0.30,
         "repeat": 0.25,
         "smooth": 0.25,

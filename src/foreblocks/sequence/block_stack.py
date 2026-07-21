@@ -18,10 +18,12 @@ Core API:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch
 import torch.nn as nn
 
-from foreblocks.modules.attention.config import AttentionConfig
+from foreblocks.modules.attention.config import AttentionConfig, AttentionShapeConfig
 from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.moe.ff import FeedForwardBlock
 from foreblocks.sequence.mamba.mamba2 import Mamba2Block
@@ -65,7 +67,7 @@ class BlockStack(nn.Module):
         input_size: int | None = None,
         dropout: float = 0.0,
         mamba_kwargs: dict | None = None,
-        attn_kwargs: dict | None = None,
+        attention_config: AttentionConfig | None = None,
         moe_kwargs: dict | None = None,
     ):
         super().__init__()
@@ -87,13 +89,26 @@ class BlockStack(nn.Module):
         )
 
         mamba_kwargs = mamba_kwargs or {}
-        attn_kwargs = attn_kwargs or {}
+        if attention_config is None:
+            attention_config = AttentionConfig(
+                shape=AttentionShapeConfig(
+                    d_model=d_model, n_heads=8, dropout=dropout
+                )
+            )
+        elif attention_config.shape.d_model != d_model:
+            raise ValueError("attention_config.shape.d_model must match d_model")
+        attention_config = replace(
+            attention_config,
+            shape=replace(attention_config.shape, dropout=dropout),
+        )
         moe_kwargs = moe_kwargs or {}
 
         self.blocks = nn.ModuleList(
             _Residual(
                 kind,
-                self._make(kind, d_model, mamba_kwargs, attn_kwargs, moe_kwargs),
+                self._make(
+                    kind, d_model, mamba_kwargs, attention_config, moe_kwargs
+                ),
                 d_model,
                 dropout,
             )
@@ -103,7 +118,9 @@ class BlockStack(nn.Module):
         self.aux_loss: torch.Tensor = torch.zeros(())
 
     @staticmethod
-    def _make(kind, d_model, mamba_kwargs, attn_kwargs, moe_kwargs) -> nn.Module:
+    def _make(
+        kind, d_model, mamba_kwargs, attention_config, moe_kwargs
+    ) -> nn.Module:
         # _Residual already pre-norms, so disable the blocks' own pre-norm.
         if kind == "mamba2":
             return Mamba2Block(
@@ -114,11 +131,7 @@ class BlockStack(nn.Module):
                 d_model=d_model, **{"use_pre_norm": False, **mamba_kwargs}
             )
         if kind == "attn":
-            return MultiAttention(
-                AttentionConfig.from_legacy_kwargs(
-                    d_model=d_model, **{"n_heads": 8, **attn_kwargs}
-                )
-            )
+            return MultiAttention(attention_config)
         # moe: FeedForwardBlock needs dim_ff and use_moe=True to actually route.
         return FeedForwardBlock(
             **{

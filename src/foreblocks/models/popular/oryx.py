@@ -23,7 +23,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.layers.norms import create_norm_layer
-from foreblocks.modules.attention.config import AttentionConfig
+from foreblocks.modules.attention.config import (
+    AttentionCacheConfig,
+    AttentionConfig,
+    AttentionShapeConfig,
+    AttentionVariantConfig,
+)
 from foreblocks.modules.attention.implementations.linear_att.gated_delta import (
     GatedDeltaNet,
 )
@@ -94,15 +99,15 @@ class OryxMixerBlock(nn.Module):
         self.gate = bool(gate)
         self.linear_mode = str(linear_mode).lower()
 
-        self.attn = MultiAttention(AttentionConfig.from_legacy_kwargs(
-            d_model=d_model,
-            n_heads=n_heads,
-            dropout=dropout,
-            attention_type=attention_type,
-            use_mla=False,
-            use_paged_cache=False,
-            use_swiglu=False,
-        ))
+        self.attn = MultiAttention(
+            AttentionConfig(
+                shape=AttentionShapeConfig(d_model, n_heads, dropout=dropout),
+                cache=AttentionCacheConfig(use_mla=False, use_paged_cache=False),
+                variant=AttentionVariantConfig(
+                    name=attention_type, use_swiglu=False
+                ),
+            )
+        )
         self._linear_mixer = None
         if self.linear_mode not in {"gdn", "gated_delta", "linear"}:
             raise ValueError(
