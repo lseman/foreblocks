@@ -15,7 +15,7 @@ Core API (re-exports):
 
 # kernels.py - backward-compatibility shim
 # All content has been split into per-kernel modules.
-from foreblocks.ops.kernels.grouped_gemm import *  # noqa: F401, F403
+from foreblocks.ops.kernels.grouped_gemm import *  # noqa: F403
 from foreblocks.ops.kernels.grouped_gemm import (  # noqa: F401
     TRITON_AVAILABLE,
     _foreach_mm,
@@ -23,7 +23,7 @@ from foreblocks.ops.kernels.grouped_gemm import (  # noqa: F401
     _split_by_offsets,
     grouped_mm_varM,
 )
-from foreblocks.ops.kernels.swiglu import *  # noqa: F401, F403
+from foreblocks.ops.kernels.swiglu import *  # noqa: F403
 from foreblocks.ops.kernels.swiglu import (  # noqa: F401
     HAS_TRITON,
     TritonSwiGLUGate,

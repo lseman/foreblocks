@@ -53,16 +53,10 @@ from foreblocks.modules.moe.experts.expert_blocks import (
 )
 from foreblocks.modules.moe.experts.moe_utils import (
     autocast_bf16_enabled as _autocast_bf16_enabled,
-)
-from foreblocks.modules.moe.experts.moe_utils import (
     eager_topk_routing,
     maybe_compile,
     optimized_topk_routing,
-)
-from foreblocks.modules.moe.experts.moe_utils import (
     should_fallback_router_topk as _should_fallback_router_topk,
-)
-from foreblocks.modules.moe.experts.moe_utils import (
     supports_grouped_prepacked as _supports_grouped_prepacked,
 )
 from foreblocks.modules.moe.experts.routers import (
@@ -99,8 +93,8 @@ except Exception:
 # Optional grouped kernel path (can accept prepacked B* if your wrapper supports)
 try:
     # Prefer a wrapper that accepts B12_cat_prepacked / B3_cat_prepacked
-    from foreblocks.modules.moe.kernels.kernels import (
-        fused_router_topk,  # type: ignore
+    from foreblocks.modules.moe.kernels.kernels import (  # type: ignore
+        fused_router_topk,
         grouped_mlp_swiglu,
     )
 except Exception:

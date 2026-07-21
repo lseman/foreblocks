@@ -6,8 +6,8 @@ Time feature generation and inference for time-series preprocessing.
 
 from __future__ import annotations
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from foreblocks.ts_handler.utils import _cyclical_encode
 

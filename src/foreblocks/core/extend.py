@@ -318,7 +318,7 @@ class DistilledForecastingModel(ForecastingModel):
             att = A.reshape(B, L1, L2, Ht).permute(0, 3, 1, 2)  # (B, Ht, L1, L2)
 
         # Spatial/temporal resize
-        if (L1, L2) != (L1t, L2t):
+        if (L1t, L2t) != (L1, L2):
             with torch.cuda.amp.autocast(enabled=False):
                 x32 = att.float().reshape(B * att.shape[1], 1, L1, L2)
                 x32 = F.interpolate(

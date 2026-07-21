@@ -37,8 +37,10 @@ __all__ = [
 
 # Optional GateSkip import
 try:
-    from foreblocks.modules.skip.gateskip import ResidualGate  # type: ignore
-    from foreblocks.modules.skip.gateskip import gateskip_apply
+    from foreblocks.modules.skip.gateskip import (  # type: ignore
+        ResidualGate,
+        gateskip_apply,
+    )
 
     _HAS_GATESKIP = True
 except Exception:  # pragma: no cover
@@ -47,14 +49,16 @@ except Exception:  # pragma: no cover
 
 # Optional Triton norm backend import
 try:
-    from foreblocks.layers.norms.layer_norm import AdaptiveLayerNorm  # type: ignore
-    from foreblocks.layers.norms.layer_norm import FastLayerNorm
-    from foreblocks.layers.norms.rms_norm import AdaptiveRMSNorm  # type: ignore
-    from foreblocks.layers.norms.rms_norm import RMSNorm
-    from foreblocks.ops.norms_triton import (
-        TRITON_AVAILABLE as _NORM_TRITON_AVAILABLE,  # type: ignore
+    from foreblocks.layers.norms.layer_norm import (  # type: ignore
+        AdaptiveLayerNorm,
+        FastLayerNorm,
     )
-    from foreblocks.ops.norms_triton import (
+    from foreblocks.layers.norms.rms_norm import (  # type: ignore
+        AdaptiveRMSNorm,
+        RMSNorm,
+    )
+    from foreblocks.ops.norms_triton import (  # type: ignore
+        TRITON_AVAILABLE as _NORM_TRITON_AVAILABLE,
         FusedAddRMSNormFunction,
         LayerNormTritonFunction,
         RMSNormTritonFunction,

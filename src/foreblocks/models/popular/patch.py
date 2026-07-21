@@ -30,7 +30,7 @@ from foreblocks.modules.attention.multi_att import MultiAttention
 
 def _patchify_1d(x: torch.Tensor, patch_len: int, stride: int) -> torch.Tensor:
     B, L = x.shape
-    if L < patch_len:
+    if patch_len > L:
         x = F.pad(x, (patch_len - L, 0))  # left pad
         L = x.size(1)
     N = 1 + (L - patch_len) // stride

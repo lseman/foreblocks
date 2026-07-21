@@ -18,6 +18,7 @@ from foreblocks.layers.graph.common import (
     xavier_zero_bias,
 )
 from foreblocks.layers.graph.conv.message_passing import (
+    CachedNorm,
     GraphConvBase,
     MessagePassing,
     _add_self_loops_edge_index,
@@ -25,7 +26,6 @@ from foreblocks.layers.graph.conv.message_passing import (
     _dense_message_passing,
     _edge_index_spmm,
     _normalize_row_edge_weight,
-    CachedNorm,
 )
 
 

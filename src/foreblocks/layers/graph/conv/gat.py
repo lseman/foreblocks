@@ -14,8 +14,8 @@ import torch.nn.functional as F
 
 from foreblocks.layers.graph.common import (
     add_self_loops,
-    ensure_adj,
     dtype_neg_inf,
+    ensure_adj,
     is_batched_adj,
     xavier_zero_bias,
 )

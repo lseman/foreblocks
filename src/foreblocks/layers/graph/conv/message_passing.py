@@ -19,27 +19,21 @@ from foreblocks.layers.graph.common import (
     xavier_zero_bias,
 )
 from foreblocks.layers.graph.norms import make_activation, make_norm_pair
+from foreblocks.ops.graph.message_passing import (
+    HAS_TRITON,
+    triton_message_passing as triton_message_passing_op,
+    triton_scatter_add as triton_scatter_add_op,
+)
 
 try:
     from torch_scatter import (
         scatter_add as torch_scatter_add,
-    )
-    from torch_scatter import (
         scatter_max as torch_scatter_max,
     )
 except ImportError:
     torch_scatter_add = None
     torch_scatter_max = None
 
-from foreblocks.ops.graph.message_passing import (
-    HAS_TRITON,
-)
-from foreblocks.ops.graph.message_passing import (
-    triton_message_passing as triton_message_passing_op,
-)
-from foreblocks.ops.graph.message_passing import (
-    triton_scatter_add as triton_scatter_add_op,
-)
 
 
 def _check_edge_index(edge_index: Tensor, num_nodes: int) -> None:

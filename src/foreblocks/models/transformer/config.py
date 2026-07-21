@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
-
 _ATTENTION_ALIASES: dict[str, str] = {
     "hybrid_linear": "hybrid",
     "kimi_hybrid": "hybrid_kimi",

@@ -121,7 +121,7 @@ class VariableSelectionNetwork(nn.Module):
 
     def forward(self, x_vars: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         B, T, V, Dv = x_vars.shape
-        assert V == self.num_vars
+        assert self.num_vars == V
 
         # Encode per variable to d_model
         encs = []

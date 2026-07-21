@@ -472,7 +472,7 @@ class SAITSImputer:
 
     def _create_windows_vectorized(self, data):
         T, D = data.shape
-        if T < self.seq_len:
+        if self.seq_len > T:
             raise ValueError(
                 f"Data length {T} is less than sequence length {self.seq_len}"
             )

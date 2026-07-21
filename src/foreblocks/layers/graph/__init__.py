@@ -14,11 +14,6 @@ Core API:
 
 """
 
-from foreblocks.layers.graph.latent import (
-    AdaptiveEdgeSparsifier,
-    CorrelationConfig,
-    LatentCorrelationLearner,
-)
 from foreblocks.layers.graph.conv import (
     EdgeCondGCN,
     GATConv,
@@ -31,6 +26,11 @@ from foreblocks.layers.graph.conv import (
     SAGEConv,
     StochasticDepth,
 )
+from foreblocks.layers.graph.latent import (
+    AdaptiveEdgeSparsifier,
+    CorrelationConfig,
+    LatentCorrelationLearner,
+)
 from foreblocks.layers.graph.norms import GraphNorm
 from foreblocks.layers.graph.spatiotemporal import (
     BackwardDiffusionConv,
@@ -41,13 +41,13 @@ from foreblocks.layers.graph.spatiotemporal import (
     GraphWaveNetBlock,
     GraphWaveNetTemporalConv,
     LatentCorrelationLayer,
+    MovingAverage,
     MTGNNBlock,
     MTGNNDilatedInception,
     MTGNNGraphConstructor,
     MTGNNMixProp,
     MTGNNProp,
     MTGNNTemporalGatedUnit,
-    MovingAverage,
     SeriesDecomposition,
     TemporalSpectralFilter,
     TGGCBlock,

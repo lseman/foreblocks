@@ -344,7 +344,7 @@ class ITransformer(nn.Module):
         if x.dim() != 3:
             raise ValueError(f"Expected x [B, T, C], got {tuple(x.shape)}")
         B, T, C = x.shape
-        if T != self.input_len:
+        if self.input_len != T:
             # We keep it strict; resize outside if needed
             raise ValueError(f"Expected input_len={self.input_len}, got T={T}")
 

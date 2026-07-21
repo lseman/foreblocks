@@ -6,11 +6,6 @@ Re-exports the ModernTransformerTuner for auto-hyperparameter selection.
 
 from foreblocks.models.transformer.config import TransformerConfig
 from foreblocks.models.transformer.generation import GenerationConfig
-
-from foreblocks.models.transformer.tuner import (
-    ModernTransformerTuner,
-    TransformerTuner,
-)
 from foreblocks.models.transformer.runtime.outputs import (
     TransformerDecoderOutput,
     TransformerEncoderOutput,
@@ -30,6 +25,10 @@ from foreblocks.models.transformer.runtime.routing import (
     gather_square_mask,
     patchify_gateskip_active_mask,
     scatter_mixture_of_depths_output,
+)
+from foreblocks.models.transformer.tuner import (
+    ModernTransformerTuner,
+    TransformerTuner,
 )
 
 __all__ = [

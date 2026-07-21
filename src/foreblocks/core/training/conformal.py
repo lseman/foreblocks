@@ -492,7 +492,7 @@ class ConformalPredictionEngine:
                 self.jackknife_residuals = residuals.clone()
             else:
                 K = len(jackknife_cv_models)
-                if K != len(jackknife_cv_indices):
+                if len(jackknife_cv_indices) != K:
                     raise ValueError(
                         "Number of CV models must match number of CV index arrays"
                     )

@@ -23,7 +23,6 @@ import torch
 import torch.nn as nn
 
 from foreblocks.layers.graph.common import Tensor, ensure_adj, xavier_zero_bias
-from foreblocks.layers.graph.latent import CorrelationConfig, LatentCorrelationLearner
 from foreblocks.layers.graph.conv import (
     EdgeCondGCN,
     GATConv,
@@ -32,6 +31,7 @@ from foreblocks.layers.graph.conv import (
     SAGEConv,
     StochasticDepth,
 )
+from foreblocks.layers.graph.latent import CorrelationConfig, LatentCorrelationLearner
 from foreblocks.layers.graph.norms import make_norm_pair
 from foreblocks.layers.graph.spatiotemporal import GraphWaveNetBlock
 

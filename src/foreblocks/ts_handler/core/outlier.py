@@ -232,7 +232,7 @@ def _remove_outliers(
         x = data_col.astype(np.float64)
         T, D = x.shape
 
-        if T < seq_len + 5:
+        if seq_len + 5 > T:
             return x if D > 1 else x.flatten()
 
         detector = TranADDetector(

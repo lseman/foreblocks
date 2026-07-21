@@ -262,7 +262,7 @@ class PatchTokenizer(nn.Module):
         if x.dim() != 3:
             raise ValueError(f"PatchTokenizer expects [B,T,D], got {tuple(x.shape)}")
         B, T, D = x.shape
-        if D != self.d_model:
+        if self.d_model != D:
             raise ValueError(
                 f"d_model mismatch: x has D={D}, tokenizer d_model={self.d_model}"
             )
@@ -303,7 +303,7 @@ class PatchDetokenizer(nn.Module):
                 f"PatchDetokenizer expects [B,Np,D], got {tuple(tokens.shape)}"
             )
         B, Np, D = tokens.shape
-        if D != self.d_model:
+        if self.d_model != D:
             raise ValueError(
                 f"d_model mismatch: tokens D={D}, detok d_model={self.d_model}"
             )

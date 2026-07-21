@@ -38,7 +38,7 @@ def node(
 ) -> Callable[[type], type]:
 
     def wrap(cls: type) -> type:
-        setattr(cls, "__is_node__", True)  # <- discovery gate
+        cls.__is_node__ = True  # <- discovery gate
         setattr(
             cls,
             "__node_options__",

@@ -260,7 +260,7 @@ class StreamingAnomalyDetector:
         # Confidence: distance from threshold relative to std
         distance = abs(current_score - threshold)
         std_val = self.ema.std if self.ema.std else 1.0
-        confidence = float(1.0) - np.exp(-distance / (std_val + 1e-8))
+        confidence = 1.0 - np.exp(-distance / (std_val + 1e-8))
 
         return StreamingResult(
             score=current_score,

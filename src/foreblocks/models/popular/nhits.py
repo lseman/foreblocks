@@ -156,7 +156,7 @@ class NHiTS(nn.Module):
         if x.dim() != 3:
             raise ValueError(f"Expected [B, L, C], got {tuple(x.shape)}")
         B, L, C = x.shape
-        if L != self.input_size:
+        if self.input_size != L:
             raise ValueError(f"input_size={self.input_size} but got lookback L={L}")
 
         # share weights across channels: fold C into the batch → [B*C, L]

@@ -190,8 +190,8 @@ else:
     )
 
 try:
-    from torch.nn.attention.flex_attention import (
-        flex_attention as _flex_available,  # noqa: F401
+    from torch.nn.attention.flex_attention import (  # noqa: F401
+        flex_attention as _flex_available,
     )
 except ImportError:
     ATTENTION_BACKENDS.register(

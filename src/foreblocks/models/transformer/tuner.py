@@ -21,11 +21,9 @@ from typing import Any, Literal
 
 import numpy as np
 import torch
-from pydantic import (
-    BaseModel,  # pip install pydantic
-    Field,
-    field_validator,
-)
+
+# pip install pydantic
+from pydantic import BaseModel, Field, field_validator
 
 
 def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:

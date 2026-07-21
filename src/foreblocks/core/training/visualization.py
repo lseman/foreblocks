@@ -152,7 +152,7 @@ def plot_prediction(
                     continue
                 e = min(s + H, T)
                 if e > s:
-                    pred_col = j if D > j else 0
+                    pred_col = j if j < D else 0
                     acc[s:e] += pred_np[k, : e - s, pred_col]
                     cnt[s:e] += 1
             have = cnt > 0

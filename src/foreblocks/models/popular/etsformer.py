@@ -108,7 +108,7 @@ class ETSformer(nn.Module):
         if x.dim() != 3:
             raise ValueError(f"Expected x [B,L,C], got {tuple(x.shape)}")
         B, L, C = x.shape
-        if C != self.in_channels:
+        if self.in_channels != C:
             raise ValueError(f"Expected {self.in_channels} channels, got {C}")
 
         trend = self._moving_average(x, self.ma_kernel)

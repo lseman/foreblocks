@@ -707,9 +707,7 @@ class ForecastingModel(nn.Module):
     def _get_attention_query(
         self, decoder_output: torch.Tensor, decoder_hidden: Any
     ) -> torch.Tensor:
-        if hasattr(self.decoder, "is_transformer") and getattr(
-            self.decoder, "is_transformer"
-        ):
+        if hasattr(self.decoder, "is_transformer") and self.decoder.is_transformer:
             return decoder_hidden.permute(1, 0, 2)  # (batch, seq_len, hidden)
         return (
             decoder_hidden[0][-1]

@@ -21,6 +21,7 @@ Core API:
 
 from __future__ import annotations
 
+from foreblocks.ts_handler.auto_filter import runner as _runner, tuning as _tuning
 from foreblocks.ts_handler.auto_filter.filters import (
     bilateral_filter,
     butter_lowpass,
@@ -50,8 +51,6 @@ from foreblocks.ts_handler.auto_filter.registry import (
     _SLOW_FILTERS,
     register_filter,
 )
-from foreblocks.ts_handler.auto_filter import runner as _runner
-from foreblocks.ts_handler.auto_filter import tuning as _tuning
 from foreblocks.ts_handler.auto_filter.tuning import (
     _TUNE_FILTER_FAMILIES as _TUNE_FILTER_FAMILIES,
     _TUNE_FILTER_SLOW_FAMILIES as _TUNE_FILTER_SLOW_FAMILIES,

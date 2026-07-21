@@ -306,7 +306,7 @@ def _looks_like_init_input(name: str, ann) -> bool:
 
 def infer_inputs(cls) -> list[str]:
     if hasattr(cls, "__inputs__"):
-        return list(getattr(cls, "__inputs__"))
+        return list(cls.__inputs__)
 
     ins: list[str] = []
 
@@ -354,7 +354,7 @@ def infer_inputs(cls) -> list[str]:
 
 def infer_optional_inputs(cls, inputs: list[str]) -> list[str]:
     if hasattr(cls, "__optional_inputs__"):
-        return [name for name in getattr(cls, "__optional_inputs__") if name in inputs]
+        return [name for name in cls.__optional_inputs__ if name in inputs]
 
     optional: list[str] = []
     try:
@@ -378,7 +378,7 @@ def infer_optional_inputs(cls, inputs: list[str]) -> list[str]:
 
 def infer_outputs(cls) -> list[str]:
     if hasattr(cls, "__outputs__"):
-        return list(getattr(cls, "__outputs__"))
+        return list(cls.__outputs__)
 
     fwd = getattr(cls, "forward", None)
     if not callable(fwd):
@@ -394,7 +394,7 @@ def infer_outputs(cls) -> list[str]:
 
     # NamedTuple subclass
     if isinstance(ret, type) and issubclass(ret, tuple) and hasattr(ret, "_fields"):
-        return list(getattr(ret, "_fields"))
+        return list(ret._fields)
 
     # TypedDict
     keys = _typed_dict_keys(ret)

@@ -16,17 +16,9 @@ Core API:
 """
 
 from foreblocks.models.transformer.config import TransformerConfig
-from foreblocks.models.transformer.generation import GenerationConfig
-
 from foreblocks.models.transformer.core.base import (
     BaseTransformer,
     BaseTransformerLayer,
-)
-from foreblocks.models.transformer.runtime.execution import (
-    MHCBlockMixin,
-    NormWrapper,
-    ResidualBlockMixin,
-    ResidualRunCfg,
 )
 from foreblocks.models.transformer.core.decoder import (
     TransformerDecoder,
@@ -35,6 +27,13 @@ from foreblocks.models.transformer.core.decoder import (
 from foreblocks.models.transformer.core.encoder import (
     TransformerEncoder,
     TransformerEncoderLayer,
+)
+from foreblocks.models.transformer.generation import GenerationConfig
+from foreblocks.models.transformer.runtime.execution import (
+    MHCBlockMixin,
+    NormWrapper,
+    ResidualBlockMixin,
+    ResidualRunCfg,
 )
 from foreblocks.models.transformer.runtime.outputs import (
     TransformerDecoderOutput,

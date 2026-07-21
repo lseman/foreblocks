@@ -62,7 +62,7 @@ class PositionalEncoding(nn.Module):
         return pe.unsqueeze(0)
 
     def _ensure_table(self, D: int, T: int, device: torch.device) -> torch.Tensor:
-        if D == self.d_model and self.pe.size(1) >= T:
+        if self.d_model == D and self.pe.size(1) >= T:
             return self.pe[:, :T].to(device=device)
         cached = self._pe_cache.get(D, None)
         if cached is None or cached.size(1) < T:

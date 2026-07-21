@@ -22,6 +22,21 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 
+from foreblocks.ts_handler.core.impute import SAITSImputer
+from foreblocks.ts_handler.core.outlier import (
+    _remove_outliers,
+    _remove_outliers_parallel,
+)
+from foreblocks.ts_handler.core.windowing import _create_sequences
+from foreblocks.ts_handler.filters import (
+    adaptive_savgol_filter,
+    emd_filter,
+    kalman_filter,
+    lowess_filter,
+    ssa_filter,
+    stl_filter,
+    wiener_filter,
+)
 from foreblocks.ts_handler.tools.auto_configure import (
     _auto_select_filter_method,
     summarize_configuration,
@@ -34,22 +49,8 @@ from foreblocks.ts_handler.tools.diagnostics import (
     score_ljung_box,
     score_pacf,
 )
-from foreblocks.ts_handler.filters import (
-    adaptive_savgol_filter,
-    emd_filter,
-    kalman_filter,
-    lowess_filter,
-    ssa_filter,
-    stl_filter,
-    wiener_filter,
-)
-from foreblocks.ts_handler.transforms.ewt import apply_ewt_and_detrend_parallel
-from foreblocks.ts_handler.core.impute import SAITSImputer
-from foreblocks.ts_handler.core.outlier import (
-    _remove_outliers,
-    _remove_outliers_parallel,
-)
 from foreblocks.ts_handler.tools.plotting import _plot_comparison, set_plot_style
+from foreblocks.ts_handler.transforms.ewt import apply_ewt_and_detrend_parallel
 from foreblocks.ts_handler.transforms.time_features import (
     _generate_time_features,
     _infer_timestamp_frequency,
@@ -72,7 +73,6 @@ from foreblocks.ts_handler.utils import (
     _select_diagnostic_features,
     compute_basic_stats,
 )
-from foreblocks.ts_handler.core.windowing import _create_sequences
 
 # ---- local deps (explicit) ---------------------------------------------------
 Mode = Literal["fit", "transform"]
@@ -133,7 +133,7 @@ def _dispatch_filter(self_ref, data: np.ndarray, method: str, **kwargs) -> np.nd
         "wiener": lambda: wiener_filter(
             data,
             mysize=kwargs.get("mysize", 15),
-            noise=kwargs.get("noise", None),
+            noise=kwargs.get("noise"),
             fill_nans_for_filter=kwargs.get("fill_nans_for_filter", True),
         ),
         "emd": lambda: emd_filter(
@@ -143,7 +143,7 @@ def _dispatch_filter(self_ref, data: np.ndarray, method: str, **kwargs) -> np.nd
         ),
         "ssa": lambda: ssa_filter(
             data,
-            window_length=kwargs.get("window_length", None),
+            window_length=kwargs.get("window_length"),
             n_components=kwargs.get("n_components", 2),
             fill_nans_for_filter=kwargs.get("fill_nans_for_filter", True),
         ),
@@ -152,7 +152,7 @@ def _dispatch_filter(self_ref, data: np.ndarray, method: str, **kwargs) -> np.nd
             period=kwargs.get("period", 7),
             robust=kwargs.get("robust", True),
             seasonal=kwargs.get("seasonal", 7),
-            trend=kwargs.get("trend", None),
+            trend=kwargs.get("trend"),
             return_component=kwargs.get("return_component", "trend_seasonal"),
             fill_nans_for_filter=kwargs.get("fill_nans_for_filter", True),
         ),
@@ -775,7 +775,7 @@ class TimeSeriesHandler:
             self.log_transform_flags = [False] * D
 
         saits_min_points = max(32, 2 * self.window_size + self.horizon)
-        if self.impute_method == "saits" and T < saits_min_points:
+        if self.impute_method == "saits" and saits_min_points > T:
             self.impute_method = (
                 "interpolate" if stats["nan_run_ratio"] < 0.10 else "ffill"
             )

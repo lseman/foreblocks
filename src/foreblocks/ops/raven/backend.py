@@ -18,12 +18,12 @@ Core API:
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
-from functools import lru_cache
+from functools import cache
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
-from collections.abc import Iterator
 
 
 def fla_path() -> Path:
@@ -55,7 +55,7 @@ def fla_import_path() -> Iterator[None]:
                 pass
 
 
-@lru_cache(maxsize=None)
+@cache
 def import_fla_module(module_name: str) -> ModuleType:
     try:
         return import_module(module_name)

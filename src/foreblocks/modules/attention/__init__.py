@@ -10,20 +10,10 @@ from foreblocks.modules.attention.cache.kv import *  # noqa: F403
 from foreblocks.modules.attention.cache.paged import *  # noqa: F403
 from foreblocks.modules.attention.config import (
     AttentionCacheConfig as AttentionCacheConfig,
-)
-from foreblocks.modules.attention.config import (
     AttentionFeatureConfig as AttentionFeatureConfig,
-)
-from foreblocks.modules.attention.config import (
     AttentionPositionConfig as AttentionPositionConfig,
-)
-from foreblocks.modules.attention.config import (
     AttentionShapeConfig as AttentionShapeConfig,
-)
-from foreblocks.modules.attention.config import (
     AttentionVariantConfig as AttentionVariantConfig,
-)
-from foreblocks.modules.attention.config import (
     MultiAttentionConfig as MultiAttentionConfig,
 )
 from foreblocks.modules.attention.masking import *  # noqa: F403

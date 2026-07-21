@@ -336,14 +336,14 @@ class Trainer:
                     is_moe = True
                     moe_block = getattr(child, "block", None)
                     if moe_block is not None:
-                        setattr(moe_block, "moe_logger", moe_logger)
-                        setattr(moe_block, "step_getter", step_getter)
-                        setattr(moe_block, "log_latency", bool(log_latency))
+                        moe_block.moe_logger = moe_logger
+                        moe_block.step_getter = step_getter
+                        moe_block.log_latency = bool(log_latency)
                         continue
                 if is_moe and hasattr(child, "moe_logger"):
-                    setattr(child, "moe_logger", moe_logger)
-                    setattr(child, "step_getter", step_getter)
-                    setattr(child, "log_latency", bool(log_latency))
+                    child.moe_logger = moe_logger
+                    child.step_getter = step_getter
+                    child.log_latency = bool(log_latency)
             except Exception:
                 pass
 
@@ -805,7 +805,7 @@ class Trainer:
         for m in model.modules():
             if hasattr(m, "num_experts"):
                 try:
-                    ne = int(getattr(m, "num_experts"))
+                    ne = int(m.num_experts)
                     if ne > 0:
                         return ne
                 except Exception:
@@ -976,7 +976,7 @@ class Trainer:
                 if h <= 0:
                     continue
                 for j in range(D_plot):
-                    pred_col = j if D > j else 0
+                    pred_col = j if j < D else 0
                     agg_pred[start:end, j] += preds[k, :h, pred_col]
                     agg_low[start:end, j] = np.minimum(
                         agg_low[start:end, j], lower[k, :h, pred_col]
@@ -1004,7 +1004,7 @@ class Trainer:
                 if h <= 0:
                     continue
                 for j in range(D_plot):
-                    pred_col = j if D > j else 0
+                    pred_col = j if j < D else 0
                     mean_pred[start:end, j] = preds[k, :h, pred_col]
                     mean_low[start:end, j] = lower[k, :h, pred_col]
                     mean_up[start:end, j] = upper[k, :h, pred_col]
@@ -1025,7 +1025,7 @@ class Trainer:
                 if h <= 0:
                     continue
                 for j in range(D_plot):
-                    pred_col = j if D > j else 0
+                    pred_col = j if j < D else 0
                     width_k = upper[k, :h, pred_col] - lower[k, :h, pred_col]
                     for t_idx, t in enumerate(range(start, end)):
                         if width_k[t_idx] < min_width[t, j]:
@@ -1049,7 +1049,7 @@ class Trainer:
                 if h <= 0:
                     continue
                 for j in range(D_plot):
-                    pred_col = j if D > j else 0
+                    pred_col = j if j < D else 0
                     acc_pred[start:end, j] += preds[k, :h, pred_col]
                     acc_low[start:end, j] += lower[k, :h, pred_col]
                     acc_up[start:end, j] += upper[k, :h, pred_col]

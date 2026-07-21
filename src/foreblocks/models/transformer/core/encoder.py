@@ -420,7 +420,7 @@ class TransformerEncoder(BaseTransformer):
             raise ValueError(f"CT-PatchTST expects [B,T,C], got {tuple(src.shape)}")
 
         B, T, C = src.shape
-        if C != self.input_size:
+        if self.input_size != C:
             raise ValueError(f"Expected input size {self.input_size}, got {C}")
 
         x = src.transpose(1, 2).contiguous()  # [B,C,T]
@@ -490,9 +490,9 @@ class TransformerEncoder(BaseTransformer):
         )
         return_dict = self.config.return_dict if return_dict is None else return_dict
         B, T, C = src.shape
-        if C != self.input_size:
+        if self.input_size != C:
             raise ValueError(f"Expected input size {self.input_size}, got {C}")
-        if T > self.max_seq_len and (not self.patch_encoder) and (not self.ct_patchtst):
+        if self.max_seq_len < T and (not self.patch_encoder) and (not self.ct_patchtst):
             raise ValueError(f"Sequence length {T} exceeds max {self.max_seq_len}")
 
         self.mod_aux_loss = 0.0

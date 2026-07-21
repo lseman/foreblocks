@@ -46,7 +46,7 @@ class SeriesDecomp1D(nn.Module):
         B, L, C = x.shape
         x_n = x.permute(0, 2, 1).contiguous()  # [B, C, L]
         pad = (self.kernel_size - 1) // 2
-        pad_mode = "reflect" if L > pad else "replicate"
+        pad_mode = "reflect" if pad < L else "replicate"
         x_pad = F.pad(x_n, (pad, pad), mode=pad_mode)
         trend = F.conv1d(x_pad, self.weight.expand(C, -1, -1), groups=C)  # [B,C,L]
         seasonal = x_n - trend
@@ -491,7 +491,7 @@ class TimeMixer(nn.Module):
 
     def _upsample_to(self, x: torch.Tensor, target_L: int) -> torch.Tensor:
         B, L, C = x.shape
-        if L >= target_L:
+        if target_L <= L:
             return x[:, :target_L, :]
         # Repeat
         repeats = (target_L + L - 1) // L
