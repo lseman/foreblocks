@@ -176,14 +176,6 @@ def run_mod_layer(
     return x, True
 
 
-_gateskip_active_mask_from_padding = gateskip_active_mask_from_padding
-_patchify_gateskip_active_mask = patchify_gateskip_active_mask
-_gather_sequence_tokens = gather_sequence_tokens
-_gather_padding_mask = gather_padding_mask
-_gather_square_mask = gather_square_mask
-_gather_query_mask = gather_query_mask
-_scatter_mixture_of_depths_output = scatter_mixture_of_depths_output
-_run_mod_layer = run_mod_layer
 __all__ = [
     "gateskip_active_mask_from_padding",
     "gather_padding_mask",

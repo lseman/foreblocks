@@ -3,7 +3,10 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from darts.training.architecture_step import compose_architecture_loss
+from darts.training.architecture_step import (
+    ArchitectureLossConfig,
+    compose_architecture_loss,
+)
 
 
 class _SearchModel(nn.Module):
@@ -44,21 +47,23 @@ def test_composed_architecture_loss_preserves_architecture_gradients() -> None:
         alpha_tracker=_AlphaTracker(),
         arch_params=[model.alpha],
         epoch=2,
-        epochs=10,
-        warmup_epochs=1,
-        device="cpu",
         engine_variant=None,
         engine_cfg=SimpleNamespace(),
-        state_mix_ortho_reg_weight=0.1,
-        beta_darts_weight=0.1,
-        edge_diversity_weight=0.0,
-        edge_usage_balance_weight=0.0,
-        edge_identity_cap=1.0,
-        edge_identity_cap_weight=0.0,
-        moe_balance_weight=0.1,
-        transformer_exploration_weight=0.1,
-        edge_sharpening_max_weight=0.0,
-        edge_sharpening_start_frac=0.5,
+        config=ArchitectureLossConfig(
+            epochs=10,
+            warmup_epochs=1,
+            device="cpu",
+            state_mix_ortho_reg_weight=0.1,
+            beta_darts_weight=0.1,
+            edge_diversity_weight=0.0,
+            edge_usage_balance_weight=0.0,
+            edge_identity_cap=1.0,
+            edge_identity_cap_weight=0.0,
+            moe_balance_weight=0.1,
+            transformer_exploration_weight=0.1,
+            edge_sharpening_max_weight=0.0,
+            edge_sharpening_start_frac=0.5,
+        ),
     )
 
     result.loss.backward()

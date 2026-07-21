@@ -4,7 +4,8 @@ import unittest
 import torch
 import torch.nn as nn
 
-from darts.architecture.core_blocks import DARTSCell, MixedOp
+from darts.architecture.darts_cell import DARTSCell
+from darts.architecture.mixed_op import MixedOp
 from darts.config import (
     DARTSEngineConfig,
     DARTSVariant,
@@ -12,13 +13,11 @@ from darts.config import (
     R_DARTSEngineConfig,
 )
 from darts.training.darts_engine import (
-    apply_permutation_consistency,
     build_engine_config,
     compute_backward_loss,
     compute_gradient_norm_balance,
     configure_mixed_op_for_variant,
     forward_bidirectional,
-    model_permutation_consistency_loss,
 )
 from darts.training.optimizers import BilevelOptimizer
 from torch.amp import GradScaler
@@ -327,58 +326,6 @@ class TestGradientNormBalance(unittest.TestCase):
         self.assertAlmostEqual(arch.item(), 0.9, places=6)
 
 
-class TestPermutationConsistency(unittest.TestCase):
-    """Test apply_permutation_consistency for PC-DARTS."""
-
-    def test_consistency_with_empty_weights(self):
-        """Permutation consistency returns 0 loss for empty weights."""
-        corrected, loss = apply_permutation_consistency({}, 1e-4)
-        self.assertEqual(corrected, {})
-        self.assertEqual(float(loss), 0.0)
-
-    def test_consistency_with_single_weight(self):
-        """Permutation consistency returns 0 loss for single weight."""
-        w1 = torch.ones(2, 4)
-        corrected, loss = apply_permutation_consistency({"edge0": w1}, 1e-4)
-        self.assertEqual(len(corrected), 1)
-        self.assertEqual(float(loss), 0.0)
-
-    def test_consistency_with_two_weights(self):
-        """Permutation consistency computes non-zero loss for two weights."""
-        w1 = torch.ones(2, 4)
-        w2 = torch.ones(2, 4) * 2.0  # different magnitude
-        corrected, loss = apply_permutation_consistency({"edge0": w1, "edge1": w2}, 1e-4)
-        self.assertEqual(len(corrected), 2)
-        # Loss should be > 0 because w1 and w2 have different magnitudes.
-        self.assertGreater(float(loss), 0.0)
-
-    def test_model_consistency_loss_backpropagates_to_edge_alphas(self):
-        cell = DARTSCell(
-            input_dim=4,
-            latent_dim=4,
-            seq_length=8,
-            num_nodes=3,
-            initial_search=False,
-            selected_ops=["Identity", "TimeConv", "DLinear"],
-            op_gdas=False,
-        )
-        model = nn.Module()
-        model.cells = nn.ModuleList([cell])
-        with torch.no_grad():
-            cell.edges[0].group_alphas.add_(1.0)
-
-        loss = model_permutation_consistency_loss(model, 1.0)
-        loss.backward()
-
-        assert loss.item() > 0.0
-        assert any(
-            parameter.grad is not None
-            for edge in cell.edges
-            for name, parameter in edge.named_parameters()
-            if "alpha" in name
-        )
-
-
 class TestForwardBidirectional(unittest.TestCase):
     """Test forward_bidirectional for Bi-DARTS."""
 
@@ -445,7 +392,6 @@ class TestBuildEngineConfig(unittest.TestCase):
         cfg = build_engine_config("pc_darts")
         self.assertEqual(cfg["enable_partial_channels"], True)
         self.assertEqual(cfg["enable_edge_normalization"], True)
-        self.assertEqual(cfg["enable_permutation_consistency"], False)
 
     def test_build_bi_darts_config(self):
         """Build engine config for Bi-DARTS."""

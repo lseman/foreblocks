@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import copy
 import math
+import re
+import warnings
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,14 +20,24 @@ import torch.nn.functional as F
 
 from foreblocks.layers.norms import RevIN
 
-from .base_blocks import MixedDecoder, MixedEncoder
+from ..utils.tensors import hard_one_hot
 from .bb_moe import DARTSFeedForward
 from .darts_cell import DARTSCell
+from .mixed_encoder_decoder import MixedDecoder, MixedEncoder
 from .mixed_op import MixedOp
 from .norms import RMSNorm
 
 
 __all__ = ["TimeSeriesDARTS"]
+
+
+def _teacher_forcing_flags(count: int, ratio: float, enabled: bool) -> list[bool]:
+    """Sample CPU control-flow decisions in one RNG dispatch."""
+    if not enabled or count <= 0 or ratio <= 0.0:
+        return [False] * max(count, 0)
+    if ratio >= 1.0:
+        return [True] * count
+    return (torch.rand(count) < float(ratio)).tolist()
 
 NORM_NAMES = ("revin", "instance_norm", "rms_norm", "identity")
 
@@ -63,8 +75,7 @@ class SearchableNorm(nn.Module):
                 return y
 
         w_soft = F.softmax(alpha, dim=0)
-        hard = torch.zeros_like(w_soft)
-        hard[int(torch.argmax(w_soft).item())] = 1.0
+        hard = hard_one_hot(w_soft)
         # Straight-through estimator: forward is hard, backward follows soft weights.
         w = hard - w_soft.detach() + w_soft if self.training else hard
         try:
@@ -96,8 +107,6 @@ class TimeSeriesDARTS(nn.Module):
         temperature_schedule: str = "cosine",
         final_temperature: float = 0.1,
         temperature_warmup_epochs: int = 0,
-        use_attention_bridge: bool = True,
-        attention_layers: int = 2,
         variant_gdas: bool = True,
         use_learned_memory_pooling: bool = True,
         memory_num_queries: int = 8,
@@ -212,8 +221,6 @@ class TimeSeriesDARTS(nn.Module):
         self.temperature_schedule = temperature_schedule
         self.final_temperature = float(final_temperature)
         self.temperature_warmup_epochs = int(temperature_warmup_epochs)
-        self.use_attention_bridge = False
-        self.attention_layers = attention_layers
         self.variant_gdas = variant_gdas
         self.use_learned_memory_pooling = use_learned_memory_pooling
         self.memory_num_queries = memory_num_queries
@@ -253,49 +260,6 @@ class TimeSeriesDARTS(nn.Module):
     @classmethod
     def from_config(cls, config: dict):
         return cls(**config)
-
-    @classmethod
-    def with_search_profile(
-        cls, profile: str = "conservative", **overrides
-    ) -> "TimeSeriesDARTS":
-        """Build model using a named MixedOp search profile."""
-        cfg = DARTSModelConfig.with_search_profile(profile=profile)
-        params = {
-            "input_dim": cfg.input_dim,
-            "hidden_dim": cfg.hidden_dim,
-            "latent_dim": cfg.latent_dim,
-            "forecast_horizon": cfg.forecast_horizon,
-            "seq_length": cfg.seq_length,
-            "num_cells": cfg.num_cells,
-            "num_nodes": cfg.num_nodes,
-            "dropout": cfg.dropout,
-            "initial_search": cfg.initial_search,
-            "selected_ops": cfg.selected_ops,
-            "loss_type": cfg.loss_type,
-            "use_gradient_checkpointing": cfg.use_gradient_checkpointing,
-            "temperature": cfg.temperature,
-            "variant_gdas": cfg.variant_gdas,
-            "use_learned_memory_pooling": cfg.use_learned_memory_pooling,
-            "memory_num_queries": cfg.memory_num_queries,
-            "group_temperature_mult": cfg.group_temperature_mult,
-            "min_group_temperature": cfg.min_group_temperature,
-            "min_op_temperature": cfg.min_op_temperature,
-            "group_min_prob": cfg.group_min_prob,
-            "competition_power": cfg.competition_power,
-            "adaptive_bias_scale": cfg.adaptive_bias_scale,
-            "performance_ema_decay": cfg.performance_ema_decay,
-            "pc_ratio": cfg.pc_ratio,
-            "max_active_edges_per_node": cfg.max_active_edges_per_node,
-            "progressive_edge_budget": cfg.progressive_edge_budget,
-            "use_drnas": cfg.use_drnas,
-            "drnas_concentration": cfg.drnas_concentration,
-            "use_fair_darts_hierarchical": cfg.use_fair_darts_hierarchical,
-            "arch_mode": cfg.arch_mode,
-            "transformer_self_attention_type": cfg.transformer_self_attention_type,
-            "transformer_ffn_variant": cfg.transformer_ffn_variant,
-        }
-        params.update(overrides)
-        return cls(**params)
 
     def _init_components(self):
         """Initialize all model components"""
@@ -390,7 +354,6 @@ class TimeSeriesDARTS(nn.Module):
             self.forecast_encoder = None  # type: ignore[assignment]
 
         if self.arch_mode in ("encoder_decoder", "decoder_only"):
-            self.decoder_use_attention_bridge = False
             decoder_cross_attention_modes = (
                 ("sdp", "linear", "probsparse", "cosine", "local")
                 if self.arch_mode == "encoder_decoder"
@@ -402,8 +365,6 @@ class TimeSeriesDARTS(nn.Module):
                 seq_len=self.seq_length,
                 dropout=self.dropout,
                 temperature=self.temperature,
-                use_attention_bridge=False,
-                attention_layers=self.attention_layers,
                 use_learned_memory_pooling=self.use_learned_memory_pooling,
                 memory_num_queries=self.memory_num_queries,
                 variant_gdas=self.variant_gdas,
@@ -414,7 +375,6 @@ class TimeSeriesDARTS(nn.Module):
                 use_checkpoint=self.use_gradient_checkpointing,
             )
         else:
-            self.decoder_use_attention_bridge = False
             self.forecast_decoder = None  # type: ignore[assignment]
 
         # Encoder-only direct forecast head: pool last encoder state → project
@@ -663,10 +623,6 @@ class TimeSeriesDARTS(nn.Module):
         )
         return forecasts_tensor
 
-    def _get_decoder_style_weights(self, decoder) -> torch.Tensor | None:
-        """Legacy alias for _build_decoder_style_weights."""
-        return self._build_decoder_style_weights(decoder)
-
     def _get_decoder_query_mode_weights(self) -> torch.Tensor | None:
         logits = getattr(self, "decoder_query_alphas", None)
         if isinstance(logits, torch.Tensor):
@@ -680,9 +636,7 @@ class TimeSeriesDARTS(nn.Module):
                 )
             probs = F.softmax(logits / tau, dim=0)
             if bool(getattr(self, "variant_gdas", False)):
-                hard = torch.zeros_like(probs)
-                hard[int(torch.argmax(probs).item())] = 1.0
-                return hard
+                return hard_one_hot(probs)
             return probs
 
         direct = getattr(self, "decoder_query_mode", None)
@@ -760,17 +714,16 @@ class TimeSeriesDARTS(nn.Module):
                 )
                 future_covariates = torch.cat([future_covariates, pad], dim=1)
 
+        use_shifted_target = _teacher_forcing_flags(
+            1,
+            teacher_forcing_ratio,
+            self.training and decoder_targets is not None,
+        )[0]
         candidates = {
             "repeat_last": repeated,
             "zeros": zeros,
             "learned_horizon_queries": learned,
-            "shifted_target": shifted
-            if (
-                self.training
-                and decoder_targets is not None
-                and torch.rand(1).item() < teacher_forcing_ratio
-            )
-            else repeated,
+            "shifted_target": shifted if use_shifted_target else repeated,
             "future_covariate_queries": future_covariates,
         }
 
@@ -780,17 +733,16 @@ class TimeSeriesDARTS(nn.Module):
         ):
             return self._ensure_dtype(repeated)
 
-        active_indices = [
-            idx for idx, w in enumerate(mode_weights.detach()) if float(w.item()) > 0.0
-        ] or [0]
-        mixed = None
-        for idx in active_indices:
-            name = self.decoder_query_mode_names[idx]
-            contrib = mode_weights[idx] * self._ensure_dtype(
-                candidates[name][:, :horizon, :]
-            )
-            mixed = contrib if mixed is None else mixed + contrib
-        future_block = self._ensure_dtype(mixed if mixed is not None else repeated)
+        candidate_stack = torch.stack(
+            [
+                self._ensure_dtype(candidates[name][:, :horizon, :])
+                for name in self.decoder_query_mode_names
+            ],
+            dim=0,
+        )
+        future_block = (
+            mode_weights.reshape(-1, 1, 1, 1) * candidate_stack
+        ).sum(dim=0)
         return self._ensure_dtype(torch.cat([history_prefix, future_block], dim=1))
 
     def _decode_autoregressive_path(
@@ -814,6 +766,11 @@ class TimeSeriesDARTS(nn.Module):
 
         mem = self._ensure_dtype(memory)
         enc_out = self._ensure_dtype(encoder_output)
+        teacher_forcing_flags = _teacher_forcing_flags(
+            self.forecast_horizon,
+            teacher_forcing_ratio,
+            self.training and decoder_targets is not None,
+        )
 
         for t in range(self.forecast_horizon):
             out, hidden = self.forecast_decoder(
@@ -826,10 +783,9 @@ class TimeSeriesDARTS(nn.Module):
             forecasts.append(prediction.squeeze(1))
 
             if (
-                self.training
-                and decoder_targets is not None
+                decoder_targets is not None
                 and t < decoder_targets.size(1)
-                and torch.rand(1).item() < teacher_forcing_ratio
+                and teacher_forcing_flags[t]
             ):
                 decoder_input = self._ensure_dtype(decoder_targets[:, t : t + 1])
             else:
@@ -974,7 +930,6 @@ class TimeSeriesDARTS(nn.Module):
         if isinstance(alphas, torch.Tensor) and alphas.numel() == 3:
             return alphas
 
-        # Check for 2-element (legacy: ar + informer), extend to 3
         style = getattr(decoder, "decode_style", None)
         if isinstance(style, str):
             ref = next(decoder.parameters(), None)
@@ -1000,7 +955,7 @@ class TimeSeriesDARTS(nn.Module):
         encoder_output: torch.Tensor,
         decoder_hidden,
     ) -> torch.Tensor:
-        style_weights = self._get_decoder_style_weights(self.forecast_decoder)
+        style_weights = self._build_decoder_style_weights(self.forecast_decoder)
         if style_weights is None or style_weights.numel() < 2:
             return self._decode_autoregressive_path(
                 x_seq,
@@ -2002,9 +1957,7 @@ class TimeSeriesDARTS(nn.Module):
 
 
 __all__ = [
-    "DARTSModelConfig",
     "MixedOp",
     "DARTSCell",
     "TimeSeriesDARTS",
 ]
-

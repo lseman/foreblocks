@@ -414,14 +414,14 @@ class DARTSCell(nn.Module):
 
             # Feature dimension alignment
             if node_output.shape[2] != residual_input.shape[2]:
-                if not hasattr(self, f"_residual_proj_{node_idx}"):
-                    proj = nn.Linear(residual_input.shape[2], node_output.shape[2]).to(
-                        residual_input.device
+                target_dim = node_output.shape[2]
+                current_dim = residual_input.shape[2]
+                if current_dim > target_dim:
+                    residual_input = residual_input[..., :target_dim]
+                else:
+                    residual_input = F.pad(
+                        residual_input, (0, target_dim - current_dim)
                     )
-                    setattr(self, f"_residual_proj_{node_idx}", proj)
-                residual_input = getattr(self, f"_residual_proj_{node_idx}")(
-                    residual_input
-                )
 
         if pattern_weights is not None:
             gate_weight = torch.sigmoid(self.gate_weights[node_idx])
@@ -465,13 +465,11 @@ class DARTSCell(nn.Module):
             ]
 
             if self.pc_darts_enabled and candidate_edges:
-                candidate_indices = torch.tensor(
-                    [item[0] for item in candidate_edges],
-                    device=self.edge_importance.device,
-                    dtype=torch.long,
-                )
                 normalized_edges = F.softmax(
-                    self.edge_importance.index_select(0, candidate_indices), dim=0
+                    torch.stack(
+                        [self.edge_importance[item[0]] for item in candidate_edges]
+                    ),
+                    dim=0,
                 )
                 candidate_edges = [
                     (edge_idx, input_idx, normalized_edges[pos])
@@ -525,8 +523,6 @@ class DARTSCell(nn.Module):
                 idx = int(torch.argmax(probs).item())
                 return self.residual_pattern_names[idx]
         return self.residual_pattern
-
-        return result
 
     def advance_progressive_stage(self):
         """Advance to next progressive search stage"""

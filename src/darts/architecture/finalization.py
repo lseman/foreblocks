@@ -6,13 +6,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .base_blocks import ArchitectureConverter
+from .converter import ArchitectureConverter
 from .bb_transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
 )
 from .inspector import _mean_softmax_top, _softmax_top
-from .operation_blocks import FixedOp
+from .fixed_ops import FixedOp
 from ..utils.tensors import as_probability_vector as _default_as_probability_vector
 
 
@@ -50,7 +50,6 @@ def derive_final_architecture(
                 out.append(item)
         return out
 
-    # Reuse shared helper from inspector (kept here as closure for legacy compat).
     _mean_mode_probs = staticmethod(_mean_softmax_top)
 
     def _edge_selection_weights(edge):
@@ -71,8 +70,8 @@ def derive_final_architecture(
             except Exception:
                 pass
 
-        if hasattr(edge, "alphas"):
-            return prob_fn(edge.alphas)
+        if hasattr(edge, "get_alphas"):
+            return edge.get_alphas(detach=True)
 
         return None
 

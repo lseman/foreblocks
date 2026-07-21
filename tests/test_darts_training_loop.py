@@ -8,7 +8,8 @@ from darts.training.training_loop import (
     _run_model_training_epoch,
 )
 from darts.training.utils import snapshot_state_dict
-from darts.architecture.core_blocks import DARTSCell
+from darts.architecture.darts_cell import DARTSCell
+from darts.utils.tensors import hard_one_hot
 
 
 class _CountingScheduler:
@@ -94,3 +95,23 @@ def test_cell_caches_topology_and_residual_search_receives_gradients() -> None:
     assert first.shape == second.shape == (2, 6, 4)
     assert cell.residual_pattern_alphas.grad is not None
     assert torch.isfinite(cell.residual_pattern_alphas.grad).all()
+
+
+def test_cell_checkpoint_load_invalidates_cached_topology() -> None:
+    cell = DARTSCell(4, 4, 6, num_nodes=3, initial_search=True)
+    cell.prepare_edge_routing()
+    assert cell._edge_routing is not None
+
+    cell.load_state_dict(cell.state_dict())
+
+    assert cell._edge_routing is None
+
+
+def test_hard_one_hot_supports_arbitrary_dimensions() -> None:
+    probs = torch.tensor([[0.1, 0.8, 0.1], [0.7, 0.2, 0.1]])
+
+    rows = hard_one_hot(probs, dim=1)
+    columns = hard_one_hot(probs, dim=0)
+
+    assert torch.equal(rows, torch.tensor([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]))
+    assert torch.equal(columns, torch.tensor([[0.0, 1.0, 1.0], [1.0, 0.0, 0.0]]))

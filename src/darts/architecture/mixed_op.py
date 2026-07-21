@@ -17,26 +17,20 @@ import torch.nn.functional as F
 
 from darts.search.metrics import _default_enable_flops
 
-from .advanced_ops import GatedGeLUFFNOp, GeGLUFFNOp, SwiGLUFFNOp
-from .operation_blocks import (
+from .advanced_ops import (
     ConvMixerOp,
-    DLinearOp,
-    FourierOp,
+    GatedGeLUFFNOp,
+    GeGLUFFNOp,
     GRNOp,
-    IdentityOp,
     InvertedAttentionOp,
-    MLPMixerOp,
-    MultiScaleConvOp,
-    NBeatsOp,
     PatchEmbedOp,
-    PyramidConvOp,
-    ResidualMLPOp,
-    RMSNorm,
-    TCNOp,
-    TimeConvOp,
-    TimesNetOp,
-    WaveletOp,
+    SwiGLUFFNOp,
 )
+from .conv_ops import MultiScaleConvOp, PyramidConvOp, TCNOp, TimeConvOp
+from .decomposition_ops import DLinearOp, NBeatsOp, TimesNetOp
+from .mlp_ops import IdentityOp, MLPMixerOp, ResidualMLPOp
+from .norms import RMSNorm
+from .spectral_ops import FourierOp, WaveletOp
 
 
 __all__ = ["MixedOp"]
@@ -628,7 +622,7 @@ class MixedOp(nn.Module):
             if self.adaptive_sampling and self.training:
                 self._update_performance_tracker(op_idx, out)
 
-        if outputs:
+        if outputs and total_weight is not None:
             result = sum(outputs) / total_weight.clamp_min(1e-6)
             return result
 
@@ -687,29 +681,6 @@ class MixedOp(nn.Module):
         alphas = self._alphas / (self.op_temperature * temperature)
         out = F.softmax(alphas, dim=0)
         return out.detach() if detach else out
-
-    @property
-    def alphas(self):
-        """Compatibility property for accessing alphas"""
-        if self.use_hierarchical:
-            return self.get_alphas()
-        else:
-            return self._alphas
-
-    @alphas.setter
-    def alphas(self, value):
-        """Compatibility setter for alphas"""
-        if self.use_hierarchical:
-            # For hierarchical, we need to distribute the values
-            # This is a simplified approach - in practice you might want more sophisticated logic
-            if hasattr(self, "group_alphas"):
-                with torch.no_grad():
-                    # Update group alphas with first few values
-                    num_groups = len(self.group_alphas)
-                    if len(value) >= num_groups:
-                        self.group_alphas.data = value[:num_groups]
-        else:
-            self._alphas = value
 
     def get_entropy_loss(self) -> torch.Tensor:
         """Get entropy loss for exploration"""

@@ -23,6 +23,7 @@ from typing import Any
 
 import torch
 
+from ..config import DARTSTrainConfig
 from ..utils.training import reset_model_parameters
 from .candidate_scoring import rescore_candidates_poolwise
 from .phase_utils import _resolve_phase3_rung_epochs, _run_phase1_benchmark
@@ -384,14 +385,16 @@ def run_multi_fidelity_search(
                 model=state["model"],
                 train_loader=train_loader,
                 val_loader=val_loader,
-                epochs=delta_epochs,
-                use_swa=False,
-                use_amp=use_amp,
-                verbose=phase3_verbose,
+                train_config=DARTSTrainConfig(
+                    epochs=delta_epochs,
+                    use_swa=False,
+                    use_amp=use_amp,
+                    verbose=phase3_verbose,
+                    **train_kwargs,
+                ),
                 # Phase 3 only reads best_val_loss; skip the extra final-metrics
                 # validation pass on every candidate×rung call.
                 compute_metrics=False,
-                **train_kwargs,
             )
             t_search = time.perf_counter() - t_s0
             t_total = time.perf_counter() - t_c0
@@ -797,5 +800,4 @@ def _sequential_fallback(trainer, num_candidates, eval_fn, task_times, logger):
         except Exception as exc:
             logger.warning(f"[P1 fallback] id={cid} failed: {exc}")
     return found, time.perf_counter() - seq_t0
-
 

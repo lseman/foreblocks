@@ -25,17 +25,17 @@ from ..training.dynamic_scheduling import (
     _dynamic_arch_update_freq,
     _dynamic_inner_arch_iters,
 )
-from ..training.architecture_step import compose_architecture_loss
-from ..training.darts_engine import configure_mixed_op_for_variant
+from ..training.architecture_step import ArchitectureLossConfig, compose_architecture_loss
+from ..training.darts_engine import (
+    compute_backward_loss,
+    configure_mixed_op_for_variant,
+)
 from ..training.edge_regularization import (
     _extract_edge_probs,
 )
-from ..training.helpers import (
-    ArchitectureRegularizer,
-    BilevelOptimizer,
-    RegularizationType,
-    TemperatureScheduler,
-)
+from ..training.optimizers import BilevelOptimizer
+from ..training.regularization import ArchitectureRegularizer, RegularizationType
+from ..training.schedulers import TemperatureScheduler
 from ..training.perturbation_hessian import (
     _apply_darts_pt_perturbation,
     _restore_model_params,
@@ -325,6 +325,21 @@ def train_darts_model(
     regularization_weights = regularization_weights or [0.05, 0.01]
     reg_types = [RegularizationType(rt) for rt in regularization_types]
     regularizer = ArchitectureRegularizer(reg_types, regularization_weights)
+    architecture_loss_config = ArchitectureLossConfig(
+        epochs=epochs,
+        warmup_epochs=warmup_epochs,
+        device=device,
+        state_mix_ortho_reg_weight=state_mix_ortho_reg_weight,
+        beta_darts_weight=beta_darts_weight,
+        edge_diversity_weight=edge_diversity_weight,
+        edge_usage_balance_weight=edge_usage_balance_weight,
+        edge_identity_cap=edge_identity_cap,
+        edge_identity_cap_weight=edge_identity_cap_weight,
+        moe_balance_weight=moe_balance_weight,
+        transformer_exploration_weight=transformer_exploration_weight,
+        edge_sharpening_max_weight=edge_sharpening_max_weight,
+        edge_sharpening_start_frac=edge_sharpening_start_frac,
+    )
 
     temp_scheduler = TemperatureScheduler(
         initial_temp=2.0,
@@ -348,7 +363,10 @@ def train_darts_model(
     patience_counter = 0
     best_state = None
     best_progressive_state = None
-    train_losses, val_losses, alpha_values, diversity_scores = [], [], [], []
+    train_losses: list[float] = []
+    val_losses: list[float] = []
+    alpha_values: list[Any] = []
+    diversity_scores: list[Any] = []
     prev_component_probs: dict = {}
     prev_edge_probs: dict = {}
     last_edge_entropy = float("nan")
@@ -550,21 +568,9 @@ def train_darts_model(
                         alpha_tracker=trainer.alpha_tracker,
                         arch_params=arch_params,
                         epoch=epoch,
-                        epochs=epochs,
-                        warmup_epochs=warmup_epochs,
-                        device=device,
                         engine_variant=resolved_engine_variant,
                         engine_cfg=engine,
-                        state_mix_ortho_reg_weight=state_mix_ortho_reg_weight,
-                        beta_darts_weight=beta_darts_weight,
-                        edge_diversity_weight=edge_diversity_weight,
-                        edge_usage_balance_weight=edge_usage_balance_weight,
-                        edge_identity_cap=edge_identity_cap,
-                        edge_identity_cap_weight=edge_identity_cap_weight,
-                        moe_balance_weight=moe_balance_weight,
-                        transformer_exploration_weight=transformer_exploration_weight,
-                        edge_sharpening_max_weight=edge_sharpening_max_weight,
-                        edge_sharpening_start_frac=edge_sharpening_start_frac,
+                        config=architecture_loss_config,
                     )
                     total_arch_loss = arch_result.loss
                     last_edge_entropy = float(
@@ -586,18 +592,19 @@ def train_darts_model(
                     gradient_balance_params=(
                         model_params
                         if resolved_engine_variant == "r_darts"
+                        and engine is not None
                         and engine.r_darts.balance_gradient_norms
                         else None
                     ),
                     gradient_balance_warmup=(
                         engine.r_darts.norm_balance_warmup
-                        if resolved_engine_variant == "r_darts"
+                        if resolved_engine_variant == "r_darts" and engine is not None
                         else 0
                     ),
                     gradient_balance_epoch=epoch,
                     arch_grad_scale=(
                         engine.r_darts.arch_grad_scale
-                        if resolved_engine_variant == "r_darts"
+                        if resolved_engine_variant == "r_darts" and engine is not None
                         else 1.0
                     ),
                 )
@@ -675,7 +682,12 @@ def train_darts_model(
             patience_counter = 0
             best_state = snapshot_state_dict(model)
             best_progressive_state = capture_progressive_state(model)
-            if use_swa and swa_model and epoch >= swa_start:
+            if (
+                use_swa
+                and swa_model is not None
+                and swa_start is not None
+                and epoch >= swa_start
+            ):
                 swa_model.update_parameters(model)
         else:
             patience_counter += 1
@@ -701,7 +713,12 @@ def train_darts_model(
     training_time = time.time() - start_time
 
     # ── SWA finalization ──────────────────────────────────────────────────
-    if use_swa and swa_model and epoch >= swa_start:
+    if (
+        use_swa
+        and swa_model is not None
+        and swa_start is not None
+        and epoch >= swa_start
+    ):
         if verbose:
             print("\nFinalizing SWA...")
         try:

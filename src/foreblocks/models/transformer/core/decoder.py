@@ -32,7 +32,6 @@ from foreblocks.models.transformer.runtime.decoder_forward import (
     build_decoder_output,
     coerce_decoder_state,
     prepare_layer_states,
-    resolve_output_options,
 )
 from foreblocks.models.transformer.runtime.decoder_services import (
     DecoderCacheManager,
@@ -41,20 +40,21 @@ from foreblocks.models.transformer.runtime.decoder_services import (
 from foreblocks.models.transformer.runtime.execution import (
     LazyAttentionBackendMixin,
     MHCBlockMixin,
+    ModelLayerInvokeStrategy,
     NormWrapper,
     ResidualBlockMixin,
-    _ModelLayerInvokeStrategy,
 )
+from foreblocks.models.transformer.runtime.outputs import resolve_output_options
 from foreblocks.models.transformer.runtime.residual_state import (
     init_attention_residual_state,
 )
 from foreblocks.models.transformer.runtime.routing import (
-    _gateskip_active_mask_from_padding,
-    _gather_padding_mask,
-    _gather_query_mask,
-    _gather_sequence_tokens,
-    _gather_square_mask,
-    _run_mod_layer,
+    gateskip_active_mask_from_padding,
+    gather_padding_mask,
+    gather_query_mask,
+    gather_sequence_tokens,
+    gather_square_mask,
+    run_mod_layer,
 )
 from foreblocks.models.transformer.runtime.state import (
     AttentionCacheState,
@@ -789,7 +789,7 @@ class TransformerDecoder(BaseTransformer):
             # Paper-like default for time series: all real positions are active.
             # We intentionally derive this only from an actual padding mask, not
             # from the auto-generated Informer masking over the forecast horizon.
-            gateskip_active_mask = _gateskip_active_mask_from_padding(
+            gateskip_active_mask = gateskip_active_mask_from_padding(
                 user_tgt_key_padding_mask
             )
 
@@ -825,7 +825,7 @@ class TransformerDecoder(BaseTransformer):
             and (not self.use_mhc)
             and (not self.use_attention_residual)
         )
-        invoke = _ModelLayerInvokeStrategy(owner=self, use_checkpoint=use_ckpt)
+        invoke = ModelLayerInvokeStrategy(owner=self, use_checkpoint=use_ckpt)
         runtime_budget = self._get_runtime_budget()
 
         used_indices: list[int] = []
@@ -843,14 +843,14 @@ class TransformerDecoder(BaseTransformer):
 
                 def gather_and_invoke(layer, routed_indices, routed_slots):
                     nonlocal streams
-                    x_routed = _gather_sequence_tokens(x, routed_indices)
-                    tgt_mask_routed = _gather_square_mask(tgt_mask, routed_indices)
-                    memory_mask_routed = _gather_query_mask(memory_mask, routed_indices)
-                    tgt_kpm_routed = _gather_padding_mask(
+                    x_routed = gather_sequence_tokens(x, routed_indices)
+                    tgt_mask_routed = gather_square_mask(tgt_mask, routed_indices)
+                    memory_mask_routed = gather_query_mask(memory_mask, routed_indices)
+                    tgt_kpm_routed = gather_padding_mask(
                         tgt_key_padding_mask, routed_indices, routed_slots
                     )
                     mtp_targets_routed = (
-                        _gather_sequence_tokens(layer_mtp_targets, routed_indices)
+                        gather_sequence_tokens(layer_mtp_targets, routed_indices)
                         if layer_mtp_targets is not None
                         else None
                     )
@@ -872,7 +872,7 @@ class TransformerDecoder(BaseTransformer):
                     )
                     return x_routed, x_routed_out
 
-                x, was_used = _run_mod_layer(
+                x, was_used = run_mod_layer(
                     self,
                     i,
                     x,

@@ -61,9 +61,18 @@ class TransformerGenerationOutput(TransformerOutput):
     past_key_values: DecoderState | None = None
 
 
+def resolve_output_options(config, hidden_states, attentions, return_dict):
+    return (
+        config.output_hidden_states if hidden_states is None else hidden_states,
+        config.output_attentions if attentions is None else attentions,
+        config.return_dict if return_dict is None else return_dict,
+    )
+
+
 __all__ = [
     "TransformerDecoderOutput",
     "TransformerEncoderOutput",
     "TransformerGenerationOutput",
     "TransformerOutput",
+    "resolve_output_options",
 ]

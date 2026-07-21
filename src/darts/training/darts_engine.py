@@ -10,7 +10,7 @@ This module provides a unified entry-point that:
 3. Handles bidirectional (Bi-DARTS) training passes.
 
 The engine is *drop-in* compatible with the existing
-``darts.training.darts_loop.train_darts_model`` — callers simply pass
+``darts.training.training_loop.train_darts_model`` — callers simply pass
 a ``DARTSEngineConfig`` instead of a long kwarg list.
 
 Usage::
@@ -32,6 +32,7 @@ Usage::
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -96,15 +97,11 @@ def _configure_pc_darts(model: nn.Module, engine_cfg: Any) -> None:
             m.op_gdas = False  # PC-DARTS uses dense forward, not GDAS
         if hasattr(m, "pc_darts_enabled"):
             m.pc_darts_enabled = bool(engine_cfg.pc_darts.enable_partial_channels)
-    # Normalize competing incoming edges as described by PC-DARTS. The legacy
-    # permutation regularizer remains opt-in and independent of this behavior.
+    # Normalize competing incoming edges as described by PC-DARTS.
     for cell in getattr(model, "cells", []):
         if not hasattr(cell, "edges"):
             continue
         cell.pc_darts_enabled = bool(engine_cfg.pc_darts.enable_edge_normalization)
-        for edge in cell.edges:
-            if hasattr(edge, "perm_l2_weight"):
-                edge.perm_l2_weight = engine_cfg.pc_darts.perm_l2_weight
 
 
 def _configure_r_darts(model: nn.Module, engine_cfg: Any) -> None:
@@ -199,75 +196,6 @@ def compute_gradient_norm_balance(
 
 
 # ---------------------------------------------------------------------------
-# Optional legacy permutation-consistency regularizer
-# ---------------------------------------------------------------------------
-
-
-def apply_permutation_consistency(
-    edge_weights: dict[str, torch.Tensor],
-    perm_l2_weight: float = 1e-4,
-) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
-    """Apply permutation-consistency correction to edge weights.
-
-    When two edges share the same underlying operation, their weights
-    should be permuted to match — swapping edge order should not change
-    the forward output.
-
-    Args:
-        edge_weights: Dict of {edge_name: weight_tensor}.
-        perm_l2_weight: L2 regularizer on the permutation matrix.
-
-    Returns:
-        (corrected_weights, perm_l2_loss) where corrected_weights are
-        the permuted weight tensors and perm_l2_loss is a small scalar
-        representing the permutation regularizer.
-    """
-    if not edge_weights or len(edge_weights) < 2:
-        return edge_weights, torch.tensor(0.0)
-
-    first = next(iter(edge_weights.values()))
-    pair_losses: list[torch.Tensor] = []
-    names = sorted(edge_weights)
-    for i, name_i in enumerate(names):
-        flat_i = edge_weights[name_i].reshape(-1)
-        for name_j in names[i + 1 :]:
-            flat_j = edge_weights[name_j].reshape(-1)
-            if flat_i.numel() != flat_j.numel():
-                continue
-            aligned_i = torch.sort(flat_i, stable=True).values
-            aligned_j = torch.sort(flat_j, stable=True).values
-            pair_losses.append((aligned_i - aligned_j).square().mean())
-
-    if not pair_losses:
-        return dict(edge_weights), first.new_tensor(0.0)
-    loss = torch.stack(pair_losses).mean() * float(perm_l2_weight)
-    return dict(edge_weights), loss
-
-
-def model_permutation_consistency_loss(
-    model: nn.Module, perm_l2_weight: float = 1e-4
-) -> torch.Tensor:
-    """Compute differentiable consistency loss across compatible cell edges."""
-    edge_weights: dict[str, torch.Tensor] = {}
-    for cell_idx, cell in enumerate(getattr(model, "cells", [])):
-        for edge_idx, edge in enumerate(getattr(cell, "edges", [])):
-            if hasattr(edge, "get_alphas"):
-                try:
-                    weights = edge.get_alphas(detach=False)
-                except TypeError:
-                    weights = edge.get_alphas()
-            else:
-                weights = getattr(edge, "alphas", None)
-            if isinstance(weights, torch.Tensor) and weights.numel() > 1:
-                edge_weights[f"cell{cell_idx}.edge{edge_idx}"] = weights
-
-    if not edge_weights:
-        parameter = next(model.parameters(), None)
-        return torch.tensor(0.0, device=parameter.device if parameter is not None else "cpu")
-    return apply_permutation_consistency(edge_weights, perm_l2_weight)[1]
-
-
-# ---------------------------------------------------------------------------
 # Bidirectional forward pass (Bi-DARTS)
 # ---------------------------------------------------------------------------
 
@@ -326,7 +254,7 @@ def compute_backward_loss(
     model: nn.Module,
     x: torch.Tensor,
     y: torch.Tensor,
-    loss_fn: callable,
+    loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     backward_loss_weight: float = 0.5,
     backward_passes: int = 1,
     model_kwargs: dict[str, Any] | None = None,
@@ -391,7 +319,7 @@ def build_engine_config(
     Returns:
         Engine config dict ready to be passed to the training loop.
     """
-    config = {
+    config: dict[str, dict[str, Any]] = {
         "darts": {},
         "gd_darts": {
             "replace_gumbel_softmax": True,
@@ -406,8 +334,6 @@ def build_engine_config(
         "pc_darts": {
             "enable_partial_channels": True,
             "enable_edge_normalization": True,
-            "enable_permutation_consistency": False,
-            "perm_l2_weight": 1e-4,
         },
         "bi_darts": {
             "bidirectional_training": True,

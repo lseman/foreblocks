@@ -438,9 +438,6 @@ class ModelLayerInvokeStrategy:
         )
 
 
-_LayerExecutionStrategy = LayerExecutionStrategy
-_ModelLayerInvokeStrategy = ModelLayerInvokeStrategy
-
 __all__ = [
     "AttentionResidualPolicy",
     "LayerExecutionStrategy",

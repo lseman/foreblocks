@@ -10,7 +10,8 @@ from unittest.mock import patch
 import torch
 import torch.nn.functional as F
 
-from darts.architecture.core_blocks import DARTSCell, MixedOp
+from darts.architecture.darts_cell import DARTSCell
+from darts.architecture.mixed_op import MixedOp
 
 # ── 1. GDAS gradient normalisation ──────────────────────────────────────────
 

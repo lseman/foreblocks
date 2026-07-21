@@ -9,9 +9,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from .bb_attention import AttentionBridge, SelfAttention
+from .bridges import AttentionBridge
+from .self_attention import SelfAttention
 from .bb_moe import DARTSFeedForward
 from .bb_primitives import RMSNorm
+from ..utils.tensors import hard_one_hot
 
 
 __all__ = [
@@ -206,9 +208,7 @@ class LightweightTransformerEncoder(nn.Module):
             return F.gumbel_softmax(logits, tau=tau, hard=bool(variant_gdas), dim=0)
         probs = F.softmax(logits / tau, dim=0)
         if self.variant_gdas:
-            hard = torch.zeros_like(probs)
-            hard[int(torch.argmax(probs).item())] = 1.0
-            return hard
+            return hard_one_hot(probs)
         return probs
 
     def get_patch_mode_probs(self) -> torch.Tensor:
@@ -341,7 +341,7 @@ class LightweightTransformerEncoder(nn.Module):
             c = sum(item[2][1] for item in outputs) / float(len(outputs))
             return out, ctx, (h, c)
         if mode == "hierarchical":
-            outputs = {
+            hierarchical_outputs = {
                 size: self._encode_channel_independent_patch_mode(
                     x, size, output_len=output_len
                 )
@@ -365,19 +365,19 @@ class LightweightTransformerEncoder(nn.Module):
                     (len(self.patch_sizes),), 1.0 / len(self.patch_sizes)
                 )
             out = sum(
-                mix_weights[idx] * outputs[size][0]
+                mix_weights[idx] * hierarchical_outputs[size][0]
                 for idx, size in enumerate(self.patch_sizes)
             )
             ctx = sum(
-                mix_weights[idx] * outputs[size][1]
+                mix_weights[idx] * hierarchical_outputs[size][1]
                 for idx, size in enumerate(self.patch_sizes)
             )
             h = sum(
-                mix_weights[idx] * outputs[size][2][0]
+                mix_weights[idx] * hierarchical_outputs[size][2][0]
                 for idx, size in enumerate(self.patch_sizes)
             )
             c = sum(
-                mix_weights[idx] * outputs[size][2][1]
+                mix_weights[idx] * hierarchical_outputs[size][2][1]
                 for idx, size in enumerate(self.patch_sizes)
             )
             return out, ctx, (h, c)

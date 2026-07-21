@@ -6,6 +6,20 @@ import torch
 import torch.nn.functional as F
 
 
+def hard_one_hot(probs: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    """Return an argmax one-hot tensor without a device-to-host synchronization."""
+    if probs.numel() == 0:
+        return torch.zeros_like(probs)
+    normalized_dim = dim % probs.ndim
+    index = probs.argmax(dim=normalized_dim)
+    encoded = F.one_hot(index, num_classes=probs.shape[normalized_dim])
+    if normalized_dim != probs.ndim - 1:
+        encoded = encoded.movedim(-1, normalized_dim)
+    return encoded.to(
+        device=probs.device, dtype=probs.dtype
+    )
+
+
 def as_probability_vector(
     alpha_like: torch.Tensor, temperature: float = 1.0
 ) -> torch.Tensor:

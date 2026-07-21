@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .bb_attention import LearnedPoolingBridge
+from .bridges import LearnedPoolingBridge
 from .bb_sequence import (
     ArchitectureNormalizer,
     BaseFixedSequenceBlock,
@@ -87,7 +87,6 @@ class ArchitectureConverter:
 
     @staticmethod
     def create_fixed_encoder(mixed_encoder, **kwargs) -> FixedEncoder:
-        kwargs.pop("forced_arch_type", None)
         best_type = "transformer"
         self_attention_type = None
         self_attention_position_mode = None
@@ -128,9 +127,6 @@ class ArchitectureConverter:
 
     @staticmethod
     def create_fixed_decoder(mixed_decoder, **kwargs) -> FixedDecoder:
-        kwargs.pop("forced_arch_type", None)
-        kwargs.pop("use_attention_bridge", None)
-        legacy_attention_variant = kwargs.pop("attention_variant", None)
         explicit_cross_attention_type = kwargs.pop("cross_attention_type", None)
         best_type = "transformer"
         self_attention_type = None
@@ -145,8 +141,6 @@ class ArchitectureConverter:
         ffn_mode = _resolve_searchable_ffn_mode(mixed_decoder.transformer)
         if explicit_cross_attention_type is not None:
             cross_attention_type = str(explicit_cross_attention_type).lower()
-        elif legacy_attention_variant is not None:
-            cross_attention_type = str(legacy_attention_variant).lower()
         if best_type == "transformer":
             self_attention_type = _resolve_searchable_self_attention_type(
                 mixed_decoder.transformer
@@ -316,5 +310,3 @@ class ArchitectureConverter:
 
         except Exception as e:
             print(f"Warning: Could not transfer decoder weights: {e}")
-
-

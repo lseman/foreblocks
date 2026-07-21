@@ -20,7 +20,7 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 
 from foreblocks.darts import DARTSTrainer
-from foreblocks.darts.architecture.core_blocks import TimeSeriesDARTS
+from darts.architecture.time_series_darts import TimeSeriesDARTS
 
 # %%
 from foreblocks.darts.transformer_diagram import draw_selected_transformer_architecture

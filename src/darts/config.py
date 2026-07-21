@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
+import torch
+
 
 class DARTSVariant(str, Enum):
     """DARTS algorithm variant.
@@ -93,10 +95,6 @@ class PC_DARTSEngineConfig:
 
     enable_partial_channels: bool = True
     enable_edge_normalization: bool = True
-    # Legacy project-specific regularizer. Disabled by default because it is
-    # not part of canonical PC-DARTS.
-    enable_permutation_consistency: bool = False
-    perm_l2_weight: float = 1e-4
 
 
 @dataclass
@@ -238,10 +236,8 @@ class DARTSSearchSpaceConfig:
 class DARTSTrainConfig:
     """Hyperparameters for the DARTS bilevel training phase.
 
-    This is the single source of truth for all bilevel-DARTS knobs.  Use it as
-    the sole argument to ``trainer.train_darts_model()`` — positional and
-    keyword overrides on the old API surface are kept for backward compatibility
-    but are deprecated.
+    This is the single source of truth for all bilevel-DARTS knobs. Use it as
+    the configuration argument to ``trainer.train_darts_model()``.
 
     Grouped by concern for readability.  See each field for defaults.
     """
@@ -321,19 +317,6 @@ class DARTSTrainConfig:
     def resolve_device(self) -> str:
         """Resolve to a concrete device string (used when wrapping in DARTSConfig)."""
         return "cuda" if torch.cuda.is_available() else "cpu"
-
-    # -- Deprecated aliases (kept for backward compat) --
-    # The following fields were renamed; the old names are absorbed in the
-    # trainer method.  They remain here so code that reads config fields
-    # by name does not break.
-    identity_dominance_cap: float = 0.45  # noqa: ERA001  # → edge_identity_cap
-    edge_sharpening_strength: float = 0.03  # noqa: ERA001  # → edge_sharpening_max_weight
-    progressive_training: bool = True  # noqa: ERA001  # → progressive_shrinking
-    pruning_enabled: bool = True  # noqa: ERA001  # → derived from progressive_shrinking
-    pruning_start_epoch: int = 20  # noqa: ERA001  # → hybrid_pruning_start_epoch
-    pruning_threshold: float = 0.15  # noqa: ERA001  # → hybrid_pruning_base_threshold
-    log_arch_gradients: bool = False  # noqa: ERA001  # absorbed
-
 
 # ---------------------------------------------------------------------------
 # Final Model Training
@@ -483,4 +466,3 @@ class DARTSConfig:
 
             return "cuda" if torch.cuda.is_available() else "cpu"
         return self.device
-

@@ -40,11 +40,11 @@ from foreblocks.models.transformer.features.patching import (
     PatchTokenizer,
 )
 from foreblocks.models.transformer.runtime.execution import (
+    LayerExecutionStrategy,
     MHCBlockMixin,
     NormWrapper,
     ResidualBlockMixin,
     ResidualRunCfg,
-    _LayerExecutionStrategy,
 )
 from foreblocks.models.transformer.runtime.residual_state import (
     attention_residual_values,
@@ -140,9 +140,9 @@ class BaseTransformerLayer(nn.Module):
         x: torch.Tensor,
         streams: torch.Tensor | None,
         attention_residual_state: dict | None = None,
-    ) -> _LayerExecutionStrategy:
+    ) -> LayerExecutionStrategy:
         if attention_residual_state is not None:
-            return _LayerExecutionStrategy(
+            return LayerExecutionStrategy(
                 owner=self,
                 use_mhc=False,
                 x=attention_residual_state["current"],
@@ -151,7 +151,7 @@ class BaseTransformerLayer(nn.Module):
             )
 
         if not self.use_mhc:
-            return _LayerExecutionStrategy(owner=self, use_mhc=False, x=x)
+            return LayerExecutionStrategy(owner=self, use_mhc=False, x=x)
 
         self._ensure_mhc_mixers()
         if streams is None:
@@ -164,7 +164,7 @@ class BaseTransformerLayer(nn.Module):
                     f"mHC streams N={streams.shape[1]} != configured {self.mhc_n_streams}"
                 )
 
-        return _LayerExecutionStrategy(owner=self, use_mhc=True, streams=streams)
+        return LayerExecutionStrategy(owner=self, use_mhc=True, streams=streams)
 
     def _new_mhc_connection(self) -> MHCHyperConnection:
         conn = MHCHyperConnection(

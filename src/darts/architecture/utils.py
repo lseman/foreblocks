@@ -1,22 +1,17 @@
-"""Attention modules: SelfAttention, AttentionBridge, LearnedPoolingBridge."""
+"""Tensor helpers shared by DARTS attention implementations."""
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-
-from .bb_positional import RotaryPositionalEncoding
-from .bb_primitives import RMSNorm
 
 
 __all__ = [
-    "SelfAttention",
-    "AttentionBridge",
-    "LearnedPoolingBridge",
+    "_make_alibi_slopes",
+    "_causal_mask",
+    "_sinusoidal_features",
+    "_seasonal_relative_bias",
 ]
 
 
@@ -101,5 +96,4 @@ def _seasonal_relative_bias(
         .reshape(1, num_heads, 1, 1)
     )
     return 0.1 * slopes * bias.reshape(1, 1, query_len, key_len)
-
 

@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .bb_attention import LearnedPoolingBridge
+from .bridges import LearnedPoolingBridge
 from .bb_sequence import (
     ArchitectureNormalizer,
     BaseFixedSequenceBlock,
@@ -432,5 +432,4 @@ def _freeze_transformer_decoder_style(module_obj, decode_style: str) -> None:
             delattr(module_obj, "decode_style_alphas")
         except AttributeError:
             pass
-
 

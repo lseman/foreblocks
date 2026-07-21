@@ -14,14 +14,6 @@ from foreblocks.models.transformer.runtime.state import (
 )
 
 
-def resolve_output_options(config, hidden_states, attentions, return_dict):
-    return (
-        config.output_hidden_states if hidden_states is None else hidden_states,
-        config.output_attentions if attentions is None else attentions,
-        config.return_dict if return_dict is None else return_dict,
-    )
-
-
 def coerce_decoder_state(
     state: dict[str, Any] | DecoderState | None, *, num_layers: int
 ) -> DecoderState | None:
@@ -72,5 +64,4 @@ __all__ = [
     "build_decoder_output",
     "coerce_decoder_state",
     "prepare_layer_states",
-    "resolve_output_options",
 ]

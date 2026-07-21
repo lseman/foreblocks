@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .darts_engine import compute_backward_loss, model_permutation_consistency_loss
+from .darts_engine import compute_backward_loss
 from .edge_regularization import _add_edge_diversity_reg, _add_edge_sharpening
 
 
@@ -23,6 +23,25 @@ class ArchitectureLossResult:
     edge_diversity_pairs: int
 
 
+@dataclass(frozen=True)
+class ArchitectureLossConfig:
+    """Static architecture-objective weights for an entire search run."""
+
+    epochs: int
+    warmup_epochs: int
+    device: str
+    state_mix_ortho_reg_weight: float
+    beta_darts_weight: float
+    edge_diversity_weight: float
+    edge_usage_balance_weight: float
+    edge_identity_cap: float
+    edge_identity_cap_weight: float
+    moe_balance_weight: float
+    transformer_exploration_weight: float
+    edge_sharpening_max_weight: float
+    edge_sharpening_start_frac: float
+
+
 def compose_architecture_loss(
     *,
     model: nn.Module,
@@ -34,21 +53,9 @@ def compose_architecture_loss(
     alpha_tracker: Any,
     arch_params: Sequence[torch.Tensor],
     epoch: int,
-    epochs: int,
-    warmup_epochs: int,
-    device: str,
     engine_variant: str | None,
     engine_cfg: Any,
-    state_mix_ortho_reg_weight: float,
-    beta_darts_weight: float,
-    edge_diversity_weight: float,
-    edge_usage_balance_weight: float,
-    edge_identity_cap: float,
-    edge_identity_cap_weight: float,
-    moe_balance_weight: float,
-    transformer_exploration_weight: float,
-    edge_sharpening_max_weight: float,
-    edge_sharpening_start_frac: float,
+    config: ArchitectureLossConfig,
 ) -> ArchitectureLossResult:
     """Build the differentiable architecture objective and its diagnostics."""
     if engine_variant == "bi_darts":
@@ -64,45 +71,39 @@ def compose_architecture_loss(
     else:
         arch_loss = loss_fn(model(x, **model_kwargs), y)
 
-    reg_losses = regularizer.compute_regularization(model, arch_params, epoch, epochs)
+    reg_losses = regularizer.compute_regularization(
+        model, arch_params, epoch, config.epochs
+    )
     total_loss = arch_loss + reg_losses["total"]
 
-    if (
-        engine_variant == "pc_darts"
-        and engine_cfg.pc_darts.enable_permutation_consistency
-    ):
-        total_loss = total_loss + model_permutation_consistency_loss(
-            model, engine_cfg.pc_darts.perm_l2_weight
-        )
-
-    if state_mix_ortho_reg_weight > 0.0 and hasattr(
+    if config.state_mix_ortho_reg_weight > 0.0 and hasattr(
         model, "get_orthogonal_regularization"
     ):
         total_loss = total_loss + float(
-            state_mix_ortho_reg_weight
+            config.state_mix_ortho_reg_weight
         ) * model.get_orthogonal_regularization()
 
-    if beta_darts_weight > 0.0 and arch_params:
-        total_loss = total_loss + beta_darts_weight * sum(
+    if config.beta_darts_weight > 0.0 and arch_params:
+        total_loss = total_loss + config.beta_darts_weight * sum(
             parameter.pow(2).mean() for parameter in arch_params
         )
 
     total_loss, diversity_pairs = _add_edge_diversity_reg(
         model=model,
         total_arch_loss=total_loss,
-        edge_diversity_weight=edge_diversity_weight,
-        edge_usage_balance_weight=edge_usage_balance_weight,
-        edge_identity_cap=edge_identity_cap,
-        edge_identity_cap_weight=edge_identity_cap_weight,
-        device=device,
+        edge_diversity_weight=config.edge_diversity_weight,
+        edge_usage_balance_weight=config.edge_usage_balance_weight,
+        edge_identity_cap=config.edge_identity_cap,
+        edge_identity_cap_weight=config.edge_identity_cap_weight,
+        device=config.device,
     )
 
-    if moe_balance_weight > 0.0 and hasattr(model, "get_moe_balance_loss"):
+    if config.moe_balance_weight > 0.0 and hasattr(model, "get_moe_balance_loss"):
         total_loss = total_loss + float(
-            moe_balance_weight
+            config.moe_balance_weight
         ) * model.get_moe_balance_loss()
 
-    if transformer_exploration_weight > 0.0:
+    if config.transformer_exploration_weight > 0.0:
         entropy_terms: list[torch.Tensor] = []
         for source in alpha_tracker.component_alpha_sources(model):
             name = str(source.get("name", ""))
@@ -120,14 +121,14 @@ def compose_architecture_loss(
 
         if entropy_terms:
             exploration_entropy = torch.stack(entropy_terms).mean()
-            if epochs > warmup_epochs:
-                progress = float(max(epoch - warmup_epochs, 0)) / float(
-                    max(epochs - warmup_epochs, 1)
+            if config.epochs > config.warmup_epochs:
+                progress = float(max(epoch - config.warmup_epochs, 0)) / float(
+                    max(config.epochs - config.warmup_epochs, 1)
                 )
             else:
-                progress = float(epoch) / float(max(epochs, 1))
+                progress = float(epoch) / float(max(config.epochs, 1))
             total_loss = total_loss - (
-                float(transformer_exploration_weight)
+                float(config.transformer_exploration_weight)
                 * max(0.0, 1.0 - progress)
                 * exploration_entropy
             )
@@ -136,11 +137,11 @@ def compose_architecture_loss(
         model=model,
         total_arch_loss=total_loss,
         epoch=epoch,
-        epochs=epochs,
-        warmup_epochs=warmup_epochs,
-        edge_sharpening_max_weight=edge_sharpening_max_weight,
-        edge_sharpening_start_frac=edge_sharpening_start_frac,
-        device=device,
+        epochs=config.epochs,
+        warmup_epochs=config.warmup_epochs,
+        edge_sharpening_max_weight=config.edge_sharpening_max_weight,
+        edge_sharpening_start_frac=config.edge_sharpening_start_frac,
+        device=config.device,
     )
     return ArchitectureLossResult(
         loss=total_loss,

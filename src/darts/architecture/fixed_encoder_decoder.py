@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .bb_attention import LearnedPoolingBridge
+from .bridges import LearnedPoolingBridge
 from .bb_sequence import (
     ArchitectureNormalizer,
     BaseFixedSequenceBlock,
@@ -149,9 +149,6 @@ class FixedDecoder(BaseFixedSequenceBlock):
         latent_dim: int = 64,
         num_layers: int = 2,
         dropout: float = 0.0,
-        use_attention_bridge: bool = False,
-        attention_layers: int = 1,
-        attention_variant: str = "sdp",
         self_attention_type: str | None = None,
         self_attention_position_mode: str | None = None,
         cross_attention_type: str | None = None,
@@ -172,7 +169,7 @@ class FixedDecoder(BaseFixedSequenceBlock):
         self.cross_attention_type = (
             str(cross_attention_type).lower()
             if cross_attention_type is not None
-            else str(attention_variant).lower()
+            else "sdp"
         )
         self.cross_attention_position_mode = (
             str(cross_attention_position_mode).lower()
@@ -183,8 +180,6 @@ class FixedDecoder(BaseFixedSequenceBlock):
             str(decode_style).lower() if decode_style is not None else "autoregressive"
         )
         self.ffn_mode = str(ffn_mode).lower() if ffn_mode is not None else "swiglu"
-        self.use_attention_bridge = False
-
         super().__init__(
             rnn=rnn,
             rnn_type=rnn_type,

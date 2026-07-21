@@ -37,21 +37,24 @@ from foreblocks.models.transformer.features.patching import (
 from foreblocks.models.transformer.runtime.execution import (
     LazyAttentionBackendMixin,
     MHCBlockMixin,
+    ModelLayerInvokeStrategy,
     NormWrapper,
     ResidualBlockMixin,
-    _ModelLayerInvokeStrategy,
 )
-from foreblocks.models.transformer.runtime.outputs import TransformerEncoderOutput
+from foreblocks.models.transformer.runtime.outputs import (
+    TransformerEncoderOutput,
+    resolve_output_options,
+)
 from foreblocks.models.transformer.runtime.residual_state import (
     init_attention_residual_state,
 )
 from foreblocks.models.transformer.runtime.routing import (
-    _gateskip_active_mask_from_padding,
-    _gather_padding_mask,
-    _gather_sequence_tokens,
-    _gather_square_mask,
-    _patchify_gateskip_active_mask,
-    _run_mod_layer,
+    gateskip_active_mask_from_padding,
+    gather_padding_mask,
+    gather_sequence_tokens,
+    gather_square_mask,
+    patchify_gateskip_active_mask,
+    run_mod_layer,
 )
 from foreblocks.modules.attention.utils.residuals import (
     AttentionResidual,
@@ -457,17 +460,9 @@ class TransformerEncoder(BaseTransformer):
         output_attentions: bool | None = None,
         return_dict: bool | None = None,
     ) -> torch.Tensor | TransformerEncoderOutput:
-        output_hidden_states = (
-            self.config.output_hidden_states
-            if output_hidden_states is None
-            else output_hidden_states
+        output_hidden_states, output_attentions, return_dict = resolve_output_options(
+            self.config, output_hidden_states, output_attentions, return_dict
         )
-        output_attentions = (
-            self.config.output_attentions
-            if output_attentions is None
-            else output_attentions
-        )
-        return_dict = self.config.return_dict if return_dict is None else return_dict
         B, T, C = src.shape
         if self.input_size != C:
             raise ValueError(f"Expected input size {self.input_size}, got {C}")
@@ -491,7 +486,7 @@ class TransformerEncoder(BaseTransformer):
                 stride=self.ct_patch_stride,
                 pad_end=self.ct_patch_pad_end,
             )
-            gateskip_active_mask = _patchify_gateskip_active_mask(
+            gateskip_active_mask = patchify_gateskip_active_mask(
                 gateskip_active_mask,
                 T=T,
                 patch_len=self.ct_patch_len,
@@ -514,7 +509,7 @@ class TransformerEncoder(BaseTransformer):
                 stride=self.patch_stride,
                 pad_end=self.patch_pad_end,
             )
-            gateskip_active_mask = _patchify_gateskip_active_mask(
+            gateskip_active_mask = patchify_gateskip_active_mask(
                 gateskip_active_mask,
                 T=T,
                 patch_len=self.patch_len,
@@ -523,7 +518,7 @@ class TransformerEncoder(BaseTransformer):
             )
 
         if gateskip_active_mask is None:
-            gateskip_active_mask = _gateskip_active_mask_from_padding(
+            gateskip_active_mask = gateskip_active_mask_from_padding(
                 src_key_padding_mask
             )
 
@@ -569,7 +564,7 @@ class TransformerEncoder(BaseTransformer):
             and (not self.use_mhc)
             and (not self.use_attention_residual)
         )
-        invoke = _ModelLayerInvokeStrategy(owner=self, use_checkpoint=use_ckpt)
+        invoke = ModelLayerInvokeStrategy(owner=self, use_checkpoint=use_ckpt)
         runtime_budget = self._get_runtime_budget()
 
         used_indices: list[int] = []
@@ -584,9 +579,9 @@ class TransformerEncoder(BaseTransformer):
 
                 def gather_and_invoke(layer, routed_indices, routed_slots):
                     nonlocal streams
-                    x_routed = _gather_sequence_tokens(x, routed_indices)
-                    src_mask_routed = _gather_square_mask(src_mask, routed_indices)
-                    src_kpm_routed = _gather_padding_mask(
+                    x_routed = gather_sequence_tokens(x, routed_indices)
+                    src_mask_routed = gather_square_mask(src_mask, routed_indices)
+                    src_kpm_routed = gather_padding_mask(
                         src_key_padding_mask, routed_indices, routed_slots
                     )
                     x_routed_out, streams = invoke.run_encoder_layer(
@@ -601,7 +596,7 @@ class TransformerEncoder(BaseTransformer):
                     )
                     return x_routed, x_routed_out
 
-                x, was_used = _run_mod_layer(
+                x, was_used = run_mod_layer(
                     self,
                     i,
                     x,

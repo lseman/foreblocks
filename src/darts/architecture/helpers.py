@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .bb_attention import LearnedPoolingBridge
+from .bridges import LearnedPoolingBridge
 from .bb_sequence import (
     ArchitectureNormalizer,
     BaseFixedSequenceBlock,
@@ -85,5 +85,4 @@ def _mean_component_mode_probs(
     if not probs:
         return None
     return torch.stack(probs, dim=0).mean(dim=0)
-
 

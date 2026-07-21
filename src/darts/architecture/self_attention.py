@@ -10,7 +10,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .bb_positional import RotaryPositionalEncoding
-from .bb_primitives import RMSNorm
 from .norms import RMSNorm
 from .utils import (
     _causal_mask,
@@ -552,5 +551,4 @@ class SelfAttention(nn.Module):
 
         out = out.transpose(1, 2).reshape(B, T, D)
         return self.out_proj(out)
-
 

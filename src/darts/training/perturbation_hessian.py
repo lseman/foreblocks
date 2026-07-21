@@ -1,42 +1,14 @@
-"""
-DARTS bilevel training loop.
-
-Extracted from ``DARTSTrainer`` so the logic lives in one focused module.
-The public entry-point is :func:`train_darts_model`.
-"""
+"""DARTS-PT perturbation and finite-difference Hessian utilities."""
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.amp import GradScaler
 
-from ..evaluation.metrics import compute_final_metrics
-from ..training.helpers import (
-    ArchitectureRegularizer,
-    BilevelOptimizer,
-    RegularizationType,
-    TemperatureScheduler,
-)
-from ..utils.training import (
-    autocast_ctx,
-    build_arch_param_groups,
-    capture_progressive_state,
-    create_progress_bar,
-    restore_progressive_state,
-    split_arch_and_model_params,
-    unpack_forecasting_batch,
-)
-
-
-# ---------------------------------------------------------------------------
-# Public entry-point
-# ---------------------------------------------------------------------------
+from ..utils.training import autocast_ctx
 
 
 def _apply_darts_pt_perturbation(
@@ -276,5 +248,4 @@ def finite_difference_hessian_penalty(
 
     curvature = (loss_plus + loss_minus - 2.0 * arch_loss.detach()) / (eps**2)
     return F.relu(curvature)
-
 

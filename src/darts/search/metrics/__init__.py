@@ -22,7 +22,7 @@ from ..scoring import (
 from .activation_diversity import compute_activation_diversity
 from .conditioning import compute_conditioning
 from .fisher import compute_fisher
-from .flops import compute_activation_flops, compute_flops
+from .flops import compute_activation_flops
 from .grasp import compute_grasp
 from .jacobian import compute_jacobian
 from .naswot import compute_naswot
@@ -821,46 +821,11 @@ class MetricsComputer:
 
         return Result(float(value), True, "", elapsed)
 
-    # Individual metric methods for compatibility
-    def synflow(self, model: nn.Module, inputs: torch.Tensor) -> Result:
-        """SynFlow metric"""
-        return self._compute_synflow(model, inputs)
-
-    def jacobian(self, model: nn.Module, inputs: torch.Tensor) -> Result:
-        """Jacobian metric"""
-        return self._compute_jacobian(model, inputs)
-
-    def grasp(
-        self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor
-    ) -> Result:
-        """GRASP metric"""
-        return self._compute_gradient_metrics(model, inputs, targets)["grasp"]
-
-    def fisher(
-        self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor
-    ) -> Result:
-        """Fisher metric"""
-        return self._compute_gradient_metrics(model, inputs, targets)["fisher"]
-
-    def snip(
-        self, model: nn.Module, inputs: torch.Tensor, targets: torch.Tensor
-    ) -> Result:
-        """SNIP metric"""
-        return self._compute_gradient_metrics(model, inputs, targets)["snip"]
-
     def params(self, model: nn.Module) -> Result:
-        """Parameter count using fvcore if available."""
         return compute_params(self, model)
 
     def conditioning(self, model: nn.Module) -> Result:
-        """Conditioning estimate using exact or iterative singular-value bounds."""
         return compute_conditioning(self, model)
-
-    def flops(self, model: nn.Module, inputs: torch.Tensor) -> Result:
-        """FLOP estimation using fvcore with fallback to manual hook count."""
-        if not self.config.enable_flops:
-            return Result(0.0, False, 0.0, "Disabled for PyTorch < 2.12")
-        return compute_flops(self, model, inputs)
 
     def sensitivity(
         self,
@@ -869,7 +834,6 @@ class MetricsComputer:
         shared_outputs: torch.Tensor | None = None,
         shared_inputs: torch.Tensor | None = None,
     ) -> Result:
-        """Input-gradient sensitivity (plain input influence signal)."""
         return compute_sensitivity(
             self,
             model,

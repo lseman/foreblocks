@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .bb_attention import LearnedPoolingBridge
+from .bridges import LearnedPoolingBridge
 from .bb_sequence import (
     ArchitectureNormalizer,
     BaseFixedSequenceBlock,
@@ -20,6 +20,7 @@ from .bb_transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
 )
+from ..utils.tensors import hard_one_hot
 
 
 __all__ = [
@@ -151,8 +152,6 @@ class MixedDecoder(nn.Module):
         seq_len: int,
         dropout: float = 0.1,
         temperature: float = 1.0,
-        use_attention_bridge: bool = True,
-        attention_layers: int = 1,
         use_learned_memory_pooling: bool = True,
         memory_num_queries: int = 8,
         variant_gdas: bool = True,
@@ -186,8 +185,6 @@ class MixedDecoder(nn.Module):
             "decode_style_alphas", nn.Parameter(0.01 * torch.randn(3))
         )
 
-        self.use_attention_bridge = False
-        self.attention_layers = attention_layers
         self.use_learned_memory_pooling = use_learned_memory_pooling
         self.attention_temperature_mult = float(max(attention_temperature_mult, 1e-3))
         self.min_attention_temperature = float(max(min_attention_temperature, 1e-3))
@@ -272,9 +269,7 @@ class MixedDecoder(nn.Module):
             )
         probs = F.softmax(self.decode_style_alphas / tau, dim=0)
         if self.variant_gdas:
-            hard = torch.zeros_like(probs)
-            hard[int(torch.argmax(probs).item())] = 1.0
-            return hard
+            return hard_one_hot(probs)
         return probs
 
     def get_decode_style_probs(self) -> torch.Tensor:
@@ -320,9 +315,7 @@ class MixedDecoder(nn.Module):
             )
         probs = F.softmax(self.memory_query_alphas / tau, dim=0)
         if self.variant_gdas:
-            hard = torch.zeros_like(probs)
-            hard[int(torch.argmax(probs).item())] = 1.0
-            return hard
+            return hard_one_hot(probs)
         return probs
 
     def _build_shared_memory(
@@ -441,5 +434,3 @@ class MixedDecoder(nn.Module):
         if ref is None:
             return torch.tensor(0.0)
         return ref.new_zeros(())
-
-

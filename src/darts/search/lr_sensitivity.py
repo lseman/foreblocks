@@ -23,6 +23,7 @@ from typing import Any
 
 import torch
 
+from ..config import DARTSTrainConfig
 from ..utils.training import reset_model_parameters
 from .candidate_scoring import rescore_candidates_poolwise
 from .stats_reporting import append_whatif_estimates, mean_std, save_csv, save_json
@@ -89,11 +90,13 @@ def bilevel_lr_sensitivity(
                     model=model,
                     train_loader=train_loader,
                     val_loader=val_loader,
-                    epochs=epochs,
-                    model_learning_rate=mlr,
-                    arch_learning_rate=alr,
-                    use_bilevel_optimization=True,
-                    verbose=False,
+                    train_config=DARTSTrainConfig(
+                        epochs=epochs,
+                        model_learning_rate=mlr,
+                        arch_learning_rate=alr,
+                        use_bilevel_optimization=True,
+                        verbose=False,
+                    ),
                 )
 
                 derived = trainer.derive_final_architecture(out["model"])

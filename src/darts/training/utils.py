@@ -1,42 +1,10 @@
-"""
-DARTS bilevel training loop.
-
-Extracted from ``DARTSTrainer`` so the logic lives in one focused module.
-The public entry-point is :func:`train_darts_model`.
-"""
+"""State, pruning, and diagnostics helpers for DARTS training."""
 
 from __future__ import annotations
 
-import time
-from typing import Any
-
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.amp import GradScaler
-
-from ..evaluation.metrics import compute_final_metrics
-from ..training.helpers import (
-    ArchitectureRegularizer,
-    BilevelOptimizer,
-    RegularizationType,
-    TemperatureScheduler,
-)
-from ..utils.training import (
-    autocast_ctx,
-    build_arch_param_groups,
-    capture_progressive_state,
-    create_progress_bar,
-    restore_progressive_state,
-    split_arch_and_model_params,
-    unpack_forecasting_batch,
-)
-
-
-# ---------------------------------------------------------------------------
-# Public entry-point
-# ---------------------------------------------------------------------------
 
 
 def _maybe_prune(

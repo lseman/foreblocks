@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from darts.config import DEFAULT_OPS  # noqa: E402
+from darts.config import DEFAULT_OPS, DARTSTrainConfig  # noqa: E402
 from darts.search.phase_utils import _resolve_phase3_rung_epochs  # noqa: E402
 from darts.trainer import DARTSTrainer  # noqa: E402
 
@@ -242,14 +242,16 @@ def main() -> int:
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
-            epochs=delta_epochs,
-            use_swa=False,
-            use_amp=bool(args.amp and args.device.startswith("cuda")),
-            verbose=bool(args.verbose),
+            train_config=DARTSTrainConfig(
+                epochs=delta_epochs,
+                use_swa=False,
+                use_amp=bool(args.amp and args.device.startswith("cuda")),
+                verbose=bool(args.verbose),
+                op_gdas=not args.no_gdas,
+                max_train_batches=args.max_train_batches,
+                max_val_batches=args.max_val_batches,
+            ),
             compute_metrics=False,
-            op_gdas=not args.no_gdas,
-            max_train_batches=args.max_train_batches,
-            max_val_batches=args.max_val_batches,
         )
         model = results["model"]
         epochs_trained = int(rung_epoch)
