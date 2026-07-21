@@ -17,6 +17,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from foreblocks.modules.attention.config import AttentionConfig
 from foreblocks.modules.attention.multi_att import MultiAttention
 
 
@@ -44,22 +45,22 @@ class CrossFormer(nn.Module):
         self.temporal_proj = nn.Linear(self.in_channels, d_model)
         self.channel_proj = nn.Conv1d(1, d_model, kernel_size=1)
 
-        self.temporal_attn = MultiAttention(
+        self.temporal_attn = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=d_model,
             n_heads=n_heads,
             dropout=dropout,
             attention_type=att_type,
             freq_modes=freq_modes,
             cross_attention=True,
-        )
-        self.channel_attn = MultiAttention(
+        ))
+        self.channel_attn = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=d_model,
             n_heads=n_heads,
             dropout=dropout,
             attention_type=att_type,
             freq_modes=freq_modes,
             cross_attention=True,
-        )
+        ))
 
         self.temporal_ff = nn.Sequential(
             nn.Linear(d_model, hidden),

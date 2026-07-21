@@ -18,7 +18,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from foreblocks.models.transformer.transformer import TransformerEncoder
+from foreblocks.models.transformer.core.encoder import TransformerEncoder
 
 
 class Informer(nn.Module):

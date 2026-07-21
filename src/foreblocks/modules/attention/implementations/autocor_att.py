@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.modules.autocor_att.
+"""foreblocks.modules.attention.implementations.autocor_att.
 
 Auto-Correlation mechanism that discovers period-based dependencies via FFT.
 

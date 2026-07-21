@@ -46,7 +46,7 @@ from foreblocks.models.transformer.runtime.execution import (
     _ModelLayerInvokeStrategy,
 )
 from foreblocks.models.transformer.runtime.residual_state import (
-    _init_attention_residual_state,
+    init_attention_residual_state,
 )
 from foreblocks.models.transformer.runtime.routing import (
     _gateskip_active_mask_from_padding,
@@ -97,7 +97,7 @@ class TransformerDecoderLayer(
             if d_model is None or nhead is None:
                 raise TypeError("d_model and nhead are required without config")
             legacy_kwargs.setdefault("dim_feedforward", 2048)
-            config = TransformerConfig.from_kwargs(
+            config = TransformerConfig.from_legacy_dict(
                 d_model=d_model, nhead=nhead, **legacy_kwargs
             )
             legacy_kwargs.clear()
@@ -123,7 +123,7 @@ class TransformerDecoderLayer(
             self._attention_config,
             shape=replace(self._attention_config.shape, cross_attention=True),
         )
-        self.cross_attn = MultiAttention.from_config(cross_attention_config)
+        self.cross_attn = MultiAttention(cross_attention_config)
 
         self.is_causal = not informer_like
 
@@ -279,7 +279,7 @@ class TransformerDecoderLayer(
                     "Attention Residuals are not compatible with mHC at the layer level."
                 )
             if attention_residual_state is None:
-                attention_residual_state = _init_attention_residual_state(
+                attention_residual_state = init_attention_residual_state(
                     tgt,
                     self.attention_residual_mode,
                     self.attention_residual_block_size,
@@ -404,8 +404,8 @@ class TransformerDecoderLayer(
 
         out_tgt, out_streams = strategy.collapse(self.mhc_collapse)
         ret_state = DecoderLayerState(
-            self_attn=AttentionCacheState.from_legacy(state["self_attn"]),
-            cross_attn=AttentionCacheState.from_legacy(state["cross_attn"]),
+            self_attn=AttentionCacheState.from_mapping(state["self_attn"]),
+            cross_attn=AttentionCacheState.from_mapping(state["cross_attn"]),
         )
         return out_tgt, ret_state, out_streams
 
@@ -446,7 +446,7 @@ class TransformerDecoder(BaseTransformer):
             model_type = config.model_type
             cache_implementation = config.cache_implementation
         else:
-            config = TransformerConfig.from_kwargs(
+            config = TransformerConfig.from_legacy_dict(
                 input_size=input_size,
                 output_size=output_size,
                 label_len=label_len,
@@ -800,7 +800,7 @@ class TransformerDecoder(BaseTransformer):
         if cache_position is not None:
             for layer_state in layer_states:
                 if layer_state is not None:
-                    self_state = AttentionCacheState.from_legacy(
+                    self_state = AttentionCacheState.from_mapping(
                         layer_state.setdefault("self_attn", {})
                     )
                     layer_state["self_attn"] = self_state
@@ -933,7 +933,7 @@ class TransformerDecoder(BaseTransformer):
 
         if return_incremental_state:
             if incremental_state is None:
-                incremental_state = DecoderState.from_legacy(
+                incremental_state = DecoderState.from_mapping(
                     None, num_layers=self.num_layers
                 )
             incremental_state["layers"] = layer_states

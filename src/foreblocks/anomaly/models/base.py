@@ -20,7 +20,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-from foreblocks.models.transformer.transformer import TransformerEncoderLayer
+from foreblocks.models.transformer.core.encoder import TransformerEncoderLayer
 
 
 @dataclass

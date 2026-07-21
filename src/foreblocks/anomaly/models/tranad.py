@@ -20,10 +20,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from foreblocks.models.transformer.transformer import (
-    TransformerDecoderLayer,
-    TransformerEncoderLayer,
-)
+from foreblocks.models.transformer.core.decoder import TransformerDecoderLayer
+from foreblocks.models.transformer.core.encoder import TransformerEncoderLayer
 
 
 class TranAD(nn.Module):

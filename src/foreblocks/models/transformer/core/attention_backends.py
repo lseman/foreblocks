@@ -31,7 +31,7 @@ class LayerAttentionBackendSpec:
                 config,
                 variant=replace(config.variant, name=self.name),
             )
-            return MultiAttention.from_config(configured)
+            return MultiAttention(configured)
         return self.module_cls(
             d_model=shape.d_model,
             n_heads=shape.n_heads,

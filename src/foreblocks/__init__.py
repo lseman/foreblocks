@@ -28,13 +28,10 @@ if TYPE_CHECKING:
     from foreblocks.core.training import Trainer
     from foreblocks.data import TimeSeriesDataset, create_dataloaders
     from foreblocks.models import ForecastingModel, GraphForecastingModel
-    from foreblocks.models.transformer.transformer import (
-        TransformerDecoder,
-        TransformerEncoder,
-    )
+    from foreblocks.models.transformer.core.decoder import TransformerDecoder
+    from foreblocks.models.transformer.core.encoder import TransformerEncoder
     from foreblocks.models.transformer.tuner import (
         ModernTransformerTuner,
-        TransformerTuner,
     )
     from foreblocks.modules.blocks.enc_dec import (
         GRUDecoder,
@@ -64,7 +61,6 @@ __all__ = [
     "TransformerEncoder",
     "TransformerDecoder",
     "ModernTransformerTuner",
-    "TransformerTuner",
     "AttentionLayer",
 ]
 
@@ -79,7 +75,7 @@ def __getattr__(name):
         "LSTMDecoder": (".modules.blocks.enc_dec", "LSTMDecoder"),
         "LSTMEncoder": (".modules.blocks.enc_dec", "LSTMEncoder"),
         "ModernTransformerTuner": (
-            ".models.transformer.transformer_tuner",
+            ".models.transformer.tuner",
             "ModernTransformerTuner",
         ),
         "ModelConfig": (".config", "ModelConfig"),
@@ -87,11 +83,13 @@ def __getattr__(name):
         "TimeSeriesDataset": (".data", "TimeSeriesDataset"),
         "Trainer": (".core.training", "Trainer"),
         "TrainingConfig": (".config", "TrainingConfig"),
-        "TransformerDecoder": (".models.transformer.transformer", "TransformerDecoder"),
-        "TransformerEncoder": (".models.transformer.transformer", "TransformerEncoder"),
-        "TransformerTuner": (
-            ".models.transformer.transformer_tuner",
-            "TransformerTuner",
+        "TransformerDecoder": (
+            ".models.transformer.core.decoder",
+            "TransformerDecoder",
+        ),
+        "TransformerEncoder": (
+            ".models.transformer.core.encoder",
+            "TransformerEncoder",
         ),
         "TimeSeriesHandler": (".ts_handler", "TimeSeriesHandler"),
         "create_dataloaders": (".data", "create_dataloaders"),

@@ -20,7 +20,7 @@ import torch.nn.functional as F
 
 from foreblocks.layers.embeddings import PositionalEncoding
 from foreblocks.layers.norms import create_norm_layer
-from foreblocks.models.transformer.transformer import TransformerEncoderLayer
+from foreblocks.models.transformer.core.encoder import TransformerEncoderLayer
 
 
 class ETSformer(nn.Module):

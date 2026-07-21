@@ -43,7 +43,7 @@ from foreblocks.models.transformer.runtime.execution import (
 )
 from foreblocks.models.transformer.runtime.outputs import TransformerEncoderOutput
 from foreblocks.models.transformer.runtime.residual_state import (
-    _init_attention_residual_state,
+    init_attention_residual_state,
 )
 from foreblocks.models.transformer.runtime.routing import (
     _gateskip_active_mask_from_padding,
@@ -84,7 +84,7 @@ class TransformerEncoderLayer(
                 raise TypeError("d_model and nhead are required without config")
             legacy_kwargs.setdefault("dim_feedforward", 2048)
             legacy_kwargs.setdefault("freq_modes", 16)
-            config = TransformerConfig.from_kwargs(
+            config = TransformerConfig.from_legacy_dict(
                 d_model=d_model, nhead=nhead, **legacy_kwargs
             )
             legacy_kwargs.clear()
@@ -208,7 +208,7 @@ class TransformerEncoderLayer(
                     "Attention Residuals are not compatible with mHC at the layer level."
                 )
             if attention_residual_state is None:
-                attention_residual_state = _init_attention_residual_state(
+                attention_residual_state = init_attention_residual_state(
                     src,
                     self.attention_residual_mode,
                     self.attention_residual_block_size,
@@ -314,7 +314,7 @@ class TransformerEncoder(BaseTransformer):
             ct_patch_pad_end = config.ct_patch_pad_end
             ct_patch_fuse = config.ct_patch_fuse
         else:
-            config = TransformerConfig.from_kwargs(
+            config = TransformerConfig.from_legacy_dict(
                 input_size=input_size,
                 model_type=model_type,
                 use_time_encoding=use_time_encoding,

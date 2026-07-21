@@ -8,8 +8,8 @@ from foreblocks.layers.graph.conv import (
     GATConv,
     GATv2Conv,
     GCNConv,
-    GINEConv,
     GINConv,
+    GINEConv,
     JumpKnowledge,
     SAGEConv,
 )

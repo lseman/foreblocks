@@ -2,6 +2,7 @@ import unittest
 
 import torch
 
+from foreblocks.modules.attention.config import AttentionConfig
 from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.attention.variants import moba as moba_module
 
@@ -9,15 +10,15 @@ from foreblocks.modules.attention.variants import moba as moba_module
 class TestMoBAAttention(unittest.TestCase):
     def test_single_block_matches_standard_attention(self):
         torch.manual_seed(0)
-        base = MultiAttention(
+        base = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=32,
             n_heads=4,
             dropout=0.0,
             attention_type="standard",
             use_mla=False,
             chunk_size=64,
-        ).eval()
-        moba = MultiAttention(
+        )).eval()
+        moba = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=32,
             n_heads=4,
             dropout=0.0,
@@ -25,7 +26,7 @@ class TestMoBAAttention(unittest.TestCase):
             use_mla=False,
             chunk_size=64,
             moba_topk=4,
-        ).eval()
+        )).eval()
         moba.load_state_dict(base.state_dict(), strict=False)
 
         x = torch.randn(2, 16, 32)
@@ -37,7 +38,7 @@ class TestMoBAAttention(unittest.TestCase):
 
     def test_causal_output_ignores_future_tokens(self):
         torch.manual_seed(0)
-        moba = MultiAttention(
+        moba = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=32,
             n_heads=4,
             dropout=0.0,
@@ -45,7 +46,7 @@ class TestMoBAAttention(unittest.TestCase):
             use_mla=False,
             chunk_size=4,
             moba_topk=2,
-        ).eval()
+        )).eval()
 
         x1 = torch.randn(2, 12, 32)
         x2 = x1.clone()
@@ -59,15 +60,15 @@ class TestMoBAAttention(unittest.TestCase):
 
     def test_dense_equivalent_topk_matches_standard_attention(self):
         torch.manual_seed(0)
-        base = MultiAttention(
+        base = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=32,
             n_heads=4,
             dropout=0.0,
             attention_type="standard",
             use_mla=False,
             chunk_size=4,
-        ).eval()
-        moba = MultiAttention(
+        )).eval()
+        moba = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=32,
             n_heads=4,
             dropout=0.0,
@@ -75,7 +76,7 @@ class TestMoBAAttention(unittest.TestCase):
             use_mla=False,
             chunk_size=4,
             moba_topk=4,
-        ).eval()
+        )).eval()
         moba.load_state_dict(base.state_dict(), strict=False)
 
         x = torch.randn(2, 12, 32)
@@ -112,7 +113,7 @@ class TestMoBAAttention(unittest.TestCase):
                 )
             )
 
-            moba = MultiAttention(
+            moba = MultiAttention(AttentionConfig.from_legacy_kwargs(
                 d_model=32,
                 n_heads=4,
                 dropout=0.0,
@@ -120,7 +121,7 @@ class TestMoBAAttention(unittest.TestCase):
                 use_mla=False,
                 chunk_size=4,
                 moba_topk=2,
-            ).eval()
+            )).eval()
             x = torch.randn(2, 12, 32)
             with torch.no_grad():
                 out, _, _ = moba(x, x, x, is_causal=True)

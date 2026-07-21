@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.modules.linear_att.deltanet.
+"""foreblocks.modules.attention.implementations.linear_att.deltanet.
 
 DeltaNet: L2-normalised Q, K with causal conv preprocessing and learnable β gate.
 
@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.modules.linear_att.base import _causal_conv1d
+from foreblocks.modules.attention.implementations.linear_att.base import _causal_conv1d
 from foreblocks.ops.attention import (
     can_use_fla_delta_rule,
     can_use_fla_recurrent_delta_rule,

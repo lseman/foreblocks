@@ -25,7 +25,6 @@ from foreblocks.ops.attention.fused_rope import (
 )
 from foreblocks.ops.attention.paged_decode import triton_paged_decode
 
-
 triton = pytest.importorskip("triton")
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Triton kernels require CUDA"

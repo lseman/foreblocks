@@ -25,6 +25,7 @@ import torch.nn.functional as F
 # Use your project modules
 from foreblocks.layers.embeddings import PositionalEncoding
 from foreblocks.layers.norms import create_norm_layer
+from foreblocks.modules.attention.config import AttentionConfig
 from foreblocks.modules.attention.multi_att import MultiAttention
 
 
@@ -59,7 +60,7 @@ class PatchTokenEncoder(nn.Module):
         use_final_norm: bool = True,
     ):
         super().__init__()
-        from foreblocks.models.transformer.transformer import (
+        from foreblocks.models.transformer.core.encoder import (
             TransformerEncoderLayer as _EncLayer,
         )
 
@@ -191,14 +192,14 @@ class PatchTST(nn.Module):
         elif output_mode == "nonpool_attn":
             # Will be lazily initialized on first forward pass
             self.horizon_queries = None
-            self.horizon_attn = MultiAttention(
+            self.horizon_attn = MultiAttention(AttentionConfig.from_legacy_kwargs(
                 d_model=d_model,
                 n_heads=n_heads,
                 dropout=dropout,
                 attention_type=att_type,
                 freq_modes=freq_modes,
                 cross_attention=True,
-            )
+            ))
             self.horizon_scalar = self._make_out_proj(d_model, head_hidden, dropout)
             self.token_to_horizon = None
             self.horizon_proj = None

@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from foreblocks.modules.attention.modules.linear_att.kimi import _KDA_Fast
+from foreblocks.modules.attention.implementations.linear_att.kimi import _KDA_Fast
 
 
 class TestKDAChunkParallel(unittest.TestCase):

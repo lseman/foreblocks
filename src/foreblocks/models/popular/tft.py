@@ -22,10 +22,8 @@ import torch.nn as nn
 
 from foreblocks.layers.embeddings import PositionalEncoding
 from foreblocks.layers.norms import create_norm_layer
-from foreblocks.models.transformer.transformer import (
-    TransformerDecoder,
-    TransformerEncoder,
-)
+from foreblocks.models.transformer.core.decoder import TransformerDecoder
+from foreblocks.models.transformer.core.encoder import TransformerEncoder
 
 # ---------------------------
 # Core TFT building blocks

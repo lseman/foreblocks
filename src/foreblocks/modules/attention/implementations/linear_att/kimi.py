@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.modules.linear_att.kimi.
+"""foreblocks.modules.attention.implementations.linear_att.kimi.
 
 Kimi Delta Attention (KDA) — per-channel forget gate linear attention (arXiv:2510.26692).
 

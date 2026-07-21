@@ -2,25 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Any, Literal
 
 from foreblocks.modules.attention.config import (
     AttentionCacheConfig,
     AttentionConfig,
+    AttentionFeatureConfig,
     AttentionPositionConfig,
     AttentionShapeConfig,
     AttentionVariantConfig,
 )
-
-_ATTENTION_ALIASES: dict[str, str] = {
-    "hybrid_linear": "hybrid",
-    "kimi_hybrid": "hybrid_kimi",
-    "gdn_hybrid": "hybrid_gdn",
-    "hybrid_gla": "gla_hybrid",
-    "hybrid_deltanet": "deltanet_hybrid",
-    "hybrid_gated_deltanet": "gated_deltanet_hybrid",
-}
 
 _ATTENTION_MODES: set[str] = {
     "standard",
@@ -51,10 +43,6 @@ _SUPPORTED_OPTIONS: set[str] = {
 }
 
 
-def _resolve_attention_mode(mode: str) -> str:
-    return _ATTENTION_ALIASES.get(mode, mode)
-
-
 @dataclass(frozen=True)
 class ResidualConfig:
     policy: Literal["standard", "gateskip", "mhc", "attention_residual", "mod"]
@@ -78,18 +66,12 @@ class TransformerConfig:
     dropout: float = 0.1
     activation: str = "gelu"
     max_seq_len: int = 5000
+    attention: AttentionConfig | None = None
     model_type: str = "transformer"
-    attention_mode: str = "standard"
-    attn_implementation: str = "auto"
-    att_type: str = "standard"
     norm_strategy: str = "pre_norm"
     custom_norm: str = "rms"
     layer_norm_eps: float = 1e-5
     pos_encoding_scale: float = 1.0
-    pos_encoding_type: str = "rope"
-    rope_base: float = 10000.0
-    rope_scaling_type: Literal["none", "yarn", "ntk", "linear"] = "none"
-    rope_scaling_factor: float = 1.0
     patch_encoder: bool = True
     patch_len: int = 16
     patch_stride: int = 8
@@ -97,8 +79,6 @@ class TransformerConfig:
     use_gradient_checkpointing: bool = False
     share_layers: bool = False
     use_final_norm: bool = True
-    use_swiglu: bool = True
-    freq_modes: int = 32
     use_moe: bool = False
     num_experts: int = 8
     top_k: int = 2
@@ -121,14 +101,6 @@ class TransformerConfig:
     attention_residual_block_size: int = 8
     initializer_range: float = 0.02
     depth_scaled_init: bool = True
-    use_attention_matching_compaction: bool = False
-    attention_matching_keep_ratio: float = 0.25
-    attention_matching_trigger_len: int = 512
-    attention_matching_min_keep: int = 64
-    attention_matching_query_budget: int = 64
-    attention_matching_force_single_step: bool = False
-    moba_block_size: int | None = None
-    moba_topk: int = 4
     cache_implementation: Literal["auto", "dynamic", "paged", "static"] = "auto"
     label_len: int = 0
     informer_like: bool = True
@@ -144,23 +116,15 @@ class TransformerConfig:
     options: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # Resolve attention-mode aliases before validation.
-        # This runs for both direct construction (TransformerConfig(...))
-        # and from_dict(), ensuring canonical values everywhere.
-        self.attention_mode = _resolve_attention_mode(self.attention_mode)
-
-        # Accept the pre-first-class representation when loading or directly
-        # constructing older configs. New code should pass these as fields.
-        known = {item.name for item in fields(self)} - {"options"}
-        promoted = known & self.options.keys()
-        for name in promoted:
-            setattr(self, name, self.options[name])
-        if promoted:
-            self.options = {
-                name: value
-                for name, value in self.options.items()
-                if name not in promoted
-            }
+        if self.attention is None:
+            self.attention = AttentionConfig(
+                shape=AttentionShapeConfig(
+                    d_model=self.d_model,
+                    n_heads=self.nhead,
+                    dropout=self.dropout,
+                    max_seq_len=self.max_seq_len,
+                )
+            )
 
         if self.input_size <= 0 or self.output_size <= 0:
             raise ValueError("input_size and output_size must be positive")
@@ -172,19 +136,40 @@ class TransformerConfig:
             raise ValueError("dropout must be in [0, 1)")
         if self.cache_implementation not in {"auto", "dynamic", "paged", "static"}:
             raise ValueError("unsupported cache_implementation")
-        if self.attention_mode not in _ATTENTION_MODES:
-            raise ValueError(f"unsupported attention_mode: {self.attention_mode}")
+        if self.attention.shape.d_model != self.d_model:
+            raise ValueError("attention.shape.d_model must match d_model")
+        if self.attention.shape.n_heads != self.nhead:
+            raise ValueError("attention.shape.n_heads must match nhead")
+        if self.attention.architecture not in _ATTENTION_MODES:
+            raise ValueError(
+                f"unsupported attention architecture: {self.attention.architecture}"
+            )
         if self.norm_strategy not in {"pre_norm", "post_norm", "sandwich_norm"}:
             raise ValueError(f"unsupported norm_strategy: {self.norm_strategy}")
         if self.custom_norm not in {"rms", "layer", "layernorm", "rmsnorm"}:
             raise ValueError(f"unsupported custom_norm: {self.custom_norm}")
-        if self.pos_encoding_type not in {"rope", "alibi", "sinusoidal", "learnable"}:
-            raise ValueError(f"unsupported pos_encoding_type: {self.pos_encoding_type}")
-        if self.rope_scaling_type not in {"none", "yarn", "ntk", "linear"}:
-            raise ValueError(f"unsupported rope_scaling_type: {self.rope_scaling_type}")
+        if self.attention.position.encoding not in {
+            "rope",
+            "alibi",
+            "sinusoidal",
+            "learnable",
+        }:
+            raise ValueError(
+                f"unsupported position encoding: {self.attention.position.encoding}"
+            )
+        if self.attention.position.rope_scaling_type not in {
+            "none",
+            "yarn",
+            "ntk",
+            "linear",
+        }:
+            raise ValueError(
+                "unsupported rope scaling type: "
+                f"{self.attention.position.rope_scaling_type}"
+            )
         if self.layer_norm_eps <= 0:
             raise ValueError("layer_norm_eps must be positive")
-        if self.freq_modes <= 0:
+        if self.attention.variant.frequency_modes <= 0:
             raise ValueError("freq_modes must be positive")
         if self.gate_budget is not None and not 0.0 <= self.gate_budget <= 1.0:
             raise ValueError("gate_budget must be in [0, 1]")
@@ -198,42 +183,6 @@ class TransformerConfig:
                 "unsupported Transformer options: " + ", ".join(unsupported)
             )
         self.validate_compatibility()
-
-    @property
-    def attention(self) -> AttentionConfig:
-        return AttentionConfig(
-            shape=AttentionShapeConfig(
-                d_model=self.d_model,
-                n_heads=self.nhead,
-                dropout=self.dropout,
-                max_seq_len=self.max_seq_len,
-            ),
-            architecture=self.attention_mode,
-            cache=AttentionCacheConfig(
-                use_paged_cache=self.cache_implementation in {"auto", "paged"},
-                use_mla=not self.use_attention_matching_compaction,
-                attention_matching=self.use_attention_matching_compaction,
-                matching_keep_ratio=self.attention_matching_keep_ratio,
-                matching_trigger_len=self.attention_matching_trigger_len,
-                matching_min_keep=self.attention_matching_min_keep,
-                matching_query_budget=self.attention_matching_query_budget,
-                matching_force_single_step=self.attention_matching_force_single_step,
-            ),
-            position=AttentionPositionConfig(
-                encoding=self.pos_encoding_type,
-                rope_base=self.rope_base,
-                rope_scaling_type=self.rope_scaling_type,
-                rope_scaling_factor=self.rope_scaling_factor,
-            ),
-            variant=AttentionVariantConfig(
-                name=self.att_type,
-                backend=self.attn_implementation,
-                frequency_modes=self.freq_modes,
-                use_swiglu=self.use_swiglu,
-                moba_block_size=self.moba_block_size,
-                moba_topk=self.moba_topk,
-            ),
-        )
 
     @property
     def residual(self) -> ResidualConfig:
@@ -287,39 +236,92 @@ class TransformerConfig:
                 "use dynamic full-sequence execution"
             )
 
-    @classmethod
-    def from_kwargs(cls, **kwargs: Any) -> TransformerConfig:
-        known = {item.name for item in fields(cls)} - {"options"}
-        values = {key: value for key, value in kwargs.items() if key in known}
-        values["options"] = {
-            key: value for key, value in kwargs.items() if key not in known
-        }
-        return cls(**values)
-
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def with_overrides(self, **overrides: Any) -> TransformerConfig:
-        values = {
-            item.name: getattr(self, item.name)
-            for item in fields(self)
-            if item.name != "options"
-        }
-        options = dict(self.options)
-        values.update(options)
-        values.update(overrides)
-        return type(self).from_kwargs(**values)
+        return replace(self, **overrides)
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> TransformerConfig:
         values = dict(values)
-        options = dict(values.get("options", {}))
+        attention = values.get("attention")
+        if isinstance(attention, dict):
+            values["attention"] = AttentionConfig(
+                shape=AttentionShapeConfig(**attention["shape"]),
+                architecture=attention.get("architecture", "standard"),
+                cache=AttentionCacheConfig(**attention.get("cache", {})),
+                position=AttentionPositionConfig(**attention.get("position", {})),
+                variant=AttentionVariantConfig(**attention.get("variant", {})),
+                features=AttentionFeatureConfig(**attention.get("features", {})),
+            )
+        return cls(**values)
+
+    @classmethod
+    def from_legacy_dict(
+        cls, values: dict[str, Any] | None = None, **kwargs: Any
+    ) -> TransformerConfig:
+        """Load the former flat attention configuration representation."""
+        values = {**(values or {}), **kwargs}
+        legacy_options = dict(values.pop("options", {}))
+        known_fields = {item.name for item in fields(cls)} - {"options"}
+        for name in known_fields & legacy_options.keys():
+            values.setdefault(name, legacy_options.pop(name))
+        attention = AttentionConfig(
+            shape=AttentionShapeConfig(
+                d_model=values.get("d_model", 256),
+                n_heads=values.get("nhead", 8),
+                dropout=values.get("dropout", 0.1),
+                max_seq_len=values.get("max_seq_len", 5000),
+            ),
+            architecture=values.pop("attention_mode", "standard"),
+            cache=AttentionCacheConfig(
+                use_paged_cache=values.get("cache_implementation", "auto")
+                in {"auto", "paged"},
+                use_mla=not values.pop("use_attention_matching_compaction", False),
+                matching_keep_ratio=values.pop(
+                    "attention_matching_keep_ratio", 0.25
+                ),
+                matching_trigger_len=values.pop(
+                    "attention_matching_trigger_len", 512
+                ),
+                matching_min_keep=values.pop("attention_matching_min_keep", 64),
+                matching_query_budget=values.pop(
+                    "attention_matching_query_budget", 64
+                ),
+                matching_force_single_step=values.pop(
+                    "attention_matching_force_single_step", False
+                ),
+            ),
+            position=AttentionPositionConfig(
+                encoding=values.pop("pos_encoding_type", "rope"),
+                rope_base=values.pop("rope_base", 10000.0),
+                rope_scaling_type=values.pop("rope_scaling_type", "none"),
+                rope_scaling_factor=values.pop("rope_scaling_factor", 1.0),
+            ),
+            variant=AttentionVariantConfig(
+                name=values.pop("att_type", "standard"),
+                backend=values.pop("attn_implementation", "auto"),
+                frequency_modes=values.pop("freq_modes", 32),
+                use_swiglu=values.pop("use_swiglu", True),
+                moba_block_size=values.pop("moba_block_size", None),
+                moba_topk=values.pop("moba_topk", 4),
+            ),
+        )
+        attention_matching = not attention.cache.use_mla
+        attention = replace(
+            attention,
+            cache=replace(
+                attention.cache, attention_matching=attention_matching
+            ),
+        )
+        values["attention"] = attention
         known = {item.name for item in fields(cls)} - {"options"}
-        for name in known & options.keys():
-            values.setdefault(name, options.pop(name))
+        options = legacy_options
+        options.update(
+            (name, values.pop(name)) for name in list(values) if name not in known
+        )
         values["options"] = options
-        if "attention_mode" in values:
-            values["attention_mode"] = _resolve_attention_mode(values["attention_mode"])
         return cls(**values)
 
     def model_kwargs(self) -> dict[str, Any]:

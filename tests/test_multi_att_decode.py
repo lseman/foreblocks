@@ -2,6 +2,7 @@ import unittest
 
 import torch
 
+from foreblocks.modules.attention.config import AttentionConfig
 from foreblocks.modules.attention.multi_att import MultiAttention
 
 
@@ -15,14 +16,14 @@ class TestMultiAttentionIncrementalDecode(unittest.TestCase):
 
     def _decode_matches_full(self, *, paged, mla, rope, T=16, prefill=0):
         torch.manual_seed(0)
-        m = MultiAttention(
+        m = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=64,
             n_heads=8,
             dropout=0.0,
             use_mla=mla,
             pos_encoding_type="rope" if rope else "sinusoidal",
             use_paged_cache=paged,
-        ).eval()
+        )).eval()
         x = torch.randn(2, T, 64)
         with torch.no_grad():
             full, _, _ = m(x, x, x, is_causal=True)

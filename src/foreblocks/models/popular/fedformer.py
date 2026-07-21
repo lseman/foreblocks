@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 
 from foreblocks.layers.norms import create_norm_layer
-from foreblocks.modules.attention.modules.frequency_att import FourierBlock
+from foreblocks.modules.attention.implementations.frequency_att import FourierBlock
 
 # ---------------------------
 # 1) Series decomposition

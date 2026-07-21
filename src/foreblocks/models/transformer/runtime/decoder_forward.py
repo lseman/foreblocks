@@ -7,7 +7,11 @@ from typing import Any
 import torch
 
 from foreblocks.models.transformer.runtime.outputs import TransformerDecoderOutput
-from foreblocks.models.transformer.runtime.state import DecoderLayerState, DecoderState
+from foreblocks.models.transformer.runtime.state import (
+    DecoderLayerState,
+    DecoderState,
+    load_legacy_decoder_state,
+)
 
 
 def resolve_output_options(config, hidden_states, attentions, return_dict):
@@ -23,7 +27,7 @@ def coerce_decoder_state(
 ) -> DecoderState | None:
     if state is None or isinstance(state, DecoderState):
         return state
-    return DecoderState.from_legacy(state, num_layers=num_layers)
+    return load_legacy_decoder_state(state, num_layers=num_layers)
 
 
 def prepare_layer_states(
@@ -33,8 +37,8 @@ def prepare_layer_states(
         return [None] * num_layers
     raw_layers = state.get("layers")
     if raw_layers is None:
-        return [DecoderLayerState.from_legacy(None) for _ in range(num_layers)]
-    layers = [DecoderLayerState.from_legacy(item) for item in raw_layers]
+        return [DecoderLayerState.from_mapping(None) for _ in range(num_layers)]
+    layers = [DecoderLayerState.from_mapping(item) for item in raw_layers]
     if len(layers) != num_layers:
         raise ValueError(
             f"incremental_state['layers'] length {len(layers)} "

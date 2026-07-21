@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 
 from foreblocks.layers.norms import create_norm_layer
-from foreblocks.modules.attention.modules.autocor_att import (
+from foreblocks.modules.attention.implementations.autocor_att import (
     AutoCorrelation as AutoCorrelationImpl,
     AutoCorrelationLayer,
 )

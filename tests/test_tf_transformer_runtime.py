@@ -2,22 +2,28 @@ import pytest
 import torch
 
 from foreblocks.models.transformer import GenerationConfig, TransformerConfig
+from foreblocks.models.transformer.core.decoder import TransformerDecoder
+from foreblocks.models.transformer.core.encoder import (
+    TransformerEncoder,
+    TransformerEncoderLayer,
+)
 from foreblocks.models.transformer.runtime.outputs import (
     TransformerDecoderOutput,
     TransformerEncoderOutput,
 )
 from foreblocks.models.transformer.runtime.state import DecoderState
-from foreblocks.models.transformer.transformer import (
-    TransformerDecoder,
-    TransformerEncoder,
-    TransformerEncoderLayer,
-)
 from foreblocks.modules.attention.backends import (
     ATTENTION_BACKENDS,
     register_attention_backend,
 )
 from foreblocks.modules.attention.cache import KVCacheProtocol
 from foreblocks.modules.attention.cache.kv import StaticKVCache
+from foreblocks.modules.attention.config import (
+    AttentionConfig,
+    AttentionPositionConfig,
+    AttentionShapeConfig,
+    AttentionVariantConfig,
+)
 from foreblocks.modules.attention.masking import build_attention_mask
 from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.skip.gateskip import BudgetScheduler
@@ -166,8 +172,12 @@ def test_sdpa_backend_matches_eager_with_gqa_and_padding():
         use_mla=False,
         use_paged_cache=False,
     )
-    eager = MultiAttention(**common, attn_implementation="eager").eval()
-    sdpa = MultiAttention(**common, attn_implementation="sdpa").eval()
+    eager = MultiAttention(
+        AttentionConfig.from_legacy_kwargs(**common, attn_implementation="eager")
+    ).eval()
+    sdpa = MultiAttention(
+        AttentionConfig.from_legacy_kwargs(**common, attn_implementation="sdpa")
+    ).eval()
     sdpa.load_state_dict(eager.state_dict())
     x = torch.randn(2, 6, 16)
     padding = torch.tensor(
@@ -320,13 +330,20 @@ def test_transformer_config_rejects_incompatible_residual_policies_early():
     with pytest.raises(ValueError, match="incompatible"):
         TransformerConfig(
             use_gateskip=True,
-            options={"use_attention_residual": True},
+            use_attention_residual=True,
         )
 
 
-def test_transformer_config_normalizes_aliases_and_rejects_option_typos():
-    config = TransformerConfig(attention_mode="hybrid_linear")
-    assert config.attention.architecture == "hybrid"
+def test_transformer_config_rejects_legacy_modes_and_option_typos():
+    with pytest.raises(ValueError, match="unsupported attention architecture"):
+        TransformerConfig(
+            attention=AttentionConfig(
+                shape=AttentionShapeConfig(d_model=256, n_heads=8),
+                architecture="hybrid_linear",
+            )
+        )
+
+    config = TransformerConfig()
     assert config.residual.policy == "standard"
     assert config.cache.implementation == "auto"
 
@@ -448,13 +465,13 @@ def test_static_cache_update_is_fullgraph_compileable():
 
 
 def test_standard_attention_dispatches_prefill_and_decode(monkeypatch):
-    attention = MultiAttention(
+    attention = MultiAttention(AttentionConfig.from_legacy_kwargs(
         d_model=8,
         n_heads=2,
         dropout=0.0,
         use_mla=False,
         use_paged_cache=True,
-    ).eval()
+    )).eval()
     calls = {"prefill": 0, "decode": 0}
     original_prefill = attention.impl.prefill
     original_decode = attention.impl.decode
@@ -528,9 +545,9 @@ def test_custom_attention_backend_registry_executes_runner():
     register_attention_backend(
         "test_backend", runner, mask_builder=build_attention_mask
     )
-    attention = MultiAttention(
+    attention = MultiAttention(AttentionConfig.from_legacy_kwargs(
         d_model=8, n_heads=2, dropout=0.0, attn_implementation="test_backend"
-    ).eval()
+    )).eval()
     output, _, _ = attention(torch.randn(1, 2, 8), is_causal=True)
     assert output.shape == (1, 2, 8)
     assert calls[0].shape == (1, 2, 2, 2)
@@ -691,8 +708,11 @@ def test_transformer_config_promotes_stable_layer_options_to_fields():
         nhead=2,
         num_layers=1,
         layer_norm_eps=1e-6,
-        use_swiglu=False,
-        freq_modes=7,
+        attention=AttentionConfig(
+            shape=AttentionShapeConfig(d_model=8, n_heads=2),
+            position=AttentionPositionConfig(encoding="rope"),
+            variant=AttentionVariantConfig(frequency_modes=7, use_swiglu=False),
+        ),
         gate_lambda=0.25,
         mhc_n_streams=3,
         initializer_range=0.01,
@@ -708,12 +728,12 @@ def test_transformer_config_promotes_stable_layer_options_to_fields():
     assert model.initializer_range == 0.01
     assert layer._attention_config.variant.frequency_modes == 7
     assert layer._attention_config.shape.d_model == config.d_model
-    assert layer._attention_config.position.encoding == config.pos_encoding_type
+    assert layer._attention_config.position.encoding == config.attention.position.encoding
     assert type(layer.feed_forward.block).__name__ == "_StandardFeedForwardBlock"
 
 
 def test_transformer_config_loads_legacy_promoted_options():
-    config = TransformerConfig.from_dict(
+    config = TransformerConfig.from_legacy_dict(
         {
             "d_model": 8,
             "nhead": 2,

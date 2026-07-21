@@ -6,7 +6,6 @@ import pandas as pd
 
 from foretools.foreminer.foreminer import DatasetAnalyzer
 
-
 # Add the project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 

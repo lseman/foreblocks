@@ -10,7 +10,7 @@ from foreblocks.modules.attention.backends import (
     AttentionBackendSpec,
     register_attention_backend,
 )
-from foreblocks.modules.attention.cache.base import KVCacheProtocol, TransformerCache
+from foreblocks.modules.attention.cache.base import KVCacheProtocol
 from foreblocks.modules.attention.config import (
     AttentionCacheConfig,
     AttentionConfig,
@@ -18,7 +18,6 @@ from foreblocks.modules.attention.config import (
     AttentionPositionConfig,
     AttentionShapeConfig,
     AttentionVariantConfig,
-    MultiAttentionConfig,
 )
 from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.attention.variants.base import AttentionContext, AttentionImpl
@@ -41,8 +40,6 @@ __all__ = [
     "AttentionVariantRegistry",
     "KVCacheProtocol",
     "MultiAttention",
-    "MultiAttentionConfig",
-    "TransformerCache",
     "register_attention_backend",
     "register_attention_variant",
 ]

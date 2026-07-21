@@ -4,8 +4,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
 import foretools.arima.arima as arima
 from foretools.arima.arima import (
     _as_2d,
@@ -13,6 +11,9 @@ from foretools.arima.arima import (
     difference,
     future_difference_exog,
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 
 
 def test_invert_difference_forecast_recovers_level_horizon() -> None:

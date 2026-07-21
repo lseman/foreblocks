@@ -83,86 +83,106 @@ class AttentionFeatureConfig:
 @dataclass(frozen=True)
 class AttentionConfig:
     shape: AttentionShapeConfig
-    architecture: str | None = None
+    architecture: str = "standard"
     cache: AttentionCacheConfig = field(default_factory=AttentionCacheConfig)
     position: AttentionPositionConfig = field(default_factory=AttentionPositionConfig)
     variant: AttentionVariantConfig = field(default_factory=AttentionVariantConfig)
     features: AttentionFeatureConfig = field(default_factory=AttentionFeatureConfig)
 
-    @property
-    def backend(self) -> str:
-        """Compatibility view of the configured kernel backend."""
-        return self.variant.backend
-
-    @property
-    def position_encoding(self) -> str:
-        return self.position.encoding
-
-    def to_legacy_kwargs(self) -> dict[str, object]:
-        return {
-            "d_model": self.shape.d_model,
-            "n_heads": self.shape.n_heads,
-            "n_kv_heads": self.shape.n_kv_heads,
-            "dropout": self.shape.dropout,
-            "max_seq_len": self.shape.max_seq_len,
-            "cross_attention": self.shape.cross_attention,
-            "attention_type": self.variant.name,
-            "attn_implementation": self.variant.backend,
-            "window_size": self.variant.window_size,
-            "chunk_size": self.variant.chunk_size,
-            "prob_sparse_factor": self.variant.probability_factor,
-            "freq_modes": self.variant.frequency_modes,
-            "softpick_chunk_size": self.variant.softpick_chunk_size,
-            "global_attention_ratio": self.variant.global_attention_ratio,
-            "use_flash_sliding": self.variant.use_flash_sliding,
-            "use_swiglu": self.variant.use_swiglu,
-            "nsa_block_size": self.variant.nsa_block_size,
-            "nsa_topk_ratio": self.variant.nsa_topk_ratio,
-            "moba_block_size": self.variant.moba_block_size,
-            "moba_topk": self.variant.moba_topk,
-            "attention_dilation": self.variant.dilation,
-            "dilated_window_size": self.variant.dilated_window_size,
-            "use_paged_cache": self.cache.use_paged_cache,
-            "cache_block_size": self.cache.block_size,
-            "max_cache_blocks": self.cache.max_blocks,
-            "use_mla": self.cache.use_mla,
-            "kv_latent_dim": self.cache.kv_latent_dim,
-            "use_attention_matching_compaction": self.cache.attention_matching,
-            "attention_matching_keep_ratio": self.cache.matching_keep_ratio,
-            "attention_matching_trigger_len": self.cache.matching_trigger_len,
-            "attention_matching_min_keep": self.cache.matching_min_keep,
-            "attention_matching_query_budget": self.cache.matching_query_budget,
-            "attention_matching_force_single_step": (
-                self.cache.matching_force_single_step
+    @classmethod
+    def from_legacy_kwargs(cls, **values: object) -> AttentionConfig:
+        """Load the former flat ``MultiAttention`` constructor representation."""
+        values = dict(values)
+        shape = AttentionShapeConfig(
+            d_model=int(values.pop("d_model")),
+            n_heads=int(values.pop("n_heads")),
+            n_kv_heads=values.pop("n_kv_heads", None),
+            dropout=float(values.pop("dropout", 0.1)),
+            max_seq_len=int(values.pop("max_seq_len", 4096)),
+            cross_attention=bool(values.pop("cross_attention", False)),
+        )
+        cache = AttentionCacheConfig(
+            use_paged_cache=bool(values.pop("use_paged_cache", True)),
+            block_size=int(values.pop("cache_block_size", 128)),
+            max_blocks=int(values.pop("max_cache_blocks", 2048)),
+            use_mla=bool(values.pop("use_mla", True)),
+            kv_latent_dim=values.pop("kv_latent_dim", None),
+            attention_matching=bool(
+                values.pop("use_attention_matching_compaction", False)
             ),
-            "pos_encoding_type": self.position.encoding,
-            "rope_base": self.position.rope_base,
-            "rope_scaling_type": self.position.rope_scaling_type,
-            "rope_scaling_factor": self.position.rope_scaling_factor,
-            "qk_norm": self.features.qk_norm,
-            "qk_norm_type": self.features.qk_norm_type,
-            "logit_softcap": self.features.logit_softcap,
-            "use_learned_temp": self.features.learned_temperature,
-            "use_gated_attention": self.features.gated_attention,
-            "gated_attn_mode": self.features.gated_attention_mode,
-            "gated_attn_bias": self.features.gated_attention_bias,
-            "temp_init": self.features.temperature_init,
-            "use_subquery_norm": self.features.subquery_norm,
-            "subquery_norm_mode": self.features.subquery_norm_mode,
-            "use_multiscale_mask": self.features.multiscale_mask,
-            "multiscale_window_ratio": self.features.multiscale_window_ratio,
-            "multiscale_topk": self.features.multiscale_topk,
-            "use_normalized_attn_out": self.features.normalized_output,
-            "norm_attn_type": self.features.normalized_output_type,
-            "use_head_importance": self.features.head_importance,
-            "head_importance_sparsity": self.features.head_importance_sparsity,
-            "verbose_init": self.features.verbose_init,
-        }
-
-
-# Compatibility name retained for callers that adopted the initial grouped API.
-MultiAttentionConfig = AttentionConfig
-
+            matching_keep_ratio=float(
+                values.pop("attention_matching_keep_ratio", 0.25)
+            ),
+            matching_trigger_len=int(
+                values.pop("attention_matching_trigger_len", 512)
+            ),
+            matching_min_keep=int(values.pop("attention_matching_min_keep", 64)),
+            matching_query_budget=int(
+                values.pop("attention_matching_query_budget", 64)
+            ),
+            matching_force_single_step=bool(
+                values.pop("attention_matching_force_single_step", False)
+            ),
+        )
+        position = AttentionPositionConfig(
+            encoding=str(values.pop("pos_encoding_type", "rope")),
+            rope_base=float(values.pop("rope_base", 10000.0)),
+            rope_scaling_type=str(values.pop("rope_scaling_type", "none")),
+            rope_scaling_factor=float(values.pop("rope_scaling_factor", 1.0)),
+        )
+        variant = AttentionVariantConfig(
+            name=str(values.pop("attention_type", "standard")),
+            backend=str(values.pop("attn_implementation", "auto")),
+            window_size=int(values.pop("window_size", 64)),
+            chunk_size=int(values.pop("chunk_size", 1024)),
+            probability_factor=float(values.pop("prob_sparse_factor", 0.4)),
+            frequency_modes=int(values.pop("freq_modes", 32)),
+            softpick_chunk_size=int(values.pop("softpick_chunk_size", 128)),
+            global_attention_ratio=float(
+                values.pop("global_attention_ratio", 0.1)
+            ),
+            use_flash_sliding=bool(values.pop("use_flash_sliding", True)),
+            use_swiglu=bool(values.pop("use_swiglu", True)),
+            nsa_block_size=values.pop("nsa_block_size", None),
+            nsa_topk_ratio=values.pop("nsa_topk_ratio", None),
+            moba_block_size=values.pop("moba_block_size", None),
+            moba_topk=int(values.pop("moba_topk", 4)),
+            dilation=int(values.pop("attention_dilation", 2)),
+            dilated_window_size=values.pop("dilated_window_size", None),
+        )
+        features = AttentionFeatureConfig(
+            qk_norm=bool(values.pop("qk_norm", False)),
+            qk_norm_type=str(values.pop("qk_norm_type", "rms")),
+            logit_softcap=values.pop("logit_softcap", None),
+            learned_temperature=bool(values.pop("use_learned_temp", False)),
+            gated_attention=bool(values.pop("use_gated_attention", False)),
+            normalized_output=bool(values.pop("use_normalized_attn_out", False)),
+            head_importance=bool(values.pop("use_head_importance", False)),
+            gated_attention_mode=str(values.pop("gated_attn_mode", "per_head")),
+            gated_attention_bias=bool(values.pop("gated_attn_bias", True)),
+            temperature_init=float(values.pop("temp_init", 1.0)),
+            subquery_norm=bool(values.pop("use_subquery_norm", False)),
+            subquery_norm_mode=str(values.pop("subquery_norm_mode", "learned")),
+            multiscale_mask=bool(values.pop("use_multiscale_mask", False)),
+            multiscale_window_ratio=float(
+                values.pop("multiscale_window_ratio", 0.2)
+            ),
+            multiscale_topk=int(values.pop("multiscale_topk", 16)),
+            normalized_output_type=str(values.pop("norm_attn_type", "rms")),
+            head_importance_sparsity=float(
+                values.pop("head_importance_sparsity", 0.1)
+            ),
+            verbose_init=bool(values.pop("verbose_init", False)),
+        )
+        if values:
+            raise TypeError(f"unknown legacy attention options: {sorted(values)}")
+        return cls(
+            shape=shape,
+            cache=cache,
+            position=position,
+            variant=variant,
+            features=features,
+        )
 
 __all__ = [
     "AttentionCacheConfig",
@@ -171,5 +191,4 @@ __all__ = [
     "AttentionPositionConfig",
     "AttentionShapeConfig",
     "AttentionVariantConfig",
-    "MultiAttentionConfig",
 ]

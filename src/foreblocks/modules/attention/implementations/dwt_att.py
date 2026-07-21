@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.modules.dwt_att.
+"""foreblocks.modules.attention.implementations.dwt_att.
 
 Spectral attention operating in the wavelet-coefficient domain.
 

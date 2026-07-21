@@ -7,7 +7,6 @@ import unittest
 import numpy as np
 import pytest
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1] / "src"
 
 

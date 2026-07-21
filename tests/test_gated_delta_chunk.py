@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from foreblocks.modules.attention.modules.linear_att.gated_delta import (
+from foreblocks.modules.attention.implementations.linear_att.gated_delta import (
     GatedDeltaNet,
 )
 

@@ -24,8 +24,8 @@ from foreblocks.models.transformer.features.mhc import (
     mhc_collapse_streams,
 )
 from foreblocks.models.transformer.runtime.residual_state import (
-    _append_attention_residual_update,
-    _attention_residual_input,
+    append_attention_residual_update,
+    attention_residual_input,
 )
 from foreblocks.modules.skip.gateskip import apply_skip_to_kv
 
@@ -258,9 +258,9 @@ class AttentionResidualPolicy:
         residual_module = context.residual_module
         if residual_module is None:
             raise RuntimeError("attention-residual execution requires residual_module")
-        x_in = _attention_residual_input(state["current"], state, residual_module)
+        x_in = attention_residual_input(state["current"], state, residual_module)
         out, updated_kv = strategy.owner._run_attnres_core(x_in, context.normw, core_fn)
-        _append_attention_residual_update(state, out)
+        append_attention_residual_update(state, out)
         strategy.x = state["current"]
         return updated_kv, None
 

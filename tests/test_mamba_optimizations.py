@@ -19,7 +19,6 @@ import time
 import torch
 import torch.nn.functional as F
 
-
 GPU = "cuda"
 if not torch.cuda.is_available():
     print("WARNING: No GPU found. Tests will run on CPU (slow).")

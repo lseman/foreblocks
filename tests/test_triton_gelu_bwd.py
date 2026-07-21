@@ -2,7 +2,6 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-
 triton = pytest.importorskip("triton")
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Triton kernels require CUDA"

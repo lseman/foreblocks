@@ -21,6 +21,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from foreblocks.modules.attention.config import AttentionConfig
 from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.moe.ff import FeedForwardBlock
 from foreblocks.sequence.mamba.mamba2 import Mamba2Block
@@ -113,7 +114,11 @@ class BlockStack(nn.Module):
                 d_model=d_model, **{"use_pre_norm": False, **mamba_kwargs}
             )
         if kind == "attn":
-            return MultiAttention(d_model=d_model, **{"n_heads": 8, **attn_kwargs})
+            return MultiAttention(
+                AttentionConfig.from_legacy_kwargs(
+                    d_model=d_model, **{"n_heads": 8, **attn_kwargs}
+                )
+            )
         # moe: FeedForwardBlock needs dim_ff and use_moe=True to actually route.
         return FeedForwardBlock(
             **{

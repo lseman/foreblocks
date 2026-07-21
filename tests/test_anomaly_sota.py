@@ -6,22 +6,21 @@ import torch
 
 from foreblocks.anomaly import (
     AnomalyDetectorConfig,
+    BNAdaptiveWrapper,
+    EMAStatistics,
+    EnsembleScoreCombiner,
     ForeblocksAnomalyDetector,
     PatchMamba,
-    iTransformer,
-    EnsembleScoreCombiner,
-    TemperatureScaler,
     PlattScaler,
-    isotonic_calibrate,
+    StreamingAnomalyDetector,
+    TemperatureScaler,
+    TENTAdapter,
     compute_confidence,
     fit_score_distribution,
-    StreamingAnomalyDetector,
-    TENTAdapter,
-    EMAStatistics,
-    BNAdaptiveWrapper,
+    isotonic_calibrate,
+    iTransformer,
 )
-from foreblocks.anomaly.models.state_space import S6Block, PatchSSMBlock
-
+from foreblocks.anomaly.models.state_space import PatchSSMBlock, S6Block
 
 # ── PatchMamba tests ──
 

@@ -15,7 +15,6 @@ from foreblocks.modules.attention.cache import (
     paged_stream_decode_standard,
 )
 
-
 CPU = torch.device("cpu")
 torch.manual_seed(0)
 

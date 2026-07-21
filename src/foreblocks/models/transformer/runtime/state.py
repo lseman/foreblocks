@@ -1,4 +1,4 @@
-"""Typed, backward-compatible runtime state for incremental decoding."""
+"""Typed runtime state for incremental decoding."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from foreblocks.modules.attention.cache.base import KVCacheProtocol
 
 class AttentionCacheState(dict[str, Any]):
     @classmethod
-    def from_legacy(cls, value: Mapping[str, Any] | None) -> AttentionCacheState:
+    def from_mapping(cls, value: Mapping[str, Any] | None) -> AttentionCacheState:
         return value if isinstance(value, cls) else cls(value or {})
 
     @property
@@ -50,11 +50,11 @@ class AttentionCacheState(dict[str, Any]):
 
 class DecoderLayerState(dict[str, AttentionCacheState]):
     @classmethod
-    def from_legacy(cls, value: Mapping[str, Any] | None) -> DecoderLayerState:
+    def from_mapping(cls, value: Mapping[str, Any] | None) -> DecoderLayerState:
         value = value or {}
         return cls(
-            self_attn=AttentionCacheState.from_legacy(value.get("self_attn")),
-            cross_attn=AttentionCacheState.from_legacy(value.get("cross_attn")),
+            self_attn=AttentionCacheState.from_mapping(value.get("self_attn")),
+            cross_attn=AttentionCacheState.from_mapping(value.get("cross_attn")),
         )
 
     @property
@@ -68,7 +68,7 @@ class DecoderLayerState(dict[str, AttentionCacheState]):
 
 class DecoderState(dict[str, Any]):
     @classmethod
-    def from_legacy(
+    def from_mapping(
         cls,
         value: Mapping[str, Any] | None,
         *,
@@ -76,14 +76,14 @@ class DecoderState(dict[str, Any]):
     ) -> DecoderState:
         raw = dict(value or {})
         raw_layers: Iterable[Mapping[str, Any] | None] = raw.get("layers") or ()
-        parsed_layers = [DecoderLayerState.from_legacy(item) for item in raw_layers]
+        parsed_layers = [DecoderLayerState.from_mapping(item) for item in raw_layers]
         if parsed_layers and len(parsed_layers) != num_layers:
             raise ValueError(
                 f"decoder state has {len(parsed_layers)} layers; expected {num_layers}"
             )
         if not parsed_layers:
             parsed_layers = [
-                DecoderLayerState.from_legacy(None) for _ in range(num_layers)
+                DecoderLayerState.from_mapping(None) for _ in range(num_layers)
             ]
         raw["layers"] = parsed_layers
         return cls(raw)
@@ -101,4 +101,16 @@ class DecoderState(dict[str, Any]):
         self["_decoded_len"] = int(value)
 
 
-__all__ = ["AttentionCacheState", "DecoderLayerState", "DecoderState"]
+def load_legacy_decoder_state(
+    value: Mapping[str, Any] | None, *, num_layers: int
+) -> DecoderState:
+    """Convert the former dictionary state format at an API boundary."""
+    return DecoderState.from_mapping(value, num_layers=num_layers)
+
+
+__all__ = [
+    "AttentionCacheState",
+    "DecoderLayerState",
+    "DecoderState",
+    "load_legacy_decoder_state",
+]

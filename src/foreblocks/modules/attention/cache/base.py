@@ -28,9 +28,6 @@ class KVCacheProtocol(Protocol):
     def state_dict(self) -> dict: ...
 
 
-TransformerCache = KVCacheProtocol
-
-
 def map_cache_state(value, tensor_fn):
     from foreblocks.modules.attention.cache.kv import StaticKVCache
     from foreblocks.modules.attention.cache.paged import PagedKVCache
@@ -92,7 +89,6 @@ def load_cache_state_dict(value, *, device=None):
 
 __all__ = [
     "KVCacheProtocol",
-    "TransformerCache",
     "cache_state_dict",
     "load_cache_state_dict",
     "map_cache_state",

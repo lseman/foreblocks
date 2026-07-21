@@ -2,9 +2,9 @@ import numpy as np
 import torch
 
 from foreblocks.anomaly import (
+    DAGMM,
     AnomalyDetectorConfig,
     AnomalyTransformer,
-    DAGMM,
     ForeblocksAnomalyDetector,
     OmniAnomaly,
     TranAD,

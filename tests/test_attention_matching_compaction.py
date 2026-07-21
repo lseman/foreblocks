@@ -1,11 +1,12 @@
 import torch
 
-from foreblocks.models.transformer.transformer import TransformerEncoderLayer
+from foreblocks.models.transformer.core.encoder import TransformerEncoderLayer
+from foreblocks.modules.attention.config import AttentionConfig
 from foreblocks.modules.attention.multi_att import MultiAttention
 
 
 def test_multiattention_attention_matching_compacts_cache():
-    attn = MultiAttention(
+    attn = MultiAttention(AttentionConfig.from_legacy_kwargs(
         d_model=32,
         n_heads=4,
         dropout=0.0,
@@ -15,7 +16,7 @@ def test_multiattention_attention_matching_compacts_cache():
         attention_matching_trigger_len=8,
         attention_matching_min_keep=4,
         attention_matching_keep_ratio=0.5,
-    )
+    ))
     attn.eval()
 
     layer_state = {}

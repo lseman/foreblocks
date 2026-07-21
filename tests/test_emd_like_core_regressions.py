@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-
 from foretools.emd_like.config import VMDOptions, VMDParameters
 from foretools.emd_like.core import VMDCore
 from foretools.emd_like.pipeline import FastVMD, VMDOptimizer

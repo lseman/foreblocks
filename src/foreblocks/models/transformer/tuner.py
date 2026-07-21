@@ -831,9 +831,6 @@ class ModernTransformerTuner:
         )
 
 
-# Backward compatibility
-TransformerTuner = ModernTransformerTuner
-
 __all__ = [
     "TunerConfig",
     "ScaleBandShare",
@@ -841,5 +838,4 @@ __all__ = [
     "DecompositionRecommendation",
     "TransformerTuningReport",
     "ModernTransformerTuner",
-    "TransformerTuner",
 ]

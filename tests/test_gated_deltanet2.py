@@ -14,7 +14,7 @@ class TestGatedDeltaNet2Basic:
     """Test basic construction and forward pass."""
 
     def test_import(self):
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet2,
         )
         assert GatedDeltaNet2 is not None
@@ -29,7 +29,7 @@ class TestGatedDeltaNet2Basic:
         assert callable(fla_gdn2_chunk_forward)
 
     def test_construction_default(self, device):
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet2,
         )
         model = GatedDeltaNet2(
@@ -43,7 +43,7 @@ class TestGatedDeltaNet2Basic:
         assert model.dv == 32
 
     def test_construction_custom_dims(self, device):
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet2,
         )
         model = GatedDeltaNet2(
@@ -56,7 +56,7 @@ class TestGatedDeltaNet2Basic:
         assert model.dv == 128
 
     def test_forward_sequential(self, device):
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet2,
         )
         B, T, D, H = 2, 32, 256, 8
@@ -68,7 +68,7 @@ class TestGatedDeltaNet2Basic:
         assert out.shape == (B, T, D)
 
     def test_forward_chunk(self, device):
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet2,
         )
         B, T, D, H = 2, 128, 256, 8
@@ -81,7 +81,7 @@ class TestGatedDeltaNet2Basic:
 
     def test_forward_api(self, device):
         """Test the MultiAttention-compatible forward API."""
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet2,
         )
         B, T, D, H = 2, 32, 256, 8
@@ -102,7 +102,7 @@ class TestGatedDeltaNet2Basic:
 
     def test_recurrent_state(self, device):
         """Test that recurrent state is carried correctly across calls."""
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet2,
         )
         B, T, D, H = 2, 16, 256, 8
@@ -129,7 +129,7 @@ class TestGatedDeltaNet2Correctness:
         When b and w are scalar (all channels same), GDN-2 should reduce to
         GatedDeltaNet with same α and β.
         """
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet,
             GatedDeltaNet2,
         )
@@ -166,7 +166,7 @@ class TestGatedDeltaNet2Integration:
     """Test integration with ModernLinearAttention wrapper."""
 
     def test_wrapper_gated_deltanet2(self, device):
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             ModernLinearAttention,
         )
         attn = ModernLinearAttention(
@@ -184,7 +184,7 @@ class TestGatedDeltaNet2Integration:
         assert "gdn2_state" in state
 
     def test_wrapper_gdn2(self, device):
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             ModernLinearAttention,
         )
         attn = ModernLinearAttention(
@@ -201,7 +201,7 @@ class TestGatedDeltaNet2Integration:
         assert out.shape == (B, T, D)
 
     def test_state_key(self, device):
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             ModernLinearAttention,
         )
         attn = ModernLinearAttention(
@@ -214,7 +214,7 @@ class TestGatedDeltaNet2NegEigval:
     """Test negative eigenvalue mode."""
 
     def test_neg_eigval_mode(self, device):
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet2,
         )
         B, T, D, H = 2, 32, 256, 8
@@ -233,7 +233,7 @@ class TestGatedDeltaNet2Gradient:
     """Test that gradients flow correctly."""
 
     def test_gradient_flow(self, device):
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet2,
         )
         B, T, D, H = 2, 32, 128, 4
@@ -255,7 +255,7 @@ class TestGatedDeltaNet2Gradient:
 
     def test_chunk_gradient(self, device):
         """Test gradient flow through chunk-parallel mode."""
-        from foreblocks.modules.attention.modules.linear_att import (
+        from foreblocks.modules.attention.implementations.linear_att import (
             GatedDeltaNet2,
         )
         B, T, D, H = 2, 128, 128, 4

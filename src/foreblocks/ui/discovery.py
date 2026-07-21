@@ -32,7 +32,6 @@ ALLOWED_PACKAGES = [
     "foreblocks.data",
     "foreblocks.models.popular",
     "foreblocks.models.transformer",
-    "foreblocks.models.transformer.transformer",
     "foreblocks.sequence.forecast_blocks",
     "foreblocks.core.training",
 ]

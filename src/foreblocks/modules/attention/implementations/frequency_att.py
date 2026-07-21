@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.modules.frequency_att.
+"""foreblocks.modules.attention.implementations.frequency_att.
 
 Frequency-domain attention operations via Fourier transforms.
 

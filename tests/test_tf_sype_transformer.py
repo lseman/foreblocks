@@ -3,21 +3,22 @@ import unittest
 import torch
 
 from foreblocks.layers.embeddings import LearnablePositionalEncoding, PositionalEncoding
-from foreblocks.models.transformer.transformer import TransformerEncoder
+from foreblocks.models.transformer.core.encoder import TransformerEncoder
+from foreblocks.modules.attention.config import AttentionConfig
 from foreblocks.modules.attention.multi_att import MultiAttention
 
 
 class TestSyPETransformer(unittest.TestCase):
     def test_sype_chunked_transform_matches_full_sequence_with_state(self):
         torch.manual_seed(0)
-        attn = MultiAttention(
+        attn = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=8,
             n_heads=2,
             dropout=0.0,
             attention_type="sype",
             use_mla=False,
             use_paged_cache=False,
-        )
+        ))
 
         B, H, T, Dh = 2, 2, 6, 4
         q = torch.randn(B, H, T, Dh)

@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.modules.linear_att.base.
+"""foreblocks.modules.attention.implementations.linear_att.base.
 
 Shared utilities and mixins for linear attention backends.
 

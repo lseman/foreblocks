@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.modules.linear_att.rda.
+"""foreblocks.modules.attention.implementations.linear_att.rda.
 
 RDA (Riemannian Distance Attention) with configurable feature map and incremental recurrent decode.
 
@@ -16,7 +16,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from foreblocks.modules.attention.modules.linear_att.base import (
+from foreblocks.modules.attention.implementations.linear_att.base import (
     FeatureMapRegistry,
     RoPEMixin,
 )

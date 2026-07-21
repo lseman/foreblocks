@@ -50,7 +50,6 @@ from foreblocks.ops.kernels.rms_norm import (
     fused_add_rmsnorm,
 )
 
-
 triton = pytest.importorskip("triton")
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="Triton kernels require CUDA"

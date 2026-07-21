@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""foreblocks.modules.attention.modules.linear_att.gated_delta.
+"""foreblocks.modules.attention.implementations.linear_att.gated_delta.
 
 Gated Delta Network: per-head matrix state with scalar forget/write gates (arXiv:2412.06464).
 
@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.modules.linear_att.gated_common import (
+from foreblocks.modules.attention.implementations.linear_att.gated_common import (
     CausalDepthwiseConv,
     GatedDeltaExecutionMixin,
     HeadRMSNorm,

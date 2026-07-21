@@ -57,12 +57,6 @@ def attention_residual_values(state: dict) -> list[torch.Tensor]:
     return values
 
 
-# Private compatibility names used by the existing stack.
-_init_attention_residual_state = init_attention_residual_state
-_attention_residual_input = attention_residual_input
-_append_attention_residual_update = append_attention_residual_update
-_attention_residual_values = attention_residual_values
-
 __all__ = [
     "append_attention_residual_update",
     "attention_residual_input",

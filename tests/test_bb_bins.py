@@ -4,7 +4,6 @@ import numpy as np
 
 from foretools.aux.bb_bins import BayesianBlocks
 
-
 ASTROPY_AVAILABLE = importlib.util.find_spec("astropy") is not None
 
 if ASTROPY_AVAILABLE:

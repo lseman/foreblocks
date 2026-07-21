@@ -7,7 +7,6 @@ It belongs to the attention key-value cache implementations area of Foreblocks.
 
 from foreblocks.modules.attention.cache.base import (
     KVCacheProtocol,
-    TransformerCache,
     cache_state_dict,
     load_cache_state_dict,
     map_cache_state,
@@ -40,7 +39,6 @@ __all__ = [
     "PagedStorage",
     "StaticKVCache",
     "StaticKVProvider",
-    "TransformerCache",
     "cache_state_dict",
     "load_cache_state_dict",
     "map_cache_state",

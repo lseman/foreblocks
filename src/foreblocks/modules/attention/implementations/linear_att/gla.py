@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.modules.linear_att.gla.
+"""foreblocks.modules.attention.implementations.linear_att.gla.
 
 Gated Linear Attention: per-timestep decay gate for recurrent state accumulation.
 
@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.modules.linear_att.base import RoPEMixin
+from foreblocks.modules.attention.implementations.linear_att.base import RoPEMixin
 from foreblocks.ops.attention import can_use_fla_gla, fla_gla_forward
 
 

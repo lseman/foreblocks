@@ -102,69 +102,74 @@ class MultiAttention(nn.Module):
     # --------------------------------------------------------------------- #
     # Init
     # --------------------------------------------------------------------- #
-    def __init__(
-        self,
-        d_model: int,
-        n_heads: int,
-        n_kv_heads: int | None = None,
-        dropout: float = 0.1,
-        attention_type: str = "standard",
-        attn_implementation: str = "auto",
-        prob_sparse_factor: float = 0.4,
-        freq_modes: int = 32,
-        max_seq_len: int = 4096,  # kept for API, not used here
-        cross_attention: bool = False,
-        pos_encoding_type: str = "rope",  # "rope" | "sinusoidal" | "alibi" | "learnable"
-        rope_base: float = 10000.0,
-        rope_scaling_type: str = "none",  # "none" | "yarn" | "ntk" | "linear"
-        rope_scaling_factor: float = 1.0,
-        softpick_chunk_size: int = 128,
-        window_size: int = 64,
-        global_attention_ratio: float = 0.1,  # kept for API
-        chunk_size: int = 1024,
-        use_flash_sliding: bool = True,
-        use_swiglu: bool = True,
-        verbose_init: bool = False,
-        # ── KV cache options ────────────────────────────────────────
-        use_paged_cache: bool = True,
-        cache_block_size: int = 128,
-        max_cache_blocks: int = 2048,
-        # ── Attention variants ──────────────────────────────────────
-        use_gated_attention: bool = False,
-        gated_attn_mode: str = "per_head",  # {"per_head", "shared"}
-        gated_attn_bias: bool = True,
-        use_mla: bool = True,
-        kv_latent_dim: int | None = None,
-        use_attention_matching_compaction: bool = False,
-        attention_matching_keep_ratio: float = 0.25,
-        attention_matching_trigger_len: int = 512,
-        attention_matching_min_keep: int = 64,
-        attention_matching_query_budget: int = 64,
-        attention_matching_force_single_step: bool = False,
-        nsa_block_size: int | None = None,
-        nsa_topk_ratio: float | None = None,
-        moba_block_size: int | None = None,
-        moba_topk: int = 4,
-        # ── Sliding-window / local attention ────────────────────────
-        attention_dilation: int = 2,
-        dilated_window_size: int | None = None,
-        # ── Attention score stabilizers ─────────────────────────────
-        qk_norm: bool = False,
-        qk_norm_type: str = "rms",  # "rms" | "l2"
-        logit_softcap: float | None = None,  # cap logits to [-cap, cap]
-        use_learned_temp: bool = False,  # learnable per-head temperature scaling
-        temp_init: float = 1.0,  # initial temperature scale
-        use_subquery_norm: bool = False,  # learnable per-QK-pair gating
-        subquery_norm_mode: str = "learned",  # "learned" | "rms"
-        use_multiscale_mask: bool = False,  # blend local + long-range
-        multiscale_window_ratio: float = 0.2,  # local window as fraction of seq
-        multiscale_topk: int = 16,  # top-K for pooled long-range
-        use_normalized_attn_out: bool = False,  # layer norm on attention output
-        norm_attn_type: str = "rms",  # "rms" | "layer"
-        use_head_importance: bool = False,  # learn which heads to prune
-        head_importance_sparsity: float = 0.1,  # target sparsity (frac of heads to prune)
-    ):
+    def __init__(self, config: AttentionConfig):
         super().__init__()
+
+        shape = config.shape
+        cache = config.cache
+        position = config.position
+        variant = config.variant
+        features = config.features
+        d_model, n_heads = shape.d_model, shape.n_heads
+        n_kv_heads, dropout = shape.n_kv_heads, shape.dropout
+        max_seq_len, cross_attention = shape.max_seq_len, shape.cross_attention
+        attention_type, attn_implementation = variant.name, variant.backend
+        prob_sparse_factor, freq_modes = (
+            variant.probability_factor,
+            variant.frequency_modes,
+        )
+        softpick_chunk_size, window_size = (
+            variant.softpick_chunk_size,
+            variant.window_size,
+        )
+        global_attention_ratio, chunk_size = (
+            variant.global_attention_ratio,
+            variant.chunk_size,
+        )
+        use_flash_sliding, use_swiglu = variant.use_flash_sliding, variant.use_swiglu
+        nsa_block_size, nsa_topk_ratio = variant.nsa_block_size, variant.nsa_topk_ratio
+        moba_block_size, moba_topk = variant.moba_block_size, variant.moba_topk
+        attention_dilation = variant.dilation
+        dilated_window_size = variant.dilated_window_size
+        pos_encoding_type, rope_base = position.encoding, position.rope_base
+        rope_scaling_type, rope_scaling_factor = (
+            position.rope_scaling_type,
+            position.rope_scaling_factor,
+        )
+        use_paged_cache, cache_block_size = cache.use_paged_cache, cache.block_size
+        max_cache_blocks, use_mla = cache.max_blocks, cache.use_mla
+        kv_latent_dim = cache.kv_latent_dim
+        use_attention_matching_compaction = cache.attention_matching
+        attention_matching_keep_ratio = cache.matching_keep_ratio
+        attention_matching_trigger_len = cache.matching_trigger_len
+        attention_matching_min_keep = cache.matching_min_keep
+        attention_matching_query_budget = cache.matching_query_budget
+        attention_matching_force_single_step = cache.matching_force_single_step
+        qk_norm, qk_norm_type = features.qk_norm, features.qk_norm_type
+        logit_softcap = features.logit_softcap
+        use_learned_temp, temp_init = (
+            features.learned_temperature,
+            features.temperature_init,
+        )
+        use_gated_attention = features.gated_attention
+        gated_attn_mode, gated_attn_bias = (
+            features.gated_attention_mode,
+            features.gated_attention_bias,
+        )
+        use_subquery_norm, subquery_norm_mode = (
+            features.subquery_norm,
+            features.subquery_norm_mode,
+        )
+        use_multiscale_mask = features.multiscale_mask
+        multiscale_window_ratio, multiscale_topk = (
+            features.multiscale_window_ratio,
+            features.multiscale_topk,
+        )
+        use_normalized_attn_out = features.normalized_output
+        norm_attn_type = features.normalized_output_type
+        use_head_importance = features.head_importance
+        head_importance_sparsity = features.head_importance_sparsity
+        verbose_init = features.verbose_init
 
         # Basic dims
         if n_heads <= 0 or d_model % n_heads:
@@ -646,7 +651,7 @@ class MultiAttention(nn.Module):
             self.nsa_gate_proj = None
 
             if attention_type == "frequency":
-                from foreblocks.modules.attention.modules.frequency_att import (
+                from foreblocks.modules.attention.implementations.frequency_att import (
                     FrequencyAttention,
                 )
 
@@ -654,13 +659,15 @@ class MultiAttention(nn.Module):
                     self.d_model, self.n_heads, self.dropout_p, modes=freq_modes
                 )
             elif attention_type == "dwt":
-                from foreblocks.modules.attention.modules.dwt_att import DWTAttention
+                from foreblocks.modules.attention.implementations.dwt_att import (
+                    DWTAttention,
+                )
 
                 self.dwt_attention = DWTAttention(
                     self.d_model, self.n_heads, self.dropout_p, modes=freq_modes
                 )
             elif attention_type == "autocor":
-                from foreblocks.modules.attention.modules.autocor_att import (
+                from foreblocks.modules.attention.implementations.autocor_att import (
                     AutoCorrelation,
                     AutoCorrelationLayer,
                 )
@@ -1184,22 +1191,6 @@ class MultiAttention(nn.Module):
 
         return q, k, v, q_start_pos
 
-    def _compute_attention_direct(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        attn_mask: torch.Tensor | None,
-        key_padding_mask: torch.Tensor | None,
-        is_causal: bool,
-        need_weights: bool,
-        q_start_pos: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Compatibility alias for callers of the former owner method."""
-        return self.kernel_dispatcher.compute(
-            q, k, v, attn_mask, key_padding_mask, is_causal, need_weights, q_start_pos
-        )
-
     def _compute_attention(
         self,
         q: torch.Tensor,
@@ -1221,9 +1212,3 @@ class MultiAttention(nn.Module):
             need_weights,
             q_start_pos,
         )
-
-    @classmethod
-    def from_config(cls, config: AttentionConfig, **overrides) -> "MultiAttention":
-        kwargs = config.to_legacy_kwargs()
-        kwargs.update(overrides)
-        return cls(**kwargs)

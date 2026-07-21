@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""foreblocks.modules.attention.modules.linear_att.gated_deltanet2.
+"""foreblocks.modules.attention.implementations.linear_att.gated_deltanet2.
 
 Gated DeltaNet-2: decoupled erase and write in linear attention (arXiv:2605.22791).
 
@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.modules.linear_att.gated_common import (
+from foreblocks.modules.attention.implementations.linear_att.gated_common import (
     CausalDepthwiseConv,
     GatedDeltaExecutionMixin,
     HeadRMSNorm,

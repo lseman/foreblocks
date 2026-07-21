@@ -47,8 +47,8 @@ from foreblocks.models.transformer.runtime.execution import (
     _LayerExecutionStrategy,
 )
 from foreblocks.models.transformer.runtime.residual_state import (
-    _attention_residual_values,
-    _init_attention_residual_state,
+    attention_residual_values,
+    init_attention_residual_state,
 )
 from foreblocks.modules.attention.utils.residuals import (
     AttentionResidual,
@@ -102,7 +102,7 @@ class BaseTransformerLayer(nn.Module):
             d_model=config.d_model,
             dim_ff=config.dim_feedforward,
             dropout=dropout,
-            use_swiglu=config.use_swiglu,
+            use_swiglu=config.attention.variant.use_swiglu,
             activation=config.activation,
             use_moe=config.use_moe,
             num_experts=config.num_experts,
@@ -283,8 +283,8 @@ class BaseTransformer(nn.Module, ABC):
         super().__init__()
         self.config = config
         d_model = config.d_model
-        att_type = config.att_type
-        attention_mode = config.attention_mode
+        att_type = config.attention.variant.name
+        attention_mode = config.attention.architecture
         dropout = config.dropout
         num_layers = config.num_layers
         max_seq_len = config.max_seq_len
@@ -301,10 +301,10 @@ class BaseTransformer(nn.Module, ABC):
         self.use_gateskip = config.use_gateskip
         self.gate_budget = config.gate_budget
         self.gate_lambda = config.gate_lambda
-        self.pos_encoding_type = str(config.pos_encoding_type)
-        self.rope_base = float(config.rope_base)
-        self.rope_scaling_type = str(config.rope_scaling_type)
-        self.rope_scaling_factor = float(config.rope_scaling_factor)
+        self.pos_encoding_type = str(config.attention.position.encoding)
+        self.rope_base = float(config.attention.position.rope_base)
+        self.rope_scaling_type = str(config.attention.position.rope_scaling_type)
+        self.rope_scaling_factor = float(config.attention.position.rope_scaling_factor)
         # Backward-compatible behavior:
         # if caller sets att_type to a routed mode but leaves attention_mode default,
         # promote attention_mode so the intended path is used.
@@ -492,21 +492,15 @@ class BaseTransformer(nn.Module, ABC):
         "deltanet": ("deltanet", "deltanet", "all"),
         "gated_deltanet": ("gated_deltanet", "gated_deltanet", "all"),
         "hybrid": ("standard", "linear", "hybrid"),
-        "hybrid_linear": ("standard", "linear", "hybrid"),
         "hybrid_kimi": ("standard", "kimi", "hybrid"),
-        "kimi_hybrid": ("standard", "kimi", "hybrid"),
         "kimi_3to1": ("standard", "kimi", "3to1"),
         "hybrid_gdn": ("standard", "gated_delta", "hybrid"),
-        "gdn_hybrid": ("standard", "gated_delta", "hybrid"),
         "gdn_3to1": ("standard", "gated_delta", "3to1"),
         "gla_hybrid": ("standard", "gla", "hybrid"),
-        "hybrid_gla": ("standard", "gla", "hybrid"),
         "gla_3to1": ("standard", "gla", "3to1"),
         "deltanet_hybrid": ("standard", "deltanet", "hybrid"),
-        "hybrid_deltanet": ("standard", "deltanet", "hybrid"),
         "deltanet_3to1": ("standard", "deltanet", "3to1"),
         "gated_deltanet_hybrid": ("standard", "gated_deltanet", "hybrid"),
-        "hybrid_gated_deltanet": ("standard", "gated_deltanet", "hybrid"),
         "gated_deltanet_3to1": ("standard", "gated_deltanet", "3to1"),
     }
 
@@ -746,7 +740,7 @@ class BaseTransformer(nn.Module, ABC):
     def _init_attention_residual_state(self, x: torch.Tensor) -> dict | None:
         if not self.use_attention_residual:
             return None
-        return _init_attention_residual_state(
+        return init_attention_residual_state(
             x, self.attention_residual_mode, self.attention_residual_block_size
         )
 
@@ -757,7 +751,7 @@ class BaseTransformer(nn.Module, ABC):
             return fallback
         if self.output_attention_residual is None:
             return fallback
-        return self.output_attention_residual(_attention_residual_values(state))
+        return self.output_attention_residual(attention_residual_values(state))
 
     def _validate_mod_runtime(self) -> None:
         if not self.use_mod:

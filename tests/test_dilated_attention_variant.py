@@ -1,11 +1,12 @@
 import torch
 
+from foreblocks.modules.attention.config import AttentionConfig
 from foreblocks.modules.attention.multi_att import MultiAttention
 
 
 def test_dilated_sliding_window_output_shape_and_weights():
     torch.manual_seed(0)
-    attn = MultiAttention(
+    attn = MultiAttention(AttentionConfig.from_legacy_kwargs(
         d_model=32,
         n_heads=4,
         dropout=0.0,
@@ -14,7 +15,7 @@ def test_dilated_sliding_window_output_shape_and_weights():
         window_size=3,
         attention_dilation=2,
         dilated_window_size=8,
-    ).eval()
+    )).eval()
     x = torch.randn(2, 10, 32)
 
     out, weights, _ = attn(x, x, x, is_causal=True, need_weights=True)
@@ -26,7 +27,7 @@ def test_dilated_sliding_window_output_shape_and_weights():
 
 def test_dilated_sliding_window_causal_output_ignores_future_tokens():
     torch.manual_seed(1)
-    attn = MultiAttention(
+    attn = MultiAttention(AttentionConfig.from_legacy_kwargs(
         d_model=32,
         n_heads=4,
         dropout=0.0,
@@ -35,7 +36,7 @@ def test_dilated_sliding_window_causal_output_ignores_future_tokens():
         window_size=3,
         attention_dilation=3,
         dilated_window_size=9,
-    ).eval()
+    )).eval()
     x1 = torch.randn(2, 12, 32)
     x2 = x1.clone()
     x2[:, 8:] = torch.randn_like(x2[:, 8:])

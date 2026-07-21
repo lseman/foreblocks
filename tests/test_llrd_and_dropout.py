@@ -9,7 +9,10 @@ from foreblocks.core.training.llrd import (
     WarmupCosineLR,
     get_llrd_param_groups,
 )
-from foreblocks.models.transformer.core.base import TransformerEncoder, TransformerDecoder
+from foreblocks.models.transformer.core.base import (
+    TransformerDecoder,
+    TransformerEncoder,
+)
 from foreblocks.modules.skip.mod import LayerDropoutSchedule
 
 

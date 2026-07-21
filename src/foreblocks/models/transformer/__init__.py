@@ -28,7 +28,6 @@ from foreblocks.models.transformer.runtime.routing import (
 )
 from foreblocks.models.transformer.tuner import (
     ModernTransformerTuner,
-    TransformerTuner,
 )
 
 __all__ = [
@@ -38,7 +37,6 @@ __all__ = [
     "TransformerEncoderOutput",
     "TransformerGenerationOutput",
     "TransformerConfig",
-    "TransformerTuner",
     "append_attention_residual_update",
     "attention_residual_input",
     "attention_residual_values",
