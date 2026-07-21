@@ -77,28 +77,31 @@ def configure_mixed_op_for_variant(
 def _configure_gd_darts(model: nn.Module, engine_cfg: Any) -> None:
     """GD-DARTS: disable Gumbel-Softmax, use pure straight-through softmax."""
     for m in model.modules():
-        if isinstance(m, nn.Module) and hasattr(m, "use_gumbel"):
+        if hasattr(m, "use_gumbel"):
             m.use_gumbel = False
-        if isinstance(m, nn.Module) and hasattr(m, "use_hierarchical"):
-            # GD-DARTS works best without hierarchical grouping.
-            m.use_hierarchical = False
+        if hasattr(m, "op_gdas"):
+            m.op_gdas = False
+        if hasattr(m, "pc_darts_enabled"):
+            m.pc_darts_enabled = False
     # Set a low fixed temperature for the commitment phase.
     for m in model.modules():
-        if isinstance(m, nn.Module) and hasattr(m, "op_temperature"):
+        if hasattr(m, "op_temperature"):
             m.op_temperature = engine_cfg.gd_darts.commitment_temperature
 
 
 def _configure_pc_darts(model: nn.Module, engine_cfg: Any) -> None:
-    """PC-DARTS: enable permutation-consistent weight sharing."""
+    """PC-DARTS: enable partial-channel execution and edge normalization."""
     for m in model.modules():
-        if isinstance(m, nn.Module) and hasattr(m, "op_gdas"):
+        if hasattr(m, "op_gdas"):
             m.op_gdas = False  # PC-DARTS uses dense forward, not GDAS
-        if isinstance(m, nn.Module) and hasattr(m, "use_hierarchical"):
-            m.use_hierarchical = False
-    # Add permutation-consistency hooks to all MixedOp edges.
+        if hasattr(m, "pc_darts_enabled"):
+            m.pc_darts_enabled = bool(engine_cfg.pc_darts.enable_partial_channels)
+    # Normalize competing incoming edges as described by PC-DARTS. The legacy
+    # permutation regularizer remains opt-in and independent of this behavior.
     for cell in getattr(model, "cells", []):
         if not hasattr(cell, "edges"):
             continue
+        cell.pc_darts_enabled = bool(engine_cfg.pc_darts.enable_edge_normalization)
         for edge in cell.edges:
             if hasattr(edge, "perm_l2_weight"):
                 edge.perm_l2_weight = engine_cfg.pc_darts.perm_l2_weight
@@ -107,8 +110,10 @@ def _configure_pc_darts(model: nn.Module, engine_cfg: Any) -> None:
 def _configure_r_darts(model: nn.Module, engine_cfg: Any) -> None:
     """R-DARTS: enable gradient-norm balancing."""
     for m in model.modules():
-        if isinstance(m, nn.Module) and hasattr(m, "op_gdas"):
+        if hasattr(m, "op_gdas"):
             m.op_gdas = True  # R-DARTS works well with GDAS
+        if hasattr(m, "pc_darts_enabled"):
+            m.pc_darts_enabled = False
     # Set gradient-balance warmup on all cells.
     for cell in getattr(model, "cells", []):
         if hasattr(cell, "norm_balance_warmup"):
@@ -120,8 +125,10 @@ def _configure_r_darts(model: nn.Module, engine_cfg: Any) -> None:
 def _configure_bi_darts(model: nn.Module, engine_cfg: Any) -> None:
     """Bi-DARTS: enable bidirectional training."""
     for m in model.modules():
-        if isinstance(m, nn.Module) and hasattr(m, "op_gdas"):
+        if hasattr(m, "op_gdas"):
             m.op_gdas = False  # Bi-DARTS uses dense forward pass
+        if hasattr(m, "pc_darts_enabled"):
+            m.pc_darts_enabled = False
     # Set bidirectional training flags.
     for cell in getattr(model, "cells", []):
         if hasattr(cell, "bidirectional_training"):
@@ -151,7 +158,7 @@ def compute_gradient_norm_balance(
 
     Formula::
 
-        s = ||∇_w L_train|| / ||∇_α L_val||
+        s = ||∇_w L_arch|| / ||∇_α L_arch||
 
     When the arch gradient is much larger than the weight gradient (common
     in early training), ``s < 1`` and the arch update is scaled down to
@@ -170,18 +177,21 @@ def compute_gradient_norm_balance(
     if epoch < warmup_epochs:
         return 1.0
 
+    arch_grads = [g for g in arch_grads if g is not None and g.numel() > 0]
+    model_grads = [g for g in model_grads if g is not None and g.numel() > 0]
+    if not arch_grads or not model_grads:
+        return 1.0
+
     # Compute weight gradient norm.
     weight_norm_sq = torch.tensor(0.0, device=model_grads[0].device if model_grads else "cpu")
     for g in model_grads:
-        if g is not None and g.numel() > 0:
-            weight_norm_sq += g.detach().pow(2).sum()
+        weight_norm_sq += g.detach().pow(2).sum()
     weight_norm = weight_norm_sq.sqrt().clamp_min(1e-12)
 
     # Compute arch gradient norm.
     arch_norm_sq = torch.tensor(0.0, device=model_grads[0].device if model_grads else "cpu")
     for g in arch_grads:
-        if g is not None and g.numel() > 0:
-            arch_norm_sq += g.detach().pow(2).sum()
+        arch_norm_sq += g.detach().pow(2).sum()
     arch_norm = arch_norm_sq.sqrt().clamp_min(1e-12)
 
     # Balance factor: scale arch update to match weight scale.
@@ -189,7 +199,7 @@ def compute_gradient_norm_balance(
 
 
 # ---------------------------------------------------------------------------
-# Permutation-consistency helper (PC-DARTS)
+# Optional legacy permutation-consistency regularizer
 # ---------------------------------------------------------------------------
 
 
@@ -215,36 +225,46 @@ def apply_permutation_consistency(
     if not edge_weights or len(edge_weights) < 2:
         return edge_weights, torch.tensor(0.0)
 
-    perm_loss = torch.tensor(0.0, device=next(iter(edge_weights.values())).device)
-    sorted_names = sorted(edge_weights.keys())
-    corrected = {}
-
-    for i, name_i in enumerate(sorted_names):
-        w_i = edge_weights[name_i]
-        if w_i.dim() < 2:
-            corrected[name_i] = w_i
-            continue
-        for j, name_j in enumerate(sorted_names):
-            if j <= i:
+    first = next(iter(edge_weights.values()))
+    pair_losses: list[torch.Tensor] = []
+    names = sorted(edge_weights)
+    for i, name_i in enumerate(names):
+        flat_i = edge_weights[name_i].reshape(-1)
+        for name_j in names[i + 1 :]:
+            flat_j = edge_weights[name_j].reshape(-1)
+            if flat_i.numel() != flat_j.numel():
                 continue
-            w_j = edge_weights[name_j]
-            if w_j.dim() < 2:
-                continue
-            # Compute pairwise alignment: if w_i and w_j share dimensions,
-            # align them so that the permutation is consistent.
-            if w_i.shape == w_j.shape:
-                # Simple element-wise alignment: keep the larger values
-                # aligned to the same indices.
-                aligned_i = torch.sort(w_i.view(-1), stable=True).values
-                aligned_j = torch.sort(w_j.view(-1), stable=True).values
-                # Alignment loss: encourage the sorted values to be similar
-                # when the edges are structurally equivalent.
-                diff = (aligned_i - aligned_j).abs()
-                perm_loss += float(perm_l2_weight) * diff.mean()
-            corrected[name_i] = w_i
-            corrected[name_j] = w_j
+            aligned_i = torch.sort(flat_i, stable=True).values
+            aligned_j = torch.sort(flat_j, stable=True).values
+            pair_losses.append((aligned_i - aligned_j).square().mean())
 
-    return corrected, perm_loss
+    if not pair_losses:
+        return dict(edge_weights), first.new_tensor(0.0)
+    loss = torch.stack(pair_losses).mean() * float(perm_l2_weight)
+    return dict(edge_weights), loss
+
+
+def model_permutation_consistency_loss(
+    model: nn.Module, perm_l2_weight: float = 1e-4
+) -> torch.Tensor:
+    """Compute differentiable consistency loss across compatible cell edges."""
+    edge_weights: dict[str, torch.Tensor] = {}
+    for cell_idx, cell in enumerate(getattr(model, "cells", [])):
+        for edge_idx, edge in enumerate(getattr(cell, "edges", [])):
+            if hasattr(edge, "get_alphas"):
+                try:
+                    weights = edge.get_alphas(detach=False)
+                except TypeError:
+                    weights = edge.get_alphas()
+            else:
+                weights = getattr(edge, "alphas", None)
+            if isinstance(weights, torch.Tensor) and weights.numel() > 1:
+                edge_weights[f"cell{cell_idx}.edge{edge_idx}"] = weights
+
+    if not edge_weights:
+        parameter = next(model.parameters(), None)
+        return torch.tensor(0.0, device=parameter.device if parameter is not None else "cpu")
+    return apply_permutation_consistency(edge_weights, perm_l2_weight)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +277,7 @@ def forward_bidirectional(
     x: torch.Tensor,
     backward_loss_weight: float = 0.5,
     backward_passes: int = 1,
+    model_kwargs: dict[str, Any] | None = None,
 ) -> torch.Tensor:
     """Run a bidirectional forward pass through the model.
 
@@ -275,15 +296,28 @@ def forward_bidirectional(
         Combined output tensor.
     """
     # Forward pass.
-    forward_out = model(x)
+    kwargs = model_kwargs or {}
+    forward_out = model(x, **kwargs)
 
     # Backward pass: reverse the sequence dimension.
     x_rev = x.flip(dims=[1])
-    backward_out = model(x_rev)
-    backward_out = backward_out.flip(dims=[1])  # Restore original order
+    reversed_kwargs = {
+        name: value.flip(dims=[1])
+        if isinstance(value, torch.Tensor) and value.dim() >= 2
+        else value
+        for name, value in kwargs.items()
+    }
+    backward_outputs = [
+        model(x_rev, **reversed_kwargs).flip(dims=[1])
+        for _ in range(max(int(backward_passes), 1))
+    ]
+    backward_out = torch.stack(backward_outputs).mean(dim=0)
 
     # Combine forward and backward outputs.
-    combined = 0.5 * forward_out + 0.5 * backward_out
+    backward_weight = max(float(backward_loss_weight), 0.0)
+    combined = (forward_out + backward_weight * backward_out) / (
+        1.0 + backward_weight
+    )
 
     return combined
 
@@ -294,6 +328,8 @@ def compute_backward_loss(
     y: torch.Tensor,
     loss_fn: callable,
     backward_loss_weight: float = 0.5,
+    backward_passes: int = 1,
+    model_kwargs: dict[str, Any] | None = None,
 ) -> torch.Tensor:
     """Compute the backward-pass loss for Bi-DARTS.
 
@@ -311,15 +347,24 @@ def compute_backward_loss(
         Combined loss (forward + backward).
     """
     # Forward loss.
-    forward_out = model(x)
+    kwargs = model_kwargs or {}
+    forward_out = model(x, **kwargs)
     forward_loss = loss_fn(forward_out, y)
 
     # Backward loss: reverse both input and target.
     x_rev = x.flip(dims=[1])
     y_rev = y.flip(dims=[1])
-    backward_out = model(x_rev)
-    backward_out = backward_out.flip(dims=[1])
-    backward_loss = loss_fn(backward_out, y_rev)
+    reversed_kwargs = {
+        name: value.flip(dims=[1])
+        if isinstance(value, torch.Tensor) and value.dim() >= 2
+        else value
+        for name, value in kwargs.items()
+    }
+    backward_losses = []
+    for _ in range(max(int(backward_passes), 1)):
+        backward_out = model(x_rev, **reversed_kwargs)
+        backward_losses.append(loss_fn(backward_out, y_rev))
+    backward_loss = torch.stack(backward_losses).mean()
 
     # Combined loss.
     return forward_loss + backward_loss_weight * backward_loss
@@ -359,7 +404,9 @@ def build_engine_config(
             "norm_balance_warmup": 2,
         },
         "pc_darts": {
-            "enable_permutation_consistency": True,
+            "enable_partial_channels": True,
+            "enable_edge_normalization": True,
+            "enable_permutation_consistency": False,
             "perm_l2_weight": 1e-4,
         },
         "bi_darts": {

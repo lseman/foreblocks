@@ -8,29 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.amp import GradScaler
 
-
-def default_as_probability_vector(
-    alpha_like: torch.Tensor, temperature: float = 1.0
-) -> torch.Tensor:
-    """Convert logits/probabilities to a normalized probability vector safely."""
-    if alpha_like.numel() == 0:
-        return alpha_like
-
-    with torch.no_grad():
-        flat = alpha_like.detach().reshape(-1)
-        finite_ok = torch.isfinite(flat).all().item()
-        in_range = flat.min().item() >= -1e-6 and flat.max().item() <= 1.0 + 1e-6
-        sum_close = abs(flat.sum().item() - 1.0) <= 1e-4
-        looks_like_probs = finite_ok and in_range and sum_close
-
-    temp = max(float(temperature), 1e-6)
-    if looks_like_probs:
-        probs = alpha_like.clamp_min(1e-8)
-        if abs(temp - 1.0) > 1e-8:
-            probs = probs.pow(1.0 / temp)
-        return probs / probs.sum(dim=-1, keepdim=True).clamp_min(1e-8)
-
-    return F.softmax(alpha_like / temp, dim=-1)
+from ..utils.tensors import as_probability_vector as default_as_probability_vector
 
 
 class RegularizationType(Enum):
@@ -280,5 +258,3 @@ class ArchitectureRegularizer:
             scheduled_loss = scheduled_loss + float(blend) * normalized_entropy
 
         return scheduled_loss
-
-

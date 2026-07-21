@@ -89,14 +89,13 @@ class R_DARTSEngineConfig:
 
 @dataclass
 class PC_DARTSEngineConfig:
-    """Configuration for PC-DARTS (permutation-consistent DARTS)."""
+    """Configuration for partial-channel PC-DARTS."""
 
-    # Enable permutation-consistent weight sharing.
-    # When two edges share the same underlying op weights, permute them
-    # so that swapping edge order does not change the forward output.
-    enable_permutation_consistency: bool = True
-    # Apply a small L2 regularizer on the permutation matrix to keep
-    # it close to the identity (encourages discrete selection).
+    enable_partial_channels: bool = True
+    enable_edge_normalization: bool = True
+    # Legacy project-specific regularizer. Disabled by default because it is
+    # not part of canonical PC-DARTS.
+    enable_permutation_consistency: bool = False
     perm_l2_weight: float = 1e-4
 
 
@@ -303,7 +302,9 @@ class DARTSTrainConfig:
     hessian_update_freq: int = 1
 
     # ── GDAS / DrNAS ──────────────────────────────────────────────────────
-    op_gdas: bool = True  # single-path sampling per edge (dominant speedup)
+    # ``None`` lets the selected engine variant choose its sampling strategy;
+    # an explicit bool remains a low-level override.
+    op_gdas: bool | None = None
     variant_gdas: bool | None = None  # mirrors op_gdas unless explicitly set
 
     # ── DARTS engine variant ──────────────────────────────────────────────
@@ -482,6 +483,4 @@ class DARTSConfig:
 
             return "cuda" if torch.cuda.is_available() else "cpu"
         return self.device
-
-
 

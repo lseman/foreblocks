@@ -88,26 +88,34 @@ ffn = FeedForwardBlock(
 
 ## Router Types
 
-### Noisy Top-K (Recommended Default)
+ForeBlocks provides several router implementations in `foreblocks.modules.moe.experts.routers`:
+
+### NoisyTopKRouter (Recommended Default)
 
 ```python
 router_type="noisy_topk"
 router_temperature=1.0          # Gumbel noise temperature
-router_perturb_noise=0.01       # Gaussian noise std
+router_perturb_noise=0.01       # Gaussian noise std (jitter)
 ```
 
 **Behavior:**
-1. Compute router logits: `logits = linear(x)`
-2. Add Gumbel noise: `logits += -log(-log(uniform()))`
-3. Scale by temperature: `logits /= temperature`
+1. Compute router logits: `logits = linear(x) + expert_bias`
+2. Add Gumbel/jitter noise: `logits += torch.randn_like(logits) * jitter`
+3. Clamp to `(-1e4, 1e4)` for stability
 4. Select top-k (differentiable via Gumbel-max trick)
 
 **Why:** Encourages exploration early, recovers to deterministic routing when trained.
 
-### Straight-Through Top-K
+**Features:**
+- `input_dropout`: Dropout on input before routing
+- `expert_bias_init`: Initial per-expert logit bias for load balancing
+- `clamp_range`: Tuple of (min, max) for logit clamping
+
+### StraightThroughTopKRouter
 
 ```python
 router_type="straight_topk"
+router_temperature=1.0
 ```
 
 Deterministic top-k with straight-through gradient (no noise).
@@ -115,17 +123,28 @@ Deterministic top-k with straight-through gradient (no noise).
 **Pros:** Fast, deterministic, reproducible.
 **Cons:** No exploration—can converge to poor local optima.
 
-### Soft Dense
+**How it works:**
+1. Compute soft probabilities: `soft = softmax(logits / temperature)`
+2. Select top-k indices: `top_i = topk(logits, k)`
+3. Create hard mask and apply straight-through gradient
+
+### ContinuousTopKRouter
 
 ```python
-router_type="soft_dense"
+router_type="continuous_topk"
+router_temperature=1.0
+router_perturb_noise=0.0        # Perturb-and-pick noise std
 ```
 
-Soft assignment to all experts (no sparsity).
+Continuous/soft top-K with perturb-and-pick.
 
-**Use case:** Debugging, baseline comparison. Not recommended for production (no compute savings).
+**Behavior:**
+1. Add Gaussian perturbation to logits (if training and `perturb_std > 0`)
+2. Compute soft probabilities: `soft_probs = softmax(relaxed_logits / temp)`
+3. Select top-k: `top_p, top_i = topk(soft_probs, k)`
+4. Normalize top-p probabilities
 
-### Hash Router
+### HashTopKRouter
 
 ```python
 router_type="hash"
@@ -141,13 +160,14 @@ Hash-based expert assignment: O(1) routing, no learned router.
 **Cons:** Fixed routing pattern, less adaptive.
 
 **How it works:**
-1. Hash input ID (or token position) → bucket
-2. Map bucket → expert group
-3. Route to experts in group
+1. Project input to hash logits: `hash_logits = hash_proj(x)`
+2. Convert to bucket indices: `bucket_idx = floor(sigmoid(hash_logits) * num_buckets)`
+3. Look up experts from hash tables: `candidates = hash_tables[bucket_idx]`
+4. Select top-k from candidates
 
 **Use case:** Inference-only, federated learning, extremely large scale.
 
-### Adaptive Top-K
+### AdaptiveNoisyTopKRouter
 
 ```python
 router_type="adaptive_noisy_topk"
@@ -161,17 +181,59 @@ Learn per-token k (number of experts to route to).
 
 **Behavior:** Router outputs both logits (expert assignment) and k (number of experts).
 
-**Auxiliary loss:** Encourages sparse k via sparsity_lambda.
+**Architecture:**
+- `k_head`: Linear projection from `d_model` to `k_head_dim`
+- `k_logits`: Linear projection from `k_head_dim` to `max_k`
+- Uses Gumbel-softmax for differentiable k selection during training
+
+**Auxiliary loss:** Encourages sparse k via `adaptive_k_sparsity_lambda`.
 
 **Use case:** Highly variable compute budgets.
 
-### Auxiliary-Token Router
+### SoftDenseRouter
+
+```python
+router_type="soft_dense"
+router_temperature=1.0
+```
+
+Soft assignment to all experts (no sparsity).
+
+**Use case:** Debugging, baseline comparison. Not recommended for production (no compute savings).
+
+**Behavior:**
+1. Compute logits: `logits = linear(x) + expert_bias`
+2. Apply temperature-scaled softmax: `gate_probs = softmax(logits / temp)`
+3. Return gate_probs as continuous assignment weights
+
+### AuxiliaryTokenRouter
 
 ```python
 router_type="auxiliary_token"
+num_aux=1
+router_temperature=1.0
 ```
 
 Expert routing via auxiliary token embeddings (learned per expert).
+
+**Architecture:**
+- `aux_tokens`: Learnable tokens of shape `[num_aux, d_model]`
+- `aux_to_expert`: Linear projection from `d_model` to `num_experts`
+
+**Behavior:**
+- For `num_aux=1`: Broadcast single aux logits to all tokens
+- For `num_aux>1`: Project each token, then combine with aux logits via average
+- Returns soft assignment probabilities
+
+### LinearRouter
+
+```python
+router_type="linear"
+```
+
+Simple linear baseline with no noise or sparsity.
+
+**Use case:** Debugging, baseline comparison.
 
 ---
 
@@ -213,6 +275,8 @@ MoE naturally suffers from **expert collapse**: most tokens route to the same ex
 Encourage uniform expert usage:
 ```python
 load_balance_weight=0.01
+# OR
+moe_aux_loss_weight=0.01
 ```
 
 Loss: `sum((expert_capacity_ratios - ideal_ratio)^2)`
@@ -247,11 +311,14 @@ Learned per-expert router biases, annealed during training:
 moe_router_bias_balance=True
 moe_router_bias_warmup_steps=1000
 moe_router_bias_min_usage=0.01
-moe_router_bias_update_rate=0.01
-moe_router_bias_clip=2.0
 ```
 
 **Behavior:** Dynamically adjust per-expert router bias to keep minimum usage above threshold.
+
+**Related router parameters:**
+- `router_expert_bias_init`: Initial per-expert logit bias
+- `router_bias_update_rate`: Rate for bias updates
+- `router_bias_clip`: Maximum clip value for bias updates
 
 ### Soft Capacity (Optional)
 
@@ -265,6 +332,13 @@ moe_capacity_max=2.0         # Max capacity ceiling
 ```
 
 **Effect:** Penalizes exceeding capacity but allows it (smooth, differentiable).
+
+### Grouped Load Balancing
+
+Support for grouped expert load balancing:
+```python
+moe_num_groups=1             # Number of expert groups
+```
 
 ### Entropy Regularization (Optional)
 
@@ -419,6 +493,10 @@ config = {
     "moe_aux_lambda": 1.0,
     "use_swiglu": True,
     "use_gradient_checkpointing": True,
+    # New load balancing features:
+    "moe_router_bias_balance": True,
+    "moe_router_bias_warmup_steps": 1000,
+    "moe_router_bias_min_usage": 0.01,
 }
 ```
 
@@ -447,17 +525,23 @@ config = {
     "num_shared": 2,
     "top_k": 4,  # More experts per token
     "router_type": "adaptive_noisy_topk",
+    "adaptive_k_head_dim": 32,
+    "adaptive_k_tau": 1.0,
     "adaptive_k_sparsity_lambda": 0.01,
     "load_balance_weight": 0.05,
     "z_loss_weight": 0.005,
     "moe_use_latent": True,
     "moe_latent_dim": 256,
+    "moe_latent_d_ff": 1024,
     "moe_entropy_reg_weight": 0.01,
     "moe_soft_capacity": True,
+    "moe_capacity_min": 0.5,
+    "moe_capacity_max": 2.0,
+    "moe_num_groups": 1,
 }
 ```
 
-Maximize expressivity: adaptive k + latent + high load balancing weight.
+Maximize expressivity: adaptive k + latent + high load balancing weight + soft capacity.
 
 ---
 

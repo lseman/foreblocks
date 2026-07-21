@@ -106,6 +106,14 @@ def _safe_load_state(model: nn.Module, best_state: dict, *, verbose: bool) -> No
             model.load_state_dict(filtered, strict=False)
 
 
+def snapshot_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
+    """Return a non-aliasing CPU snapshot suitable for long-lived checkpoints."""
+    return {
+        name: tensor.detach().to(device="cpu", copy=True)
+        for name, tensor in model.state_dict().items()
+    }
+
+
 def _log_arch_gradients(model: nn.Module) -> None:
     """Log encoder/decoder architecture gradient stats when both exist."""
     enc = getattr(model.forecast_encoder, "alphas", None)

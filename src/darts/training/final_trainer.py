@@ -19,6 +19,7 @@ from torch.amp import GradScaler
 from ..evaluation.metrics import compute_metrics
 from ..utils.io import print_final_results
 from ..utils.training import autocast_ctx, create_progress_bar, unpack_forecasting_batch
+from .utils import snapshot_state_dict
 
 
 # ---------------------------------------------------------------------------
@@ -172,11 +173,12 @@ def train_final_model(
             if use_onecycle:
                 scheduler.step()
 
-            epoch_train_loss += loss.item()
+            batch_loss = float(loss.detach())
+            epoch_train_loss += batch_loss
             train_batches_seen += 1
             train_pbar.set_postfix(
                 {
-                    "loss": f"{loss.item():.4f}",
+                    "loss": f"{batch_loss:.4f}",
                     "avg": f"{epoch_train_loss / train_batches_seen:.4f}",
                     "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
                 }
@@ -223,7 +225,7 @@ def train_final_model(
             patience_counter = 0
             # Move directly to CPU: saves a full-param VRAM copy competing
             # with the training batch for the rest of the run.
-            best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+            best_state = snapshot_state_dict(model)
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -345,9 +347,7 @@ def _finalize_swa(
 
     if swa_val_loss < best_val_loss:
         print("Using SWA model (better).")
-        best_state.update(
-            {k: v.cpu().clone() for k, v in swa_model.state_dict().items()}
-        )
+        best_state.update(snapshot_state_dict(swa_model))
         return True
 
     print("Keeping original best model.")

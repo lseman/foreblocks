@@ -82,6 +82,46 @@ class TestGDASGradientNormalisation(unittest.TestCase):
 
 
 class TestPerformanceTrackerMetric(unittest.TestCase):
+    def test_tracker_state_is_registered_as_buffers(self):
+        op = MixedOp(
+            input_dim=4,
+            latent_dim=4,
+            seq_length=8,
+            available_ops=["Identity", "TimeConv"],
+            use_hierarchical=False,
+        )
+
+        buffers = dict(op.named_buffers())
+        parameters = dict(op.named_parameters())
+        self.assertIn("performance_tracker", buffers)
+        self.assertIn("usage_counter", buffers)
+        self.assertNotIn("performance_tracker", parameters)
+        self.assertNotIn("usage_counter", parameters)
+
+        op.available_ops = ["Identity", "TimeConv", "DLinear"]
+        op._init_hierarchical_search()
+        self.assertIn("performance_tracker", dict(op.named_buffers()))
+        self.assertIn("usage_counter", dict(op.named_buffers()))
+        self.assertNotIn("performance_tracker", dict(op.named_parameters()))
+
+    def test_tracker_penalizes_non_finite_outputs(self):
+        op = MixedOp(
+            input_dim=4,
+            latent_dim=4,
+            seq_length=8,
+            available_ops=["Identity", "TimeConv"],
+            use_hierarchical=False,
+        )
+        op.performance_tracker[0] = 2.0
+
+        op._update_performance_tracker(0, torch.tensor([float("nan")]))
+
+        expected = 2.0 * op.performance_ema_decay - (
+            1.0 - op.performance_ema_decay
+        )
+        self.assertAlmostEqual(op.performance_tracker[0].item(), expected, places=6)
+        self.assertEqual(op.usage_counter[0].item(), 1.0)
+
     def test_mixed_op_skips_fvcore_profile_on_old_torch(self):
         """PyTorch < 2.12 uses static efficiency priors instead of fvcore tracing."""
         real_import = __import__

@@ -212,25 +212,104 @@ No config changes needed — dropout schedule is a model-level choice, not a tra
 
 ## Advanced Attention Mechanisms
 
-### Attention Mode Overview
+### Attention Configuration Structure
 
-Choose per-layer attention type via `attention_mode`:
+ForeBlocks uses a structured `AttentionConfig` with sub-configurations:
 
 ```python
-encoder = TransformerEncoder(
-    input_size=1,
+from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.modules.attention.config import (
+    AttentionConfig,
+    AttentionShapeConfig,
+    AttentionCacheConfig,
+    AttentionPositionConfig,
+    AttentionVariantConfig,
+    AttentionFeatureConfig,
+)
+
+config = TransformerConfig(
     d_model=256,
     nhead=8,
-    num_layers=6,
-    attention_mode="standard",  # or "linear", "sype", "hybrid", "kimi", ...
+    attention=AttentionConfig(
+        shape=AttentionShapeConfig(
+            d_model=256,
+            n_heads=8,
+            n_kv_heads=None,  # None for MHA, or specific for GQA/MQA
+            dropout=0.1,
+            max_seq_len=4096,
+            cross_attention=False,
+        ),
+        architecture="standard",  # or "linear", "gla", "deltanet", etc.
+        cache=AttentionCacheConfig(
+            use_paged_cache=True,
+            block_size=128,
+            max_blocks=2048,
+            use_mla=True,
+            kv_latent_dim=None,
+            attention_matching=False,
+            matching_keep_ratio=0.25,
+            matching_trigger_len=512,
+            matching_min_keep=64,
+            matching_query_budget=64,
+            matching_force_single_step=False,
+        ),
+        position=AttentionPositionConfig(
+            encoding="rope",          # "rope", "alibi", "sinusoidal", "learnable"
+            rope_base=10000.0,
+            rope_scaling_type="none", # "none", "yarn", "ntk", "linear"
+            rope_scaling_factor=1.0,
+        ),
+        variant=AttentionVariantConfig(
+            name="standard",
+            backend="auto",
+            window_size=64,
+            chunk_size=1024,
+            probability_factor=0.4,
+            frequency_modes=32,
+            softpick_chunk_size=128,
+            global_attention_ratio=0.1,
+            use_flash_sliding=True,
+            use_swiglu=True,
+            nsa_block_size=None,
+            nsa_topk_ratio=None,
+            moba_block_size=None,
+            moba_topk=4,
+            dilation=2,
+            dilated_window_size=None,
+        ),
+        features=AttentionFeatureConfig(
+            qk_norm=False,
+            qk_norm_type="rms",
+            logit_softcap=None,
+            learned_temperature=False,
+            gated_attention=False,
+            normalized_output=False,
+            head_importance=False,
+            gated_attention_mode="per_head",
+            gated_attention_bias=True,
+            temperature_init=1.0,
+            subquery_norm=False,
+            subquery_norm_mode="learned",
+            multiscale_mask=False,
+            multiscale_window_ratio=0.2,
+            multiscale_topk=16,
+            normalized_output_type="rms",
+            head_importance_sparsity=0.1,
+            verbose_init=False,
+        ),
+    ),
 )
 ```
+
+### Attention Architecture Modes
+
+Choose the attention architecture via `attention.architecture`:
 
 #### Standard (Scaled Dot-Product)
 
 ```python
-attention_mode="standard"
-att_type="standard"
+attention.architecture="standard"
+variant.name="standard"
 ```
 
 Full-rank attention, O(T²) complexity. Good for short sequences (<1000 tokens).
@@ -239,49 +318,69 @@ Full-rank attention, O(T²) complexity. Good for short sequences (<1000 tokens).
 
 **Gated Linear Attention (GLA):**
 ```python
-attention_mode="linear"
-att_type="linear"
+attention.architecture="gla"
+variant.name="gla"
 ```
 
 Gate-controlled recurrence, O(T) complexity. Effective for long sequences.
 
+Variants: `gla`, `gla_hybrid`, `gla_3to1`
+
 **DeltaNet (Gated Delta Rule):**
 ```python
-attention_mode="gated_delta"
-att_type="gated_delta"
+attention.architecture="deltanet"
+variant.name="deltanet"
 ```
 
 Delta-based state update, efficient for streaming.
 
+Variants: `deltanet`, `deltanet_hybrid`, `deltanet_3to1`
+
+**Gated DeltaNet:**
+```python
+attention.architecture="gated_deltanet"
+variant.name="gated_deltanet"
+```
+
+Gated delta-based state update, improved stability for streaming.
+
+Variants: `gated_deltanet`, `gated_deltanet_hybrid`, `gated_deltanet_3to1`
+
 **Kimi (Learned Linear Recurrence):**
 ```python
-attention_mode="kimi"
-att_type="kimi"
+attention.architecture="kimi"
+variant.name="kimi"
 ```
 
 Learned diagonal recurrence, competitive with quadratic attention.
+
+Variants: `kimi`, `hybrid_kimi`, `kimi_3to1`
 
 #### Hybrid Modes
 
 Mix standard and linear attention across layers:
 
 ```python
-attention_mode="hybrid"  # Alternates standard and linear
-attention_mode="hybrid_kimi"  # Alternates standard and kimi
+attention.architecture="hybrid"  # Alternates standard and linear
+attention.architecture="hybrid_kimi"  # Alternates standard and kimi
+attention.architecture="hybrid_gdn"  # Alternates standard and GDN
+attention.architecture="gla_hybrid"  # Alternates standard and GLA
+attention.architecture="deltanet_hybrid"  # Alternates standard and DeltaNet
+attention.architecture="gated_deltanet_hybrid"  # Alternates standard and Gated DeltaNet
 ```
 
 #### Positional Encoding
 
-Interact with `pos_encoding_type` (set in BaseTransformer):
+Configured via `attention.position.encoding`:
 
 ```python
-encoder = TransformerEncoder(
-    pos_encoding_type="rope",    # Rotary Position Embedding (modern)
-    # OR
-    pos_encoding_type="alibi",   # ALiBi (length-generalization)
-    # OR
-    pos_encoding_type="sinusoidal",  # Sinusoidal (classic)
-)
+attention.position.encoding="rope"    # Rotary Position Embedding (modern)
+# OR
+attention.position.encoding="alibi"   # ALiBi (length-generalization)
+# OR
+attention.position.encoding="sinusoidal"  # Sinusoidal (classic)
+# OR
+attention.position.encoding="learnable"
 ```
 
 **RoPE** integrates seamlessly with all attention modes. Applied inside the attention module before matmuls.
@@ -657,13 +756,22 @@ history = trainer.train(train_dl, val_dl, epochs=50)
 
 | Goal | Recommended Config |
 |------|-------------------|
-| **Long sequences** | `attention_mode="linear"` + `use_mod=True` + `patch_encoder=True` |
+| **Long sequences** | `attention_mode="gla"` or `deltanet` + `use_mod=True` + `patch_encoder=True` |
 | **Large models** | `use_gradient_checkpointing=True` + `share_layers=True` + `use_moe=True` |
 | **Fine-tuning** | `use_llrd=True` + `llrd_decay=0.9` + `scheduler_type="warmup_cosine"` |
-| **Low latency** | `attention_mode="kimi"` + `router_type="hash"` (for MoE) |
+| **Low latency** | `attention_mode="kimi"` or `gated_delta` + `router_type="hash"` (for MoE) |
 | **Stable training** | `use_gateskip=True` + `layer_dropout_schedule` + `mhc=True` |
 
 ---
+
+## Transformer Tuner Features
+
+`ModernTransformerTuner` provides auto-hyperparameter selection and advanced feature analysis:
+
+- **Lempel-Ziv complexity**: Measures sequence compressibility and structural regularity
+- **CWT (Continuous Wavelet Transform) energy**: Captures frequency domain characteristics and periodic patterns
+
+Note: `TransformerTuner` has been removed; use `ModernTransformerTuner` for all tuner functionality.
 
 ## References
 
@@ -673,3 +781,5 @@ history = trainer.train(train_dl, val_dl, epochs=50)
 - MoD: Ritter et al. (2024) arXiv:2404.02258
 - mHC: Based on Hyper-Connection architectures
 - GateSkip: Residual scaling literature
+- GLA: Gated Linear Attention mechanisms
+- DeltaNet: Gated Delta Rule attention

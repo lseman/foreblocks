@@ -54,9 +54,9 @@ decoder = TransformerDecoder(
 )
 ```text
 
-#### `attention_mode` — routing schedule
+#### `attention.architecture` — routing schedule
 
-Supported `attention_mode` values currently include:
+Supported `attention.architecture` values currently include:
 
 - `standard`
 - `linear`
@@ -68,10 +68,19 @@ Supported `attention_mode` values currently include:
 - `gated_delta`
 - `hybrid_gdn`
 - `gdn_3to1`
+- `gla`
+- `gla_hybrid`
+- `gla_3to1`
+- `deltanet`
+- `deltanet_hybrid`
+- `deltanet_3to1`
+- `gated_deltanet`
+- `gated_deltanet_hybrid`
+- `gated_deltanet_3to1`
 
 Important behavior:
 
-- if `attention_mode="standard"` but `att_type` is a routed type such as `linear`, `sype`, `kimi`, or `gated_delta`, the model promotes `attention_mode` automatically
+- if `attention.architecture="standard"` but the variant `name` is a routed type such as `linear`, `sype`, `kimi`, `gated_delta`, `gla`, `deltanet`, or `gated_deltanet`, the model promotes the architecture automatically
 
 ### Patching
 
@@ -255,3 +264,26 @@ model = ForecastingModel(
     target_len=24,
     output_size=1,
 )
+```
+
+## Transformer Configuration Structure
+
+ForeBlocks now uses a structured configuration system for transformers and attention:
+
+- `TransformerConfig`: Main transformer configuration
+- `AttentionConfig`: Attention settings with sub-configs:
+  - `shape`: `AttentionShapeConfig` (d_model, n_heads, n_kv_heads, dropout, max_seq_len, cross_attention)
+  - `architecture`: Attention mode (standard, linear, gla, deltanet, etc.)
+  - `cache`: `AttentionCacheConfig` (use_paged_cache, block_size, max_blocks, use_mla, attention_matching)
+  - `position`: `AttentionPositionConfig` (encoding, rope_base, rope_scaling_type, rope_scaling_factor)
+  - `variant`: `AttentionVariantConfig` (name, backend, window_size, chunk_size, frequency_modes, use_flash_sliding, use_swiglu, nsa_block_size, moba_topk, dilation)
+  - `features`: `AttentionFeatureConfig` (qk_norm, logit_softcap, learned_temperature, gated_attention, normalized_output, head_importance, multiscale_mask, subquery_norm)
+
+## Transformer Tuner
+
+ForeBlocks provides `ModernTransformerTuner` for auto-hyperparameter selection and feature analysis. The tuner has been modernized and now includes:
+
+- **Lempel-Ziv complexity** analysis for sequence structure
+- **Continuous Wavelet Transform (CWT) energy** features for frequency domain analysis
+
+Note: `TransformerTuner` has been removed; use `ModernTransformerTuner` instead.

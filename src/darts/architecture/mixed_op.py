@@ -97,6 +97,7 @@ class MixedOp(nn.Module):
         self.adaptive_bias_scale = adaptive_bias_scale
         self.performance_ema_decay = performance_ema_decay
         self.pc_ratio = float(min(max(pc_ratio, 0.0), 1.0))
+        self.pc_darts_enabled = False
 
         # Define operation map using your existing operators
         self.op_map = {
@@ -180,12 +181,14 @@ class MixedOp(nn.Module):
 
         # Adaptive sampling weights
         if adaptive_sampling:
-            self.performance_tracker = nn.Parameter(
-                torch.zeros(len(self.available_ops)), requires_grad=False
+            # These values are persistent runtime statistics, not optimizable
+            # model parameters.  Buffers still follow the module across
+            # devices and remain part of the state dict without leaking into
+            # parameter discovery or optimizer construction.
+            self.register_buffer(
+                "performance_tracker", torch.zeros(len(self.available_ops))
             )
-            self.usage_counter = nn.Parameter(
-                torch.zeros(len(self.available_ops)), requires_grad=False
-            )
+            self.register_buffer("usage_counter", torch.zeros(len(self.available_ops)))
 
         # Fallback operation
         self.fallback_idx = (
@@ -358,13 +361,12 @@ class MixedOp(nn.Module):
         if self.adaptive_sampling and hasattr(self, "performance_tracker"):
             if self.performance_tracker.numel() != len(self.available_ops):
                 device = self.performance_tracker.device
-                self.performance_tracker = nn.Parameter(
-                    torch.zeros(len(self.available_ops), device=device),
-                    requires_grad=False,
+                dtype = self.performance_tracker.dtype
+                self.performance_tracker = torch.zeros(
+                    len(self.available_ops), device=device, dtype=dtype
                 )
-                self.usage_counter = nn.Parameter(
-                    torch.zeros(len(self.available_ops), device=device),
-                    requires_grad=False,
+                self.usage_counter = torch.zeros(
+                    len(self.available_ops), device=device, dtype=dtype
                 )
 
     def _init_flat_search(self):
@@ -392,9 +394,6 @@ class MixedOp(nn.Module):
 
         candidates = []
         for group_name, group_weight in zip(self.group_names, group_weights):
-            if group_weight.item() <= 1e-8:
-                continue
-
             op_logits = self.op_alphas[group_name]
             if self.adaptive_sampling and self.training:
                 op_indices = self.group_op_indices[group_name]
@@ -449,15 +448,13 @@ class MixedOp(nn.Module):
         weights = weights.pow(self.competition_power)
         weights = weights / weights.sum().clamp_min(1e-8)
 
-        selected_ops = [(i, w) for i, w in enumerate(weights) if w.item() > 1e-6]
-
-        # Apply top-k selection
+        selected_ops = list(range(weights.numel()))
         if top_k is not None and len(selected_ops) > top_k:
-            selected_ops = sorted(
-                selected_ops, key=lambda x: x[1].item(), reverse=True
-            )[:top_k]
+            top_values, top_indices = torch.topk(weights, top_k)
+            selected_ops = top_indices.tolist()
+            weights = top_values / top_values.sum().clamp_min(1e-8)
 
-        return selected_ops
+        return list(zip(selected_ops, weights))
 
     def _sample_op_weights(
         self,
@@ -546,21 +543,7 @@ class MixedOp(nn.Module):
         # contributes — not a gradient norm (gradients are unknown at this
         # point in the forward pass).
         if self.adaptive_sampling and self.training:
-            with torch.no_grad():
-                finite_ok = torch.isfinite(out).all()
-                if finite_ok:
-                    out_det = out.detach()
-                    # Mean-square output energy (lower = more stable signal).
-                    mean_sq = (out_det.square().mean().item())
-                    score = 1.0 / (mean_sq + 1e-6)
-                    self.performance_tracker[op_global_idx].mul_(
-                        self.performance_ema_decay
-                    ).add_((1 - self.performance_ema_decay) * score)
-                else:
-                    self.performance_tracker[op_global_idx].mul_(
-                        self.performance_ema_decay
-                    ).add_(-(1 - self.performance_ema_decay))
-                self.usage_counter[op_global_idx] += 1
+            self._update_performance_tracker(op_global_idx, out)
 
         # Straight-through scale: 1.0 in the forward pass, but the expression
         # carries a gradient w.r.t. soft[sampled_pos] (and thus the logits)
@@ -585,6 +568,24 @@ class MixedOp(nn.Module):
         outputs = []
         total_weight: torch.Tensor | None = None
 
+        # PC-DARTS must compare every candidate on the same sampled channels.
+        # The previous per-operation sampling introduced avoidable ranking noise
+        # and accidentally affected every dense DARTS variant.
+        channel_mask: torch.Tensor | None = None
+        if (
+            self.pc_darts_enabled
+            and self.training
+            and 0.0 < self.pc_ratio < 1.0
+            and x.size(-1) > 1
+            and self.input_dim == self.latent_dim == x.size(-1)
+        ):
+            channels = int(x.size(-1))
+            active_channels = max(1, int(round(channels * self.pc_ratio)))
+            if active_channels < channels:
+                indices = torch.randperm(channels, device=x.device)[:active_channels]
+                channel_mask = torch.zeros(channels, device=x.device, dtype=x.dtype)
+                channel_mask[indices] = 1.0
+
         # Precompute DropPath keep/drop decisions on the host in one shot so the
         # per-op loop below never issues a GPU→CPU ``.item()`` sync (each sync
         # stalls the CUDA pipeline). Drawing on CPU is equivalent in
@@ -598,17 +599,11 @@ class MixedOp(nn.Module):
             if drop_mask[path_idx]:
                 continue
 
-            op_input = x
-            pc_scale = 1.0
-            if self.training and 0.0 < self.pc_ratio < 1.0 and x.size(-1) > 1:
-                channels = int(x.size(-1))
-                active_channels = max(1, int(round(channels * self.pc_ratio)))
-                if active_channels < channels:
-                    idx = torch.randperm(channels, device=x.device)[:active_channels]
-                    channel_mask = torch.zeros(channels, device=x.device, dtype=x.dtype)
-                    channel_mask[idx] = 1.0
-                    op_input = x * channel_mask.reshape(1, 1, channels)
-                    pc_scale = channels / float(active_channels)
+            op_input = (
+                x * channel_mask.reshape(1, 1, -1)
+                if channel_mask is not None
+                else x
+            )
 
             try:
                 out = self.ops[op_idx](op_input)
@@ -618,10 +613,10 @@ class MixedOp(nn.Module):
                     f"MixedOp forward failed for operation '{op_name}' (index={op_idx})"
                 ) from e
 
-            if pc_scale != 1.0:
-                out = out * pc_scale
-
             out = self._ensure_output_dim(out)
+            if channel_mask is not None:
+                mask = channel_mask.reshape(1, 1, -1)
+                out = out * mask + x * (1.0 - mask)
             outputs.append(out * weight)
             # Accumulate the normaliser as a tensor; dividing once at the end
             # avoids a per-op ``.item()`` sync (see DropPath note above).
@@ -631,21 +626,7 @@ class MixedOp(nn.Module):
             # Uses mean-square output energy as a "quality score" — lower
             # energy means the op contributes stable, non-exploding signal.
             if self.adaptive_sampling and self.training:
-                with torch.no_grad():
-                    finite_ok = torch.isfinite(out).all()
-                    if finite_ok:
-                        out_det = out.detach()
-                        mean_sq = float(out_det.square().mean().item())
-                        score = 1.0 / (mean_sq + 1e-6)
-                        self.performance_tracker[op_idx].mul_(
-                            self.performance_ema_decay
-                        ).add_((1 - self.performance_ema_decay) * score)
-                    else:
-                        self.performance_tracker[op_idx].mul_(
-                            self.performance_ema_decay
-                        ).add_(-(1 - self.performance_ema_decay))
-
-                    self.usage_counter[op_idx] += 1
+                self._update_performance_tracker(op_idx, out)
 
         if outputs:
             result = sum(outputs) / total_weight.clamp_min(1e-6)
@@ -654,6 +635,19 @@ class MixedOp(nn.Module):
         # Final fallback
         fallback_out = self.ops[self.fallback_idx](x)
         return self._ensure_output_dim(fallback_out)
+
+    @torch.no_grad()
+    def _update_performance_tracker(self, op_idx: int, output: torch.Tensor) -> None:
+        """Update an operation's EMA statistics without a device-host sync."""
+        mean_sq = output.detach().float().square().mean()
+        score = torch.where(
+            torch.isfinite(mean_sq),
+            mean_sq.add(1e-6).reciprocal(),
+            mean_sq.new_tensor(-1.0),
+        ).to(dtype=self.performance_tracker.dtype)
+        decay = self.performance_ema_decay
+        self.performance_tracker[op_idx].mul_(decay).add_(score, alpha=1.0 - decay)
+        self.usage_counter[op_idx].add_(1)
 
     def _hierarchical_probability_vector(
         self, temperature: float = 1.0

@@ -14,10 +14,14 @@ from darts.config import (
 from darts.training.darts_engine import (
     apply_permutation_consistency,
     build_engine_config,
+    compute_backward_loss,
     compute_gradient_norm_balance,
     configure_mixed_op_for_variant,
     forward_bidirectional,
+    model_permutation_consistency_loss,
 )
+from darts.training.optimizers import BilevelOptimizer
+from torch.amp import GradScaler
 
 
 class TestDARTSVariantEnum(unittest.TestCase):
@@ -113,8 +117,29 @@ class TestConfigureMixedOpForVariant(unittest.TestCase):
 
         self.assertEqual(op.op_temperature, 0.1)
 
+    def test_gd_darts_hierarchical_op_remains_runnable(self):
+        """Changing variants must not invalidate construction-time alpha layout."""
+        op = MixedOp(
+            input_dim=4,
+            latent_dim=4,
+            seq_length=8,
+            available_ops=["Identity", "TimeConv", "DLinear"],
+            use_hierarchical=True,
+            op_gdas=True,
+        )
+        engine_cfg = DARTSEngineConfig(variant=DARTSVariant.GD_DARTS)
+
+        configure_mixed_op_for_variant(
+            op, "gd_darts", engine_cfg, epoch=0, total_epochs=10
+        )
+        output = op(torch.randn(2, 8, 4))
+
+        self.assertTrue(op.use_hierarchical)
+        self.assertFalse(op.op_gdas)
+        self.assertEqual(output.shape, (2, 8, 4))
+
     def test_pc_darts_sets_perm_l2_weight(self):
-        """PC-DARTS: enable permutation consistency on edges."""
+        """PC-DARTS enables partial channels and learned edge normalization."""
         cell = DARTSCell(
             input_dim=4,
             latent_dim=4,
@@ -125,18 +150,49 @@ class TestConfigureMixedOpForVariant(unittest.TestCase):
             op_gdas=False,  # PC-DARTS disables GDAS
         )
 
-        engine_cfg = DARTSEngineConfig(
-            variant=DARTSVariant.PC_DARTS,
-            pc_darts=type("PCDARTS", (), {"perm_l2_weight": 1e-3})(),
-        )
+        engine_cfg = DARTSEngineConfig(variant=DARTSVariant.PC_DARTS)
         configure_mixed_op_for_variant(
             cell, "pc_darts", engine_cfg, epoch=0, total_epochs=50
         )
 
-        # All edges in the cell should have perm_l2_weight set.
+        self.assertTrue(cell.pc_darts_enabled)
         for edge in cell.edges:
-            if hasattr(edge, "perm_l2_weight"):
-                self.assertEqual(edge.perm_l2_weight, 1e-3)
+            self.assertTrue(edge.pc_darts_enabled)
+
+    def test_pc_darts_candidates_share_one_channel_sample(self):
+        op = MixedOp(
+            input_dim=8,
+            latent_dim=8,
+            seq_length=4,
+            available_ops=["Identity", "DLinear"],
+            use_hierarchical=False,
+            drop_prob=0.0,
+            pc_ratio=0.25,
+            op_gdas=False,
+        )
+        configure_mixed_op_for_variant(
+            op,
+            "pc_darts",
+            DARTSEngineConfig(variant=DARTSVariant.PC_DARTS),
+            epoch=0,
+            total_epochs=2,
+        )
+        seen = []
+        hooks = [
+            candidate.register_forward_pre_hook(
+                lambda _module, args: seen.append(args[0].detach().clone())
+            )
+            for candidate in op.ops
+        ]
+        try:
+            op.train()(torch.ones(1, 4, 8))
+        finally:
+            for hook in hooks:
+                hook.remove()
+
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(torch.equal(seen[0], seen[1]))
+        self.assertEqual(torch.count_nonzero(seen[0]).item(), 8)
 
     def test_bi_darts_sets_bidirectional_training(self):
         """Bi-DARTS: enable bidirectional training on cells."""
@@ -243,6 +299,33 @@ class TestGradientNormBalance(unittest.TestCase):
         # Should return 1.0 (no balancing needed).
         self.assertEqual(factor, 1.0)
 
+    def test_bilevel_step_applies_balance_to_arch_gradient(self):
+        arch = nn.Parameter(torch.tensor(1.0))
+        weight = nn.Parameter(torch.tensor(1.0))
+        optimizer = torch.optim.SGD([arch], lr=0.1)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
+        bilevel = BilevelOptimizer(
+            arch_optimizer=optimizer,
+            arch_scheduler=scheduler,
+            arch_params=[arch],
+            edge_arch_params=[],
+            component_arch_params=[],
+            use_bilevel_optimization=False,
+            train_arch_loader=None,
+            val_loader=[(torch.zeros(1), torch.zeros(1))],
+            train_model_loader=[(torch.zeros(1), torch.zeros(1))],
+        )
+
+        # Raw gradients are arch=2 and weight=1, so balancing scales arch by 0.5.
+        bilevel.step_architecture(
+            arch * 2.0 + weight,
+            GradScaler(enabled=False),
+            gradient_balance_params=[weight],
+            gradient_balance_epoch=1,
+        )
+
+        self.assertAlmostEqual(arch.item(), 0.9, places=6)
+
 
 class TestPermutationConsistency(unittest.TestCase):
     """Test apply_permutation_consistency for PC-DARTS."""
@@ -269,6 +352,32 @@ class TestPermutationConsistency(unittest.TestCase):
         # Loss should be > 0 because w1 and w2 have different magnitudes.
         self.assertGreater(float(loss), 0.0)
 
+    def test_model_consistency_loss_backpropagates_to_edge_alphas(self):
+        cell = DARTSCell(
+            input_dim=4,
+            latent_dim=4,
+            seq_length=8,
+            num_nodes=3,
+            initial_search=False,
+            selected_ops=["Identity", "TimeConv", "DLinear"],
+            op_gdas=False,
+        )
+        model = nn.Module()
+        model.cells = nn.ModuleList([cell])
+        with torch.no_grad():
+            cell.edges[0].group_alphas.add_(1.0)
+
+        loss = model_permutation_consistency_loss(model, 1.0)
+        loss.backward()
+
+        assert loss.item() > 0.0
+        assert any(
+            parameter.grad is not None
+            for edge in cell.edges
+            for name, parameter in edge.named_parameters()
+            if "alpha" in name
+        )
+
 
 class TestForwardBidirectional(unittest.TestCase):
     """Test forward_bidirectional for Bi-DARTS."""
@@ -287,6 +396,33 @@ class TestForwardBidirectional(unittest.TestCase):
         x = torch.randn(2, 8, 4)
         out = forward_bidirectional(cell, x, backward_loss_weight=0.5)
         self.assertEqual(out.shape, x.shape)
+
+    def test_backward_loss_uses_weight_and_number_of_passes(self):
+        class CountingIdentity(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.scale = nn.Parameter(torch.tensor(1.0))
+                self.calls = 0
+
+            def forward(self, x, **kwargs):
+                self.calls += 1
+                return x * self.scale
+
+        model = CountingIdentity()
+        x = torch.arange(12, dtype=torch.float32).reshape(1, 3, 4)
+        y = torch.zeros_like(x)
+        loss = compute_backward_loss(
+            model,
+            x,
+            y,
+            nn.MSELoss(),
+            backward_loss_weight=0.25,
+            backward_passes=2,
+        )
+
+        expected = nn.functional.mse_loss(x, y) * 1.25
+        self.assertEqual(model.calls, 3)
+        self.assertTrue(torch.allclose(loss, expected))
 
 
 class TestBuildEngineConfig(unittest.TestCase):
@@ -307,7 +443,9 @@ class TestBuildEngineConfig(unittest.TestCase):
     def test_build_pc_darts_config(self):
         """Build engine config for PC-DARTS."""
         cfg = build_engine_config("pc_darts")
-        self.assertEqual(cfg["enable_permutation_consistency"], True)
+        self.assertEqual(cfg["enable_partial_channels"], True)
+        self.assertEqual(cfg["enable_edge_normalization"], True)
+        self.assertEqual(cfg["enable_permutation_consistency"], False)
 
     def test_build_bi_darts_config(self):
         """Build engine config for Bi-DARTS."""

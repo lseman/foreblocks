@@ -88,6 +88,10 @@ class BilevelOptimizer:
         *,
         already_backward: bool = False,
         implicit_corrections: list[torch.Tensor | None] | None = None,
+        gradient_balance_params: list[torch.Tensor] | None = None,
+        gradient_balance_warmup: int = 0,
+        gradient_balance_epoch: int = 0,
+        arch_grad_scale: float = 1.0,
     ):
         if not already_backward:
             scaler.scale(total_arch_loss).backward()
@@ -100,6 +104,23 @@ class BilevelOptimizer:
             for p, corr in zip(self.arch_params, implicit_corrections):
                 if p.grad is not None and corr is not None:
                     p.grad.add_(corr.to(p.grad.device, p.grad.dtype))
+
+        if gradient_balance_params is not None:
+            from .darts_engine import compute_gradient_norm_balance
+
+            factor = compute_gradient_norm_balance(
+                model=nn.Identity(),
+                arch_grads=[p.grad for p in self.arch_params if p.grad is not None],
+                model_grads=[
+                    p.grad for p in gradient_balance_params if p.grad is not None
+                ],
+                warmup_epochs=gradient_balance_warmup,
+                epoch=gradient_balance_epoch,
+            )
+            factor = max(0.0, min(float(factor) * float(arch_grad_scale), 10.0))
+            for param in self.arch_params:
+                if param.grad is not None:
+                    param.grad.mul_(factor)
 
         # Optional EMA smoothing: blend raw arch grads with a running average
         # to reduce variance from the noisy bilevel validation estimate.

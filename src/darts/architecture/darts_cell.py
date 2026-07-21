@@ -88,6 +88,7 @@ class DARTSCell(nn.Module):
         self.drnas_concentration = drnas_concentration
         self.use_fair_darts_hierarchical = use_fair_darts_hierarchical
         self.op_gdas = bool(op_gdas)
+        self.pc_darts_enabled = False
 
         # Progressive operation selection
         self.stage_operations = {
@@ -126,6 +127,9 @@ class DARTSCell(nn.Module):
 
         self._init_components()
         self._edge_indices = self._precompute_edge_indices()
+        self._edge_routing: tuple[tuple[tuple[int, int], ...], ...] | None = None
+        self._edge_routing_training: bool | None = None
+        self.register_load_state_dict_post_hook(self._invalidate_edge_routing)
 
     def _select_operations(self, selected_ops):
         """Select operations based on search stage"""
@@ -204,6 +208,7 @@ class DARTSCell(nn.Module):
                 else 0
             )
 
+        self._invalidate_edge_routing()
         return True
 
     def _precompute_edge_indices(self):
@@ -290,12 +295,52 @@ class DARTSCell(nn.Module):
             return min(2, max_k, full_count)
         return max_k
 
+    def prepare_edge_routing(self) -> None:
+        """Resolve discrete incoming-edge topology outside the hot forward path."""
+        with torch.no_grad():
+            scores = torch.sigmoid(self.edge_importance.detach()).cpu().tolist()
+
+        if self.training and self.edges and getattr(self.edges[0], "op_gdas", False):
+            gate_threshold = max(0.12, min(0.25, sum(scores) / max(len(scores), 1)))
+        else:
+            gate_threshold = 0.35
+
+        routing: list[tuple[tuple[int, int], ...]] = []
+        for node_idx in range(1, self.num_nodes):
+            candidates = [
+                (scores[edge_idx], edge_idx, input_idx)
+                for input_idx in range(node_idx)
+                for edge_idx in [self._get_edge_index(node_idx, input_idx)]
+                if scores[edge_idx] > gate_threshold
+            ]
+            candidates.sort(key=lambda item: item[0], reverse=True)
+            routing.append(
+                tuple(
+                    (edge_idx, input_idx)
+                    for _, edge_idx, input_idx in candidates[
+                        : self._max_in_edges_for_node(node_idx)
+                    ]
+                )
+            )
+        self._edge_routing = tuple(routing)
+        self._edge_routing_training = self.training
+
+    def _invalidate_edge_routing(self, *_args) -> None:
+        """Discard topology derived from parameters that may have changed."""
+        self._edge_routing = None
+        self._edge_routing_training = None
+
     def _aggregate_inputs(self, inputs, edge_indices):
         """Aggregate inputs with different strategies"""
         if len(inputs) == 1:
             return inputs[0]
 
         stacked = torch.stack(inputs, dim=0)
+
+        # PC-DARTS edge weights are already normalized jointly over incoming
+        # edges, so a second aggregation softmax would distort them.
+        if self.pc_darts_enabled:
+            return stacked.sum(dim=0)
 
         if self.aggregation == "weighted" and self.agg_weights is not None:
             # Use edge-specific weights
@@ -333,6 +378,17 @@ class DARTSCell(nn.Module):
         idx = int(torch.argmax(probs).item())
         return self.residual_pattern_names[idx]
 
+    def _get_residual_pattern_weights(self) -> torch.Tensor | None:
+        """Return a differentiable residual-pattern relaxation during search."""
+        if not self.residual_searchable:
+            return None
+        tau = max(float(self.temperature), 1e-3)
+        if self.training:
+            return F.gumbel_softmax(
+                self.residual_pattern_alphas, tau=tau, hard=False, dim=0
+            )
+        return F.softmax(self.residual_pattern_alphas / tau, dim=0)
+
     def _apply_residual(self, node_output, residual_input, node_idx, pattern=None):
         """Apply residual connection with proper dimension handling.
 
@@ -341,6 +397,7 @@ class DARTSCell(nn.Module):
         - "gated":    sigmoid(gate) * output + skip
         - "skip":     output + skip (no weighting)
         """
+        pattern_weights = pattern if isinstance(pattern, torch.Tensor) else None
         if pattern is None:
             pattern = self._get_residual_pattern()
 
@@ -366,6 +423,17 @@ class DARTSCell(nn.Module):
                     residual_input
                 )
 
+        if pattern_weights is not None:
+            gate_weight = torch.sigmoid(self.gate_weights[node_idx])
+            additive = torch.sigmoid(self.residual_weights[node_idx])
+            additive_out = additive * node_output + (1 - additive) * residual_input
+            gated_out = gate_weight * node_output + residual_input
+            skip_out = node_output + residual_input
+            return (
+                pattern_weights[0] * additive_out
+                + pattern_weights[1] * gated_out
+                + pattern_weights[2] * skip_out
+            )
         if pattern == "gated":
             # Use pre-registered gate weight (avoids CPU/CUDA device mismatch)
             gate_weight = torch.sigmoid(self.gate_weights[node_idx])
@@ -383,55 +451,34 @@ class DARTSCell(nn.Module):
 
         x_proj = self.input_proj(x)
         nodes = [x_proj]
-
-        # Precompute edge importance values as plain Python floats so that
-        # control-flow branches (the threshold) never appear inside the
-        # dynamo-traced compute graph, avoiding unnecessary graph breaks.
-        with torch.no_grad():
-            _ew_vals: list[float] = torch.sigmoid(self.edge_importance).tolist()
+        if self._edge_routing is None or self._edge_routing_training != self.training:
+            self.prepare_edge_routing()
         _edge_weights = torch.sigmoid(self.edge_importance)  # tracked for backprop
-
-        # GDAS threshold: during GDAS training each edge needs a reasonable
-        # chance of being sampled so its alphas can recover from early
-        # mis-ranking.  A very low threshold (0.05) causes permanent edge
-        # elimination.  We use a floor of ``1/num_edges`` so every edge has
-        # at least ``O(1/n)`` weight in the gating distribution, and we
-        # require the sigmoid importance to exceed the mean of the edge
-        # distribution — this adapts to the actual learned importance
-        # landscape rather than a fixed absolute number.
-        if self.training and getattr(self.edges[0], "op_gdas", False):
-            ew_tensor = torch.sigmoid(self.edge_importance)
-            ew_mean = float(ew_tensor.mean().item())
-            ew_floor = 1.0 / max(len(self.edges), 1)
-            gate_threshold = max(0.12, min(0.25, ew_mean))
-        else:
-            # Dense (all-edges) mode: only gate out truly dead edges.
-            gate_threshold = 0.35
+        residual_pattern = self._get_residual_pattern_weights()
 
         for node_idx in range(1, self.num_nodes):
             node_inputs, edge_indices = [], []
-            candidate_edges = []
+            selected_edges = self._edge_routing[node_idx - 1]
+            candidate_edges = [
+                (edge_idx, input_idx, _edge_weights[edge_idx])
+                for edge_idx, input_idx in selected_edges
+            ]
 
-            for input_idx in range(node_idx):
-                edge_idx = self._get_edge_index(node_idx, input_idx)
-                edge = self.edges[edge_idx]
+            if self.pc_darts_enabled and candidate_edges:
+                candidate_indices = torch.tensor(
+                    [item[0] for item in candidate_edges],
+                    device=self.edge_importance.device,
+                    dtype=torch.long,
+                )
+                normalized_edges = F.softmax(
+                    self.edge_importance.index_select(0, candidate_indices), dim=0
+                )
+                candidate_edges = [
+                    (edge_idx, input_idx, normalized_edges[pos])
+                    for pos, (edge_idx, input_idx, _) in enumerate(candidate_edges)
+                ]
 
-                # Apply edge importance gating (no .item() inside traced graph)
-                ew_val = _ew_vals[edge_idx]
-                if ew_val > gate_threshold:
-                    candidate_edges.append((
-                        ew_val,
-                        edge_idx,
-                        input_idx,
-                        _edge_weights[edge_idx],
-                    ))
-
-            max_in_edges = self._max_in_edges_for_node(node_idx)
-            if len(candidate_edges) > max_in_edges:
-                candidate_edges.sort(key=lambda x: x[0], reverse=True)
-                candidate_edges = candidate_edges[:max_in_edges]
-
-            for _, edge_idx, input_idx, edge_weight in candidate_edges:
+            for edge_idx, input_idx, edge_weight in candidate_edges:
                 edge = self.edges[edge_idx]
                 # Use gradient checkpointing if enabled
                 if self.training and self.use_checkpoint:
@@ -450,7 +497,9 @@ class DARTSCell(nn.Module):
                 # Aggregate inputs
                 agg = self._aggregate_inputs(node_inputs, edge_indices)
                 # Apply residual connection
-                out = self._apply_residual(agg, nodes[node_idx - 1], node_idx)
+                out = self._apply_residual(
+                    agg, nodes[node_idx - 1], node_idx, residual_pattern
+                )
             else:
                 # Fallback to previous node
                 out = nodes[node_idx - 1]
@@ -458,7 +507,7 @@ class DARTSCell(nn.Module):
             nodes.append(out)
 
         # Apply final residual and normalization
-        final = self._apply_residual(nodes[-1], x_proj, 0)
+        final = self._apply_residual(nodes[-1], x_proj, 0, residual_pattern)
         result = self.out_norm(final)
         return result
 
