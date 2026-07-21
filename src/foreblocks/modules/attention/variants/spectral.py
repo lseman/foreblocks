@@ -14,10 +14,12 @@ Core API:
 
 import torch
 
+from foreblocks.modules.attention.variants.base import AttentionContext
+
 
 class SpectralAttentionImpl:
-    def __init__(self, parent):
-        self.parent = parent
+    def __init__(self, context: AttentionContext):
+        self.context = context
 
     def forward(
         self,
@@ -30,8 +32,8 @@ class SpectralAttentionImpl:
         need_weights,
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
-        if self.parent.attention_type == "frequency":
-            out, weights = self.parent.freq_attention(
+        if self.context.attention_type == "frequency":
+            out, weights = self.context.freq_attention(
                 query,
                 key,
                 value,
@@ -42,8 +44,8 @@ class SpectralAttentionImpl:
             )
             return out, weights, None
 
-        if self.parent.attention_type == "dwt":
-            out, weights = self.parent.dwt_attention(
+        if self.context.attention_type == "dwt":
+            out, weights = self.context.dwt_attention(
                 query,
                 key,
                 value,
@@ -54,7 +56,7 @@ class SpectralAttentionImpl:
             )
             return out, weights, None
 
-        out, weights = self.parent.freq_attention(
+        out, weights = self.context.freq_attention(
             query,
             key,
             value,

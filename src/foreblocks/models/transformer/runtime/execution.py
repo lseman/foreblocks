@@ -163,12 +163,7 @@ class LazyAttentionBackendMixin:
         module = cache.get(name)
         if module is None:
             dev = next(self.parameters()).device
-            module = build_layer_attention_backend(
-                name,
-                self._attn_init_kwargs,
-                self._pos_encoding_type,
-                self._attn_backend_cfg,
-            ).to(dev)
+            module = build_layer_attention_backend(name, self._attention_config).to(dev)
             cache[name] = module
             self.add_module(f"_attn_backend_{name}", module)
         return module

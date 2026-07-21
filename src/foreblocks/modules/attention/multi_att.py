@@ -36,12 +36,10 @@ from foreblocks.modules.attention.cache.kv import (
 )
 from foreblocks.modules.attention.cache.paged import PagedKVCache
 from foreblocks.modules.attention.cache.selection import AttentionCacheSelector
-from foreblocks.modules.attention.config import MultiAttentionConfig
+from foreblocks.modules.attention.config import AttentionConfig
 from foreblocks.modules.attention.dispatch import AttentionKernelDispatcher
 from foreblocks.modules.attention.masking import (
-    build_attention_mask,
     normalize_blocked_mask,
-    to_additive_mask,
 )
 from foreblocks.modules.attention.pipeline import QKVPipeline
 from foreblocks.modules.attention.utils.compaction import (
@@ -49,7 +47,11 @@ from foreblocks.modules.attention.utils.compaction import (
     AttentionMatchingConfig,
 )
 from foreblocks.modules.attention.utils.position import PositionEncodingApplier
-from foreblocks.modules.attention.variants.base import AttentionImpl
+from foreblocks.modules.attention.variants.base import (
+    AttentionContext,
+    AttentionImpl,
+    MultiAttentionContext,
+)
 from foreblocks.modules.attention.variants.registry import ATTENTION_VARIANTS
 from foreblocks.modules.attention.variants.standard import StandardAttentionImpl
 from foreblocks.ops.attention import triton_apply_rope, triton_paged_decode
@@ -338,7 +340,8 @@ class MultiAttention(nn.Module):
         self.position_encoding_applier = self._build_position_encoding_applier()
         self._paged_stream_decode = paged_stream_decode_standard
         self._triton_paged_decode = triton_paged_decode
-        self._fallback_standard = StandardAttentionImpl(self)
+        self.context: AttentionContext = MultiAttentionContext(self)
+        self._fallback_standard = StandardAttentionImpl(self.context)
         self.impl: AttentionImpl = self._create_impl()
 
         # Backends
@@ -682,7 +685,7 @@ class MultiAttention(nn.Module):
         return applier
 
     def _create_impl(self) -> AttentionImpl:
-        return ATTENTION_VARIANTS.create(self.attention_type, self)
+        return ATTENTION_VARIANTS.create(self.attention_type, self.context)
 
     def register_position_transform(self, name: str, fn) -> None:
         self.position_encoding_applier.add_transform(name, fn)
@@ -1181,204 +1184,21 @@ class MultiAttention(nn.Module):
 
         return q, k, v, q_start_pos
 
-    def _can_use_sdpa(
-        self,
-        *,
-        need_weights: bool,
-        q_start_pos: torch.Tensor | None,
-    ) -> bool:
-        if self.attn_implementation == "eager":
-            return False
-        if not hasattr(F, "scaled_dot_product_attention"):
-            return False
-        if need_weights or q_start_pos is not None:
-            return False
-        # These features modify attention scores and therefore require eager
-        # score materialization until they have dedicated backend hooks.
-        return not (
-            self.logit_softcap is not None
-            or self.use_learned_temp
-            or self.use_multiscale_mask
-            or self.use_alibi
-        )
-
-    def _sdpa_attention_mask(
+    def _compute_attention_direct(
         self,
         q: torch.Tensor,
         k: torch.Tensor,
-        attn_mask: torch.Tensor | None,
-        key_padding_mask: torch.Tensor | None,
-        is_causal: bool,
-    ) -> torch.Tensor | None:
-        blocked = build_attention_mask(
-            query=q,
-            key_length=k.size(2),
-            attention_mask=attn_mask,
-            padding_mask=key_padding_mask,
-            is_causal=is_causal and not self.cross_attention,
-        )
-        return to_additive_mask(blocked, dtype=q.dtype)
-
-    # --------------------------------------------------------------------- #
-    # Plain full attention compute (prefill / cross)
-    # --------------------------------------------------------------------- #
-    def _compute_attention_direct(
-        self,
-        q: torch.Tensor,  # [B, H, T_q, D]
-        k: torch.Tensor,  # [B, H, T_k, D]
-        v: torch.Tensor,  # [B, H, T_k, D]
+        v: torch.Tensor,
         attn_mask: torch.Tensor | None,
         key_padding_mask: torch.Tensor | None,
         is_causal: bool,
         need_weights: bool,
         q_start_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        B, H, T_q, D = q.shape
-        T_k = k.size(2)
-
-        compiler = getattr(torch, "compiler", None)
-        compiling = bool(
-            compiler is not None
-            and hasattr(compiler, "is_compiling")
-            and compiler.is_compiling()
+        """Compatibility alias for callers of the former owner method."""
+        return self.kernel_dispatcher.compute(
+            q, k, v, attn_mask, key_padding_mask, is_causal, need_weights, q_start_pos
         )
-        backend = ATTENTION_BACKENDS.validate(
-            self.attn_implementation,
-            device_type=q.device.type,
-            require_attention_weights=need_weights,
-            require_gqa=q.size(1) != k.size(1),
-            compiling=compiling,
-        )
-        if backend.runner is not None:
-            mask_builder = backend.mask_builder
-            if mask_builder is None:
-                raise RuntimeError(f"backend {backend.name!r} has no mask builder")
-            blocked = mask_builder(
-                query=q,
-                key_length=T_k,
-                attention_mask=attn_mask,
-                padding_mask=key_padding_mask,
-                is_causal=is_causal and not self.cross_attention,
-                cache_position=(
-                    q_start_pos[:, None]
-                    + torch.arange(T_q, device=q.device, dtype=torch.long)[None, :]
-                    if q_start_pos is not None
-                    else None
-                ),
-            )
-            backend_mask = (
-                blocked
-                if backend.supports_boolean_mask
-                else to_additive_mask(blocked, dtype=q.dtype)
-            )
-            result = backend.runner(
-                q,
-                k,
-                v,
-                attention_mask=backend_mask,
-                dropout_p=self.dropout_p if self.training else 0.0,
-                scale=self.scale,
-                need_weights=need_weights,
-            )
-            if isinstance(result, tuple):
-                out, weights = result
-            else:
-                out, weights = result, None
-            out = self._apply_subquery_norm(out)
-            out = self._apply_gated_attention(out)
-            return out, weights
-
-        if self._can_use_sdpa(
-            need_weights=need_weights,
-            q_start_pos=q_start_pos,
-        ):
-            sdpa_mask = self._sdpa_attention_mask(
-                q, k, attn_mask, key_padding_mask, is_causal
-            )
-            dropout_p = self.dropout_p if self.training else 0.0
-            try:
-                out = F.scaled_dot_product_attention(
-                    q,
-                    k,
-                    v,
-                    attn_mask=sdpa_mask,
-                    dropout_p=dropout_p,
-                    is_causal=False,
-                    enable_gqa=(q.size(1) != k.size(1)),
-                    scale=self.scale,
-                )
-            except (RuntimeError, TypeError) as exc:
-                if self.attn_implementation == "sdpa":
-                    raise RuntimeError(
-                        "requested SDPA attention backend failed"
-                    ) from exc
-            else:
-                out = self._apply_subquery_norm(out)
-                out = self._apply_gated_attention(out)
-                return out, None
-
-        if k.size(1) != q.size(1):
-            k = self._repeat_kv(k)
-            v = self._repeat_kv(v)
-
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B,H,T_q,T_k]
-
-        # Learned per-head temperature (before masking so -inf stays -inf)
-        scores = self._apply_learned_temperature(scores)
-
-        # Logit softcapping (tanh) — must precede -inf masking
-        scores = self._apply_logit_softcap(scores)
-
-        # Causal mask (self-attention only)
-        if is_causal and not self.cross_attention:
-            if q_start_pos is None:
-                causal_mask = torch.triu(
-                    torch.ones(T_q, T_k, device=q.device, dtype=torch.bool),
-                    diagonal=1,
-                )
-                scores = scores.masked_fill(
-                    causal_mask.view(1, 1, T_q, T_k),
-                    float("-inf"),
-                )
-            else:
-                if q_start_pos.ndim != 1 or q_start_pos.shape[0] != B:
-                    raise ValueError(
-                        f"q_start_pos must be [B], got {tuple(q_start_pos.shape)}"
-                    )
-                q_pos = q_start_pos.to(device=q.device, dtype=torch.long).view(
-                    B, 1, 1, 1
-                ) + torch.arange(T_q, device=q.device, dtype=torch.long).view(
-                    1, 1, T_q, 1
-                )
-                k_pos = torch.arange(T_k, device=q.device, dtype=torch.long).view(
-                    1, 1, 1, T_k
-                )
-                scores = scores.masked_fill(k_pos > q_pos, float("-inf"))
-
-        scores = self._apply_masks(scores, attn_mask, key_padding_mask)
-
-        # ALiBi bias (applied after external masks, before softmax)
-        if self.use_alibi and self.alibi_bias is not None:
-            scores = scores + self.alibi_bias(T_q, T_k, device=q.device)
-
-        # Multi-scale masking (optional hierarchical attention)
-        if self.use_multiscale_mask:
-            multiscale_mask = self._create_multiscale_mask(
-                T_q, T_k, device=q.device, is_causal=is_causal
-            )
-            if multiscale_mask is not None:
-                scores = scores.masked_fill(
-                    (~multiscale_mask).view(1, 1, T_q, T_k),
-                    float("-inf"),
-                )
-
-        weights = F.softmax(scores, dim=-1)
-        weights = self._dropout_weights(weights)
-
-        out = torch.matmul(weights, v)  # [B,H,T_q,D]
-        out = self._apply_subquery_norm(out)
-        out = self._apply_gated_attention(out)
-        return out, (weights if need_weights else None)
 
     def _compute_attention(
         self,
@@ -1403,7 +1223,7 @@ class MultiAttention(nn.Module):
         )
 
     @classmethod
-    def from_config(cls, config: MultiAttentionConfig, **overrides) -> "MultiAttention":
+    def from_config(cls, config: AttentionConfig, **overrides) -> "MultiAttention":
         kwargs = config.to_legacy_kwargs()
         kwargs.update(overrides)
         return cls(**kwargs)

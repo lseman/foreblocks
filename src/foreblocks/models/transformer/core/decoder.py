@@ -14,6 +14,8 @@ Core API:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -110,47 +112,18 @@ class TransformerDecoderLayer(
         d_model = config.d_model
         nhead = config.nhead
 
-        # ── Lazy attention module placeholders (decoder uses 5 self-attn backends) ──
-        # Init parameters for the lazy attention-backend registry (captured once, reused).
-        # See core/attention_backends.py + runtime/execution.py's
-        # LazyAttentionBackendMixin for the shared lazy-instantiation cache.
-        self._attn_init_kwargs = {
-            "d_model": d_model,
-            "n_heads": nhead,
-            "dropout": dropout,
-            "cross_attention": False,
-        }
-        self._attn_backend_cfg = dict(
-            att_type=config.att_type,
-            attn_implementation=config.attn_implementation,
-            freq_modes=config.freq_modes,
-            use_attention_matching_compaction=config.use_attention_matching_compaction,
-            attention_matching_keep_ratio=config.attention_matching_keep_ratio,
-            attention_matching_trigger_len=config.attention_matching_trigger_len,
-            attention_matching_min_keep=config.attention_matching_min_keep,
-            attention_matching_query_budget=config.attention_matching_query_budget,
-            attention_matching_force_single_step=config.attention_matching_force_single_step,
-            moba_block_size=config.moba_block_size,
-            moba_topk=config.moba_topk,
-            rope_base=config.rope_base,
-            rope_scaling_type=config.rope_scaling_type,
-            rope_scaling_factor=config.rope_scaling_factor,
+        # Self-attention backends consume one immutable grouped configuration.
+        self._attention_config = replace(
+            config.attention,
+            shape=replace(config.attention.shape, dropout=dropout),
         )
         self.layer_attention_type = str(layer_attention_type)
-        self._pos_encoding_type = str(config.pos_encoding_type)
 
-        self.cross_attn = MultiAttention(
-            d_model=d_model,
-            n_heads=nhead,
-            dropout=dropout,
-            attention_type=config.att_type,
-            attn_implementation=config.attn_implementation,
-            freq_modes=config.freq_modes,
-            cross_attention=True,
-            pos_encoding_type=self._pos_encoding_type,
-            moba_block_size=config.moba_block_size,
-            moba_topk=config.moba_topk,
+        cross_attention_config = replace(
+            self._attention_config,
+            shape=replace(self._attention_config.shape, cross_attention=True),
         )
+        self.cross_attn = MultiAttention.from_config(cross_attention_config)
 
         self.is_causal = not informer_like
 

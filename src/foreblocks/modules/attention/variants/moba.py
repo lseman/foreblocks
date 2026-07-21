@@ -21,6 +21,8 @@ import warnings
 import torch
 import torch.nn.functional as F
 
+from foreblocks.modules.attention.variants.base import AttentionContext
+
 _FLASH_MOBA_OPS: tuple[object | None, object | None] | None = None
 _FLASH_MOBA_WARNED = False
 
@@ -75,8 +77,8 @@ def _exclusive_cu_seqlens(lengths: torch.Tensor) -> torch.Tensor:
 
 
 class MoBAAttentionImpl:
-    def __init__(self, parent):
-        self.parent = parent
+    def __init__(self, context: AttentionContext):
+        self.context = context
 
     def forward(
         self,
@@ -91,7 +93,7 @@ class MoBAAttentionImpl:
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
-        q, k, v, _ = self.parent._prepare_qkv_attention(query, key, value, layer_state)
+        q, k, v, _ = self.context._prepare_qkv_attention(query, key, value, layer_state)
         out, weights = self._moba_attention(
             q,
             k,
@@ -101,7 +103,7 @@ class MoBAAttentionImpl:
             is_causal,
             need_weights,
         )
-        return self.parent._finalize_projected_output(out, B, T_q), weights, layer_state
+        return self.context._finalize_projected_output(out, B, T_q), weights, layer_state
 
     def _moba_attention(
         self,
@@ -154,9 +156,9 @@ class MoBAAttentionImpl:
             q.is_cuda
             and k.is_cuda
             and v.is_cuda
-            and (not self.parent.training)
+            and (not self.context.training)
             and is_causal
-            and (not self.parent.cross_attention)
+            and (not self.context.cross_attention)
             and (not need_weights)
             and attn_mask is None
             and key_padding_mask is None
@@ -176,7 +178,7 @@ class MoBAAttentionImpl:
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
-        block_size = max(1, min(self.parent.moba_block_size, T_k if T_k > 0 else 1))
+        block_size = max(1, min(self.context.moba_block_size, T_k if T_k > 0 else 1))
         if T_k == 0:
             out = torch.zeros_like(q)
             return out, (
@@ -188,10 +190,10 @@ class MoBAAttentionImpl:
         n_blocks = math.ceil(T_k / block_size)
         if (
             n_blocks <= 1
-            or self.parent.moba_topk <= 1
-            or self.parent.moba_topk >= n_blocks
+            or self.context.moba_topk <= 1
+            or self.context.moba_topk >= n_blocks
         ):
-            return self.parent._compute_attention(
+            return self.context._compute_attention(
                 q,
                 k,
                 v,
@@ -218,25 +220,25 @@ class MoBAAttentionImpl:
             is_causal=is_causal,
         )
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.parent.scale
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.context.scale
         scores = scores.masked_fill(~selected_tokens, float("-inf"))
 
-        if is_causal and not self.parent.cross_attention:
+        if is_causal and not self.context.cross_attention:
             causal_mask = torch.triu(
                 torch.ones(T_q, T_k, device=q.device, dtype=torch.bool), diagonal=1
             )
             scores = scores.masked_fill(causal_mask.view(1, 1, T_q, T_k), float("-inf"))
 
-        scores = self.parent._apply_masks(scores, attn_mask, key_padding_mask)
+        scores = self.context._apply_masks(scores, attn_mask, key_padding_mask)
 
         weights = F.softmax(scores, dim=-1)
         weights = torch.where(
             torch.isfinite(weights), weights, torch.zeros_like(weights)
         )
-        weights = self.parent._dropout_weights(weights)
+        weights = self.context._dropout_weights(weights)
 
         out = torch.matmul(weights, v)
-        out = self.parent._apply_gated_attention(out)
+        out = self.context._apply_gated_attention(out)
         return out, (weights if need_weights else None)
 
     def _flash_moba_attention(
@@ -251,7 +253,7 @@ class MoBAAttentionImpl:
             raise RuntimeError("flash-attn varlen interface is unavailable")
 
         B, H, T, D = q.shape
-        block_size = max(1, min(self.parent.moba_block_size, T if T > 0 else 1))
+        block_size = max(1, min(self.context.moba_block_size, T if T > 0 else 1))
         output = torch.empty_like(q)
         for batch_idx in range(B):
             output[batch_idx] = self._flash_moba_single_sample(
@@ -263,7 +265,7 @@ class MoBAAttentionImpl:
                 num_heads=H,
                 head_dim=D,
             )
-        return self.parent._apply_gated_attention(output)
+        return self.context._apply_gated_attention(output)
 
     def _flash_moba_single_sample(
         self,
@@ -349,7 +351,7 @@ class MoBAAttentionImpl:
             cu_seqlens_k=cu_seqlens_k,
             max_seqlen_q=max_seqlen_q,
             max_seqlen_k=max_seqlen_k,
-            softmax_scale=self.parent.scale,
+            softmax_scale=self.context.scale,
             causal=causal,
             dropout_p=0.0,
         )
@@ -380,7 +382,7 @@ class MoBAAttentionImpl:
         T = q.size(0)
         n_blocks = math.ceil(T / block_size)
         target_blocks = n_blocks - 1
-        topk_remote = min(max(self.parent.moba_topk - 1, 0), max(target_blocks, 0))
+        topk_remote = min(max(self.context.moba_topk - 1, 0), max(target_blocks, 0))
         if target_blocks <= 0 or topk_remote <= 0:
             return None
 
@@ -559,7 +561,7 @@ class MoBAAttentionImpl:
         B, H, _, _ = q.shape
         block_scores = (
             torch.einsum("bhtd,bhnd->bhtn", q.float(), block_keys.float())
-            * self.parent.scale
+            * self.context.scale
         )
 
         block_mask = (~block_valid).view(B, 1, 1, n_blocks).expand(B, H, T_q, n_blocks)
@@ -571,7 +573,7 @@ class MoBAAttentionImpl:
             B, H, T_q, n_blocks
         )
 
-        if is_causal and not self.parent.cross_attention:
+        if is_causal and not self.context.cross_attention:
             block_end = (
                 (torch.arange(n_blocks, device=q.device) + 1) * block_size - 1
             ).clamp_max(T_k - 1)
@@ -579,7 +581,7 @@ class MoBAAttentionImpl:
             future_blocks = block_end.view(1, 1, 1, n_blocks) > q_pos
             block_mask = block_mask | future_blocks
 
-        extra_k = min(max(self.parent.moba_topk - 1, 0), max(n_blocks - 1, 0))
+        extra_k = min(max(self.context.moba_topk - 1, 0), max(n_blocks - 1, 0))
         selected_blocks = local_blocks.clone()
 
         if extra_k > 0:

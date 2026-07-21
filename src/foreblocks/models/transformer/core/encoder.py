@@ -97,32 +97,11 @@ class TransformerEncoderLayer(
         d_model = config.d_model
         nhead = config.nhead
 
-        # Init parameters for the lazy attention-backend registry (captured once, reused).
-        # See core/attention_backends.py + runtime/execution.py's
-        # LazyAttentionBackendMixin for the shared lazy-instantiation cache.
-        self._attn_init_kwargs = {
-            "d_model": d_model,
-            "n_heads": nhead,
-            "dropout": dropout,
-        }
-        self._attn_backend_cfg = dict(
-            att_type=config.att_type,
-            attn_implementation=config.attn_implementation,
-            freq_modes=config.freq_modes,
-            use_attention_matching_compaction=config.use_attention_matching_compaction,
-            attention_matching_keep_ratio=config.attention_matching_keep_ratio,
-            attention_matching_trigger_len=config.attention_matching_trigger_len,
-            attention_matching_min_keep=config.attention_matching_min_keep,
-            attention_matching_query_budget=config.attention_matching_query_budget,
-            attention_matching_force_single_step=config.attention_matching_force_single_step,
-            moba_block_size=config.moba_block_size,
-            moba_topk=config.moba_topk,
-            rope_base=config.rope_base,
-            rope_scaling_type=config.rope_scaling_type,
-            rope_scaling_factor=config.rope_scaling_factor,
+        self._attention_config = dataclasses.replace(
+            config.attention,
+            shape=dataclasses.replace(config.attention.shape, dropout=dropout),
         )
         self.layer_attention_type = str(layer_attention_type)
-        self._pos_encoding_type = str(config.pos_encoding_type)
 
         self.attn_norm = NormWrapper.make(
             d_model,

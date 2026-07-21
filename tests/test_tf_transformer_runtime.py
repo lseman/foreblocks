@@ -12,16 +12,16 @@ from foreblocks.models.transformer.transformer import (
     TransformerEncoder,
     TransformerEncoderLayer,
 )
-from foreblocks.modules.skip.gateskip import BudgetScheduler
-from foreblocks.modules.skip.mod import MoDBudgetScheduler
-from foreblocks.modules.attention.multi_att import MultiAttention
-from foreblocks.modules.attention.cache.kv import StaticKVCache
-from foreblocks.modules.attention.cache import KVCacheProtocol
 from foreblocks.modules.attention.backends import (
     ATTENTION_BACKENDS,
     register_attention_backend,
 )
+from foreblocks.modules.attention.cache import KVCacheProtocol
+from foreblocks.modules.attention.cache.kv import StaticKVCache
 from foreblocks.modules.attention.masking import build_attention_mask
+from foreblocks.modules.attention.multi_att import MultiAttention
+from foreblocks.modules.skip.gateskip import BudgetScheduler
+from foreblocks.modules.skip.mod import MoDBudgetScheduler
 
 
 def _optimizer_param_ids(optimizer: torch.optim.Optimizer) -> set[int]:
@@ -706,7 +706,9 @@ def test_transformer_config_promotes_stable_layer_options_to_fields():
     assert model.gate_lambda == 0.25
     assert model.mhc_n_streams == 3
     assert model.initializer_range == 0.01
-    assert layer._attn_backend_cfg["freq_modes"] == 7
+    assert layer._attention_config.variant.frequency_modes == 7
+    assert layer._attention_config.shape.d_model == config.d_model
+    assert layer._attention_config.position.encoding == config.pos_encoding_type
     assert type(layer.feed_forward.block).__name__ == "_StandardFeedForwardBlock"
 
 

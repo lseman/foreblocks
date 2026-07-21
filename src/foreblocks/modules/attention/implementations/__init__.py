@@ -1,23 +1,16 @@
-"""foreblocks.modules.attention.modules.
+"""Canonical namespace for concrete attention implementations.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the reusable attention, block, head, MoE, and skip modules area of Foreblocks.
-
+The older ``attention.modules`` path remains available for compatibility, but
+new callers should import concrete algorithms from this namespace.
 """
 
-from foreblocks.modules.attention.modules.autocor_att import (
+from foreblocks.modules.attention.modules import (
     AutoCorrelation,
     AutoCorrelationLayer,
-)
-from foreblocks.modules.attention.modules.dwt_att import DWTAttention
-from foreblocks.modules.attention.modules.frequency_att import (
-    FourierBlock,
-    FourierModeSelector,
-    FrequencyAttention,
-)
-from foreblocks.modules.attention.modules.linear_att import (
     DeltaNetBackend,
+    DWTAttention,
     FeatureMapRegistry,
+    FrequencyAttention,
     GatedDeltaBackend,
     GatedDeltaNet,
     GatedDeltaNet2,
@@ -35,8 +28,6 @@ __all__ = [
     "DWTAttention",
     "DeltaNetBackend",
     "FeatureMapRegistry",
-    "FourierBlock",
-    "FourierModeSelector",
     "FrequencyAttention",
     "GLABackend",
     "GatedDeltaBackend",

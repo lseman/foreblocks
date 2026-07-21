@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
-from foreblocks.modules.attention.variants.base import AttentionImpl
+from foreblocks.modules.attention.variants.base import AttentionContext, AttentionImpl
 
-VariantFactory = Callable[[Any], AttentionImpl]
+VariantFactory = Callable[[AttentionContext], AttentionImpl]
 
 
 class AttentionVariantRegistry:
@@ -25,18 +24,23 @@ class AttentionVariantRegistry:
 
         return decorator
 
-    def create(self, name: str, owner: Any) -> AttentionImpl:
+    def create(self, name: str, context: AttentionContext) -> AttentionImpl:
         try:
             factory = self._factories[name.lower()]
         except KeyError as exc:
             raise ValueError(f"unknown attention type: {name}") from exc
-        return factory(owner)
+        return factory(context)
 
     def names(self) -> tuple[str, ...]:
         return tuple(self._factories)
 
 
 ATTENTION_VARIANTS = AttentionVariantRegistry()
+
+
+def register_attention_variant(*names: str):
+    """Register a custom attention variant factory under one or more names."""
+    return ATTENTION_VARIANTS.register(*names)
 
 
 def _register_builtin_variants() -> None:
@@ -65,4 +69,9 @@ def _register_builtin_variants() -> None:
 
 _register_builtin_variants()
 
-__all__ = ["ATTENTION_VARIANTS", "AttentionVariantRegistry", "VariantFactory"]
+__all__ = [
+    "ATTENTION_VARIANTS",
+    "AttentionVariantRegistry",
+    "VariantFactory",
+    "register_attention_variant",
+]

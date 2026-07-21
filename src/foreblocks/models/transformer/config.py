@@ -5,6 +5,14 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
+from foreblocks.modules.attention.config import (
+    AttentionCacheConfig,
+    AttentionConfig,
+    AttentionPositionConfig,
+    AttentionShapeConfig,
+    AttentionVariantConfig,
+)
+
 _ATTENTION_ALIASES: dict[str, str] = {
     "hybrid_linear": "hybrid",
     "kimi_hybrid": "hybrid_kimi",
@@ -45,38 +53,6 @@ _SUPPORTED_OPTIONS: set[str] = {
 
 def _resolve_attention_mode(mode: str) -> str:
     return _ATTENTION_ALIASES.get(mode, mode)
-
-
-@dataclass(frozen=True)
-class AttentionConfig:
-    architecture: Literal[
-        "standard",
-        "linear",
-        "sype",
-        "hybrid",
-        "kimi",
-        "gated_delta",
-        "gla",
-        "deltanet",
-        "gated_deltanet",
-        "kimi_hybrid",
-        "hybrid_kimi",
-        "hybrid_gdn",
-        "gdn_hybrid",
-        "gla_hybrid",
-        "hybrid_gla",
-        "deltanet_hybrid",
-        "hybrid_deltanet",
-        "gated_deltanet_hybrid",
-        "hybrid_gated_deltanet",
-        "kimi_3to1",
-        "gdn_3to1",
-        "gla_3to1",
-        "deltanet_3to1",
-        "gated_deltanet_3to1",
-    ]
-    backend: Literal["auto", "sdpa", "flash", "cudnn"]
-    position: Literal["rope", "alibi", "sinusoidal", "learnable"]
 
 
 @dataclass(frozen=True)
@@ -226,9 +202,37 @@ class TransformerConfig:
     @property
     def attention(self) -> AttentionConfig:
         return AttentionConfig(
+            shape=AttentionShapeConfig(
+                d_model=self.d_model,
+                n_heads=self.nhead,
+                dropout=self.dropout,
+                max_seq_len=self.max_seq_len,
+            ),
             architecture=self.attention_mode,
-            backend=self.attn_implementation,
-            position=self.pos_encoding_type,
+            cache=AttentionCacheConfig(
+                use_paged_cache=self.cache_implementation in {"auto", "paged"},
+                use_mla=not self.use_attention_matching_compaction,
+                attention_matching=self.use_attention_matching_compaction,
+                matching_keep_ratio=self.attention_matching_keep_ratio,
+                matching_trigger_len=self.attention_matching_trigger_len,
+                matching_min_keep=self.attention_matching_min_keep,
+                matching_query_budget=self.attention_matching_query_budget,
+                matching_force_single_step=self.attention_matching_force_single_step,
+            ),
+            position=AttentionPositionConfig(
+                encoding=self.pos_encoding_type,
+                rope_base=self.rope_base,
+                rope_scaling_type=self.rope_scaling_type,
+                rope_scaling_factor=self.rope_scaling_factor,
+            ),
+            variant=AttentionVariantConfig(
+                name=self.att_type,
+                backend=self.attn_implementation,
+                frequency_modes=self.freq_modes,
+                use_swiglu=self.use_swiglu,
+                moba_block_size=self.moba_block_size,
+                moba_topk=self.moba_topk,
+            ),
         )
 
     @property

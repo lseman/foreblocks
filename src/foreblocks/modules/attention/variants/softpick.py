@@ -16,10 +16,12 @@ import warnings
 
 import torch
 
+from foreblocks.modules.attention.variants.base import AttentionContext
+
 
 class SoftpickAttentionImpl:
-    def __init__(self, parent):
-        self.parent = parent
+    def __init__(self, context: AttentionContext):
+        self.context = context
 
     def forward(
         self,
@@ -34,11 +36,11 @@ class SoftpickAttentionImpl:
         cu_seqlens=None,
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
-        if not self.parent.backends.get("softpick"):
+        if not self.context.backends.get("softpick"):
             warnings.warn(
                 "[MultiAttention] SoftPick unavailable, falling back to standard."
             )
-            return self.parent._fallback_standard.forward(
+            return self.context._fallback_standard.forward(
                 query,
                 key,
                 value,
@@ -56,7 +58,7 @@ class SoftpickAttentionImpl:
             )
 
             B, T_q, _ = query.shape
-            q, k, v, _ = self.parent._prepare_qkv_attention(
+            q, k, v, _ = self.context._prepare_qkv_attention(
                 query, key, value, layer_state
             )
 
@@ -65,37 +67,37 @@ class SoftpickAttentionImpl:
                     q,
                     k,
                     v,
-                    scale=self.parent.scale,
+                    scale=self.context.scale,
                     cu_seqlens=None,
                     head_first=False,
                 )
-                out = out.contiguous().view(B, T_q, self.parent.d_model)
+                out = out.contiguous().view(B, T_q, self.context.d_model)
             else:
                 T_k = k.size(2)
-                q_flat = q.reshape(B * T_q, self.parent.n_heads, self.parent.head_dim)
-                k_flat = k.reshape(B * T_k, self.parent.n_heads, self.parent.head_dim)
-                v_flat = v.reshape(B * T_k, self.parent.n_heads, self.parent.head_dim)
+                q_flat = q.reshape(B * T_q, self.context.n_heads, self.context.head_dim)
+                k_flat = k.reshape(B * T_k, self.context.n_heads, self.context.head_dim)
+                v_flat = v.reshape(B * T_k, self.context.n_heads, self.context.head_dim)
                 out = parallel_softpick_attn(
                     q_flat,
                     k_flat,
                     v_flat,
-                    scale=self.parent.scale,
+                    scale=self.context.scale,
                     cu_seqlens=cu_seqlens,
                     head_first=True,
                 )
                 out = (
-                    out.view(B, T_q, self.parent.n_heads, self.parent.head_dim)
+                    out.view(B, T_q, self.context.n_heads, self.context.head_dim)
                     .contiguous()
-                    .view(B, T_q, self.parent.d_model)
+                    .view(B, T_q, self.context.d_model)
                 )
 
-            return self.parent.out_proj(self.parent.dropout(out)), None, layer_state
+            return self.context.out_proj(self.context.dropout(out)), None, layer_state
 
         except Exception as e:
             warnings.warn(
                 f"[MultiAttention] SoftPick failed ({e}), falling back to standard."
             )
-            return self.parent._fallback_standard.forward(
+            return self.context._fallback_standard.forward(
                 query,
                 key,
                 value,

@@ -19,10 +19,12 @@ import math
 import torch
 import torch.nn.functional as F
 
+from foreblocks.modules.attention.variants.base import AttentionContext
+
 
 class ProbSparseAttentionImpl:
-    def __init__(self, parent):
-        self.parent = parent
+    def __init__(self, context: AttentionContext):
+        self.context = context
 
     def forward(
         self,
@@ -37,7 +39,7 @@ class ProbSparseAttentionImpl:
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
-        q, k, v, _ = self.parent._prepare_qkv_attention(query, key, value, layer_state)
+        q, k, v, _ = self.context._prepare_qkv_attention(query, key, value, layer_state)
         out, weights = self._prob_sparse_attention(
             q,
             k,
@@ -47,7 +49,7 @@ class ProbSparseAttentionImpl:
             is_causal,
             need_weights,
         )
-        return self.parent._finalize_projected_output(out, B, T_q), weights, layer_state
+        return self.context._finalize_projected_output(out, B, T_q), weights, layer_state
 
     def _prob_sparse_attention(
         self,
@@ -66,7 +68,7 @@ class ProbSparseAttentionImpl:
         sample_k = max(1, min(T_k, int(math.ceil(5 * math.log(max(T_k, 2))))))
 
         if u >= T_q or sample_k >= T_k:
-            return self.parent._compute_attention(
+            return self.context._compute_attention(
                 q,
                 k,
                 v,
@@ -77,7 +79,7 @@ class ProbSparseAttentionImpl:
             )
 
         k_sample = k[:, :, :: max(1, T_k // sample_k), :][:, :, :sample_k, :]
-        scores_sample = torch.matmul(q, k_sample.transpose(-2, -1)) * self.parent.scale
+        scores_sample = torch.matmul(q, k_sample.transpose(-2, -1)) * self.context.scale
 
         sparsity = scores_sample.max(dim=-1)[0] - scores_sample.mean(dim=-1)
 
@@ -88,15 +90,15 @@ class ProbSparseAttentionImpl:
             top_idx.unsqueeze(-1).expand(-1, -1, -1, D),
         )
 
-        scores = torch.matmul(top_q, k.transpose(-2, -1)) * self.parent.scale
+        scores = torch.matmul(top_q, k.transpose(-2, -1)) * self.context.scale
 
-        if is_causal and not self.parent.cross_attention:
+        if is_causal and not self.context.cross_attention:
             q_pos = top_idx.unsqueeze(-1)
             k_pos = torch.arange(T_k, device=q.device).view(1, 1, 1, T_k)
             scores = scores.masked_fill(k_pos > q_pos, float("-inf"))
 
         if attn_mask is not None:
-            mask = self.parent._normalize_attn_mask(attn_mask, B, H, T_q, T_k)
+            mask = self.context._normalize_attn_mask(attn_mask, B, H, T_q, T_k)
             mask_top = torch.gather(
                 mask,
                 2,
@@ -112,7 +114,7 @@ class ProbSparseAttentionImpl:
 
         scores_max = scores.max(dim=-1, keepdim=True)[0]
         weights = F.softmax(scores - scores_max, dim=-1)
-        weights = self.parent._dropout_weights(weights)
+        weights = self.context._dropout_weights(weights)
 
         top_out = torch.matmul(weights, v)
 

@@ -25,7 +25,7 @@ import torch.nn.functional as F
 
 from foreblocks.modules.attention.modules.linear_att.gated_common import (
     CausalDepthwiseConv,
-    GatedDeltaStateMixin,
+    GatedDeltaExecutionMixin,
     HeadRMSNorm,
 )
 from foreblocks.ops.attention import (
@@ -53,7 +53,7 @@ class _HeadRMSNorm(HeadRMSNorm):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class GatedDeltaNet(GatedDeltaStateMixin, nn.Module):
+class GatedDeltaNet(GatedDeltaExecutionMixin, nn.Module):
     def __init__(
         self,
         d_model: int,
@@ -157,17 +157,6 @@ class GatedDeltaNet(GatedDeltaStateMixin, nn.Module):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _project(
-        self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        q_raw = self.q_proj(x)  # [B, T, H*Dk]
-        k_raw = self.k_proj(x)
-        v_raw = self.v_proj(x)
-        if self.use_short_conv:
-            q_raw = self.q_conv(q_raw)
-            k_raw = self.k_conv(k_raw)
-            v_raw = self.v_conv(v_raw)
-        return q_raw, k_raw, v_raw
 
     def _gate_params(
         self, x: torch.Tensor, BH: int, T: int
@@ -202,14 +191,6 @@ class GatedDeltaNet(GatedDeltaStateMixin, nn.Module):
         g_log = g_log.transpose(1, 2).contiguous().reshape(BH, T, 1)
         return alpha, beta, g_log
 
-    def _output_gate(self, x: torch.Tensor) -> torch.Tensor:
-        B, T = x.size(0), x.size(1)
-        return (
-            self.g_up(F.silu(self.g_down(x)))  # [B, T, H*Dv] gate logits
-            .view(B, T, self.h, self.dv)
-            .permute(0, 2, 1, 3)  # [B, H, T, Dv]
-            .contiguous()
-        )
 
     # ── Single recurrent step ─────────────────────────────────────────────────
 
@@ -646,12 +627,6 @@ class GatedDeltaNet(GatedDeltaStateMixin, nn.Module):
 
     # ── Standalone x-in interface (matches KimiAttention style) ──────────────
 
-    def forward_standalone(
-        self,
-        x: torch.Tensor,
-        state: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._forward_recurrent(x, state)
 
     def extra_repr(self) -> str:
         return (

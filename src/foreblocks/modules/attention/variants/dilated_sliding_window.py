@@ -15,10 +15,12 @@ Core API:
 import torch
 import torch.nn.functional as F
 
+from foreblocks.modules.attention.variants.base import AttentionContext
+
 
 class DilatedSlidingWindowAttentionImpl:
-    def __init__(self, parent):
-        self.parent = parent
+    def __init__(self, context: AttentionContext):
+        self.context = context
 
     def forward(
         self,
@@ -33,17 +35,17 @@ class DilatedSlidingWindowAttentionImpl:
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
-        q, k, v, _ = self.parent._prepare_qkv_attention(query, key, value, layer_state)
+        q, k, v, _ = self.context._prepare_qkv_attention(query, key, value, layer_state)
         mask = self._create_dilated_mask(T_q, k.size(2), q.device, is_causal)
 
-        if self.parent.backends.get("sdp") and not need_weights:
+        if self.context.backends.get("sdp") and not need_weights:
             try:
                 combined = mask.view(1, 1, T_q, k.size(2))
                 if attn_mask is not None:
-                    combined = combined | self.parent._normalize_attn_mask(
+                    combined = combined | self.context._normalize_attn_mask(
                         attn_mask,
                         B,
-                        self.parent.n_heads,
+                        self.context.n_heads,
                         T_q,
                         k.size(2),
                     )
@@ -69,21 +71,21 @@ class DilatedSlidingWindowAttentionImpl:
                     k,
                     v,
                     attn_mask=additive_mask,
-                    dropout_p=self.parent.dropout_p if self.parent.training else 0.0,
+                    dropout_p=self.context.dropout_p if self.context.training else 0.0,
                     is_causal=False,
                 )
-                out = self.parent._apply_gated_attention(out)
+                out = self.context._apply_gated_attention(out)
                 return (
-                    self.parent._finalize_projected_output(out, B, T_q),
+                    self.context._finalize_projected_output(out, B, T_q),
                     None,
                     layer_state,
                 )
             except Exception:
                 pass
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.parent.scale
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.context.scale
         scores = scores.masked_fill(mask.view(1, 1, T_q, k.size(2)), float("-inf"))
-        scores = self.parent._apply_masks(scores, attn_mask, key_padding_mask)
+        scores = self.context._apply_masks(scores, attn_mask, key_padding_mask)
 
         weights = F.softmax(scores, dim=-1)
         weights = torch.where(
@@ -91,11 +93,11 @@ class DilatedSlidingWindowAttentionImpl:
             weights,
             torch.zeros_like(weights),
         )
-        weights = self.parent._dropout_weights(weights)
+        weights = self.context._dropout_weights(weights)
         out = torch.matmul(weights, v)
-        out = self.parent._apply_gated_attention(out)
+        out = self.context._apply_gated_attention(out)
         return (
-            self.parent._finalize_projected_output(out, B, T_q),
+            self.context._finalize_projected_output(out, B, T_q),
             weights if need_weights else None,
             layer_state,
         )
@@ -111,15 +113,15 @@ class DilatedSlidingWindowAttentionImpl:
         k_pos = torch.arange(T_k, device=device).view(1, T_k)
         distance = q_pos - k_pos
 
-        local = distance.abs() < self.parent.window_size
-        if is_causal and not self.parent.cross_attention:
+        local = distance.abs() < self.context.window_size
+        if is_causal and not self.context.cross_attention:
             valid_direction = distance >= 0
-            in_span = distance < self.parent.dilated_window_size
-            dilated = (distance % self.parent.attention_dilation) == 0
+            in_span = distance < self.context.dilated_window_size
+            dilated = (distance % self.context.attention_dilation) == 0
         else:
             valid_direction = torch.ones_like(distance, dtype=torch.bool)
-            in_span = distance.abs() < self.parent.dilated_window_size
-            dilated = (distance.abs() % self.parent.attention_dilation) == 0
+            in_span = distance.abs() < self.context.dilated_window_size
+            dilated = (distance.abs() % self.context.attention_dilation) == 0
 
         keep = valid_direction & (local | (in_span & dilated))
         return ~keep

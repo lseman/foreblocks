@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""foreblocks.modules.attention.modules.linear_att.bench_linear_att.
+"""Benchmark Foreblocks linear-attention implementations against FLA kernels.
 
 Benchmark harness comparing custom PyTorch linear attention backends against FLA (flash-linear-attn) kernels.
 
