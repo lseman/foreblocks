@@ -15,7 +15,7 @@ class TransformerOutput:
     def to_tuple(self) -> tuple[object, ...]:
         return tuple(
             value
-            for item in fields(self)
+            for item in fields(self)  # pyright: ignore[reportArgumentType]
             if (value := getattr(self, item.name)) is not None
         )
 

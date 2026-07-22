@@ -203,9 +203,7 @@ def _can_fused_add_rmsnorm(
         return False
     if not getattr(mod, "elementwise_affine", False):
         return False
-    if getattr(mod, "weight", None) is None:
-        return False
-    return True
+    return getattr(mod, "weight", None) is not None
 
 
 def _can_use_triton_add(
@@ -226,9 +224,7 @@ def _can_use_triton_add(
         return False
     if residual.dtype != update.dtype:
         return False
-    if residual.numel() == 0:
-        return False
-    return True
+    return residual.numel() != 0
 
 
 if TRITON_AVAILABLE:

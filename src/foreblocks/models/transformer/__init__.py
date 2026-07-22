@@ -4,7 +4,7 @@ Re-exports the ModernTransformerTuner for auto-hyperparameter selection.
 
 """
 
-from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.models.transformer.config import AttentionMode, TransformerConfig
 from foreblocks.models.transformer.generation import GenerationConfig
 from foreblocks.models.transformer.runtime.outputs import (
     TransformerDecoderOutput,
@@ -31,6 +31,7 @@ from foreblocks.models.transformer.tuner import (
 )
 
 __all__ = [
+    "AttentionMode",
     "GenerationConfig",
     "ModernTransformerTuner",
     "TransformerDecoderOutput",

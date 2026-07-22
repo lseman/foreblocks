@@ -68,12 +68,22 @@ class DecoderLayerState(dict[str, AttentionCacheState]):
 
 class DecoderState(dict[str, Any]):
     @classmethod
-    def from_mapping(
+    def coerce(
         cls,
         value: Mapping[str, Any] | None,
         *,
         num_layers: int,
-    ) -> DecoderState:
+        create: bool = False,
+    ) -> DecoderState | None:
+        """Normalize the public mapping representation at the decoder boundary."""
+        if value is None and not create:
+            return None
+        if isinstance(value, cls):
+            if len(value.layers) != num_layers:
+                raise ValueError(
+                    f"decoder state has {len(value.layers)} layers; expected {num_layers}"
+                )
+            return value
         raw = dict(value or {})
         raw_layers: Iterable[Mapping[str, Any] | None] = raw.get("layers") or ()
         parsed_layers = [DecoderLayerState.from_mapping(item) for item in raw_layers]
@@ -88,6 +98,15 @@ class DecoderState(dict[str, Any]):
         raw["layers"] = parsed_layers
         return cls(raw)
 
+    @classmethod
+    def from_mapping(
+        cls, value: Mapping[str, Any] | None, *, num_layers: int
+    ) -> DecoderState:
+        """Construct a state, including an empty state when ``value`` is absent."""
+        state = cls.coerce(value, num_layers=num_layers, create=True)
+        assert state is not None
+        return state
+
     @property
     def layers(self) -> list[DecoderLayerState]:
         return self["layers"]
@@ -101,16 +120,8 @@ class DecoderState(dict[str, Any]):
         self["_decoded_len"] = int(value)
 
 
-def load_legacy_decoder_state(
-    value: Mapping[str, Any] | None, *, num_layers: int
-) -> DecoderState:
-    """Convert the former dictionary state format at an API boundary."""
-    return DecoderState.from_mapping(value, num_layers=num_layers)
-
-
 __all__ = [
     "AttentionCacheState",
     "DecoderLayerState",
     "DecoderState",
-    "load_legacy_decoder_state",
 ]

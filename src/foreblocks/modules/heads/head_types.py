@@ -116,6 +116,10 @@ class HeadSpec:
     moe_k: int = 2
     spectral_norm: bool = False
     fusion_scale_init: float = 1.0
+    input_dim: int | None = None
+    output_dim: int | None = None
+    parameter_cost: float = 0.0
+    latency_cost: float = 0.0
 
     def __post_init__(self):
         valid_combine = ("invert", "add", "none", "lora_residual")
@@ -152,6 +156,12 @@ class HeadSpec:
             )
         if self.lora_rank is not None and self.lora_rank <= 0:
             raise ValueError("lora_rank must be positive if set")
+        if self.input_dim is not None and self.input_dim <= 0:
+            raise ValueError("input_dim must be positive if set")
+        if self.output_dim is not None and self.output_dim <= 0:
+            raise ValueError("output_dim must be positive if set")
+        if self.parameter_cost < 0 or self.latency_cost < 0:
+            raise ValueError("head architecture costs cannot be negative")
 
     def __repr__(self) -> str:
         return (

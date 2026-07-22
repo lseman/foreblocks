@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.utils.residuals.
+"""Transformer attention-residual feature policies.
 
 Attention Residuals — learned softmax-weighted aggregation over layer outputs (arXiv:2603.15031).
 

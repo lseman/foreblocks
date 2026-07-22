@@ -252,6 +252,57 @@ class HeadStateManager(nn.Module):
             rep[spec.name] = d
         return rep
 
+    def architecture_probabilities(self) -> dict[str, torch.Tensor]:
+        """Return deterministic selection probabilities for searchable heads."""
+        probabilities: dict[str, torch.Tensor] = {}
+        for head in self._active_heads:
+            if head.spec.alpha_mode == "off":
+                continue
+            w_head, _ = self.deterministic_alpha_weights_for_head(head)
+            if w_head is not None:
+                probabilities[head.name] = w_head
+        return probabilities
+
+    def architecture_regularization(
+        self,
+        *,
+        entropy_weight: float = 0.0,
+        expected_cost_weight: float = 0.0,
+    ) -> torch.Tensor:
+        """Differentiable entropy and expected-compute penalty."""
+        probabilities = self.architecture_probabilities()
+        reference = next(iter(self._alphas.values()), None)
+        if not probabilities:
+            return torch.zeros((), device=reference.device if reference is not None else None)
+        loss = next(iter(probabilities.values())).new_zeros(())
+        for head in self._active_heads:
+            probability = probabilities.get(head.name)
+            if probability is None:
+                continue
+            probability = probability.clamp(self._EPS, 1.0 - self._EPS)
+            entropy = -(
+                probability * probability.log()
+                + (1.0 - probability) * (1.0 - probability).log()
+            )
+            cost = head.spec.parameter_cost + head.spec.latency_cost
+            loss = loss + entropy_weight * entropy
+            loss = loss + expected_cost_weight * probability * cost
+        return loss
+
+    @torch.no_grad()
+    def export_architecture(self, threshold: float = 0.5) -> tuple[str, ...]:
+        """Return selected head names without mutating the search model."""
+        probabilities = self.architecture_probabilities()
+        return tuple(
+            head.name
+            for head in self._active_heads
+            if head.enabled
+            and (
+                head.name not in probabilities
+                or float(probabilities[head.name].detach().cpu()) >= threshold
+            )
+        )
+
     @torch.no_grad()
     def discretize_(self, threshold: float = 0.5) -> dict[str, bool]:
         if not self.enable_nas:

@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.utils.position.
+"""Position-encoding preparation for attention inputs.
 
 Composable positional transform pipeline for Q/K tensors.
 

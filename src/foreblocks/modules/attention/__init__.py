@@ -5,11 +5,6 @@ the ``implementations`` and ``cache`` subpackages. Keeping this facade small avo
 loading optional implementations merely to import the core attention API.
 """
 
-from foreblocks.modules.attention.backends import (
-    AttentionBackendRegistry,
-    AttentionBackendSpec,
-    register_attention_backend,
-)
 from foreblocks.modules.attention.cache.base import KVCacheProtocol
 from foreblocks.modules.attention.config import (
     AttentionCacheConfig,
@@ -18,6 +13,19 @@ from foreblocks.modules.attention.config import (
     AttentionPositionConfig,
     AttentionShapeConfig,
     AttentionVariantConfig,
+)
+from foreblocks.modules.attention.enums import (
+    AttentionOutputNorm,
+    GatedAttentionMode,
+    PositionEncoding,
+    QKNorm,
+    RopeScaling,
+    SubqueryNorm,
+)
+from foreblocks.modules.attention.execution.backends import (
+    AttentionBackendRegistry,
+    AttentionBackendSpec,
+    register_attention_backend,
 )
 from foreblocks.modules.attention.multi_att import MultiAttention
 from foreblocks.modules.attention.variants.base import AttentionContext, AttentionImpl
@@ -35,11 +43,17 @@ __all__ = [
     "AttentionFeatureConfig",
     "AttentionImpl",
     "AttentionPositionConfig",
+    "AttentionOutputNorm",
     "AttentionShapeConfig",
     "AttentionVariantConfig",
     "AttentionVariantRegistry",
     "KVCacheProtocol",
+    "GatedAttentionMode",
     "MultiAttention",
+    "PositionEncoding",
+    "QKNorm",
+    "RopeScaling",
+    "SubqueryNorm",
     "register_attention_backend",
     "register_attention_variant",
 ]

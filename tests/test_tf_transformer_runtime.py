@@ -11,10 +11,18 @@ from foreblocks.models.transformer.runtime.outputs import (
     TransformerDecoderOutput,
     TransformerEncoderOutput,
 )
-from foreblocks.models.transformer.runtime.state import DecoderState
-from foreblocks.modules.attention.backends import (
-    ATTENTION_BACKENDS,
-    register_attention_backend,
+from foreblocks.models.transformer.runtime.residual_state import (
+    AttentionResidualState,
+    append_attention_residual_update,
+    init_attention_residual_state,
+)
+from foreblocks.models.transformer.runtime.routing import (
+    scatter_mixture_of_depths_output,
+)
+from foreblocks.models.transformer.runtime.state import (
+    AttentionCacheState,
+    DecoderLayerState,
+    DecoderState,
 )
 from foreblocks.modules.attention.cache import KVCacheProtocol
 from foreblocks.modules.attention.cache.kv import StaticKVCache
@@ -24,18 +32,78 @@ from foreblocks.modules.attention.config import (
     AttentionShapeConfig,
     AttentionVariantConfig,
 )
-from foreblocks.modules.attention.masking import build_attention_mask
+from foreblocks.modules.attention.execution.backends import (
+    ATTENTION_BACKENDS,
+    register_attention_backend,
+)
 from foreblocks.modules.attention.multi_att import MultiAttention
+from foreblocks.modules.attention.preparation.masking import build_attention_mask
 from foreblocks.modules.skip.gateskip import BudgetScheduler
 from foreblocks.modules.skip.mod import MoDBudgetScheduler
 
 
 def _optimizer_param_ids(optimizer: torch.optim.Optimizer) -> set[int]:
-    return {
-        id(param)
-        for group in optimizer.param_groups
-        for param in group["params"]
-    }
+    return {id(param) for group in optimizer.param_groups for param in group["params"]}
+
+
+def test_decoder_state_coerce_is_the_single_mapping_boundary():
+    state = DecoderState.coerce(
+        {"layers": [{"self_attn": {"cache_position": torch.tensor([2])}}]},
+        num_layers=1,
+    )
+
+    assert isinstance(state, DecoderState)
+    assert isinstance(state.layers[0], DecoderLayerState)
+    assert isinstance(state.layers[0].self_attention, AttentionCacheState)
+    assert DecoderState.coerce(None, num_layers=1) is None
+
+
+def test_attention_residual_state_uses_typed_mutable_storage():
+    initial = torch.ones(1, 2, 3)
+    state = init_attention_residual_state(initial, "full", block_size=2)
+
+    append_attention_residual_update(state, 2 * initial)
+
+    assert isinstance(state, AttentionResidualState)
+    torch.testing.assert_close(state.current, 3 * initial)
+    assert len(state.history) == 2
+
+
+@pytest.mark.parametrize("use_expert_choice", [True, False])
+def test_vectorized_mod_scatter_matches_rowwise_reference(use_expert_choice):
+    torch.manual_seed(9)
+    x_base = torch.randn(3, 6, 4)
+    indices = torch.tensor([[4, 1, 0], [3, 5, 2], [1, 0, 4]])
+    slot_mask = torch.tensor(
+        [[True, True, False], [False, False, False], [True, False, True]]
+    )
+    x_routed_in = torch.randn(3, 3, 4)
+    x_routed_out = torch.randn(3, 3, 4)
+    logits = torch.randn(3, 3)
+    expected = x_base.clone()
+    for batch_idx in range(expected.size(0)):
+        valid = slot_mask[batch_idx]
+        token_idx = indices[batch_idx, valid]
+        if use_expert_choice:
+            expected[batch_idx, token_idx] = x_routed_out[batch_idx, valid]
+        else:
+            delta = x_routed_out[batch_idx, valid] - x_routed_in[batch_idx, valid]
+            scale = torch.sigmoid(logits[batch_idx, valid]).unsqueeze(-1)
+            expected[batch_idx, token_idx] = (
+                x_base[batch_idx, token_idx] + scale * delta
+            )
+
+    actual = scatter_mixture_of_depths_output(
+        x_base,
+        x_routed_in,
+        x_routed_out,
+        indices,
+        slot_mask,
+        logits,
+        use_expert_choice=use_expert_choice,
+    )
+
+    torch.testing.assert_close(actual, expected)
 
 
 def test_transformer_schedulers_do_not_step_during_eval():
@@ -180,16 +248,10 @@ def test_sdpa_backend_matches_eager_with_gqa_and_padding():
     ).eval()
     sdpa.load_state_dict(eager.state_dict())
     x = torch.randn(2, 6, 16)
-    padding = torch.tensor(
-        [[False, False, False, False, True, True], [False] * 6]
-    )
+    padding = torch.tensor([[False, False, False, False, True, True], [False] * 6])
 
-    eager_out, _, _ = eager(
-        x, key_padding_mask=padding, is_causal=True
-    )
-    sdpa_out, _, _ = sdpa(
-        x, key_padding_mask=padding, is_causal=True
-    )
+    eager_out, _, _ = eager(x, key_padding_mask=padding, is_causal=True)
+    sdpa_out, _, _ = sdpa(x, key_padding_mask=padding, is_causal=True)
 
     torch.testing.assert_close(sdpa_out, eager_out, rtol=1e-5, atol=1e-6)
 
@@ -226,9 +288,7 @@ def test_encoder_propagates_padding_mask_to_moe_router():
         num_experts=4,
         top_k=2,
     ).eval()
-    padding = torch.tensor(
-        [[False, False, True, True], [False, True, False, True]]
-    )
+    padding = torch.tensor([[False, False, True, True], [False, True, False, True]])
     result = model(
         torch.randn(2, 4, 2),
         src_key_padding_mask=padding,
@@ -302,9 +362,7 @@ def test_decoder_specific_modules_use_transformer_initialization():
         initializer_range=0.03,
     )
 
-    assert decoder.output_projection.weight.std().item() == pytest.approx(
-        0.03, rel=0.2
-    )
+    assert decoder.output_projection.weight.std().item() == pytest.approx(0.03, rel=0.2)
     assert torch.count_nonzero(decoder.output_projection.bias) == 0
 
 
@@ -449,9 +507,7 @@ def test_structured_output_collects_router_states():
 
 
 def test_static_cache_update_is_fullgraph_compileable():
-    cache = StaticKVCache(
-        1, 2, 8, 4, device="cpu", dtype=torch.float32
-    )
+    cache = StaticKVCache(1, 2, 8, 4, device="cpu", dtype=torch.float32)
 
     def update_cache(k, v):
         cached_k, cached_v = cache.update(k, v)
@@ -465,13 +521,15 @@ def test_static_cache_update_is_fullgraph_compileable():
 
 
 def test_standard_attention_dispatches_prefill_and_decode(monkeypatch):
-    attention = MultiAttention(AttentionConfig.from_legacy_kwargs(
-        d_model=8,
-        n_heads=2,
-        dropout=0.0,
-        use_mla=False,
-        use_paged_cache=True,
-    )).eval()
+    attention = MultiAttention(
+        AttentionConfig.from_legacy_kwargs(
+            d_model=8,
+            n_heads=2,
+            dropout=0.0,
+            use_mla=False,
+            use_paged_cache=True,
+        )
+    ).eval()
     calls = {"prefill": 0, "decode": 0}
     original_prefill = attention.impl.prefill
     original_decode = attention.impl.decode
@@ -545,9 +603,11 @@ def test_custom_attention_backend_registry_executes_runner():
     register_attention_backend(
         "test_backend", runner, mask_builder=build_attention_mask
     )
-    attention = MultiAttention(AttentionConfig.from_legacy_kwargs(
-        d_model=8, n_heads=2, dropout=0.0, attn_implementation="test_backend"
-    )).eval()
+    attention = MultiAttention(
+        AttentionConfig.from_legacy_kwargs(
+            d_model=8, n_heads=2, dropout=0.0, attn_implementation="test_backend"
+        )
+    ).eval()
     output, _, _ = attention(torch.randn(1, 2, 8), is_causal=True)
     assert output.shape == (1, 2, 8)
     assert calls[0].shape == (1, 2, 2, 2)
@@ -630,9 +690,17 @@ def test_decoder_prefill_and_decode_entry_points():
 
 def _small_static_decoder():
     return TransformerDecoder(
-        input_size=2, output_size=2, d_model=8, nhead=2, num_layers=1,
-        dim_feedforward=16, patch_encoder=False, informer_like=False,
-        cache_implementation="static", max_seq_len=12, dropout=0.0,
+        input_size=2,
+        output_size=2,
+        d_model=8,
+        nhead=2,
+        num_layers=1,
+        dim_feedforward=16,
+        patch_encoder=False,
+        informer_like=False,
+        cache_implementation="static",
+        max_seq_len=12,
+        dropout=0.0,
     ).eval()
 
 
@@ -653,7 +721,9 @@ def test_speculative_decode_rolls_back_rejected_suffix():
     memory = torch.randn(1, 3, 8)
     _, state = decoder.prefill(torch.randn(1, 2, 2), memory)
     output, state, accepted = decoder.speculative_decode(
-        torch.randn(1, 3, 2), memory, state,
+        torch.randn(1, 3, 2),
+        memory,
+        state,
         verifier_fn=lambda output, draft: 1,
     )
     cache = state["layers"][0]["self_attn"]["static_cache"]
@@ -728,7 +798,9 @@ def test_transformer_config_promotes_stable_layer_options_to_fields():
     assert model.initializer_range == 0.01
     assert layer._attention_config.variant.frequency_modes == 7
     assert layer._attention_config.shape.d_model == config.d_model
-    assert layer._attention_config.position.encoding == config.attention.position.encoding
+    assert (
+        layer._attention_config.position.encoding == config.attention.position.encoding
+    )
     assert type(layer.feed_forward.block).__name__ == "_StandardFeedForwardBlock"
 
 

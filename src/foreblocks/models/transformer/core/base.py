@@ -29,15 +29,22 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 import torch
 import torch.nn as nn
 
-from foreblocks.layers.embeddings import LearnablePositionalEncoding, PositionalEncoding
 from foreblocks.layers.norms import RMSNorm, create_norm_layer
-from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.models.transformer.config import AttentionMode, TransformerConfig
+from foreblocks.models.transformer.core.construction import (
+    build_layer_modules,
+    build_positional_encoder,
+)
 from foreblocks.models.transformer.features.mhc import (
     MHCHyperConnection,
     mhc_init_streams,
 )
 from foreblocks.models.transformer.features.patching import (
     PatchTokenizer,
+)
+from foreblocks.models.transformer.features.residuals import (
+    AttentionResidual,
+    normalize_attention_residual_mode,
 )
 from foreblocks.models.transformer.runtime.execution import (
     LayerExecutionStrategy,
@@ -47,12 +54,9 @@ from foreblocks.models.transformer.runtime.execution import (
     ResidualRunCfg,
 )
 from foreblocks.models.transformer.runtime.residual_state import (
+    AttentionResidualState,
     attention_residual_values,
     init_attention_residual_state,
-)
-from foreblocks.modules.attention.utils.residuals import (
-    AttentionResidual,
-    normalize_attention_residual_mode,
 )
 from foreblocks.modules.moe.ff import FeedForwardBlock
 from foreblocks.modules.skip.gateskip import (
@@ -139,13 +143,13 @@ class BaseTransformerLayer(nn.Module):
         *,
         x: torch.Tensor,
         streams: torch.Tensor | None,
-        attention_residual_state: dict | None = None,
+        attention_residual_state: AttentionResidualState | None = None,
     ) -> LayerExecutionStrategy:
         if attention_residual_state is not None:
             return LayerExecutionStrategy(
                 owner=self,
                 use_mhc=False,
-                x=attention_residual_state["current"],
+                x=attention_residual_state.current,
                 use_attention_residual=True,
                 attention_residual_state=attention_residual_state,
             )
@@ -365,49 +369,33 @@ class BaseTransformer(nn.Module, ABC):
         # Only instantiate input-level positional encoding when pos_encoding_type
         # demands it (sinusoidal / learnable). RoPE and ALiBi handle position
         # encoding internally inside the attention module.
-        self.pos_encoder: nn.Module | None = None
-        if pos_encoder is not None:
-            self.pos_encoder = pos_encoder
-        elif self.pos_encoding_type in ("sinusoidal", "learnable"):
-            if self.attention_mode == "sype" or self.att_type == "sype":
-                self.pos_encoder = LearnablePositionalEncoding(
-                    self.d_model,
-                    max_len=max_seq_len,
-                    dropout=dropout,
-                    scale_strategy="fixed",
-                    scale_value=pos_encoding_scale,
-                    use_layer_norm=False,
-                )
-            else:
-                self.pos_encoder = PositionalEncoding(
-                    self.d_model, max_len=max_seq_len, scale=pos_encoding_scale
-                )
+        self.pos_encoder = build_positional_encoder(
+            d_model=self.d_model,
+            max_seq_len=max_seq_len,
+            dropout=dropout,
+            encoding_type=self.pos_encoding_type,
+            attention_mode=self.attention_mode,
+            scale=pos_encoding_scale,
+            supplied=pos_encoder,
+        )
 
         self.register_buffer("_causal_mask", torch.empty(0, 0), persistent=False)
 
         # Build layers (per-layer attention type decided by attention_mode)
-        if share_layers:
-            layer_attn_type = self._get_layer_attention_type(0)
-            self.shared_layer = self._make_layer(
-                config, layer_attn_type, dropout, informer_like
-            )
-            self.layers = None
-        else:
-            self.layers = nn.ModuleList()
-            for i in range(num_layers):
-                layer_attn_type = self._get_layer_attention_type(i)
-                # Per-layer dropout: use the schedule if available, else flat dropout
-                layer_dropout = (
-                    self.layer_dropout_schedule.get_dropout(i)
-                    if self.layer_dropout_schedule
-                    else dropout
-                )
-                self.layers.append(
-                    self._make_layer(
-                        config, layer_attn_type, layer_dropout, informer_like
-                    )
-                )
-            self.shared_layer = None
+        self.shared_layer, self.layers = build_layer_modules(
+            num_layers=num_layers,
+            dropout=dropout,
+            share_layers=share_layers,
+            attention_type_for=self._get_layer_attention_type,
+            layer_factory=lambda attention_type, layer_dropout: self._make_layer(
+                config, attention_type, layer_dropout, informer_like
+            ),
+            dropout_for=(
+                self.layer_dropout_schedule.get_dropout
+                if self.layer_dropout_schedule is not None
+                else None
+            ),
+        )
 
         self.final_norm = (
             create_norm_layer(custom_norm, d_model, layer_norm_eps)
@@ -483,27 +471,27 @@ class BaseTransformer(nn.Module, ABC):
     # pattern="all" → single backend; "hybrid" → early layers use secondary,
     # last layer uses primary; "3to1" → every group of 4 uses secondary 3 times.
     _ATTN_ROUTES: ClassVar[
-        dict[str, tuple[str, str, Literal["all", "hybrid", "3to1"]]]
+        dict[AttentionMode, tuple[str, str, Literal["all", "hybrid", "3to1"]]]
     ] = {
-        "standard": ("standard", "standard", "all"),
-        "linear": ("linear", "linear", "all"),
-        "sype": ("sype", "sype", "all"),
-        "kimi": ("kimi", "kimi", "all"),
-        "gated_delta": ("gated_delta", "gated_delta", "all"),
-        "gla": ("gla", "gla", "all"),
-        "deltanet": ("deltanet", "deltanet", "all"),
-        "gated_deltanet": ("gated_deltanet", "gated_deltanet", "all"),
-        "hybrid": ("standard", "linear", "hybrid"),
-        "hybrid_kimi": ("standard", "kimi", "hybrid"),
-        "kimi_3to1": ("standard", "kimi", "3to1"),
-        "hybrid_gdn": ("standard", "gated_delta", "hybrid"),
-        "gdn_3to1": ("standard", "gated_delta", "3to1"),
-        "gla_hybrid": ("standard", "gla", "hybrid"),
-        "gla_3to1": ("standard", "gla", "3to1"),
-        "deltanet_hybrid": ("standard", "deltanet", "hybrid"),
-        "deltanet_3to1": ("standard", "deltanet", "3to1"),
-        "gated_deltanet_hybrid": ("standard", "gated_deltanet", "hybrid"),
-        "gated_deltanet_3to1": ("standard", "gated_deltanet", "3to1"),
+        AttentionMode.STANDARD: ("standard", "standard", "all"),
+        AttentionMode.LINEAR: ("linear", "linear", "all"),
+        AttentionMode.SYPE: ("sype", "sype", "all"),
+        AttentionMode.KIMI: ("kimi", "kimi", "all"),
+        AttentionMode.GATED_DELTA: ("gated_delta", "gated_delta", "all"),
+        AttentionMode.GLA: ("gla", "gla", "all"),
+        AttentionMode.DELTANET: ("deltanet", "deltanet", "all"),
+        AttentionMode.GATED_DELTANET: ("gated_deltanet", "gated_deltanet", "all"),
+        AttentionMode.HYBRID: ("standard", "linear", "hybrid"),
+        AttentionMode.HYBRID_KIMI: ("standard", "kimi", "hybrid"),
+        AttentionMode.KIMI_3TO1: ("standard", "kimi", "3to1"),
+        AttentionMode.HYBRID_GDN: ("standard", "gated_delta", "hybrid"),
+        AttentionMode.GDN_3TO1: ("standard", "gated_delta", "3to1"),
+        AttentionMode.GLA_HYBRID: ("standard", "gla", "hybrid"),
+        AttentionMode.GLA_3TO1: ("standard", "gla", "3to1"),
+        AttentionMode.DELTANET_HYBRID: ("standard", "deltanet", "hybrid"),
+        AttentionMode.DELTANET_3TO1: ("standard", "deltanet", "3to1"),
+        AttentionMode.GATED_DELTANET_HYBRID: ("standard", "gated_deltanet", "hybrid"),
+        AttentionMode.GATED_DELTANET_3TO1: ("standard", "gated_deltanet", "3to1"),
     }
 
     def _get_layer_attention_type(self, layer_idx: int) -> str:
@@ -739,7 +727,9 @@ class BaseTransformer(nn.Module, ABC):
                 "Paper-style Attention Residuals are not wired for Mixture-of-Depths."
             )
 
-    def _init_attention_residual_state(self, x: torch.Tensor) -> dict | None:
+    def _init_attention_residual_state(
+        self, x: torch.Tensor
+    ) -> AttentionResidualState | None:
         if not self.use_attention_residual:
             return None
         return init_attention_residual_state(

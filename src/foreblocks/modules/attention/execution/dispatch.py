@@ -7,8 +7,11 @@ from typing import Any, Protocol
 import torch
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.backends import ATTENTION_BACKENDS
-from foreblocks.modules.attention.masking import build_attention_mask, to_additive_mask
+from foreblocks.modules.attention.execution.backends import ATTENTION_BACKENDS
+from foreblocks.modules.attention.preparation.masking import (
+    build_attention_mask,
+    to_additive_mask,
+)
 
 
 class KernelDispatchContext(Protocol):

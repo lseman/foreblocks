@@ -1,4 +1,4 @@
-"""Public registry for attention and matching mask implementations."""
+"""Registry and adapters for concrete attention execution backends."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.masking import build_attention_mask
+from foreblocks.modules.attention.preparation.masking import build_attention_mask
 
 
 @dataclass(frozen=True)

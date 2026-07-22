@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields, replace
+from enum import StrEnum
 from typing import Any, Literal
 
 from foreblocks.modules.attention.config import (
@@ -14,27 +15,35 @@ from foreblocks.modules.attention.config import (
     AttentionVariantConfig,
 )
 
-_ATTENTION_MODES: set[str] = {
-    "standard",
-    "linear",
-    "sype",
-    "hybrid",
-    "kimi",
-    "hybrid_kimi",
-    "kimi_3to1",
-    "gated_delta",
-    "hybrid_gdn",
-    "gdn_3to1",
-    "gla",
-    "gla_hybrid",
-    "gla_3to1",
-    "deltanet",
-    "deltanet_hybrid",
-    "deltanet_3to1",
-    "gated_deltanet",
-    "gated_deltanet_hybrid",
-    "gated_deltanet_3to1",
-}
+
+class AttentionMode(StrEnum):
+    """Per-layer attention routing mode for ``AttentionConfig.architecture``.
+
+    Also the single source of truth for ``BaseTransformer._ATTN_ROUTES`` keys.
+    """
+
+    STANDARD = "standard"
+    LINEAR = "linear"
+    SYPE = "sype"
+    HYBRID = "hybrid"
+    KIMI = "kimi"
+    HYBRID_KIMI = "hybrid_kimi"
+    KIMI_3TO1 = "kimi_3to1"
+    GATED_DELTA = "gated_delta"
+    HYBRID_GDN = "hybrid_gdn"
+    GDN_3TO1 = "gdn_3to1"
+    GLA = "gla"
+    GLA_HYBRID = "gla_hybrid"
+    GLA_3TO1 = "gla_3to1"
+    DELTANET = "deltanet"
+    DELTANET_HYBRID = "deltanet_hybrid"
+    DELTANET_3TO1 = "deltanet_3to1"
+    GATED_DELTANET = "gated_deltanet"
+    GATED_DELTANET_HYBRID = "gated_deltanet_hybrid"
+    GATED_DELTANET_3TO1 = "gated_deltanet_3to1"
+
+
+_ATTENTION_MODES: frozenset[str] = frozenset(mode.value for mode in AttentionMode)
 
 _SUPPORTED_OPTIONS: set[str] = {
     "pos_encoder",
@@ -349,4 +358,10 @@ class TransformerConfig:
         return kwargs
 
 
-__all__ = ["AttentionConfig", "CacheConfig", "ResidualConfig", "TransformerConfig"]
+__all__ = [
+    "AttentionConfig",
+    "AttentionMode",
+    "CacheConfig",
+    "ResidualConfig",
+    "TransformerConfig",
+]

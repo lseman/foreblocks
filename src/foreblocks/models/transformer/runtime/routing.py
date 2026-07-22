@@ -3,10 +3,27 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Protocol
 
 import torch
+import torch.nn as nn
 
 from foreblocks.models.transformer.features.patching import patchify_padding_mask
+
+
+class RoutingOwner(Protocol):
+    def _prepare_layer_routing(
+        self,
+        layer_idx: int,
+        x: torch.Tensor,
+        active_mask: torch.Tensor | None,
+    ) -> tuple[
+        nn.Module,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor | None,
+    ]: ...
 
 
 def gateskip_active_mask_from_padding(
@@ -39,7 +56,7 @@ def gather_sequence_tokens(x: torch.Tensor, indices: torch.Tensor) -> torch.Tens
     if indices.numel() == 0:
         return x[:, :0]
     view = [indices.size(0), indices.size(1)] + [1] * (x.dim() - 2)
-    shape = [indices.size(0), indices.size(1)] + list(x.shape[2:])
+    shape = [indices.size(0), indices.size(1), *x.shape[2:]]
     return x.gather(1, indices.view(*view).expand(*shape))
 
 
@@ -55,15 +72,21 @@ def gather_padding_mask(
     return mask.to(dtype=torch.bool).gather(1, indices) | (~slot_mask)
 
 
-def _batch_mask(mask, batch_size):
+def _canonicalize_attention_mask(
+    mask: torch.Tensor, batch_size: int
+) -> tuple[torch.Tensor, int]:
+    if mask.dim() == 2:
+        return mask.unsqueeze(0).expand(batch_size, -1, -1), 1
+    if mask.dim() not in (3, 4):
+        raise ValueError(f"Unsupported attention mask shape {tuple(mask.shape)}")
     if mask.size(0) == 1 and batch_size > 1:
-        return mask.expand(batch_size, *mask.shape[1:])
+        mask = mask.expand(batch_size, *mask.shape[1:])
     if mask.size(0) != batch_size:
         raise ValueError(
             f"Batch attention mask shape {tuple(mask.shape)} incompatible with "
             f"batch size {batch_size}"
         )
-    return mask
+    return mask, mask.dim() - 2
 
 
 def gather_square_mask(
@@ -74,13 +97,8 @@ def gather_square_mask(
     if indices.numel() == 0:
         return mask.new_zeros((indices.size(0), 0, 0))
     batch_size, capacity = indices.shape
-    if mask.dim() == 2:
-        base = mask.unsqueeze(0).expand(batch_size, -1, -1)
-    elif mask.dim() in (3, 4):
-        base = _batch_mask(mask, batch_size)
-    else:
-        raise ValueError(f"Unsupported square attention mask shape {tuple(mask.shape)}")
-    if mask.dim() < 4:
+    base, query_dim = _canonicalize_attention_mask(mask, batch_size)
+    if query_dim == 1:
         rows = base.gather(1, indices.unsqueeze(-1).expand(-1, -1, base.size(-1)))
         return rows.gather(2, indices.unsqueeze(1).expand(-1, capacity, -1))
     rows = base.gather(
@@ -99,13 +117,8 @@ def gather_query_mask(
     if indices.numel() == 0:
         return mask.new_zeros((indices.size(0), 0, mask.size(-1)))
     batch_size = indices.size(0)
-    if mask.dim() == 2:
-        base = mask.unsqueeze(0).expand(batch_size, -1, -1)
-    elif mask.dim() in (3, 4):
-        base = _batch_mask(mask, batch_size)
-    else:
-        raise ValueError(f"Unsupported query attention mask shape {tuple(mask.shape)}")
-    if mask.dim() < 4:
+    base, query_dim = _canonicalize_attention_mask(mask, batch_size)
+    if query_dim == 1:
         return base.gather(1, indices.unsqueeze(-1).expand(-1, -1, base.size(-1)))
     return base.gather(
         2, indices[:, None, :, None].expand(-1, base.size(1), -1, base.size(-1))
@@ -124,29 +137,27 @@ def scatter_mixture_of_depths_output(
     if indices.numel() == 0:
         return x_base
     out = x_base.clone()
-    for batch_idx in range(out.size(0)):
-        valid = slot_mask[batch_idx]
-        if not bool(valid.any()):
-            continue
-        idx = indices[batch_idx, valid]
-        if use_expert_choice:
-            out[batch_idx, idx] = x_routed_out[batch_idx, valid]
-        else:
-            delta = x_routed_out[batch_idx, valid] - x_routed_in[batch_idx, valid]
-            scale = torch.sigmoid(router_logits[batch_idx, valid]).unsqueeze(-1)
-            out[batch_idx, idx] = x_base[batch_idx, idx] + scale * delta
+    batch_idx, slot_idx = slot_mask.nonzero(as_tuple=True)
+    token_idx = indices[batch_idx, slot_idx]
+    if use_expert_choice:
+        values = x_routed_out[batch_idx, slot_idx]
+    else:
+        delta = x_routed_out[batch_idx, slot_idx] - x_routed_in[batch_idx, slot_idx]
+        scale = torch.sigmoid(router_logits[batch_idx, slot_idx]).unsqueeze(-1)
+        values = x_base[batch_idx, token_idx] + scale * delta
+    out[batch_idx, token_idx] = values
     return out
 
 
 def run_mod_layer(
-    owner: object,
+    owner: RoutingOwner,
     layer_idx: int,
     x: torch.Tensor,
     active_mask: torch.Tensor | None,
     all_hidden_states: list[torch.Tensor] | None,
     router_states: list[object],
     gather_and_invoke: Callable[
-        [torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]
+        [nn.Module, torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]
     ],
 ) -> tuple[torch.Tensor, bool]:
     layer, router_logits, _keep_mask, routed_indices, routed_slots = (

@@ -27,7 +27,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.models.transformer.features.sype import AdaptiveWarp, SyPERotator
-from foreblocks.modules.attention.backends import ATTENTION_BACKENDS
+from foreblocks.modules.attention.cache.compaction import (
+    AttentionMatchingCompactor,
+    AttentionMatchingConfig,
+)
 from foreblocks.modules.attention.cache.decode_stream import (
     paged_stream_decode_standard,
 )
@@ -37,16 +40,12 @@ from foreblocks.modules.attention.cache.kv import (
 from foreblocks.modules.attention.cache.paged import PagedKVCache
 from foreblocks.modules.attention.cache.selection import AttentionCacheSelector
 from foreblocks.modules.attention.config import AttentionConfig
-from foreblocks.modules.attention.dispatch import AttentionKernelDispatcher
-from foreblocks.modules.attention.masking import (
-    normalize_blocked_mask,
-)
-from foreblocks.modules.attention.pipeline import QKVPipeline
-from foreblocks.modules.attention.utils.compaction import (
-    AttentionMatchingCompactor,
-    AttentionMatchingConfig,
-)
-from foreblocks.modules.attention.utils.position import PositionEncodingApplier
+from foreblocks.modules.attention.execution.backends import ATTENTION_BACKENDS
+from foreblocks.modules.attention.execution.dispatch import AttentionKernelDispatcher
+from foreblocks.modules.attention.preparation.masking import AttentionMaskProcessor
+from foreblocks.modules.attention.preparation.pipeline import QKVPipeline
+from foreblocks.modules.attention.preparation.position import PositionEncodingApplier
+from foreblocks.modules.attention.preparation.projections import QKVProjector
 from foreblocks.modules.attention.variants.base import (
     AttentionContext,
     AttentionImpl,
@@ -371,6 +370,8 @@ class MultiAttention(nn.Module):
         self.max_cache_blocks = max_cache_blocks
         self.cache_selector = AttentionCacheSelector(self)
         self.qkv_pipeline = QKVPipeline(self)
+        self.qkv_projector = QKVProjector(self)
+        self.mask_processor = AttentionMaskProcessor()
         self.kernel_dispatcher = AttentionKernelDispatcher(self)
 
         # ── Gated Attention (G1) ─────────────────────────────────────────────
@@ -801,41 +802,7 @@ class MultiAttention(nn.Module):
         torch.Tensor,
         torch.Tensor | None,
     ]:
-        B, T_q, _ = query.shape
-        T_k = key.shape[1]
-        q = self.q_proj(query).view(B, T_q, self.n_heads, self.head_dim).transpose(1, 2)
-
-        if self.use_mla:
-            if (
-                self.kv_down_proj is None
-                or self.k_up_proj is None
-                or self.v_up_proj is None
-            ):
-                raise RuntimeError("MLA projections are not initialized.")
-            kv_latent = self.kv_down_proj(key)  # [B, T_k, L]
-            k = (
-                self.k_up_proj(kv_latent)
-                .view(B, T_k, self.n_kv_heads, self.head_dim)
-                .transpose(1, 2)
-            )
-            v = (
-                self.v_up_proj(kv_latent)
-                .view(B, T_k, self.n_kv_heads, self.head_dim)
-                .transpose(1, 2)
-            )
-            return q, k, v, kv_latent
-
-        k = (
-            self.k_proj(key)
-            .view(B, T_k, self.n_kv_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        v = (
-            self.v_proj(value)
-            .view(B, T_k, self.n_kv_heads, self.head_dim)
-            .transpose(1, 2)
-        )
-        return q, k, v, None
+        return self.qkv_projector.project(query, key, value)
 
     def _finalize_projected_output(
         self,
@@ -1021,15 +988,13 @@ class MultiAttention(nn.Module):
         device: torch.device,
         is_causal: bool = True,
     ) -> torch.Tensor:
-        i = torch.arange(T_q, device=device).unsqueeze(1)  # [T_q, 1]
-        j = torch.arange(T_k, device=device).unsqueeze(0)  # [1, T_k]
-
-        if is_causal:
-            # Only attend to keys within [i - window_size + 1, i] and j <= i
-            return (j > i) | (j < (i - self.window_size + 1))
-        else:
-            half = self.window_size // 2
-            return (j < (i - half)) | (j > (i + half))
+        return self.mask_processor.sliding_window(
+            T_q,
+            T_k,
+            window_size=self.window_size,
+            device=device,
+            is_causal=is_causal,
+        )
 
     def _apply_masks(
         self,
@@ -1037,19 +1002,7 @@ class MultiAttention(nn.Module):
         attn_mask: torch.Tensor | None,
         key_padding_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        B, H, T_q, T_k = scores.shape
-
-        if attn_mask is not None:
-            mask = self._normalize_attn_mask(attn_mask, B, H, T_q, T_k)
-            scores = scores.masked_fill(mask, float("-inf"))
-
-        if key_padding_mask is not None:
-            scores = scores.masked_fill(
-                key_padding_mask.view(B, 1, 1, T_k).bool(),
-                float("-inf"),
-            )
-
-        return scores
+        return self.mask_processor.apply(scores, attn_mask, key_padding_mask)
 
     def _normalize_attn_mask(
         self,
@@ -1059,7 +1012,7 @@ class MultiAttention(nn.Module):
         T_q: int,
         T_k: int,
     ) -> torch.Tensor:
-        return normalize_blocked_mask(
+        return self.mask_processor.normalize(
             attn_mask,
             batch_size=B,
             num_heads=H,
@@ -1079,10 +1032,15 @@ class MultiAttention(nn.Module):
         T_q_full: int,
         T_k_full: int,
     ) -> torch.Tensor | None:
-        if attn_mask is None:
-            return None
-        full = self._normalize_attn_mask(attn_mask, B, H, T_q_full, T_k_full)
-        return full[:, :, q_start:q_end, k_start:k_end]
+        return self.mask_processor.slice(
+            attn_mask,
+            batch_size=B,
+            num_heads=H,
+            query_slice=slice(q_start, q_end),
+            key_slice=slice(k_start, k_end),
+            query_length=T_q_full,
+            key_length=T_k_full,
+        )
 
     def _dropout_weights(self, w: torch.Tensor) -> torch.Tensor:
         if self.training and self.dropout_p > 0:

@@ -1,4 +1,4 @@
-"""foreblocks.modules.attention.utils.compaction.
+"""Attention-aware KV-cache compaction policies.
 
 Experimental KV cache compaction via attention matching.
 

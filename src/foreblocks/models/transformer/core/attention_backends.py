@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from typing import Protocol, cast
 
 import torch.nn as nn
 
@@ -16,6 +17,14 @@ from foreblocks.modules.attention.implementations import (
 from foreblocks.modules.attention.multi_att import MultiAttention
 
 AttentionKwargsFactory = Callable[[AttentionConfig], dict[str, object]]
+
+
+class LazyAttentionOwner(Protocol):
+    _attention_config: AttentionConfig
+    layer_attention_type: str
+
+    def parameters(self, recurse: bool = True): ...
+    def add_module(self, name: str, module: nn.Module | None) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -81,8 +90,45 @@ def build_layer_attention_backend(name: str, config: AttentionConfig) -> nn.Modu
     return spec.build(config)
 
 
+class LazyAttentionBackendMixin:
+    """Lazily construct only the attention implementations selected by a layer."""
+
+    layer_attention_type: str = "standard"
+
+    def _ensure_attn_backend(self, name: str) -> nn.Module:
+        owner = cast(LazyAttentionOwner, cast(object, self))
+        cache: dict[str, nn.Module] = self.__dict__.setdefault("_attn_backends", {})
+        module = cache.get(name)
+        if module is None:
+            parameter = next(owner.parameters())
+            module = build_layer_attention_backend(name, owner._attention_config).to(
+                parameter.device
+            )
+            cache[name] = module
+            owner.add_module(f"_attn_backend_{name}", module)
+        return module
+
+    def _self_attn(self) -> nn.Module:
+        return self._ensure_attn_backend(self.layer_attention_type)
+
+    def set_layer_attention_type(self, layer_attention_type: str) -> None:
+        self.layer_attention_type = str(layer_attention_type)
+
+    def materialize_attention_type(
+        self, layer_attention_type: str | None = None
+    ) -> nn.Module:
+        previous = self.layer_attention_type
+        if layer_attention_type is not None:
+            self.layer_attention_type = str(layer_attention_type)
+        try:
+            return self._self_attn()
+        finally:
+            self.layer_attention_type = previous
+
+
 __all__ = [
     "LAYER_ATTENTION_BACKENDS",
     "LayerAttentionBackendSpec",
+    "LazyAttentionBackendMixin",
     "build_layer_attention_backend",
 ]

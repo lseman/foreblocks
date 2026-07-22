@@ -25,6 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
 
+from foreblocks.modules.heads.contracts import HeadOutput
 from foreblocks.modules.heads.head_state import HeadStateManager
 from foreblocks.modules.heads.head_types import (
     ActiveHead,
@@ -519,6 +520,22 @@ class HeadComposer(nn.Module):
         return int(x_ref.size(-1))
 
     def _extract_parallel_tensor(self, spec: HeadSpec, out: Any) -> torch.Tensor:
+        if isinstance(out, HeadOutput):
+            if self.parallel_structured_outputs == "error" and (
+                out.residual is not None or out.inverse_state is not None
+            ):
+                raise RuntimeError(
+                    f"[{spec.name}] parallel stage received structured HeadOutput but "
+                    "parallel_structured_outputs='error'"
+                )
+            if (
+                self.parallel_structured_outputs == "main_add_second"
+                and out.residual is not None
+            ):
+                return self._merge_parallel_main_and_second(
+                    spec, out.value, out.residual
+                )
+            return out.value
         if isinstance(out, torch.Tensor):
             return out
 
@@ -544,7 +561,15 @@ class HeadComposer(nn.Module):
         if self.parallel_structured_outputs == "main_add_second":
             if not isinstance(second, torch.Tensor):
                 return main
+            return self._merge_parallel_main_and_second(spec, main, second)
 
+        raise ValueError(
+            f"Unknown parallel_structured_outputs mode: {self.parallel_structured_outputs}"
+        )
+
+    def _merge_parallel_main_and_second(
+        self, spec: HeadSpec, main: torch.Tensor, second: torch.Tensor
+    ) -> torch.Tensor:
             extra = second
             if extra.size(0) != main.size(0):
                 raise RuntimeError(
@@ -565,10 +590,6 @@ class HeadComposer(nn.Module):
                 )
                 extra = proj(extra)
             return main + extra
-
-        raise ValueError(
-            f"Unknown parallel_structured_outputs mode: {self.parallel_structured_outputs}"
-        )
 
     def _align_parallel_branches_for_fusion(
         self,
@@ -1253,11 +1274,14 @@ class HeadComposer(nn.Module):
         hardened: bool | None,
         rec: SerialInvertState,
     ) -> tuple[torch.Tensor, SerialInvertState]:
-        if not self._is_2tuple(out) or not isinstance(out[0], torch.Tensor):
+        if isinstance(out, HeadOutput):
+            y, state = out.value, out.inverse_state
+        elif self._is_2tuple(out) and isinstance(out[0], torch.Tensor):
+            y, state = out[0], out[1]
+        else:
             raise RuntimeError(
                 f"[{spec.name}] expected (y: Tensor, state: Any) for 'invert', got {type(out).__name__}"
             )
-        y, state = out[0], out[1]
 
         if w_head is None:
             rec.state = state
@@ -1301,11 +1325,14 @@ class HeadComposer(nn.Module):
         hardened: bool | None,
         rec: SerialAddState,
     ) -> tuple[torch.Tensor, SerialAddState]:
-        if not self._both_tensors(out):
+        if isinstance(out, HeadOutput) and out.residual is not None:
+            main, carry = out.value, out.residual
+        elif self._both_tensors(out):
+            main, carry = out
+        else:
             raise RuntimeError(
                 f"[{spec.name}] expected (main: Tensor, carry: Tensor) for 'add', got {type(out).__name__}"
             )
-        main, carry = out
         rec.add_project = bool(spec.add_project)
 
         if self.stop_gradient_on_carry:
@@ -1365,6 +1392,8 @@ class HeadComposer(nn.Module):
         hardened: bool | None,
         rec: SerialNoneState,
     ) -> tuple[torch.Tensor, SerialNoneState]:
+        if isinstance(out, HeadOutput):
+            out = out.value
         if not isinstance(out, torch.Tensor):
             raise RuntimeError(
                 f"[{spec.name}] expected single Tensor for 'none', got {type(out).__name__}"
@@ -1501,6 +1530,20 @@ class HeadComposer(nn.Module):
 
     def alpha_report(self) -> dict[str, dict[str, Any]]:
         return self.state_manager.alpha_report()
+
+    def architecture_regularization(
+        self,
+        *,
+        entropy_weight: float = 0.0,
+        expected_cost_weight: float = 0.0,
+    ) -> torch.Tensor:
+        return self.state_manager.architecture_regularization(
+            entropy_weight=entropy_weight,
+            expected_cost_weight=expected_cost_weight,
+        )
+
+    def export_architecture(self, threshold: float = 0.5) -> tuple[str, ...]:
+        return self.state_manager.export_architecture(threshold)
 
     @torch.no_grad()
     def discretize_(self, threshold: float = 0.5) -> dict[str, bool]:

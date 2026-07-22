@@ -5,6 +5,20 @@ It belongs to the forecasting head composition and projection modules area of Fo
 
 """
 
+from foreblocks.modules.heads.config import (
+    AlignmentMode,
+    HeadComposerConfig,
+    HeadNASConfig,
+    NASMode,
+    ParallelFusion,
+    ParallelStageConfig,
+    SerialMerge,
+    SerialStageConfig,
+    StageKind,
+    StructuredOutputPolicy,
+)
+from foreblocks.modules.heads.contracts import HeadOutput, HeadShape
+from foreblocks.modules.heads.graph import HeadGraph, HeadGraphState, HeadStage
 from foreblocks.modules.heads.head_helper import HeadComposer, HeadSpec
 from foreblocks.modules.heads.heads import (
     DAIN,
@@ -36,6 +50,7 @@ from foreblocks.modules.heads.heads import (
 
 __all__ = [
     "DAIN",
+    "AlignmentMode",
     "Chronos2EmbedHead",
     "DAINHead",
     "DecompositionBlock",
@@ -48,16 +63,30 @@ __all__ = [
     "HaarWaveletTopK",
     "HaarWaveletTopKHead",
     "HeadComposer",
+    "HeadComposerConfig",
+    "HeadGraph",
+    "HeadGraphState",
+    "HeadNASConfig",
+    "HeadOutput",
+    "HeadShape",
     "HeadSpec",
+    "HeadStage",
     "LearnableFourierSeasonal",
     "LearnableFourierSeasonalHead",
     "MultiKernelConvHead",
     "MultiScaleConv",
     "MultiScaleConvHead",
+    "NASMode",
+    "ParallelFusion",
+    "ParallelStageConfig",
     "PatchEmbed",
     "PatchEmbedHead",
     "RevIN",
     "RevINHead",
+    "SerialMerge",
+    "SerialStageConfig",
+    "StageKind",
+    "StructuredOutputPolicy",
     "Time2Vec",
     "Time2VecHead",
     "TimeAttention",

@@ -5,6 +5,84 @@ from __future__ import annotations
 import torch
 
 
+class AttentionMaskProcessor:
+    """Own mask normalization, composition, slicing, and window construction."""
+
+    def normalize(
+        self,
+        mask: torch.Tensor,
+        *,
+        batch_size: int,
+        num_heads: int,
+        query_length: int,
+        key_length: int,
+    ) -> torch.Tensor:
+        return normalize_blocked_mask(
+            mask,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            query_length=query_length,
+            key_length=key_length,
+        )
+
+    def apply(
+        self,
+        scores: torch.Tensor,
+        attention_mask: torch.Tensor | None,
+        padding_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        key_length = scores.shape[-1]
+        blocked = build_attention_mask(
+            query=scores,
+            key_length=key_length,
+            attention_mask=attention_mask,
+            padding_mask=padding_mask,
+        )
+        return scores if blocked is None else scores.masked_fill(blocked, float("-inf"))
+
+    def slice(
+        self,
+        mask: torch.Tensor | None,
+        *,
+        batch_size: int,
+        num_heads: int,
+        query_slice: slice,
+        key_slice: slice,
+        query_length: int,
+        key_length: int,
+    ) -> torch.Tensor | None:
+        if mask is None:
+            return None
+        normalized = self.normalize(
+            mask,
+            batch_size=batch_size,
+            num_heads=num_heads,
+            query_length=query_length,
+            key_length=key_length,
+        )
+        return normalized[:, :, query_slice, key_slice]
+
+    @staticmethod
+    def sliding_window(
+        query_length: int,
+        key_length: int,
+        *,
+        window_size: int,
+        device: torch.device,
+        is_causal: bool = True,
+    ) -> torch.Tensor:
+        query_index = torch.arange(query_length, device=device).unsqueeze(1)
+        key_index = torch.arange(key_length, device=device).unsqueeze(0)
+        if is_causal:
+            return (key_index > query_index) | (
+                key_index < query_index - window_size + 1
+            )
+        half_window = window_size // 2
+        return (key_index < query_index - half_window) | (
+            key_index > query_index + half_window
+        )
+
+
 def normalize_blocked_mask(
     mask: torch.Tensor,
     *,
@@ -97,4 +175,9 @@ def to_additive_mask(blocked: torch.Tensor | None, *, dtype: torch.dtype):
     )
 
 
-__all__ = ["build_attention_mask", "normalize_blocked_mask", "to_additive_mask"]
+__all__ = [
+    "AttentionMaskProcessor",
+    "build_attention_mask",
+    "normalize_blocked_mask",
+    "to_additive_mask",
+]

@@ -22,30 +22,37 @@ import torch.nn.functional as F
 
 from foreblocks.layers.embeddings import InformerTimeEmbedding
 from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.models.transformer.core.attention_backends import (
+    LazyAttentionBackendMixin,
+)
 from foreblocks.models.transformer.core.base import (
     BaseTransformer,
     BaseTransformerLayer,
 )
 from foreblocks.models.transformer.features.mhc import mhc_init_streams
+from foreblocks.models.transformer.features.residuals import (
+    AttentionResidual,
+    BlockAttentionResidual,
+    normalize_attention_residual_mode,
+)
 from foreblocks.models.transformer.generation import GenerationConfig
-from foreblocks.models.transformer.runtime.decoder_forward import (
-    build_decoder_output,
-    coerce_decoder_state,
-    prepare_layer_states,
-)
-from foreblocks.models.transformer.runtime.decoder_services import (
-    DecoderCacheManager,
-    GenerationEngine,
-)
+from foreblocks.models.transformer.runtime.cache import DecoderCacheManager
+from foreblocks.models.transformer.runtime.decoding.engine import GenerationEngine
 from foreblocks.models.transformer.runtime.execution import (
-    LazyAttentionBackendMixin,
     MHCBlockMixin,
     ModelLayerInvokeStrategy,
     NormWrapper,
     ResidualBlockMixin,
 )
+from foreblocks.models.transformer.runtime.forward.decoder import (
+    build_decoder_output,
+    execute_decoder_layer,
+    prepare_decoder_state,
+    validate_memory_padding_mask,
+)
 from foreblocks.models.transformer.runtime.outputs import resolve_output_options
 from foreblocks.models.transformer.runtime.residual_state import (
+    AttentionResidualState,
     init_attention_residual_state,
 )
 from foreblocks.models.transformer.runtime.routing import (
@@ -63,11 +70,6 @@ from foreblocks.models.transformer.runtime.state import (
 )
 from foreblocks.modules.attention.cache.kv import StaticKVCache
 from foreblocks.modules.attention.multi_att import MultiAttention
-from foreblocks.modules.attention.utils.residuals import (
-    AttentionResidual,
-    BlockAttentionResidual,
-    normalize_attention_residual_mode,
-)
 from foreblocks.modules.skip.gateskip import ResidualGate
 from foreblocks.ui.node_spec import node
 
@@ -213,7 +215,7 @@ class TransformerDecoderLayer(
         mhc_sinkhorn_iters: int | None = None,
         mhc_collapse: str | None = None,
         mtp_targets: torch.Tensor | None = None,
-        attention_residual_state: dict | None = None,
+        attention_residual_state: AttentionResidualState | None = None,
         gateskip_active_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict | None, torch.Tensor | None]:
         self._reset_aux_loss()
@@ -248,13 +250,10 @@ class TransformerDecoderLayer(
                 )
 
         if incremental_state is not None:
-            self_attn_state = incremental_state.get("self_attn")
-            cross_attn_state = incremental_state.get("cross_attn")
+            typed_layer_state = DecoderLayerState.from_mapping(incremental_state)
             state = {
-                "self_attn": (self_attn_state if self_attn_state is not None else {}),
-                "cross_attn": (
-                    cross_attn_state if cross_attn_state is not None else {}
-                ),
+                "self_attn": typed_layer_state.self_attention,
+                "cross_attn": typed_layer_state.cross_attention,
             }
         else:
             state = {"self_attn": None, "cross_attn": None}
@@ -619,7 +618,7 @@ class TransformerDecoder(BaseTransformer):
         memory_mask: torch.Tensor | None = None,
         tgt_key_padding_mask: torch.Tensor | None = None,
         memory_key_padding_mask: torch.Tensor | None = None,
-        incremental_state: dict | None = None,
+        incremental_state: dict | DecoderState | None = None,
         return_incremental_state: bool = False,
         time_features: torch.Tensor | None = None,
         mtp_targets: torch.Tensor | None = None,  # [B,T,F] or [B,T,H,D]
@@ -637,35 +636,6 @@ class TransformerDecoder(BaseTransformer):
         B, T, _ = tgt.shape
         device = tgt.device
         user_tgt_key_padding_mask = tgt_key_padding_mask
-
-        incremental_state = coerce_decoder_state(
-            incremental_state, num_layers=self.num_layers
-        )
-
-        if cache_position is None and incremental_state is not None:
-            existing_layers = incremental_state.get("layers")
-            if existing_layers:
-                first_self_state = (existing_layers[0] or {}).get("self_attn", {})
-                existing_cache = first_self_state.get("static_cache")
-                if isinstance(existing_cache, StaticKVCache):
-                    cache_position = existing_cache.lengths[:, None] + torch.arange(
-                        T, device=device, dtype=torch.long
-                    )
-
-        if cache_position is not None:
-            cache_position = cache_position.to(device=device, dtype=torch.long)
-            if cache_position.ndim == 1:
-                cache_position = cache_position.unsqueeze(0).expand(B, -1)
-            if cache_position.shape != (B, T):
-                raise ValueError(
-                    f"cache_position must be [T] or [B,T], got {tuple(cache_position.shape)}"
-                )
-            if position_offset is None:
-                position_offset = cache_position[:, 0]
-        if cache_update_mask is not None:
-            cache_update_mask = cache_update_mask.to(device=device, dtype=torch.bool)
-            if cache_update_mask.shape != (B,):
-                raise ValueError("cache_update_mask must have shape [B]")
 
         self.mod_aux_loss = 0.0
 
@@ -689,21 +659,29 @@ class TransformerDecoder(BaseTransformer):
                 dtype=tgt.dtype,
             )
 
+        prepared_state = prepare_decoder_state(
+            incremental_state,
+            num_layers=self.num_layers,
+            batch_size=B,
+            sequence_length=T,
+            device=device,
+            cache_position=cache_position,
+            cache_update_mask=cache_update_mask,
+            position_offset=position_offset,
+        )
+        incremental_state = prepared_state.state
+        layer_states = prepared_state.layer_states
+        cache_position = prepared_state.cache_position
+        cache_update_mask = prepared_state.cache_update_mask
+        position_offset = prepared_state.position_offset
+
         if self.use_mod and incremental_state is not None:
             raise RuntimeError(
                 "Mixture-of-Depths routing is currently implemented for full-sequence decoding only. "
                 "Disable MoD for KV-cached autoregressive decoding."
             )
 
-        # FIX: Validate memory + mask alignment early (patch_encoder common pitfall)
-        if memory_key_padding_mask is not None:
-            if (
-                memory_key_padding_mask.shape[0] != memory.shape[0]
-                or memory_key_padding_mask.shape[1] != memory.shape[1]
-            ):
-                raise ValueError(
-                    f"memory_key_padding_mask shape {tuple(memory_key_padding_mask.shape)} must match memory [B,Tm]=[{memory.shape[0]},{memory.shape[1]}]"
-                )
+        validate_memory_padding_mask(memory, memory_key_padding_mask)
 
         x = self.input_adapter(tgt)  # [B, T, D]
 
@@ -793,23 +771,6 @@ class TransformerDecoder(BaseTransformer):
                 user_tgt_key_padding_mask
             )
 
-        layer_states = prepare_layer_states(
-            incremental_state, num_layers=self.num_layers
-        )
-
-        if cache_position is not None:
-            for layer_state in layer_states:
-                if layer_state is not None:
-                    self_state = AttentionCacheState.from_mapping(
-                        layer_state.setdefault("self_attn", {})
-                    )
-                    layer_state["self_attn"] = self_state
-                    self_state.cache_position = cache_position
-                    if cache_update_mask is not None:
-                        self_state.cache_update_mask = cache_update_mask
-                    else:
-                        self_state.cache_update_mask = None
-
         streams: torch.Tensor | None = None
         if self.use_mhc:
             if incremental_state is not None:
@@ -885,41 +846,39 @@ class TransformerDecoder(BaseTransformer):
                     used_indices.append(i)
                 continue
 
-            layer = self._resolve_layer(i)
-            self_attention_module = layer._self_attn()
-            cross_attention_module = layer.cross_attn
-            if hasattr(self_attention_module, "output_attentions"):
-                self_attention_module.output_attentions = output_attentions
-            cross_attention_module.output_attentions = output_attentions
             used_indices.append(i)
-            x, layer_states[i], streams = invoke.run_decoder_layer(
-                layer=layer,
-                x=x,
+            result = execute_decoder_layer(
+                self,
+                invoke,
+                layer_index=i,
+                hidden_states=x,
                 memory=memory,
                 tgt_mask=tgt_mask,
                 memory_mask=memory_mask,
                 tgt_key_padding_mask=tgt_key_padding_mask,
                 memory_key_padding_mask=memory_key_padding_mask,
                 layer_state=layer_states[i],
-                prev_state=prev_state,
+                previous_state=prev_state,
                 budget=runtime_budget,
                 streams=streams,
                 mtp_targets=layer_mtp_targets,
                 attention_residual_state=attention_residual_state,
-                gateskip_active_mask=gateskip_active_mask,
+                active_mask=gateskip_active_mask,
+                output_attentions=output_attentions,
+            )
+            x, layer_states[i], streams = (
+                result.hidden_states,
+                result.layer_state,
+                result.streams,
             )
             if all_hidden_states is not None:
                 all_hidden_states.append(x)
-            ff_block = getattr(getattr(layer, "feed_forward", None), "block", None)
-            router_state = getattr(ff_block, "last_routing_state", None)
-            if router_state is not None:
-                router_states.append(router_state)
-            self_weights = getattr(self_attention_module, "last_attn_weights", None)
-            cross_weights = getattr(cross_attention_module, "last_attn_weights", None)
-            if self_weights is not None:
-                all_attentions.append(self_weights)
-            if cross_weights is not None:
-                all_cross_attentions.append(cross_weights)
+            if result.router_state is not None:
+                router_states.append(result.router_state)
+            if result.self_attention is not None:
+                all_attentions.append(result.self_attention)
+            if result.cross_attention is not None:
+                all_cross_attentions.append(result.cross_attention)
 
         # FIX: aggregate only over executed layers
         self._finalize_layer_stack(used_indices)
@@ -982,13 +941,11 @@ class TransformerDecoder(BaseTransformer):
                 f"forward_one_step expects tgt [B,T,C] with T>0, got {tuple(tgt.shape)}"
             )
 
-        has_kv_cache = False
-        if incremental_state is not None:
-            layer_states = incremental_state.get("layers")
-            if isinstance(layer_states, list):
-                has_kv_cache = any(
-                    layer_state is not None for layer_state in layer_states
-                )
+        incremental_state = DecoderState.coerce(
+            incremental_state, num_layers=self.num_layers
+        )
+        decoded_len = incremental_state.decoded_length if incremental_state else 0
+        has_kv_cache = decoded_len > 0
 
         step_tgt = tgt[:, -1:, :] if has_kv_cache else tgt
         step_time_features = (
@@ -996,15 +953,13 @@ class TransformerDecoder(BaseTransformer):
             if (has_kv_cache and time_features is not None)
             else time_features
         )
-        decoded_len = int((incremental_state or {}).get("_decoded_len", 0))
-        has_static_cache = False
-        if incremental_state is not None:
-            layers = incremental_state.get("layers") or []
-            if layers:
-                first_self_state = (layers[0] or {}).get("self_attn", {})
-                has_static_cache = isinstance(
-                    first_self_state.get("static_cache"), StaticKVCache
-                )
+        has_static_cache = bool(
+            incremental_state
+            and incremental_state.layers
+            and isinstance(
+                incremental_state.layers[0].self_attention.cache, StaticKVCache
+            )
+        )
         if cache_position is None and not has_static_cache:
             cache_position = torch.arange(
                 decoded_len,

@@ -25,27 +25,33 @@ import torch.nn.functional as F
 
 from foreblocks.layers.embeddings import InformerTimeEmbedding
 from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.models.transformer.core.attention_backends import (
+    LazyAttentionBackendMixin,
+)
 from foreblocks.models.transformer.core.base import (
     BaseTransformer,
     BaseTransformerLayer,
 )
 from foreblocks.models.transformer.features.mhc import mhc_init_streams
-from foreblocks.models.transformer.features.patching import (
-    PatchInfo,
-    patchify_padding_mask,
+from foreblocks.models.transformer.features.patching import PatchInfo
+from foreblocks.models.transformer.features.residuals import (
+    AttentionResidual,
+    BlockAttentionResidual,
+    normalize_attention_residual_mode,
 )
 from foreblocks.models.transformer.runtime.execution import (
-    LazyAttentionBackendMixin,
     MHCBlockMixin,
     ModelLayerInvokeStrategy,
     NormWrapper,
     ResidualBlockMixin,
 )
+from foreblocks.models.transformer.runtime.forward.encoder import prepare_encoder_input
 from foreblocks.models.transformer.runtime.outputs import (
     TransformerEncoderOutput,
     resolve_output_options,
 )
 from foreblocks.models.transformer.runtime.residual_state import (
+    AttentionResidualState,
     init_attention_residual_state,
 )
 from foreblocks.models.transformer.runtime.routing import (
@@ -53,13 +59,7 @@ from foreblocks.models.transformer.runtime.routing import (
     gather_padding_mask,
     gather_sequence_tokens,
     gather_square_mask,
-    patchify_gateskip_active_mask,
     run_mod_layer,
-)
-from foreblocks.modules.attention.utils.residuals import (
-    AttentionResidual,
-    BlockAttentionResidual,
-    normalize_attention_residual_mode,
 )
 from foreblocks.modules.skip.gateskip import ResidualGate
 from foreblocks.ui.node_spec import node
@@ -175,7 +175,7 @@ class TransformerEncoderLayer(
         mhc_sinkhorn_iters: int | None = None,
         mhc_collapse: str | None = None,
         mtp_targets: torch.Tensor | None = None,
-        attention_residual_state: dict | None = None,
+        attention_residual_state: AttentionResidualState | None = None,
         gateskip_active_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         self._reset_aux_loss()
@@ -463,59 +463,14 @@ class TransformerEncoder(BaseTransformer):
         output_hidden_states, output_attentions, return_dict = resolve_output_options(
             self.config, output_hidden_states, output_attentions, return_dict
         )
-        B, T, C = src.shape
-        if self.input_size != C:
-            raise ValueError(f"Expected input size {self.input_size}, got {C}")
-        if self.max_seq_len < T and (not self.patch_encoder) and (not self.ct_patchtst):
-            raise ValueError(f"Sequence length {T} exceeds max {self.max_seq_len}")
-
         self.mod_aux_loss = 0.0
-
-        patch_info: PatchInfo | None = None
-        if self.ct_patchtst:
-            x, patch_info = self._ct_patchify(src)  # [B, Np, D]
-            if x.shape[1] > self.max_seq_len:
-                raise ValueError(
-                    f"Encoder CT-patch token length {x.shape[1]} exceeds max_seq_len={self.max_seq_len}. "
-                    f"Increase max_seq_len or adjust ct_patch_len/ct_patch_stride."
-                )
-            src_key_padding_mask = patchify_padding_mask(
-                src_key_padding_mask,
-                T=T,
-                patch_len=self.ct_patch_len,
-                stride=self.ct_patch_stride,
-                pad_end=self.ct_patch_pad_end,
-            )
-            gateskip_active_mask = patchify_gateskip_active_mask(
-                gateskip_active_mask,
-                T=T,
-                patch_len=self.ct_patch_len,
-                stride=self.ct_patch_stride,
-                pad_end=self.ct_patch_pad_end,
-            )
-        else:
-            x = self.input_adapter(src)  # [B, T, D]
-        if self.patch_encoder:
-            x, patch_info = self.patcher(x)  # [B, Np, D]
-            if x.shape[1] > self.max_seq_len:
-                raise ValueError(
-                    f"Encoder patch token length {x.shape[1]} exceeds max_seq_len={self.max_seq_len}. "
-                    f"Increase max_seq_len or adjust patch_len/patch_stride."
-                )
-            src_key_padding_mask = patchify_padding_mask(
-                src_key_padding_mask,
-                T=T,
-                patch_len=self.patch_len,
-                stride=self.patch_stride,
-                pad_end=self.patch_pad_end,
-            )
-            gateskip_active_mask = patchify_gateskip_active_mask(
-                gateskip_active_mask,
-                T=T,
-                patch_len=self.patch_len,
-                stride=self.patch_stride,
-                pad_end=self.patch_pad_end,
-            )
+        prepared = prepare_encoder_input(
+            self, src, src_key_padding_mask, gateskip_active_mask
+        )
+        x = prepared.hidden_states
+        src_key_padding_mask = prepared.padding_mask
+        gateskip_active_mask = prepared.active_mask
+        patch_info = prepared.patch_info
 
         if gateskip_active_mask is None:
             gateskip_active_mask = gateskip_active_mask_from_padding(
