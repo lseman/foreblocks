@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.core.model import ForecastingModel
-from foreblocks.core.training.quantization import (
+from foreblocks.core.quantization import (
     DynamicQuantizedLinear,
     FakeQuantize,
     ManualDeQuantStub,

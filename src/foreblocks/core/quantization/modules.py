@@ -1,4 +1,4 @@
-"""foreblocks.core.training.quantization.
+"""Quantization configurations, observers, and linear modules.
 
 Neural network quantization helpers for training and deployment.
 

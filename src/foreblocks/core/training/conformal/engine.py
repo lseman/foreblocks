@@ -1,4 +1,4 @@
-"""foreblocks.core.training.conformal.
+"""Conformal prediction engine and online calibration algorithms.
 
 Conformal prediction engine for time-series forecasting uncertainty.
 

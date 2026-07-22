@@ -1,4 +1,4 @@
-"""foreblocks.core.training.history.
+"""Serializable training history state.
 
 Training history tracking for epochs, losses, and model metadata.
 

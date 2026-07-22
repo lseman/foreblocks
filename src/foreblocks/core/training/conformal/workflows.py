@@ -1,4 +1,4 @@
-"""foreblocks.core.training.conformal_trainer.
+"""Trainer-facing conformal calibration and prediction workflows.
 
 Trainer-side conformal prediction API for calibrated prediction intervals.
 

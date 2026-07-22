@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 from foreblocks.config import TrainingConfig
-from foreblocks.core.training.llrd import (
+from foreblocks.core.training.optimization.llrd import (
     WarmupCosineLR,
     get_llrd_param_groups,
 )

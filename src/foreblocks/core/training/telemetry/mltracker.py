@@ -1,4 +1,4 @@
-"""foreblocks.core.training.logging.
+"""MLTracker telemetry integration for training.
 
 MLTracker and MoE logging helpers extracted from the Trainer.
 

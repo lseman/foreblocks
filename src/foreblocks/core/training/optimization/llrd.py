@@ -1,4 +1,4 @@
-"""foreblocks.core.training.llrd.
+"""Layer-wise learning-rate decay and warmup scheduling.
 
 Layer-wise learning rate decay and warmup-cosine scheduling.
 

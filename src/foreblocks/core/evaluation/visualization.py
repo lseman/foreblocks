@@ -1,4 +1,4 @@
-"""foreblocks.core.training.visualization.
+"""Forecast and interval visualization.
 
 Visualization helpers for training predictions and conformal intervals.
 
@@ -33,7 +33,7 @@ def _require_matplotlib() -> None:
         raise ImportError(
             "matplotlib is required for visualization methods. "
             "Install it with: pip install matplotlib"
-        )
+        ) from None
 
 
 def _flatten_forecast_array(values: torch.Tensor | np.ndarray) -> np.ndarray:  # type: ignore[name-defined]

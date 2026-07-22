@@ -1,4 +1,4 @@
-"""foreblocks.core.training.training_loop.
+"""Training and evaluation epoch execution.
 
 Core training-loop primitives: forward/backward passes, epoch-level training,
 evaluation, and NAS alpha optimization steps.
@@ -27,7 +27,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from foreblocks.core.training.batch_io import (
+from foreblocks.core.training.execution.batch import (
     loader_len,
     move_batch_to_device,
     unpack_batch,
@@ -177,9 +177,10 @@ def train_epoch(
     current_epoch: int = 0,
     forward_pass_fn: Any = forward_pass,
     backward_step_fn: Any = backward_step,
-    device: torch.device = torch.device("cpu"),
+    device: torch.device | None = None,
     scheduler: Any = None,
 ) -> tuple[float, dict[str, float], int]:
+    device = device or torch.device("cpu")
     model.train()
     total_loss = 0.0
     all_components: dict[str, list[float]] = {}
@@ -273,12 +274,13 @@ def train_epoch(
 def evaluate(
     model: nn.Module,
     dataloader: DataLoader,
-    device: torch.device = torch.device("cpu"),
+    device: torch.device | None = None,
     amp_context: Any = contextlib.nullcontext,
     moe_log: Any = None,
     moe_meta_builder: Any = None,
     forward_pass_fn: Any = forward_pass,
 ) -> float:
+    device = device or torch.device("cpu")
     if dataloader is None:
         return float("nan")
     model.eval()

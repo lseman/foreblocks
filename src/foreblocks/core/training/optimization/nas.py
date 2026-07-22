@@ -1,4 +1,4 @@
-"""foreblocks.core.training.nas.
+"""Neural architecture search optimization support.
 
 Neural Architecture Search (NAS) helper for HeadComposer-based architecture optimization.
 
@@ -21,7 +21,7 @@ import torch
 import torch.nn as nn
 
 from foreblocks.config import TrainingConfig
-from foreblocks.core.training.history import TrainingHistory
+from foreblocks.core.training.state.history import TrainingHistory
 from foreblocks.modules.heads.head_helper import HeadComposer
 
 try:

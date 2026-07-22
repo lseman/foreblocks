@@ -32,16 +32,18 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from foreblocks.config import TrainingConfig
+from foreblocks.core.evaluation import visualization as _viz
 from foreblocks.core.evaluation.model_evaluator import ModelEvaluator
-from foreblocks.core.training import (
-    conformal_trainer as _conf,
-    logging as _log,
-    training_loop,
-    visualization as _viz,
-)
-from foreblocks.core.training.history import TrainingHistory
+from foreblocks.core.training.conformal import workflows as _conf
+from foreblocks.core.training.execution import epochs as training_loop
 from foreblocks.core.training.losses import LossComputer
-from foreblocks.core.training.nas import NASHelper
+from foreblocks.core.training.optimization.nas import NASHelper
+from foreblocks.core.training.state.checkpoint import (
+    load_trainer_checkpoint,
+    save_trainer_checkpoint,
+)
+from foreblocks.core.training.state.history import TrainingHistory
+from foreblocks.core.training.telemetry import mltracker as _log
 
 # ── Optional imports ────────────────────────────────────────────────────
 
@@ -179,7 +181,9 @@ class Trainer:
             )
             # LLRD only applies to weight params, not alpha params
             if getattr(self.config, "use_llrd", False):
-                from foreblocks.core.training.llrd import get_llrd_param_groups
+                from foreblocks.core.training.optimization.llrd import (
+                    get_llrd_param_groups,
+                )
 
                 param_groups = get_llrd_param_groups(
                     self.model,
@@ -209,7 +213,9 @@ class Trainer:
             self._weight_params = list(self.model.parameters())
             # LLRD: build param groups by layer depth
             if getattr(self.config, "use_llrd", False):
-                from foreblocks.core.training.llrd import get_llrd_param_groups
+                from foreblocks.core.training.optimization.llrd import (
+                    get_llrd_param_groups,
+                )
 
                 param_groups = get_llrd_param_groups(
                     self.model,
@@ -259,7 +265,7 @@ class Trainer:
     # ── Conformal engine factory ───────────────────────────────────────
 
     def _create_conformal_engine(self) -> Any:
-        from foreblocks.core.training.conformal import ConformalPredictionEngine
+        from foreblocks.core.training.conformal.engine import ConformalPredictionEngine
 
         return ConformalPredictionEngine(
             method=getattr(self.config, "conformal_method", "split"),
@@ -388,7 +394,7 @@ class Trainer:
                 eta_min=getattr(self.config, "min_lr", 1e-6),
             )
         if stype == "warmup_cosine":
-            from foreblocks.core.training.llrd import WarmupCosineLR
+            from foreblocks.core.training.optimization.llrd import WarmupCosineLR
 
             # Compute warmup_steps: either explicit or from ratio
             warmup_steps = getattr(self.config, "warmup_steps", 0)
@@ -429,7 +435,7 @@ class Trainer:
         if self.scheduler is None:
             return
         # WarmupCosineLR is stepped per-optimizer-step, not per-epoch
-        from foreblocks.core.training.llrd import WarmupCosineLR
+        from foreblocks.core.training.optimization.llrd import WarmupCosineLR
 
         if isinstance(self.scheduler, WarmupCosineLR):
             return
@@ -477,7 +483,7 @@ class Trainer:
     ) -> tuple[float, dict[str, float]]:
         _global_step = {"step": self.global_step}
         # Pass step-level scheduler (only WarmupCosineLR for now)
-        from foreblocks.core.training.llrd import WarmupCosineLR
+        from foreblocks.core.training.optimization.llrd import WarmupCosineLR
 
         step_scheduler = (
             self.scheduler if isinstance(self.scheduler, WarmupCosineLR) else None
@@ -548,7 +554,9 @@ class Trainer:
 
                     _global_step = {"step": self.global_step}
                     # Pass step-level scheduler (only WarmupCosineLR for now)
-                    from foreblocks.core.training.llrd import WarmupCosineLR
+                    from foreblocks.core.training.optimization.llrd import (
+                        WarmupCosineLR,
+                    )
 
                     step_scheduler = (
                         self.scheduler
@@ -748,55 +756,10 @@ class Trainer:
     # ── Saving / loading ───────────────────────────────────────────────
 
     def save(self, path: str | Path) -> None:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        save_dict: dict[str, Any] = {
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "config": (
-                self.config.__dict__
-                if hasattr(self.config, "__dict__")
-                else dict(self.config)
-            ),
-            "history": {
-                "train_losses": self.history.train_losses,
-                "val_losses": self.history.val_losses,
-                "learning_rates": self.history.learning_rates,
-                "alpha_values": self.history.alpha_values,
-            },
-        }
-        if self.alpha_optimizer is not None:
-            save_dict["alpha_optimizer_state_dict"] = self.alpha_optimizer.state_dict()
-
-        if (
-            self.conformal_engine is not None
-            and getattr(self.conformal_engine, "radii", None) is not None
-        ):
-            save_dict["conformal_radii"] = self.conformal_engine.radii
-            save_dict["conformal_method"] = self.conformal_engine.method
-
-        torch.save(save_dict, path)
+        save_trainer_checkpoint(self, path)
 
     def load(self, path: str | Path) -> None:
-        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.model.to(self.device)
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if (
-            "alpha_optimizer_state_dict" in checkpoint
-            and self.alpha_optimizer is not None
-        ):
-            self.alpha_optimizer.load_state_dict(
-                checkpoint["alpha_optimizer_state_dict"]
-            )
-        if "config" in checkpoint:
-            if hasattr(self.config, "update"):
-                self.config.update(**checkpoint["config"])
-            elif hasattr(self.config, "__dict__"):
-                self.config.__dict__.update(checkpoint["config"])
-
-        if "conformal_radii" in checkpoint and self.conformal_engine is not None:
-            self.conformal_engine.radii = checkpoint["conformal_radii"]
+        load_trainer_checkpoint(self, path)
 
     # ── Model utilities ────────────────────────────────────────────────
 

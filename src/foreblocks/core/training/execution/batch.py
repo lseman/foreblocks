@@ -1,4 +1,4 @@
-"""foreblocks.core.training.batch_io.
+"""Batch normalization and device transfer for training execution.
 
 Batch I/O utilities for the Trainer: unpacking, device transfer, and dataloader helpers.
 
@@ -98,8 +98,9 @@ def move_batch_to_device(
     y: Any | None,
     time_feat: Any | None = None,
     graph_kwargs: dict[str, Any] | None = None,
-    device: torch.device = torch.device("cpu"),
+    device: torch.device | None = None,
 ) -> tuple[Any, Any | None, Any | None, dict[str, Any]]:
+    device = device or torch.device("cpu")
     X = to_device(X, device)
     y = to_device(y, device)
     time_feat = to_device(time_feat, device)
