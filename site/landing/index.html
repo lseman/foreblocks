@@ -295,45 +295,28 @@
 
     .nav-toggle {
       display: none;
-      width: 42px;
-      height: 42px;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: rgba(255, 255, 255, 0.04);
+      width: 40px;
+      height: 40px;
+      border: none;
+      background: transparent;
       color: var(--text);
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      transition: background 0.15s, transform 0.15s;
+      padding: 0;
     }
 
-    .nav-toggle:hover {
-      background: rgba(255, 255, 255, 0.08);
+    .nav-toggle svg {
+      width: 22px;
+      height: 22px;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      fill: none;
     }
 
-    .nav-toggle span {
-      display: block;
-      width: 18px;
-      height: 2px;
-      border-radius: 999px;
-      background: currentColor;
-      transition: transform 0.25s ease, opacity 0.25s ease;
-    }
-
-    .nav-toggle span+span {
-      margin-top: 4px;
-    }
-
-    .nav-toggle.open span:nth-child(1) {
-      transform: translateY(6px) rotate(45deg);
-    }
-
-    .nav-toggle.open span:nth-child(2) {
-      opacity: 0;
-    }
-
-    .nav-toggle.open span:nth-child(3) {
-      transform: translateY(-6px) rotate(-45deg);
+    .nav-toggle.open svg line {
+      opacity: 0.2;
     }
 
     .btn-ghost {
@@ -861,15 +844,18 @@
     ═══════════════════════════════════════════ */
     .install-grid {
       display: grid;
-      grid-template-columns: 1fr 1.1fr;
-      gap: 3rem;
-      align-items: start;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.2rem;
       margin-top: 3rem;
+    }
+
+    .install-grid > div:first-child {
+      grid-column: 1 / -1;
     }
 
     .install-cards {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, 1fr);
       gap: 1rem;
       margin-top: 2rem;
     }
@@ -878,8 +864,9 @@
       background: rgba(255,255,255,0.02);
       border: 1px solid rgba(255,255,255,0.04);
       border-radius: 14px;
-      padding: 1.5rem;
+      padding: 1.2rem;
       transition: all 0.3s;
+      min-width: 0;
     }
 
     .install-card:hover {
@@ -890,22 +877,22 @@
 
     .install-card-tag {
       font-family: 'JetBrains Mono', monospace;
-      font-size: 0.68rem;
+      font-size: 0.65rem;
       color: var(--accent-1);
       letter-spacing: 0.06em;
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.4rem;
       opacity: 0.7;
     }
 
     .install-card-title {
       font-family: 'Plus Jakarta Sans', sans-serif;
-      font-size: 1rem;
+      font-size: 0.92rem;
       font-weight: 700;
-      margin-bottom: 0.45rem;
+      margin-bottom: 0.35rem;
     }
 
     .install-card-desc {
-      font-size: 0.82rem;
+      font-size: 0.78rem;
       color: var(--text-dim);
       line-height: 1.65;
     }
@@ -1437,7 +1424,7 @@
     ═══════════════════════════════════════════ */
     @media (max-width: 1024px) {
       .hero {
-        padding: 6rem 2rem 3rem;
+        padding: 5rem 2rem 3rem;
       }
 
       .hero-inner {
@@ -1464,7 +1451,21 @@
       }
 
       .hero-panel {
-        display: none;
+        display: flex;
+        max-height: 320px;
+        overflow: hidden;
+      }
+
+      .terminal-card {
+        max-height: 320px;
+      }
+
+      .term-body code {
+        font-size: 0.72rem !important;
+      }
+
+      .quick-nav {
+        grid-template-columns: 1fr;
       }
 
       .paths-grid {
@@ -1480,7 +1481,7 @@
       }
 
       .features-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, 1fr);
       }
 
       .stack-row {
@@ -1499,6 +1500,10 @@
 
       .install-cards {
         grid-template-columns: 1fr;
+      }
+
+      .install-card {
+        padding: 1rem;
       }
 
       .ref-grid {
@@ -1551,45 +1556,106 @@
       }
 
       .hero {
-        padding: 5rem 1rem 3rem;
+        padding: 4.5rem 0.75rem 2.5rem;
+        min-height: auto;
       }
 
       .hero-inner {
-        gap: 2rem;
+        gap: 1.5rem;
+      }
+
+      .hero-logo {
+        width: 180px;
+        margin-bottom: 1rem;
+      }
+
+      .hero-kicker {
+        font-size: 0.7rem;
+        margin-bottom: 1rem;
       }
 
       .hero-title {
-        font-size: clamp(2rem, 8vw, 3rem);
+        font-size: clamp(1.8rem, 9vw, 2.6rem);
       }
 
       .hero-desc {
-        font-size: 1rem;
-        line-height: 1.7;
+        font-size: 0.95rem;
+        line-height: 1.6;
+        margin-bottom: 1.5rem;
       }
 
       .hero-ctas {
-        gap: 0.6rem;
+        gap: 0.5rem;
+        flex-direction: column;
+        align-items: stretch;
       }
 
       .btn-primary,
       .btn-outline {
-        padding: 0.75rem 1rem;
+        padding: 0.85rem 1rem;
+        justify-content: center;
+        font-size: 0.9rem;
+      }
+
+      .hero-pills {
+        justify-content: center;
+      }
+
+      .pill {
+        font-size: 0.72rem;
+        padding: 0.3rem 0.6rem;
       }
 
       .nav-inner {
-        padding: 0 1rem;
+        padding: 0 0.75rem;
+      }
+
+      .hero-panel {
+        max-height: 260px;
+      }
+
+      .terminal-card {
+        max-height: 260px;
+      }
+
+      .term-body code {
+        font-size: 0.68rem !important;
+      }
+
+      .term-body {
+        padding: 0.8rem 1rem !important;
+      }
+
+      .ver-badge {
+        font-size: 0.6rem;
+        padding: 0.25rem 0.55rem;
+        top: -0.65rem;
+        right: 0.55rem;
       }
 
       .quick-nav {
         display: grid;
         grid-template-columns: 1fr;
-        gap: 0.85rem;
+        gap: 0.6rem;
+      }
+
+      .quick-link {
+        padding: 0.65rem 0.8rem;
+      }
+
+      .quick-link strong {
+        font-size: 0.82rem;
+      }
+
+      .quick-link small {
+        font-size: 0.75rem;
       }
 
       .install-table,
       .code-panel,
       .term-body {
         overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
       }
 
       .install-table {
@@ -1597,7 +1663,7 @@
       }
 
       .container {
-        padding-inline: 0.5rem;
+        padding-inline: 0.75rem;
       }
 
       body {
@@ -1605,7 +1671,23 @@
       }
 
       .section {
-        padding: 3rem 1rem;
+        padding: 2.5rem 0.75rem;
+      }
+
+      .section-title {
+        font-size: clamp(1.5rem, 6vw, 2rem);
+      }
+
+      .section-copy {
+        font-size: 0.95rem;
+      }
+
+      .scroll-indicator {
+        bottom: 1.5rem;
+      }
+
+      .scroll-indicator span {
+        font-size: 0.6rem;
       }
     }
   </style>
@@ -1641,9 +1723,11 @@
         <li><a href="#examples">Examples</a></li>
       </ul>
       <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false" type="button">
-        <span></span>
-        <span></span>
-        <span></span>
+        <svg viewBox="0 0 24 24">
+          <line x1="3" y1="6" x2="21" y2="6"/>
+          <line x1="3" y1="12" x2="21" y2="12"/>
+          <line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
       </button>
       <div class="nav-actions">
         <a href="/studio/" class="btn-ghost" style="display:none" id="nav-studio">Studio</a>
@@ -1841,81 +1925,73 @@ pip install "foreblocks[darts]"</code></pre>
 ══════════════════════════ -->
   <section id="install" class="section">
     <div class="container">
-      <div class="install-grid">
-        <div class="reveal">
-          <div class="section-num">02 — Install</div>
-          <h2 class="section-title">Lean by default, <em>modular</em> by design</h2>
-          <p class="section-copy">Install the core package for forecasting and training. Add extras only when you need
-            preprocessing, search, tracking, or analysis.</p>
-          <div class="install-cards">
-            <div class="install-card">
-              <div class="install-card-tag">Recommended</div>
-              <div class="install-card-title">Start small</div>
-              <div class="install-card-desc">Validate one training loop, then add extras for preprocessing or search.
-              </div>
-            </div>
-            <div class="install-card">
-              <div class="install-card-tag">Source</div>
-              <div class="install-card-title">Hack locally</div>
-              <div class="install-card-desc">Editable installs are best when modifying blocks, docs, or training
-                internals.</div>
-            </div>
+      <div class="reveal">
+        <div class="section-num">02 — Install</div>
+        <h2 class="section-title">Lean by default, <em>modular</em> by design</h2>
+        <p class="section-copy">Install the core package for forecasting and training. Add extras only when you need
+          preprocessing, search, tracking, or analysis.</p>
+      </div>
+
+      <div class="install-cards">
+        <div class="install-card reveal reveal-delay-1">
+          <div class="install-card-tag">Recommended</div>
+          <div class="install-card-title">Core package</div>
+          <div class="install-card-desc">Forecasting, training loop, dataloaders, configs, transformer blocks.</div>
+          <div class="code-block" style="padding:0.8rem 0 0 0;">
+            <pre><code class="language-bash" id="install-code">pip install foreblocks</code></pre>
           </div>
         </div>
-
-        <div class="reveal reveal-delay-1">
-          <div class="code-panel">
-            <div class="code-panel-header">
-              <span class="code-panel-label">Core + Extras</span>
-              <button class="copy-btn" data-target="install-code">Copy</button>
-            </div>
-            <div class="code-block">
-              <pre><code class="language-bash" id="install-code">pip install foreblocks
-
-pip install "foreblocks[preprocessing]"
-pip install "foreblocks[darts]"
-pip install "foreblocks[mltracker]"
-pip install "foreblocks[all]"
-
-git clone https://github.com/lseman/foreblocks.git
+        <div class="install-card reveal reveal-delay-2">
+          <div class="install-card-tag">Extras</div>
+          <div class="install-card-title">Add-ons</div>
+          <div class="install-card-desc">Preprocessing, DARTS search, MLTracker, VMD, wavelets, benchmarking.</div>
+          <div class="code-block" style="padding:0.8rem 0 0 0;">
+            <pre><code class="language-bash">pip install "foreblocks[all]"</code></pre>
+          </div>
+        </div>
+        <div class="install-card reveal reveal-delay-3">
+          <div class="install-card-tag">Source</div>
+          <div class="install-card-title">From source</div>
+          <div class="install-card-desc">Editable install for hacking blocks, docs, or training internals.</div>
+          <div class="code-block" style="padding:0.8rem 0 0 0;">
+            <pre><code class="language-bash">git clone https://github.com/lseman/foreblocks.git
 cd foreblocks && pip install -e ".[dev]"</code></pre>
-            </div>
-          </div>
-
-          <div class="code-panel" style="margin-top:1rem; border-radius:var(--r-sm); overflow:hidden;">
-            <table class="install-table">
-              <thead>
-                <tr>
-                  <th>Need</th>
-                  <th>Install</th>
-                  <th>Docs</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>Core forecasting</td>
-                  <td><code class="inline">foreblocks</code></td>
-                  <td><a href="docs/getting-started/">Getting Started →</a></td>
-                </tr>
-                <tr>
-                  <td>Preprocessing</td>
-                  <td><code class="inline">foreblocks[preprocessing]</code></td>
-                  <td><a href="docs/preprocessor/">Preprocessor →</a></td>
-                </tr>
-                <tr>
-                  <td>DARTS search</td>
-                  <td><code class="inline">foreblocks[darts]</code></td>
-                  <td><a href="docs/darts/">DARTS Guide →</a></td>
-                </tr>
-                <tr>
-                  <td>Tracking UI</td>
-                  <td><code class="inline">foreblocks[mltracker]</code></td>
-                  <td><a href="docs/webui/">Web UI →</a></td>
-                </tr>
-              </tbody>
-            </table>
           </div>
         </div>
+      </div>
+
+      <div class="code-panel" style="margin-top:1.5rem; border-radius:var(--r-sm); overflow:hidden;">
+        <table class="install-table">
+          <thead>
+            <tr>
+              <th>Need</th>
+              <th>Install</th>
+              <th>Docs</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Core forecasting</td>
+              <td><code class="inline">foreblocks</code></td>
+              <td><a href="docs/getting-started/">Getting Started →</a></td>
+            </tr>
+            <tr>
+              <td>Preprocessing</td>
+              <td><code class="inline">foreblocks[preprocessing]</code></td>
+              <td><a href="docs/preprocessor/">Preprocessor →</a></td>
+            </tr>
+            <tr>
+              <td>DARTS search</td>
+              <td><code class="inline">foreblocks[darts]</code></td>
+              <td><a href="docs/darts/">DARTS Guide →</a></td>
+            </tr>
+            <tr>
+              <td>Tracking UI</td>
+              <td><code class="inline">foreblocks[mltracker]</code></td>
+              <td><a href="docs/webui/">Web UI →</a></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </section>
@@ -2431,6 +2507,13 @@ print(history.train_losses[-1], metrics)</code></pre>
       }
       resize();
       window.addEventListener('resize', resize);
+
+      // Skip canvas rendering on mobile to save battery
+      if (window.innerWidth < 768) {
+        // Keep a static gradient fallback instead
+        canvas.style.background = 'radial-gradient(ellipse at 60% 40%, rgba(6,182,212,0.08) 0%, transparent 60%), radial-gradient(ellipse at 40% 70%, rgba(139,92,246,0.06) 0%, transparent 50%)';
+        return;
+      }
 
       // ── Value synthesis: sum of sine harmonics at random phases ──
       // This gives smooth, organic, never-repeating-within-session curves
