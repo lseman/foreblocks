@@ -2,19 +2,17 @@
 
 Base classes and execution plumbing for modular transformer encoder/decoder.
 
-Implements ResidualBlockMixin and MHCBlockMixin that eliminate repetitive code
-across encoder and decoder layers. Provides support for pre/post/sandwich
-normalization, GateSkip residual gating, manifold-constrained hyper-connections
-(mHC), Mixture-of-Depths routing, and attention residual tracking.
-Attention-residual state lives in ``residual_state`` and tensor routing lives
-in ``routing``; this module owns layer/model base classes.
+Provides support for pre/post/sandwich normalization, GateSkip residual
+gating, manifold-constrained hyper-connections (mHC), Mixture-of-Depths
+routing, and attention residual tracking. ResidualBlockMixin and
+MHCExecutionMixin (the mixins encoder/decoder layers use for this) live in
+``runtime.execution``. Attention-residual state lives in ``residual_state``
+and tensor routing lives in ``routing``; this module owns layer/model base
+classes.
 
 Core API:
-- ResidualBlockMixin: shared residual logic for non-mHC blocks
-- MHCBlockMixin: shared stream-wise mHC block logic
 - BaseTransformerLayer: base layer with FFN/MoE and aux_loss tracking
 - BaseTransformer: abstract encoder/decoder base with embedding, layer building
-- ResidualRunCfg: frozen config for residual computation
 
 """
 
@@ -48,9 +46,7 @@ from foreblocks.models.transformer.features.residuals import (
 )
 from foreblocks.models.transformer.runtime.execution import (
     LayerExecutionStrategy,
-    MHCBlockMixin,
     NormWrapper,
-    ResidualBlockMixin,
     ResidualRunCfg,
 )
 from foreblocks.models.transformer.runtime.residual_state import (
@@ -664,20 +660,49 @@ class BaseTransformer(nn.Module, ABC):
             self._get_layer_attention_type(i) for i in range(self.num_layers)
         ]
         attn_mix = ", ".join(sorted(set(per_layer_attn)))
-        print(
-            f"[{self.__class__.__name__}] "
-            f"att_type={att_type} | "
-            f"attention_mode={self.attention_mode} (layers={attn_mix}) | "
-            f"norm={custom_norm}/{norm_strategy} final_norm={use_final_norm} | "
-            f"moe={use_moe} experts={num_experts} top_k={top_k} moe_aux_lambda={self.moe_aux_lambda} | "
-            f"gateskip={self.use_gateskip} budget={self.gate_budget} gate_lambda={self.gate_lambda} | "
-            f"attnres={self.use_attention_residual}/{self.attention_residual_mode}"
-            f"/block={self.attention_residual_block_size} | "
-            f"mhc={self.use_mhc} streams={self.mhc_n_streams} collapse={self.mhc_collapse} | "
-            f"patch(enc={self.patch_encoder},len={self.patch_len},stride={self.patch_stride}) | "
-            f"mod={self.use_mod}/{self.mod_mode} | "
-            f"shared_layers={share_layers} grad_ckpt={self.use_gradient_checkpointing}"
+
+        lines = [f"[{self.__class__.__name__}]"]
+        lines.append(
+            f"  shape:     d_model={self.d_model} nhead={self.config.nhead} "
+            f"layers={self.num_layers} max_seq_len={self.max_seq_len} "
+            f"dropout={self.dropout}"
         )
+        lines.append(
+            f"  attention: att_type={att_type} mode={self.attention_mode} "
+            f"(layers={attn_mix})"
+        )
+        lines.append(
+            f"  norm:      {custom_norm}/{norm_strategy} final_norm={use_final_norm}"
+        )
+        if use_moe:
+            lines.append(
+                f"  moe:       experts={num_experts} top_k={top_k} "
+                f"aux_lambda={self.moe_aux_lambda}"
+            )
+        if self.use_gateskip:
+            lines.append(
+                f"  gateskip:  budget={self.gate_budget} gate_lambda={self.gate_lambda}"
+            )
+        if self.use_attention_residual:
+            lines.append(
+                f"  attn_res:  mode={self.attention_residual_mode} "
+                f"block={self.attention_residual_block_size}"
+            )
+        if self.use_mhc:
+            lines.append(
+                f"  mhc:       streams={self.mhc_n_streams} collapse={self.mhc_collapse}"
+            )
+        if self.patch_encoder:
+            lines.append(
+                f"  patch:     len={self.patch_len} stride={self.patch_stride}"
+            )
+        if self.use_mod:
+            lines.append(f"  mod:       mode={self.mod_mode}")
+        lines.append(
+            f"  runtime:   shared_layers={share_layers} "
+            f"grad_ckpt={self.use_gradient_checkpointing}"
+        )
+        print("\n".join(lines))
 
     # FIX: aggregate aux loss over executed layer indices (supports skipping)
     def _aggregate_aux_loss(self, used_indices: list[int]) -> None:
@@ -838,10 +863,6 @@ class BaseTransformer(nn.Module, ABC):
 
 
 __all__ = [
-    "NormWrapper",
-    "ResidualRunCfg",
-    "ResidualBlockMixin",
-    "MHCBlockMixin",
     "BaseTransformerLayer",
     "BaseTransformer",
     "TransformerEncoder",

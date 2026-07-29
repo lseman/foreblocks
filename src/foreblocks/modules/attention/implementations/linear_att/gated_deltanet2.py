@@ -6,14 +6,14 @@ Gated DeltaNet-2: decoupled erase and write in linear attention (arXiv:2605.2279
 https://arxiv.org/abs/2605.22791
 
 Decouples the erase and write operations that a single β gate forces in
-GatedDeltaNet: per-channel erase gate b_t controls which key coordinates read
+GatedDeltaNetBackend: per-channel erase gate b_t controls which key coordinates read
 old state, per-channel write gate w_t controls which value coordinates are
 committed, and per-channel decay α_t applies Mamba2-style forgetting. Three
 forward modes — sequential (exact training), chunk-parallel (WY form), and
 incremental (single-step decoding).
 
 Core API:
-- GatedDeltaNet2: GDN-2 with decoupled erase/write gates and chunk modes
+- GatedDeltaNet2Backend: GDN-2 with decoupled erase/write gates and chunk modes
 
 """
 
@@ -40,24 +40,11 @@ from foreblocks.ops.attention import (
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class _CausalConv(CausalDepthwiseConv):
-    pass
-
-
-class _HeadRMSNorm(HeadRMSNorm):
-    pass
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Main module
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class GatedDeltaNet2(GatedDeltaExecutionMixin, nn.Module):
+class GatedDeltaNet2Backend(GatedDeltaExecutionMixin, nn.Module):
     def __init__(
         self,
         d_model: int,
@@ -127,15 +114,15 @@ class GatedDeltaNet2(GatedDeltaExecutionMixin, nn.Module):
         self.g_up = nn.Linear(self.h * self.dv // 2, self.h * self.dv, bias=False)
 
         # ── Normalisation & dropout ────────────────────────────────────────
-        self.h_rms = _HeadRMSNorm(self.h, self.dv, eps=eps)
+        self.h_rms = HeadRMSNorm(self.h, self.dv, eps=eps)
         self.drop = nn.Dropout(dropout)
 
         # ── Optional short conv on Q, K, V ────────────────────────────────
         self.use_short_conv = use_short_conv
         if use_short_conv:
-            self.q_conv = _CausalConv(self.h * self.dk, conv_kernel)
-            self.k_conv = _CausalConv(self.h * self.dk, conv_kernel)
-            self.v_conv = _CausalConv(self.h * self.dv, conv_kernel)
+            self.q_conv = CausalDepthwiseConv(self.h * self.dk, conv_kernel)
+            self.k_conv = CausalDepthwiseConv(self.h * self.dk, conv_kernel)
+            self.v_conv = CausalDepthwiseConv(self.h * self.dv, conv_kernel)
 
         # ── Initialisation ─────────────────────────────────────────────────
         nn.init.xavier_uniform_(self.q_proj.weight, gain=0.5)

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
@@ -48,7 +48,7 @@ def has_fla_checkout() -> bool:
 
 
 @contextmanager
-def fla_import_path() -> Iterator[Path]:
+def fla_import_path() -> Generator[Path]:
     path = fla_path()
     path_str = str(path)
     inserted = False

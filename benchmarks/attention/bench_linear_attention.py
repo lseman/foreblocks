@@ -4,7 +4,7 @@
 Benchmark harness comparing custom PyTorch linear attention backends against FLA (flash-linear-attn) kernels.
 
 Runs forward and backward timing passes for all backends (RDA, GLA, DeltaNet,
-GatedDeltaNet, GatedDeltaNet2, KimiAttention) against their corresponding FLA
+GatedDeltaNetBackend, GatedDeltaNet2Backend, KimiAttentionBackend) against their corresponding FLA
 Triton/TileLang kernels, with optional shape correctness checks. CLI-driven;
 runs as a script, not importable as a library.
 
@@ -28,13 +28,13 @@ from foreblocks.modules.attention.implementations.linear_att.deltanet import (
     DeltaNetBackend,
 )
 from foreblocks.modules.attention.implementations.linear_att.gated_delta import (
-    GatedDeltaNet,
+    GatedDeltaNetBackend,
 )
 from foreblocks.modules.attention.implementations.linear_att.gated_deltanet2 import (
-    GatedDeltaNet2,
+    GatedDeltaNet2Backend,
 )
 from foreblocks.modules.attention.implementations.linear_att.gla import GLABackend
-from foreblocks.modules.attention.implementations.linear_att.kimi import KimiAttention
+from foreblocks.modules.attention.implementations.linear_att.kimi import KimiAttentionBackend
 
 # ── Custom backends ──────────────────────────────────────────────────────────
 from foreblocks.modules.attention.implementations.linear_att.rda import RDABackend
@@ -110,7 +110,7 @@ def _build_deltanet(B, T, H, dk, dv, dtype, chunk_size=64):
 
 
 def _build_gated_delta(B, T, H, dk, dv, dtype, chunk_size=64):
-    return GatedDeltaNet(
+    return GatedDeltaNetBackend(
         d_model=H * dk,
         n_heads=H,
         d_key=dk,
@@ -122,7 +122,7 @@ def _build_gated_delta(B, T, H, dk, dv, dtype, chunk_size=64):
 
 
 def _build_gdn2(B, T, H, dk, dv, dtype, chunk_size=64):
-    return GatedDeltaNet2(
+    return GatedDeltaNet2Backend(
         d_model=H * dk,
         n_heads=H,
         d_key=dk,
@@ -135,7 +135,7 @@ def _build_gdn2(B, T, H, dk, dv, dtype, chunk_size=64):
 
 
 def _build_kimi(B, T, H, dk, dv, dtype, chunk_size=64):
-    return KimiAttention(
+    return KimiAttentionBackend(
         d_model=H * dk,
         n_heads=H,
         d_key=dk,

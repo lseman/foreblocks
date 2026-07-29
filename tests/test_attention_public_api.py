@@ -8,7 +8,7 @@ from foreblocks.modules.attention import (
     AttentionShapeConfig,
     MultiAttention,
 )
-from foreblocks.modules.attention.implementations import GatedDeltaNet
+from foreblocks.modules.attention.implementations import GatedDeltaNetBackend
 
 
 def test_public_api_is_explicit_and_resolvable() -> None:
@@ -16,9 +16,9 @@ def test_public_api_is_explicit_and_resolvable() -> None:
     assert len(attention.__all__) == len(set(attention.__all__))
     assert all(hasattr(attention, name) for name in attention.__all__)
     assert "torch" not in attention.__all__
-    assert "GatedDeltaNet" not in attention.__all__
+    assert "GatedDeltaNetBackend" not in attention.__all__
     assert "PagedKVCache" not in attention.__all__
-    assert GatedDeltaNet.__name__ == "GatedDeltaNet"
+    assert GatedDeltaNetBackend.__name__ == "GatedDeltaNetBackend"
 
 
 def test_multi_attention_consumes_grouped_config() -> None:

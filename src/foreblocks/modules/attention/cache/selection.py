@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import torch
 
-from .kv import (
+from foreblocks.modules.attention.cache.kv import (
     DenseKVProvider,
     KVProvider,
     PagedKVProvider,

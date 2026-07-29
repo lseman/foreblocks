@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from foreblocks.modules.attention.variants.base import AttentionContext, AttentionImpl
+from foreblocks.modules.attention.variants.base import AttentionImpl, AttentionOwner
 
-VariantFactory = Callable[[AttentionContext], AttentionImpl]
+VariantFactory = Callable[[AttentionOwner], AttentionImpl]
 
 
 class AttentionVariantRegistry:
@@ -24,7 +24,7 @@ class AttentionVariantRegistry:
 
         return decorator
 
-    def create(self, name: str, context: AttentionContext) -> AttentionImpl:
+    def create(self, name: str, context: AttentionOwner) -> AttentionImpl:
         try:
             factory = self._factories[name.lower()]
         except KeyError as exc:
@@ -47,7 +47,7 @@ def _register_builtin_variants() -> None:
     from foreblocks.modules.attention.variants import (
         DilatedSlidingWindowAttentionImpl,
         MoBAAttentionImpl,
-        NSAImpl,
+        NSAAttentionImpl,
         ProbSparseAttentionImpl,
         SlidingWindowAttentionImpl,
         SoftpickAttentionImpl,
@@ -57,7 +57,7 @@ def _register_builtin_variants() -> None:
 
     ATTENTION_VARIANTS.register("standard", "sype")(StandardAttentionImpl)
     ATTENTION_VARIANTS.register("prob_sparse")(ProbSparseAttentionImpl)
-    ATTENTION_VARIANTS.register("nsa")(NSAImpl)
+    ATTENTION_VARIANTS.register("nsa")(NSAAttentionImpl)
     ATTENTION_VARIANTS.register("moba")(MoBAAttentionImpl)
     ATTENTION_VARIANTS.register("sliding_window")(SlidingWindowAttentionImpl)
     ATTENTION_VARIANTS.register("dilated_sliding_window", "dilated_window")(

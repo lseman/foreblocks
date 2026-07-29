@@ -1,4 +1,4 @@
-"""Greedy generation facade and decoder compilation entry points."""
+"""Autoregressive, beam, and speculative transformer decoding."""
 
 from __future__ import annotations
 
@@ -9,17 +9,99 @@ import torch
 
 from foreblocks.models.transformer.generation import GenerationConfig
 from foreblocks.models.transformer.runtime.cache import DecoderCacheManager
-from foreblocks.models.transformer.runtime.contracts import DecoderProtocol
-from foreblocks.models.transformer.runtime.decoding.beam import beam_search
-from foreblocks.models.transformer.runtime.decoding.speculative import (
-    speculative_decode,
-)
+from foreblocks.models.transformer.runtime.contracts import DecoderOwner
 from foreblocks.models.transformer.runtime.outputs import TransformerGenerationOutput
 from foreblocks.models.transformer.runtime.state import DecoderState
 
 
+@torch.no_grad()
+def beam_search(
+    decoder: DecoderOwner,
+    cache_manager: DecoderCacheManager,
+    initial_tgt: torch.Tensor,
+    memory: torch.Tensor,
+    max_new_tokens: int,
+    num_beams: int,
+    proposal_fn: Callable[[torch.Tensor, int], tuple[torch.Tensor, torch.Tensor]],
+) -> tuple[torch.Tensor, torch.Tensor, DecoderState]:
+    if num_beams < 1 or max_new_tokens < 1:
+        raise ValueError("num_beams and max_new_tokens must be positive")
+    batch_size = initial_tgt.size(0)
+    prediction, state = decoder.forward_one_step(initial_tgt, memory)
+    prediction = prediction[:, -1:, :]
+    beam_scores = prediction.new_zeros(batch_size, 1)
+    histories = None
+    beam_memory = memory
+    for step in range(max_new_tokens):
+        candidates, candidate_scores = proposal_fn(prediction, step)
+        if candidates.ndim != 3 or candidate_scores.shape != candidates.shape[:2]:
+            raise ValueError("proposal_fn must return [N,K,C] values and [N,K] scores")
+        current_beams, choices = beam_scores.size(1), candidates.size(1)
+        total = candidate_scores.view(batch_size, current_beams, choices)
+        total = total + beam_scores.unsqueeze(-1)
+        keep = min(num_beams, current_beams * choices)
+        beam_scores, flat_indices = total.flatten(1).topk(keep, dim=1)
+        parent = torch.div(flat_indices, choices, rounding_mode="floor")
+        choice = flat_indices.remainder(choices)
+        offsets = (
+            torch.arange(batch_size, device=parent.device)[:, None] * current_beams
+        )
+        parent_global = (parent + offsets).flatten()
+        rows = candidates.view(batch_size, current_beams, choices, -1)
+        batch_rows = torch.arange(batch_size, device=parent.device)[:, None]
+        selected = rows[batch_rows, parent, choice].reshape(batch_size * keep, 1, -1)
+        if histories is None:
+            histories = selected.view(batch_size, keep, 1, -1)
+        else:
+            histories = torch.cat(
+                [
+                    histories[batch_rows, parent],
+                    selected.view(batch_size, keep, 1, -1),
+                ],
+                dim=2,
+            )
+        state = cache_manager.reorder(state, parent_global)
+        beam_memory = beam_memory.index_select(0, parent_global.to(beam_memory.device))
+        if step + 1 < max_new_tokens:
+            prediction, state = decoder.forward_one_step(
+                selected, beam_memory, incremental_state=state
+            )
+            prediction = prediction[:, -1:, :]
+    if histories is None:
+        raise RuntimeError("beam search produced no histories")
+    return histories[:, 0], beam_scores[:, 0], state
+
+
+def speculative_decode(
+    decoder: DecoderOwner,
+    draft_tokens: torch.Tensor,
+    memory: torch.Tensor,
+    state: DecoderState,
+    *,
+    verifier_fn: Callable[[torch.Tensor, torch.Tensor], int] | None = None,
+    **kwargs: Any,
+) -> tuple[torch.Tensor, DecoderState, int]:
+    caches = [layer.self_attention.cache for layer in state.layers]
+    start_lengths = [
+        cache.get_seq_length() if cache is not None else None for cache in caches
+    ]
+    output, state = decoder.forward_multi_step(draft_tokens, memory, state, **kwargs)
+    accepted = (
+        int(verifier_fn(output, draft_tokens))
+        if verifier_fn is not None
+        else draft_tokens.size(1)
+    )
+    accepted = max(0, min(accepted, draft_tokens.size(1)))
+    if accepted != draft_tokens.size(1):
+        for start, layer in zip(start_lengths, state.layers, strict=True):
+            cache = layer.self_attention.cache
+            if start is not None and cache is not None:
+                cache.crop(start + accepted)
+    return output[:, :accepted], state, accepted
+
+
 class GenerationEngine:
-    def __init__(self, decoder: DecoderProtocol, cache: DecoderCacheManager) -> None:
+    def __init__(self, decoder: DecoderOwner, cache: DecoderCacheManager) -> None:
         self.decoder = decoder
         self.cache = cache
 
@@ -130,4 +212,4 @@ class GenerationEngine:
         )
 
 
-__all__ = ["GenerationEngine"]
+__all__ = ["GenerationEngine", "beam_search", "speculative_decode"]

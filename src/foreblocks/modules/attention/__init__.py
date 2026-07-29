@@ -28,7 +28,7 @@ from foreblocks.modules.attention.execution.backends import (
     register_attention_backend,
 )
 from foreblocks.modules.attention.multi_att import MultiAttention
-from foreblocks.modules.attention.variants.base import AttentionContext, AttentionImpl
+from foreblocks.modules.attention.variants.base import AttentionImpl, AttentionOwner
 from foreblocks.modules.attention.variants.registry import (
     AttentionVariantRegistry,
     register_attention_variant,
@@ -39,7 +39,7 @@ __all__ = [
     "AttentionBackendSpec",
     "AttentionCacheConfig",
     "AttentionConfig",
-    "AttentionContext",
+    "AttentionOwner",
     "AttentionFeatureConfig",
     "AttentionImpl",
     "AttentionPositionConfig",

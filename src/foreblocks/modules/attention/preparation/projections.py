@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 
-class ProjectionContext(Protocol):
+class ProjectionOwner(Protocol):
     d_model: int
     head_dim: int
     n_heads: int
@@ -25,7 +25,7 @@ class ProjectionContext(Protocol):
 class QKVProjector:
     """Project model-space inputs into query, key, and value heads."""
 
-    def __init__(self, context: ProjectionContext) -> None:
+    def __init__(self, context: ProjectionOwner) -> None:
         self.context = context
 
     def project(
@@ -66,4 +66,4 @@ class QKVProjector:
         return q, k, v, None
 
 
-__all__ = ["ProjectionContext", "QKVProjector"]
+__all__ = ["ProjectionOwner", "QKVProjector"]

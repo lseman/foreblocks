@@ -307,15 +307,27 @@ class MoEFeedForwardDMoE(nn.Module):
             if bool(moe_router_bias_balance) and router_bias_update_rate > 0
             else "off"
         )
-        print(
-            f"MoEFeedForwardDMoE: E={num_experts} (shared={num_shared}, routed={num_routed}), "
-            f"K={top_k}, routing={routing_mode}, ec_tokens={ec_tokens_desc}, "
-            f"swiglu={use_swiglu}, shared={shared_combine}, "
-            f"cap={soft_cap}, groups={moe_num_groups}, router={router_type}, "
-            f"aux_lb={aux_status}, z_loss={z_loss_weight}, "
-            f"entropy_reg={moe_entropy_reg_weight}, bias_balance={bias_bal_status}, "
-            f"latent={latent_enabled} latent_dim={latent_dim if latent_enabled else 'off'}"
+        moe_lines = ["[MoEFeedForwardDMoE]"]
+        moe_lines.append(
+            f"  experts:   total={num_experts} shared={num_shared} routed={num_routed} "
+            f"top_k={top_k} groups={moe_num_groups}"
         )
+        moe_lines.append(
+            f"  routing:   mode={routing_mode} router={router_type} "
+            f"ec_tokens={ec_tokens_desc} cap={soft_cap}"
+        )
+        moe_lines.append(
+            f"  combine:   swiglu={use_swiglu} shared={shared_combine}"
+        )
+        moe_lines.append(
+            f"  aux:       lb={aux_status} z_loss={z_loss_weight} "
+            f"entropy_reg={moe_entropy_reg_weight}"
+        )
+        if bias_bal_status != "off":
+            moe_lines.append(f"  bias_balance: {bias_bal_status}")
+        if latent_enabled:
+            moe_lines.append(f"  latent:    dim={latent_dim}")
+        print("\n".join(moe_lines))
         self.d_model = d_model
         self.d_ff = d_ff
         self.moe_use_latent = latent_enabled

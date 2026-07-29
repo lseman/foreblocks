@@ -71,7 +71,7 @@ def _causal_conv1d(
 
 class FeatureMapRegistry:
     @staticmethod
-    def make(name: str, d_head: int, num_features: int | None = None):
+    def build(name: str, d_head: int, num_features: int | None = None):
         if name == "elu":
             return lambda x: F.elu(x) + 1.0
         if name == "relu":

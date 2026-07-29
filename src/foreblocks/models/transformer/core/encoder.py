@@ -40,12 +40,12 @@ from foreblocks.models.transformer.features.residuals import (
     normalize_attention_residual_mode,
 )
 from foreblocks.models.transformer.runtime.execution import (
-    MHCBlockMixin,
+    MHCExecutionMixin,
     ModelLayerInvokeStrategy,
     NormWrapper,
     ResidualBlockMixin,
 )
-from foreblocks.models.transformer.runtime.forward.encoder import prepare_encoder_input
+from foreblocks.models.transformer.runtime.forward import prepare_encoder_input
 from foreblocks.models.transformer.runtime.outputs import (
     TransformerEncoderOutput,
     resolve_output_options,
@@ -66,7 +66,10 @@ from foreblocks.ui.node_spec import node
 
 
 class TransformerEncoderLayer(
-    ResidualBlockMixin, MHCBlockMixin, LazyAttentionBackendMixin, BaseTransformerLayer
+    ResidualBlockMixin,
+    MHCExecutionMixin,
+    LazyAttentionBackendMixin,
+    BaseTransformerLayer,
 ):
     def __init__(
         self,
@@ -106,14 +109,14 @@ class TransformerEncoderLayer(
         )
         self.layer_attention_type = str(layer_attention_type)
 
-        self.attn_norm = NormWrapper.make(
+        self.attn_norm = NormWrapper.build(
             d_model,
             config.custom_norm,
             config.norm_strategy,
             dropout,
             config.layer_norm_eps,
         )
-        self.ff_norm = NormWrapper.make(
+        self.ff_norm = NormWrapper.build(
             d_model,
             config.custom_norm,
             config.norm_strategy,

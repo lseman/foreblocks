@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from foreblocks.models.transformer.runtime.cache import DecoderCacheManager
-    from foreblocks.models.transformer.runtime.decoding.engine import GenerationEngine
+    from foreblocks.models.transformer.runtime.decoding import GenerationEngine
     from foreblocks.models.transformer.runtime.outputs import (
         TransformerDecoderOutput,
         TransformerEncoderOutput,
@@ -41,7 +41,7 @@ _MODULE_BY_NAME = {
     "DecoderCacheManager": "cache",
     "DecoderLayerState": "state",
     "DecoderState": "state",
-    "GenerationEngine": "decoding.engine",
+    "GenerationEngine": "decoding",
     "TransformerDecoderOutput": "outputs",
     "TransformerEncoderOutput": "outputs",
     "TransformerGenerationOutput": "outputs",

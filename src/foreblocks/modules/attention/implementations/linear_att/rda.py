@@ -62,7 +62,7 @@ class RDABackend(RoPEMixin, nn.Module):
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
         self.dropout = nn.Dropout(dropout)
 
-        self.feature_fn = FeatureMapRegistry.make(
+        self.feature_fn = FeatureMapRegistry.build(
             feature_map, self.d_head, num_features
         )
 

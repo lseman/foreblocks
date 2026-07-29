@@ -30,7 +30,7 @@ from foreblocks.modules.attention.config import (
     AttentionVariantConfig,
 )
 from foreblocks.modules.attention.implementations.linear_att.gated_delta import (
-    GatedDeltaNet,
+    GatedDeltaNetBackend,
 )
 from foreblocks.modules.attention.multi_att import MultiAttention
 
@@ -113,7 +113,7 @@ class OryxMixerBlock(nn.Module):
             raise ValueError(
                 f"Unknown linear_mode={linear_mode}. Use 'gdn' or 'linear'."
             )
-        self.gdn = GatedDeltaNet(
+        self.gdn = GatedDeltaNetBackend(
             d_model=d_model,
             n_heads=n_heads,
             dropout=dropout,

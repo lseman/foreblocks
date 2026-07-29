@@ -10,7 +10,7 @@ sliding window — combined per-token by independent learned sigmoid gates.
 Pure-PyTorch reference implementation for training.
 
 Core API:
-- NSAImpl: native sparse attention with compression, selection, and sliding-window branches
+- NSAAttentionImpl: native sparse attention with compression, selection, and sliding-window branches
 
 """
 
@@ -19,14 +19,14 @@ import math
 import torch
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.variants.base import AttentionContext
+from foreblocks.modules.attention.variants.base import AttentionOwner
 from foreblocks.modules.attention.variants.sliding_window import (
     SlidingWindowAttentionImpl,
 )
 
 
-class NSAImpl:
-    def __init__(self, context: AttentionContext):
+class NSAAttentionImpl:
+    def __init__(self, context: AttentionOwner):
         self.context = context
 
     def forward(

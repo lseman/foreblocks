@@ -14,7 +14,7 @@ from foreblocks.modules.attention.preparation.masking import (
 )
 
 
-class KernelDispatchContext(Protocol):
+class KernelDispatchOwner(Protocol):
     """State and score transforms required by kernel dispatch."""
 
     alibi_bias: Any
@@ -48,7 +48,7 @@ class KernelDispatchContext(Protocol):
 class AttentionKernelDispatcher:
     """Choose registered, SDPA, or eager attention from declared capabilities."""
 
-    def __init__(self, context: KernelDispatchContext) -> None:
+    def __init__(self, context: KernelDispatchOwner) -> None:
         self.context = context
 
     def _can_use_sdpa(
@@ -244,4 +244,4 @@ class AttentionKernelDispatcher:
         return self.context._apply_gated_attention(out)
 
 
-__all__ = ["AttentionKernelDispatcher", "KernelDispatchContext"]
+__all__ = ["AttentionKernelDispatcher", "KernelDispatchOwner"]

@@ -10,7 +10,7 @@ from foreblocks.modules.attention.variants.dilated_sliding_window import (
     DilatedSlidingWindowAttentionImpl,
 )
 from foreblocks.modules.attention.variants.moba import MoBAAttentionImpl
-from foreblocks.modules.attention.variants.nsa import NSAImpl
+from foreblocks.modules.attention.variants.nsa import NSAAttentionImpl
 from foreblocks.modules.attention.variants.prob_sparse import ProbSparseAttentionImpl
 from foreblocks.modules.attention.variants.sliding_window import (
     SlidingWindowAttentionImpl,
@@ -23,7 +23,7 @@ __all__ = [
     "AttentionImpl",
     "DilatedSlidingWindowAttentionImpl",
     "MoBAAttentionImpl",
-    "NSAImpl",
+    "NSAAttentionImpl",
     "ProbSparseAttentionImpl",
     "SlidingWindowAttentionImpl",
     "SoftpickAttentionImpl",

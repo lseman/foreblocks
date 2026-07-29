@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import torch
 
-from foreblocks.models.transformer.runtime.contracts import DecoderProtocol
+from foreblocks.models.transformer.runtime.contracts import DecoderOwner
 from foreblocks.models.transformer.runtime.state import (
     AttentionCacheState,
     DecoderLayerState,
@@ -22,7 +22,7 @@ from foreblocks.modules.attention.cache.paged import PagedKVCache
 
 
 class DecoderCacheManager:
-    def __init__(self, decoder: DecoderProtocol) -> None:
+    def __init__(self, decoder: DecoderOwner) -> None:
         self.decoder = decoder
 
     def reorder(self, state: DecoderState, beam_idx: torch.Tensor) -> DecoderState:

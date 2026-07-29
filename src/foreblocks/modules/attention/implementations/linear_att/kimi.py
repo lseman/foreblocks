@@ -5,12 +5,12 @@ Kimi Delta Attention (KDA) — per-channel forget gate linear attention (arXiv:2
 https://arxiv.org/abs/2510.26692
 
 DeltaNet variant with per-channel vector forget gate (α_t ∈ [0,1]^{d_h} per
-head) instead of GatedDeltaNet's scalar gate. Uses L2-normalized Q, K with
+head) instead of GatedDeltaNetBackend's scalar gate. Uses L2-normalized Q, K with
 short causal convolutions, bottleneck gating projections, and Mamba2-style
 decay initialization. Supports chunk-parallel and exact sequential modes.
 
 Core API:
-- KimiAttention: public adapter with LinearAttention-compatible forward API
+- KimiAttentionBackend: public adapter with LinearAttention-compatible forward API
 - _KDA_Fast: core KDA layer with sequential and chunk-parallel forward
 
 """
@@ -502,7 +502,7 @@ class _KDA_Fast(nn.Module):
 # ─────────────────────────────────────────────────────────────────────────────
 # Public adapter — drop-in replacement for MultiAttention / LinearAttention
 # ─────────────────────────────────────────────────────────────────────────────
-class KimiAttention(nn.Module):
+class KimiAttentionBackend(nn.Module):
     def __init__(
         self,
         d_model: int,
@@ -523,7 +523,7 @@ class KimiAttention(nn.Module):
         super().__init__()
         if cross_attention:
             raise ValueError(
-                "KimiAttention is self-attention only. "
+                "KimiAttentionBackend is self-attention only. "
                 "Pass cross_attention=False (default)."
             )
         self.pos_encoding_type = pos_encoding_type
@@ -561,7 +561,7 @@ class KimiAttention(nn.Module):
                 S = S_raw
 
         # Apply RoPE to query if enabled.
-        # KimiAttention is recurrent so ALiBi is not applicable; RoPE for
+        # KimiAttentionBackend is recurrent so ALiBi is not applicable; RoPE for
         # recurrent models requires special handling. Current implementation
         # handles positional information via its delta-gating mechanism.
         if self.pos_encoding_type == "rope" and self._rotary_emb is None:

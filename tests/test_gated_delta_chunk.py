@@ -3,7 +3,7 @@ import unittest
 import torch
 
 from foreblocks.modules.attention.implementations.linear_att.gated_delta import (
-    GatedDeltaNet,
+    GatedDeltaNetBackend,
 )
 
 
@@ -12,7 +12,7 @@ class TestGatedDeltaChunkParallel(unittest.TestCase):
 
     def _run_both(self, T, chunk_size, **kw):
         torch.manual_seed(0)
-        m = GatedDeltaNet(
+        m = GatedDeltaNetBackend(
             d_model=32,
             n_heads=4,
             dropout=0.0,
@@ -52,7 +52,7 @@ class TestGatedDeltaChunkParallel(unittest.TestCase):
     def test_carried_state(self):
         # feed an incoming non-zero state and check both paths agree
         torch.manual_seed(1)
-        m = GatedDeltaNet(
+        m = GatedDeltaNetBackend(
             d_model=32, n_heads=4, dropout=0.0, chunk_size=16,
             use_short_conv=False, use_mamba_gate=True,
         ).double()

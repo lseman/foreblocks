@@ -2,16 +2,17 @@
 
 Modular linear attention with swappable backends.
 
-Provides a unified interface to six linear attention backends (RDA, GLA,
-DeltaNet, GatedDeltaNet, GatedDeltaNet2, KimiAttention), each implementing
-O(L·d²) sequence modeling with recurrent state. Use ModernLinearAttention for
-runtime backend selection, or import individual backends directly.
+Provides a unified interface to six linear attention backends (RDABackend,
+GLABackend, DeltaNetBackend, GatedDeltaNetBackend, GatedDeltaNet2Backend,
+KimiAttentionBackend), each implementing O(L·d²) sequence modeling with
+recurrent state. Use ModernLinearAttention for runtime backend selection, or
+import individual backends directly.
 
 Core API:
 - ModernLinearAttention: swappable multi-backend linear attention wrapper
 - RDABackend, GLABackend, DeltaNetBackend: standard linear attention backends
-- GatedDeltaNet, GatedDeltaNet2: gated delta network backends
-- KimiAttention: Kimi Delta Attention (KDA) with per-channel forget gates
+- GatedDeltaNetBackend, GatedDeltaNet2Backend: gated delta network backends
+- KimiAttentionBackend: Kimi Delta Attention (KDA) with per-channel forget gates
 - RoPEMixin, FeatureMapRegistry: shared utilities and feature map factory
 
 """
@@ -26,17 +27,17 @@ from foreblocks.modules.attention.implementations.linear_att.deltanet import (
     DeltaNetBackend,
 )
 from foreblocks.modules.attention.implementations.linear_att.gated_delta import (
-    GatedDeltaNet,
+    GatedDeltaNetBackend,
 )
 from foreblocks.modules.attention.implementations.linear_att.gated_deltanet2 import (
-    GatedDeltaNet2,
+    GatedDeltaNet2Backend,
 )
 from foreblocks.modules.attention.implementations.linear_att.gla import GLABackend
-from foreblocks.modules.attention.implementations.linear_att.kimi import KimiAttention
+from foreblocks.modules.attention.implementations.linear_att.kimi import (
+    KimiAttentionBackend,
+)
 from foreblocks.modules.attention.implementations.linear_att.rda import RDABackend
 from foreblocks.modules.attention.implementations.linear_att.wrapper import (
-    GatedDeltaBackend,
-    KimiBackend,
     ModernLinearAttention,
 )
 
@@ -44,11 +45,9 @@ __all__ = [
     "DeltaNetBackend",
     "FeatureMapRegistry",
     "GLABackend",
-    "GatedDeltaBackend",
-    "GatedDeltaNet",
-    "GatedDeltaNet2",
-    "KimiAttention",
-    "KimiBackend",
+    "GatedDeltaNetBackend",
+    "GatedDeltaNet2Backend",
+    "KimiAttentionBackend",
     "ModernLinearAttention",
     "RDABackend",
     "RoPEMixin",

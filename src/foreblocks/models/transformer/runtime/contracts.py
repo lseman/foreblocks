@@ -11,7 +11,7 @@ import torch.nn as nn
 from foreblocks.models.transformer.runtime.state import DecoderState
 
 
-class DecoderProtocol(Protocol):
+class DecoderOwner(Protocol):
     output_size: int
     num_layers: int
 
@@ -42,4 +42,4 @@ class DecoderProtocol(Protocol):
     ) -> tuple[torch.Tensor, DecoderState]: ...
 
 
-__all__ = ["DecoderProtocol"]
+__all__ = ["DecoderOwner"]

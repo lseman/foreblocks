@@ -37,14 +37,14 @@ from foreblocks.models.transformer.features.residuals import (
 )
 from foreblocks.models.transformer.generation import GenerationConfig
 from foreblocks.models.transformer.runtime.cache import DecoderCacheManager
-from foreblocks.models.transformer.runtime.decoding.engine import GenerationEngine
+from foreblocks.models.transformer.runtime.decoding import GenerationEngine
 from foreblocks.models.transformer.runtime.execution import (
-    MHCBlockMixin,
+    MHCExecutionMixin,
     ModelLayerInvokeStrategy,
     NormWrapper,
     ResidualBlockMixin,
 )
-from foreblocks.models.transformer.runtime.forward.decoder import (
+from foreblocks.models.transformer.runtime.forward import (
     build_decoder_output,
     execute_decoder_layer,
     prepare_decoder_state,
@@ -75,7 +75,10 @@ from foreblocks.ui.node_spec import node
 
 
 class TransformerDecoderLayer(
-    ResidualBlockMixin, MHCBlockMixin, LazyAttentionBackendMixin, BaseTransformerLayer
+    ResidualBlockMixin,
+    MHCExecutionMixin,
+    LazyAttentionBackendMixin,
+    BaseTransformerLayer,
 ):
     def __init__(
         self,
@@ -129,21 +132,21 @@ class TransformerDecoderLayer(
 
         self.is_causal = not informer_like
 
-        self.self_attn_norm = NormWrapper.make(
+        self.self_attn_norm = NormWrapper.build(
             d_model,
             config.custom_norm,
             config.norm_strategy,
             dropout,
             config.layer_norm_eps,
         )
-        self.cross_attn_norm = NormWrapper.make(
+        self.cross_attn_norm = NormWrapper.build(
             d_model,
             config.custom_norm,
             config.norm_strategy,
             dropout,
             config.layer_norm_eps,
         )
-        self.ff_norm = NormWrapper.make(
+        self.ff_norm = NormWrapper.build(
             d_model,
             config.custom_norm,
             config.norm_strategy,

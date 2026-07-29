@@ -1,4 +1,4 @@
-"""Normalization and residual execution for transformer sublayers."""
+"""Transformer residual and layer-execution strategies."""
 
 from __future__ import annotations
 
@@ -28,6 +28,134 @@ from foreblocks.models.transformer.runtime.residual_state import (
 from foreblocks.modules.skip.gateskip import apply_skip_to_kv
 
 
+class LayerInvokeOwner(Protocol):
+    gate_lambda: float
+    use_gateskip: bool
+    use_mhc: bool
+    mhc_n_streams: int
+    mhc_sinkhorn_iters: int
+    mhc_collapse: str
+
+    def _run_with_checkpoint(
+        self,
+        fn: Callable[..., torch.Tensor],
+        *inputs: torch.Tensor,
+        use_checkpoint: bool,
+    ) -> torch.Tensor: ...
+
+
+@dataclass(frozen=True)
+class ModelLayerInvokeStrategy:
+    owner: LayerInvokeOwner
+    use_checkpoint: bool
+
+    def run_encoder_layer(
+        self,
+        *,
+        layer,
+        x,
+        src_mask,
+        src_key_padding_mask,
+        budget,
+        streams,
+        attention_residual_state,
+        gateskip_active_mask,
+    ):
+        if self.use_checkpoint:
+
+            def checkpointed(value):
+                result, _ = layer(
+                    value,
+                    src_mask,
+                    src_key_padding_mask,
+                    gate_budget=budget,
+                    gate_lambda=self.owner.gate_lambda,
+                    use_gateskip=self.owner.use_gateskip,
+                    streams=None,
+                    use_mhc=self.owner.use_mhc,
+                    mhc_n_streams=self.owner.mhc_n_streams,
+                    mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
+                    mhc_collapse=self.owner.mhc_collapse,
+                    gateskip_active_mask=gateskip_active_mask,
+                )
+                return result
+
+            return self.owner._run_with_checkpoint(
+                checkpointed, x, use_checkpoint=True
+            ), streams
+        return layer(
+            x,
+            src_mask,
+            src_key_padding_mask,
+            gate_budget=budget,
+            gate_lambda=self.owner.gate_lambda,
+            use_gateskip=self.owner.use_gateskip,
+            streams=streams,
+            use_mhc=self.owner.use_mhc,
+            mhc_n_streams=self.owner.mhc_n_streams,
+            mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
+            mhc_collapse=self.owner.mhc_collapse,
+            attention_residual_state=attention_residual_state,
+            gateskip_active_mask=gateskip_active_mask,
+        )
+
+    def run_decoder_layer(
+        self,
+        *,
+        layer,
+        x,
+        memory,
+        tgt_mask,
+        memory_mask,
+        tgt_key_padding_mask,
+        memory_key_padding_mask,
+        layer_state,
+        prev_state,
+        budget,
+        streams,
+        mtp_targets,
+        attention_residual_state,
+        gateskip_active_mask,
+    ):
+        args = (
+            memory,
+            tgt_mask,
+            memory_mask,
+            tgt_key_padding_mask,
+            memory_key_padding_mask,
+        )
+        common = dict(
+            incremental_state=layer_state,
+            prev_layer_state=prev_state,
+            gate_budget=budget,
+            gate_lambda=self.owner.gate_lambda,
+            use_gateskip=self.owner.use_gateskip,
+            use_mhc=self.owner.use_mhc,
+            mhc_n_streams=self.owner.mhc_n_streams,
+            mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
+            mhc_collapse=self.owner.mhc_collapse,
+            mtp_targets=mtp_targets,
+            gateskip_active_mask=gateskip_active_mask,
+        )
+        if self.use_checkpoint:
+
+            def checkpointed(value):
+                result, _, _ = layer(value, *args, streams=None, **common)
+                return result
+
+            result = self.owner._run_with_checkpoint(
+                checkpointed, x, use_checkpoint=True
+            )
+            return result, layer_state, streams
+        return layer(
+            x,
+            *args,
+            streams=streams,
+            attention_residual_state=attention_residual_state,
+            **common,
+        )
+
+
 class NormWrapper(nn.Module):
     def __init__(self, norm: nn.Module, strategy: str, dropout: nn.Module) -> None:
         super().__init__()
@@ -38,7 +166,7 @@ class NormWrapper(nn.Module):
         self.dropout = dropout
 
     @staticmethod
-    def make(
+    def build(
         d_model: int,
         norm_type: str = "rms",
         strategy: str = "pre_norm",
@@ -64,7 +192,7 @@ class ResidualRunCfg:
 
 
 class ExecutionOwner(Protocol):
-    """Operations required by residual execution policies."""
+    """Operations required by residual execution strategies/mixins."""
 
     def _run_sublayer_nonmhc(self, *args: Any, **kwargs: Any) -> tuple[Any, ...]: ...
     def _mhc_run_block(self, *args: Any, **kwargs: Any) -> torch.Tensor: ...
@@ -73,7 +201,7 @@ class ExecutionOwner(Protocol):
     def _drop_p(self, normw: NormWrapper) -> float: ...
 
 
-class MHCConnection(Protocol):
+class MHCConnectionOwner(Protocol):
     def pre_aggregate(self, streams: torch.Tensor) -> tuple[torch.Tensor, Any]: ...
     def combine(
         self, streams: torch.Tensor, update: torch.Tensor, *, maps: Any
@@ -161,12 +289,12 @@ class ResidualBlockMixin:
         )
 
 
-class MHCBlockMixin:
+class MHCExecutionMixin:
     def _mhc_run_block(
         self,
         streams: torch.Tensor,
         normw: NormWrapper,
-        hyper_conn: MHCConnection,
+        hyper_conn: MHCConnectionOwner,
         core_fn: Callable[[torch.Tensor], torch.Tensor],
     ) -> torch.Tensor:
         x_in, maps = hyper_conn.pre_aggregate(streams)
@@ -200,7 +328,7 @@ class LayerExecutionStrategy:
         aux_l2_terms: list[torch.Tensor],
         core_fn: CoreFn | None = None,
         mhc_core: MhcCoreFn | None = None,
-        hyper_conn: MHCConnection | None = None,
+        hyper_conn: MHCConnectionOwner | None = None,
         prev_layer_state: Any | None = None,
         kv_key: str | None = None,
         active_mask: torch.Tensor | None = None,
@@ -264,7 +392,9 @@ class LayerExecutionStrategy:
 __all__ = [
     "ExecutionOwner",
     "LayerExecutionStrategy",
-    "MHCBlockMixin",
+    "LayerInvokeOwner",
+    "MHCExecutionMixin",
+    "ModelLayerInvokeStrategy",
     "NormWrapper",
     "ResidualBlockMixin",
     "ResidualRunCfg",

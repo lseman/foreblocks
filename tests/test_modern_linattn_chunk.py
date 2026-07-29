@@ -13,11 +13,9 @@ import torch
 
 from foreblocks.layers.embeddings.rotary import apply_rotary_emb
 from foreblocks.modules.attention.implementations.linear_att import (
-    GatedDeltaBackend,
-    GatedDeltaNet,
+    GatedDeltaNetBackend,
     GLABackend,
-    KimiAttention,
-    KimiBackend,
+    KimiAttentionBackend,
     ModernLinearAttention,
     RDABackend,
 )
@@ -139,9 +137,6 @@ class TestModernLinearAttentionRoPE(unittest.TestCase):
 
 
 class TestModernLinearAttentionGatedDeltaWrapper(unittest.TestCase):
-    def test_gated_delta_exports_backend_alias(self):
-        self.assertIs(GatedDeltaBackend, GatedDeltaNet)
-
     def test_gated_delta_backend_aliases_forward(self):
         torch.manual_seed(0)
         x = torch.randn(2, 12, 32)
@@ -192,9 +187,6 @@ class TestModernLinearAttentionGatedDeltaWrapper(unittest.TestCase):
 
 
 class TestModernLinearAttentionKimiWrapper(unittest.TestCase):
-    def test_kimi_exports_backend_alias(self):
-        self.assertIs(KimiBackend, KimiAttention)
-
     def test_kimi_backend_forward(self):
         torch.manual_seed(0)
         x = torch.randn(2, 12, 32)

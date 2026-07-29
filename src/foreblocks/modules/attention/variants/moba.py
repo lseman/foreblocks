@@ -21,7 +21,7 @@ import warnings
 import torch
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.variants.base import AttentionContext
+from foreblocks.modules.attention.variants.base import AttentionOwner
 
 _FLASH_MOBA_OPS: tuple[object | None, object | None] | None = None
 _FLASH_MOBA_WARNED = False
@@ -77,7 +77,7 @@ def _exclusive_cu_seqlens(lengths: torch.Tensor) -> torch.Tensor:
 
 
 class MoBAAttentionImpl:
-    def __init__(self, context: AttentionContext):
+    def __init__(self, context: AttentionOwner):
         self.context = context
 
     def forward(

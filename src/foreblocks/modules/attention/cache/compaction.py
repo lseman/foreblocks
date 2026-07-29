@@ -8,31 +8,34 @@ slot so decode can approximate the removed attention mass. Use when KV cache
 size has grown past a trigger threshold and you want to reduce memory without
 full truncation.
 
+Parameters are read directly from ``AttentionCacheConfig.matching_*`` — see
+that dataclass for the single source of truth on defaults and docs.
+
 Core API:
-- AttentionMatchingConfig: compaction parameters (keep_ratio, trigger_len, etc.)
 - AttentionMatchingCompactor: batch compaction over a PagedKVCache
 
 """
-
-from dataclasses import dataclass
 
 import torch
 
 from foreblocks.modules.attention.cache.paged import PagedKVCache
 
 
-@dataclass
-class AttentionMatchingConfig:
-    keep_ratio: float = 0.25
-    trigger_len: int = 512
-    min_keep: int = 64
-    query_budget: int = 64
-    force_single_step: bool = False
-
-
 class AttentionMatchingCompactor:
-    def __init__(self, config: AttentionMatchingConfig):
-        self.config = config
+    def __init__(
+        self,
+        *,
+        keep_ratio: float = 0.25,
+        trigger_len: int = 512,
+        min_keep: int = 64,
+        query_budget: int = 64,
+        force_single_step: bool = False,
+    ):
+        self.keep_ratio = keep_ratio
+        self.trigger_len = trigger_len
+        self.min_keep = min_keep
+        self.query_budget = query_budget
+        self.force_single_step = force_single_step
 
     def should_compact(
         self,
@@ -41,11 +44,11 @@ class AttentionMatchingCompactor:
         t_new: int,
     ) -> bool:
         physical_len = cache.get_seq_len(batch_idx)
-        if physical_len <= max(self.config.trigger_len, self.config.min_keep):
+        if physical_len <= max(self.trigger_len, self.min_keep):
             return False
         if t_new <= 0:
             return False
-        if self.config.force_single_step and t_new != 1:
+        if self.force_single_step and t_new != 1:
             return False
         target_keep = self._target_keep(physical_len)
         return target_keep < physical_len
@@ -90,8 +93,8 @@ class AttentionMatchingCompactor:
             )
 
     def _target_keep(self, seq_len: int) -> int:
-        keep = int(round(seq_len * float(self.config.keep_ratio)))
-        keep = max(int(self.config.min_keep), keep)
+        keep = int(round(seq_len * float(self.keep_ratio)))
+        keep = max(int(self.min_keep), keep)
         return min(seq_len, max(1, keep))
 
     def _compact_sequence(
@@ -113,7 +116,7 @@ class AttentionMatchingCompactor:
         if target_keep >= seq_len:
             return None
 
-        q_ref = self._select_query_budget(q_bhtd, self.config.query_budget)
+        q_ref = self._select_query_budget(q_bhtd, self.query_budget)
         q_pos = q_start + torch.arange(q_ref.size(1), device=q_ref.device)
 
         kept_indices = self._select_kept_indices(

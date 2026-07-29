@@ -13,10 +13,6 @@ if TYPE_CHECKING:
     from foreblocks.models.transformer.core.base import (
         BaseTransformer,
         BaseTransformerLayer,
-        MHCBlockMixin,
-        NormWrapper,
-        ResidualBlockMixin,
-        ResidualRunCfg,
     )
     from foreblocks.models.transformer.core.decoder import (
         TransformerDecoder,
@@ -32,10 +28,6 @@ __all__ = [
     "BaseTransformer",
     "BaseTransformerLayer",
     "LayerAttentionBackendSpec",
-    "MHCBlockMixin",
-    "NormWrapper",
-    "ResidualBlockMixin",
-    "ResidualRunCfg",
     "TransformerDecoder",
     "TransformerDecoderLayer",
     "TransformerEncoder",
@@ -49,10 +41,6 @@ _MODULE_BY_NAME = {
     "build_layer_attention_backend": "attention_backends",
     "BaseTransformer": "base",
     "BaseTransformerLayer": "base",
-    "MHCBlockMixin": "base",
-    "NormWrapper": "base",
-    "ResidualBlockMixin": "base",
-    "ResidualRunCfg": "base",
     "TransformerDecoder": "decoder",
     "TransformerDecoderLayer": "decoder",
     "TransformerEncoder": "encoder",

@@ -2,10 +2,11 @@
 
 Modular linear attention with swappable backends.
 
-Dispatches to one of six backend implementations (RDA, GLA, DeltaNet,
-GatedDeltaNet, GatedDeltaNet2, KimiAttention) based on a string key, all
-implementing the same drop-in forward API. Use when you need to switch
-backends without changing model code.
+Dispatches to one of six backend implementations (RDABackend, GLABackend,
+DeltaNetBackend, GatedDeltaNetBackend, GatedDeltaNet2Backend,
+KimiAttentionBackend) based on a string key, all implementing the same
+drop-in forward API. Use when you need to switch backends without changing
+model code.
 
 Core API:
 - ModernLinearAttention: backend-dispatching wrapper with unified forward API
@@ -23,28 +24,26 @@ from foreblocks.modules.attention.implementations.linear_att.deltanet import (
     DeltaNetBackend,
 )
 from foreblocks.modules.attention.implementations.linear_att.gated_delta import (
-    GatedDeltaNet,
+    GatedDeltaNetBackend,
 )
 from foreblocks.modules.attention.implementations.linear_att.gated_deltanet2 import (
-    GatedDeltaNet2,
+    GatedDeltaNet2Backend,
 )
 from foreblocks.modules.attention.implementations.linear_att.gla import GLABackend
-from foreblocks.modules.attention.implementations.linear_att.kimi import KimiAttention
+from foreblocks.modules.attention.implementations.linear_att.kimi import (
+    KimiAttentionBackend,
+)
 from foreblocks.modules.attention.implementations.linear_att.rda import RDABackend
-
-GatedDeltaBackend = GatedDeltaNet
-KimiBackend = KimiAttention
-
 
 _BACKEND_MAP = {
     "rda": RDABackend,
     "gla": GLABackend,
     "deltanet": DeltaNetBackend,
-    "gated_delta": GatedDeltaBackend,
-    "gated_deltanet": GatedDeltaBackend,
-    "gated_deltanet2": GatedDeltaNet2,
-    "gdn2": GatedDeltaNet2,
-    "kimi": KimiBackend,
+    "gated_delta": GatedDeltaNetBackend,
+    "gated_deltanet": GatedDeltaNetBackend,
+    "gated_deltanet2": GatedDeltaNet2Backend,
+    "gdn2": GatedDeltaNet2Backend,
+    "kimi": KimiAttentionBackend,
 }
 
 

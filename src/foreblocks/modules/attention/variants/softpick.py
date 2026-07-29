@@ -16,11 +16,11 @@ import warnings
 
 import torch
 
-from foreblocks.modules.attention.variants.base import AttentionContext
+from foreblocks.modules.attention.variants.base import AttentionOwner
 
 
 class SoftpickAttentionImpl:
-    def __init__(self, context: AttentionContext):
+    def __init__(self, context: AttentionOwner):
         self.context = context
 
     def forward(

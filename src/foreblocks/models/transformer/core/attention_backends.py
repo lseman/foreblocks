@@ -10,8 +10,8 @@ import torch.nn as nn
 
 from foreblocks.modules.attention.config import AttentionConfig
 from foreblocks.modules.attention.implementations import (
-    GatedDeltaNet,
-    KimiAttention,
+    GatedDeltaNetBackend,
+    KimiAttentionBackend,
     ModernLinearAttention,
 )
 from foreblocks.modules.attention.multi_att import MultiAttention
@@ -78,10 +78,10 @@ LAYER_ATTENTION_BACKENDS: dict[str, LayerAttentionBackendSpec] = {
         "deltanet", ModernLinearAttention, _deltanet_kwargs
     ),
     "gated_deltanet": LayerAttentionBackendSpec(
-        "gated_deltanet", GatedDeltaNet, _gdn_modern_kwargs
+        "gated_deltanet", GatedDeltaNetBackend, _gdn_modern_kwargs
     ),
-    "kimi": LayerAttentionBackendSpec("kimi", KimiAttention),
-    "gated_delta": LayerAttentionBackendSpec("gated_delta", GatedDeltaNet),
+    "kimi": LayerAttentionBackendSpec("kimi", KimiAttentionBackend),
+    "gated_delta": LayerAttentionBackendSpec("gated_delta", GatedDeltaNetBackend),
 }
 
 

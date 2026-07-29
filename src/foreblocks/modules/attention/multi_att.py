@@ -27,10 +27,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.models.transformer.features.sype import AdaptiveWarp, SyPERotator
-from foreblocks.modules.attention.cache.compaction import (
-    AttentionMatchingCompactor,
-    AttentionMatchingConfig,
-)
+from foreblocks.modules.attention.cache.compaction import AttentionMatchingCompactor
 from foreblocks.modules.attention.cache.decode_stream import (
     paged_stream_decode_standard,
 )
@@ -47,9 +44,9 @@ from foreblocks.modules.attention.preparation.pipeline import QKVPipeline
 from foreblocks.modules.attention.preparation.position import PositionEncodingApplier
 from foreblocks.modules.attention.preparation.projections import QKVProjector
 from foreblocks.modules.attention.variants.base import (
-    AttentionContext,
     AttentionImpl,
-    MultiAttentionContext,
+    AttentionOwner,
+    MultiAttentionOwner,
 )
 from foreblocks.modules.attention.variants.registry import ATTENTION_VARIANTS
 from foreblocks.modules.attention.variants.standard import StandardAttentionImpl
@@ -214,13 +211,11 @@ class MultiAttention(nn.Module):
             raise ValueError("attention_matching_query_budget must be > 0")
         self.attention_matching_compactor = (
             AttentionMatchingCompactor(
-                AttentionMatchingConfig(
-                    keep_ratio=self.attention_matching_keep_ratio,
-                    trigger_len=self.attention_matching_trigger_len,
-                    min_keep=self.attention_matching_min_keep,
-                    query_budget=self.attention_matching_query_budget,
-                    force_single_step=self.attention_matching_force_single_step,
-                )
+                keep_ratio=self.attention_matching_keep_ratio,
+                trigger_len=self.attention_matching_trigger_len,
+                min_keep=self.attention_matching_min_keep,
+                query_budget=self.attention_matching_query_budget,
+                force_single_step=self.attention_matching_force_single_step,
             )
             if self.use_attention_matching_compaction
             else None
@@ -344,7 +339,7 @@ class MultiAttention(nn.Module):
         self.position_encoding_applier = self._build_position_encoding_applier()
         self._paged_stream_decode = paged_stream_decode_standard
         self._triton_paged_decode = triton_paged_decode
-        self.context: AttentionContext = MultiAttentionContext(self)
+        self.context: AttentionOwner = MultiAttentionOwner(self)
         self._fallback_standard = StandardAttentionImpl(self.context)
         self.impl: AttentionImpl = self._create_impl()
 

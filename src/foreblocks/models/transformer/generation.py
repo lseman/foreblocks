@@ -1,4 +1,4 @@
-"""Generation policy independent from decoder model construction."""
+"""Generation-time configuration, independent from decoder model construction."""
 
 from __future__ import annotations
 

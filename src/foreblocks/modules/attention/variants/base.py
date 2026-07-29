@@ -16,7 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 import torch
 
 
-class AttentionContext(Protocol):
+class AttentionOwner(Protocol):
     """Typed services and state exposed to attention variants.
 
     Variants depend on this interface instead of the full ``MultiAttention``
@@ -85,8 +85,8 @@ class AttentionContext(Protocol):
     def _slice_attn_mask(self, *args: Any, **kwargs: Any) -> Any: ...
 
 
-class MultiAttentionContext:
-    """Compatibility adapter implementing :class:`AttentionContext`."""
+class MultiAttentionOwner:
+    """Compatibility adapter implementing :class:`AttentionOwner`."""
 
     __slots__ = ("_attention",)
 
@@ -112,4 +112,4 @@ class AttentionImpl(Protocol):
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]: ...
 
 
-__all__ = ["AttentionContext", "AttentionImpl", "MultiAttentionContext"]
+__all__ = ["AttentionImpl", "AttentionOwner", "MultiAttentionOwner"]

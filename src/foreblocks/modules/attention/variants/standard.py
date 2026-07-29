@@ -16,11 +16,11 @@ Core API:
 import torch
 
 from foreblocks.modules.attention.cache.kv import PagedKVProvider, StaticKVCache
-from foreblocks.modules.attention.variants.base import AttentionContext
+from foreblocks.modules.attention.variants.base import AttentionOwner
 
 
 class StandardAttentionImpl:
-    def __init__(self, context: AttentionContext):
+    def __init__(self, context: AttentionOwner):
         self.context = context
 
     def forward(

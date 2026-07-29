@@ -15,11 +15,11 @@ Core API:
 import torch
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.variants.base import AttentionContext
+from foreblocks.modules.attention.variants.base import AttentionOwner
 
 
 class SlidingWindowAttentionImpl:
-    def __init__(self, context: AttentionContext):
+    def __init__(self, context: AttentionOwner):
         self.context = context
 
     def forward(

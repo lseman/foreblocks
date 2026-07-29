@@ -15,9 +15,9 @@ class TestGatedDeltaNet2Basic:
 
     def test_import(self):
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet2,
+            GatedDeltaNet2Backend,
         )
-        assert GatedDeltaNet2 is not None
+        assert GatedDeltaNet2Backend is not None
 
     def test_kernel_imports(self):
         from foreblocks.ops.attention import (
@@ -30,9 +30,9 @@ class TestGatedDeltaNet2Basic:
 
     def test_construction_default(self, device):
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet2,
+            GatedDeltaNet2Backend,
         )
-        model = GatedDeltaNet2(
+        model = GatedDeltaNet2Backend(
             d_model=256,
             n_heads=8,
             dropout=0.1,
@@ -44,9 +44,9 @@ class TestGatedDeltaNet2Basic:
 
     def test_construction_custom_dims(self, device):
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet2,
+            GatedDeltaNet2Backend,
         )
-        model = GatedDeltaNet2(
+        model = GatedDeltaNet2Backend(
             d_model=512,
             n_heads=8,
             d_key=64,
@@ -57,10 +57,10 @@ class TestGatedDeltaNet2Basic:
 
     def test_forward_sequential(self, device):
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet2,
+            GatedDeltaNet2Backend,
         )
         B, T, D, H = 2, 32, 256, 8
-        model = GatedDeltaNet2(d_model=D, n_heads=H, chunk_size=0).to(device)
+        model = GatedDeltaNet2Backend(d_model=D, n_heads=H, chunk_size=0).to(device)
         model.eval()
         x = torch.randn(B, T, D, device=device)
         with torch.no_grad():
@@ -69,10 +69,10 @@ class TestGatedDeltaNet2Basic:
 
     def test_forward_chunk(self, device):
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet2,
+            GatedDeltaNet2Backend,
         )
         B, T, D, H = 2, 128, 256, 8
-        model = GatedDeltaNet2(d_model=D, n_heads=H, chunk_size=64).to(device)
+        model = GatedDeltaNet2Backend(d_model=D, n_heads=H, chunk_size=64).to(device)
         model.eval()
         x = torch.randn(B, T, D, device=device)
         with torch.no_grad():
@@ -82,10 +82,10 @@ class TestGatedDeltaNet2Basic:
     def test_forward_api(self, device):
         """Test the MultiAttention-compatible forward API."""
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet2,
+            GatedDeltaNet2Backend,
         )
         B, T, D, H = 2, 32, 256, 8
-        model = GatedDeltaNet2(d_model=D, n_heads=H).to(device)
+        model = GatedDeltaNet2Backend(d_model=D, n_heads=H).to(device)
         model.eval()
         x = torch.randn(B, T, D, device=device)
         with torch.no_grad():
@@ -103,10 +103,10 @@ class TestGatedDeltaNet2Basic:
     def test_recurrent_state(self, device):
         """Test that recurrent state is carried correctly across calls."""
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet2,
+            GatedDeltaNet2Backend,
         )
         B, T, D, H = 2, 16, 256, 8
-        model = GatedDeltaNet2(d_model=D, n_heads=H, chunk_size=0).to(device)
+        model = GatedDeltaNet2Backend(d_model=D, n_heads=H, chunk_size=0).to(device)
         model.eval()
         x1 = torch.randn(B, T, D, device=device)
         x2 = torch.randn(B, T, D, device=device)
@@ -127,15 +127,15 @@ class TestGatedDeltaNet2Correctness:
     def test_scalar_gates_reduce_to_gdn(self, device):
         """
         When b and w are scalar (all channels same), GDN-2 should reduce to
-        GatedDeltaNet with same α and β.
+        GatedDeltaNetBackend with same α and β.
         """
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet,
-            GatedDeltaNet2,
+            GatedDeltaNetBackend,
+            GatedDeltaNet2Backend,
         )
         B, T, D, H = 2, 16, 128, 4
-        gdn2 = GatedDeltaNet2(d_model=D, n_heads=H, chunk_size=0).to(device)
-        gdn = GatedDeltaNet(d_model=D, n_heads=H, chunk_size=0).to(device)
+        gdn2 = GatedDeltaNet2Backend(d_model=D, n_heads=H, chunk_size=0).to(device)
+        gdn = GatedDeltaNetBackend(d_model=D, n_heads=H, chunk_size=0).to(device)
 
         # Initialize both with same projections for Q, K, V
         with torch.no_grad():
@@ -215,10 +215,10 @@ class TestGatedDeltaNet2NegEigval:
 
     def test_neg_eigval_mode(self, device):
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet2,
+            GatedDeltaNet2Backend,
         )
         B, T, D, H = 2, 32, 256, 8
-        model = GatedDeltaNet2(
+        model = GatedDeltaNet2Backend(
             d_model=D, n_heads=H, allow_neg_eigval=True, chunk_size=64
         ).to(device)
         model.eval()
@@ -234,10 +234,10 @@ class TestGatedDeltaNet2Gradient:
 
     def test_gradient_flow(self, device):
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet2,
+            GatedDeltaNet2Backend,
         )
         B, T, D, H = 2, 32, 128, 4
-        model = GatedDeltaNet2(d_model=D, n_heads=H, chunk_size=64).to(device)
+        model = GatedDeltaNet2Backend(d_model=D, n_heads=H, chunk_size=64).to(device)
         x = torch.randn(B, T, D, device=device, requires_grad=True)
         out, _ = model.forward_standalone(x)
         loss = out.sum()
@@ -256,10 +256,10 @@ class TestGatedDeltaNet2Gradient:
     def test_chunk_gradient(self, device):
         """Test gradient flow through chunk-parallel mode."""
         from foreblocks.modules.attention.implementations.linear_att import (
-            GatedDeltaNet2,
+            GatedDeltaNet2Backend,
         )
         B, T, D, H = 2, 128, 128, 4
-        model = GatedDeltaNet2(d_model=D, n_heads=H, chunk_size=64).to(device)
+        model = GatedDeltaNet2Backend(d_model=D, n_heads=H, chunk_size=64).to(device)
         x = torch.randn(B, T, D, device=device, requires_grad=True)
         out, _ = model.forward_standalone(x)
         loss = out.sum()
