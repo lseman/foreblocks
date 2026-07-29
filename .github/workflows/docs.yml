@@ -97,6 +97,8 @@ jobs:
           mkdir -p site
           cp site/landing/index.html site/index.html
           cp site/landing/logo.svg site/logo.svg
+          cp site/landing/logo_dark.svg site/logo_dark.svg
+          cp site/landing/logo_light.svg site/logo_light.svg
           cp -R site/landing/imgs site/imgs
           if [ -f site/landing/CNAME ]; then cp site/landing/CNAME site/CNAME; fi
           if [ -d apps/webui/dist ]; then cp -a apps/webui/dist site/studio; fi
