@@ -720,14 +720,15 @@
     }
 
     .section-title {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       font-size: clamp(1.8rem, 3.5vw, 2.8rem);
       font-weight: 800;
       letter-spacing: -0.025em;
       margin-bottom: 0.8rem;
     }
 
-    .section-title .grad {
+    .section-title .grad,
+    .section-title em {
       background: var(--grad);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
@@ -784,11 +785,22 @@
       letter-spacing: 0.05em;
     }
 
-    .path-icon {
-      width: 16px;
-      height: 16px;
+    .path-header {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
       margin-bottom: 0.5rem;
-      display: block;
+    }
+
+    .path-icon {
+      width: 32px;
+      height: 32px;
+      margin-bottom: 0;
+      margin-right: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
       color: var(--accent-3);
       opacity: 0.7;
     }
@@ -797,8 +809,11 @@
       width: 24px;
       height: 24px;
       stroke: currentColor;
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
       border-radius: 6px;
-      padding: 4px;
+      padding: 2px;
       background: rgba(255,255,255,0.03);
       border: 1px solid rgba(255,255,255,0.08);
     }
@@ -808,8 +823,12 @@
       font-size: 0.68rem;
       color: var(--accent-1);
       letter-spacing: 0.06em;
-      margin-bottom: 0.5rem;
+      margin-bottom: 0;
       opacity: 0.7;
+      display: inline-flex;
+      align-items: center;
+      line-height: 1;
+      vertical-align: middle;
     }
 
     .path-title {
@@ -823,6 +842,7 @@
       font-size: 0.88rem;
       color: var(--text-dim);
       line-height: 1.6;
+      margin-bottom: 1rem;
     }
 
     .path-links {
@@ -1325,6 +1345,12 @@
       transition: all 0.3s;
     }
 
+    .next-link > div {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+    }
+
     .next-link:hover {
       background: rgba(255,255,255,0.04);
       border-color: rgba(6, 182, 212, 0.15);
@@ -1378,7 +1404,8 @@
     .footer-tagline {
       font-size: 0.85rem;
       color: var(--text-dim);
-      max-width: 300px;
+      white-space: nowrap;
+      margin-bottom: 0.6rem;
     }
 
     .footer-links {
@@ -1874,12 +1901,14 @@ pip install "foreblocks[darts]"</code></pre>
       <div class="paths-grid">
         <article class="path-card reveal reveal-delay-1">
           <div class="path-num">01</div>
-          <div class="path-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M11 5h2m-6 4h10M7 13h10M7 17h6" />
-            </svg>
+          <div class="path-header">
+            <div class="path-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M11 5h2m-6 4h10M7 13h10M7 17h6" />
+              </svg>
+            </div>
+            <div class="path-tag">Path 01</div>
           </div>
-          <div class="path-tag">Path 01</div>
           <h3 class="path-title">Train a baseline first</h3>
           <p class="path-desc">Use the safest path through the public API: build a head or encoder/decoder pair, create
             dataloaders, train with <code class="inline">Trainer</code>, and evaluate before adding complexity.</p>
@@ -1891,12 +1920,14 @@ pip install "foreblocks[darts]"</code></pre>
 
         <article class="path-card reveal reveal-delay-2">
           <div class="path-num">02</div>
-          <div class="path-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M4 8l4-4 4 4m8 8l-4 4-4-4M8 4v16m8-16v16" />
-            </svg>
+          <div class="path-header">
+            <div class="path-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M4 8l4-4 4 4m8 8l-4 4-4-4M8 4v16m8-16v16" />
+              </svg>
+            </div>
+            <div class="path-tag">Path 02</div>
           </div>
-          <div class="path-tag">Path 02</div>
           <h3 class="path-title">Start from raw series</h3>
           <p class="path-desc">When your input is a raw <code class="inline">[T, D]</code> array rather than ready-made
             training windows, reach for the preprocessing stack so scaling, filtering, and slicing stay consistent.</p>
@@ -1908,12 +1939,14 @@ pip install "foreblocks[darts]"</code></pre>
 
         <article class="path-card reveal reveal-delay-3">
           <div class="path-num">03</div>
-          <div class="path-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M9 17v-6m3 6V7m3 10v-3m5 5H4" />
-            </svg>
+          <div class="path-header">
+            <div class="path-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M9 17v-6m3 6V7m3 10v-3m5 5H4" />
+              </svg>
+            </div>
+            <div class="path-tag">Path 03</div>
           </div>
-          <div class="path-tag">Path 03</div>
           <h3 class="path-title">Search and compare architectures</h3>
           <p class="path-desc">Once the baseline loop is working, move into staged DARTS search, multi-fidelity ranking,
             BOHB optimization, and retraining workflows.</p>
@@ -2364,8 +2397,7 @@ print(history.train_losses[-1], metrics)</code></pre>
           <img src="logo_dark.svg" alt="foreBlocks" class="footer-logo-mark" width="120" height="96">
           <span class="footer-logo-name">foreBlocks</span>
         </div>
-        <div class="footer-tagline">Modular forecasting, preprocessing, search, and tooling for PyTorch. Start lean,
-          grow deliberately.</div>
+        <div class="footer-tagline">Modular forecasting, preprocessing, search, and tooling for PyTorch. Start lean, grow deliberately.</div>
         <div class="footer-links">
           <a href="/studio/" class="btn-ghost">Studio</a>
           <a href="docs/" class="btn-ghost">Docs</a>
