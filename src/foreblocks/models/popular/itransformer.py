@@ -24,12 +24,12 @@ import torch.nn.functional as F
 
 from foreblocks.layers.embeddings import PositionalEncoding
 from foreblocks.layers.norms import create_norm_layer
-from foreblocks.modules.attention.config import (
+from foreblocks.attention.config import (
     AttentionConfig,
     AttentionShapeConfig,
     AttentionVariantConfig,
 )
-from foreblocks.modules.attention.multi_att import MultiAttention
+from foreblocks.attention.multi_att import MultiAttention
 
 
 class _TemporalCompressor(nn.Module):

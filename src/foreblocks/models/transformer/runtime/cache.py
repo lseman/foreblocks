@@ -13,12 +13,12 @@ from foreblocks.models.transformer.runtime.state import (
     DecoderLayerState,
     DecoderState,
 )
-from foreblocks.modules.attention.cache.base import (
+from foreblocks.attention.cache.base import (
     cache_state_dict,
     load_cache_state_dict,
 )
-from foreblocks.modules.attention.cache.kv import StaticKVCache
-from foreblocks.modules.attention.cache.paged import PagedKVCache
+from foreblocks.attention.cache.kv import StaticKVCache
+from foreblocks.attention.cache.paged import PagedKVCache
 
 
 class DecoderCacheManager:

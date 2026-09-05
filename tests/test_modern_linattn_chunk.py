@@ -12,7 +12,7 @@ import unittest
 import torch
 
 from foreblocks.layers.embeddings.rotary import apply_rotary_emb
-from foreblocks.modules.attention.implementations.linear_att import (
+from foreblocks.attention.implementations.linear_att import (
     GatedDeltaNetBackend,
     GLABackend,
     KimiAttentionBackend,

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from foreblocks.modules import attention
-from foreblocks.modules.attention import (
+from foreblocks.attention import (
     AttentionConfig,
     AttentionShapeConfig,
     MultiAttention,
 )
-from foreblocks.modules.attention.implementations import GatedDeltaNetBackend
+from foreblocks.attention.implementations import GatedDeltaNetBackend
 
 
 def test_public_api_is_explicit_and_resolvable() -> None:

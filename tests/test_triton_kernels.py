@@ -15,10 +15,10 @@ import pytest
 import torch
 
 from foreblocks.layers.embeddings.rotary import apply_rotary_emb
-from foreblocks.modules.attention.cache.decode_stream import (
+from foreblocks.attention.cache.decode_stream import (
     paged_stream_decode_standard,
 )
-from foreblocks.modules.attention.cache.paged import PagedKVCache
+from foreblocks.attention.cache.paged import PagedKVCache
 from foreblocks.ops.attention.fused_rope import (
     triton_apply_rope,
     triton_apply_rope_bthd,

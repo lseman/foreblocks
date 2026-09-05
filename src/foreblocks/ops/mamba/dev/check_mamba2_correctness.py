@@ -533,7 +533,7 @@ def check_step_vs_parallel(
     d_conv: int = 4,
     num_heads: int = 4,
 ) -> dict:
-    from foreblocks.sequence.mamba import Mamba2Block
+    from foreblocks.models.sequence.mamba import Mamba2Block
 
     device = _device()
     torch.manual_seed(0)
@@ -577,7 +577,7 @@ def check_attention_mask(
     d_model: int = 64,
     num_heads: int = 4,
 ) -> dict:
-    from foreblocks.sequence.mamba import Mamba2Block
+    from foreblocks.models.sequence.mamba import Mamba2Block
 
     device = _device()
     torch.manual_seed(42)
@@ -633,7 +633,7 @@ def check_mamba2_block_torch_path(
     d_conv: int = 4,
     num_heads: int = 4,
 ) -> dict:
-    from foreblocks.sequence.mamba import Mamba2Block
+    from foreblocks.models.sequence.mamba import Mamba2Block
 
     device = _device()
     dtype = _dtype()

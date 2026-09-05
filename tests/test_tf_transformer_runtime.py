@@ -24,20 +24,20 @@ from foreblocks.models.transformer.runtime.state import (
     DecoderLayerState,
     DecoderState,
 )
-from foreblocks.modules.attention.cache import KVCacheProtocol
-from foreblocks.modules.attention.cache.kv import StaticKVCache
-from foreblocks.modules.attention.config import (
+from foreblocks.attention.cache import KVCacheProtocol
+from foreblocks.attention.cache.kv import StaticKVCache
+from foreblocks.attention.config import (
     AttentionConfig,
     AttentionPositionConfig,
     AttentionShapeConfig,
     AttentionVariantConfig,
 )
-from foreblocks.modules.attention.execution.backends import (
+from foreblocks.attention.execution.backends import (
     ATTENTION_BACKENDS,
     register_attention_backend,
 )
-from foreblocks.modules.attention.multi_att import MultiAttention
-from foreblocks.modules.attention.preparation.masking import build_attention_mask
+from foreblocks.attention.multi_att import MultiAttention
+from foreblocks.attention.preparation.masking import build_attention_mask
 from foreblocks.modules.skip.gateskip import BudgetScheduler
 from foreblocks.modules.skip.mod import MoDBudgetScheduler
 

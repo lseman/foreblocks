@@ -240,7 +240,7 @@ from foreblocks.config import TrainingConfig
 from foreblocks.modules.moe.ff import FeedForwardBlock
 
 # Advanced attention
-from foreblocks.modules.attention.multi_att import MultiAttention
+from foreblocks.attention.multi_att import MultiAttention
 ```
 
 ---
@@ -278,7 +278,7 @@ gradient_clip_val=1.0,
 
 ```python
 from foreblocks.models.transformer.config import TransformerConfig
-from foreblocks.modules.attention.config import (
+from foreblocks.attention.config import (
     AttentionConfig, AttentionShapeConfig, AttentionPositionConfig,
     AttentionVariantConfig,
 )

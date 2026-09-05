@@ -78,7 +78,7 @@ _MODULE_BY_NAME = {
 
 
 def __getattr__(name: str):
-    # Lazy re-export (PEP 562): foreblocks.modules.attention.multi_att imports
+    # Lazy re-export (PEP 562): foreblocks.attention.multi_att imports
     # foreblocks.models.transformer.features.sype directly, which is part of a
     # transformer <-> attention import cycle. Eager imports here would deadlock it.
     module_name = _MODULE_BY_NAME.get(name)

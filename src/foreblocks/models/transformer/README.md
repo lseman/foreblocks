@@ -46,7 +46,7 @@ there is a self-contained `nn.Module`. This one-way dependency is why
 `runtime/__init__.py` all use a `TYPE_CHECKING` + PEP 562 `__getattr__` lazy
 re-export: `core/base.py` and `core/{encoder,decoder}.py` import each other
 (the base class needs to type-hint the concrete stack classes; the stack
-classes subclass the base), and `foreblocks.modules.attention` imports back
+classes subclass the base), and `foreblocks.attention` imports back
 into `transformer/features` and `transformer/core`, forming a genuine import
 cycle. Don't eagerly import across those seams at module scope — follow the
 existing lazy-facade pattern in the `__init__.py` you're touching.

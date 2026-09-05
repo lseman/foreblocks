@@ -8,13 +8,13 @@ from typing import Protocol, cast
 
 import torch.nn as nn
 
-from foreblocks.modules.attention.config import AttentionConfig
-from foreblocks.modules.attention.implementations import (
+from foreblocks.attention.config import AttentionConfig
+from foreblocks.attention.implementations import (
     GatedDeltaNetBackend,
     KimiAttentionBackend,
     ModernLinearAttention,
 )
-from foreblocks.modules.attention.multi_att import MultiAttention
+from foreblocks.attention.multi_att import MultiAttention
 
 AttentionKwargsFactory = Callable[[AttentionConfig], dict[str, object]]
 

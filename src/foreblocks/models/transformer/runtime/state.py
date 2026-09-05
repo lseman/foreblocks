@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from foreblocks.modules.attention.cache.base import KVCacheProtocol
+from foreblocks.attention.cache.base import KVCacheProtocol
 
 
 class AttentionCacheState(dict[str, Any]):

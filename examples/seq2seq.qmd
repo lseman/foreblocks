@@ -370,7 +370,7 @@ else:
 Pass it as the `ForecastingModel` `encoder` (backbone) with `model_type="hybrid_mamba"`. MoE auxiliary (load-balancing) losses accumulate in `BlockStack.aux_loss` and flow into the training loss automatically via `ForecastingModel.get_aux_loss()`.
 
 ```{python}
-from foreblocks.sequence import BlockStack
+from foreblocks.models.sequence import BlockStack
 
 import torch
 import torch.nn as nn
@@ -380,7 +380,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from foreblocks import ForecastingModel, Trainer
 from foreblocks.config import TrainingConfig
-from foreblocks.sequence.forecast_blocks import Mamba2ModelBlock, RavenModelBlock
+from foreblocks.models.sequence.forecast_blocks import Mamba2ModelBlock, RavenModelBlock
 
 torch.manual_seed(7)
 np.random.seed(7)

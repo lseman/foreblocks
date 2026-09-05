@@ -23,16 +23,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.layers.norms import create_norm_layer
-from foreblocks.modules.attention.config import (
+from foreblocks.attention.config import (
     AttentionCacheConfig,
     AttentionConfig,
     AttentionShapeConfig,
     AttentionVariantConfig,
 )
-from foreblocks.modules.attention.implementations.linear_att.gated_delta import (
+from foreblocks.attention.implementations.linear_att.gated_delta import (
     GatedDeltaNetBackend,
 )
-from foreblocks.modules.attention.multi_att import MultiAttention
+from foreblocks.attention.multi_att import MultiAttention
 
 
 class _CausalDepthwiseConv(nn.Module):

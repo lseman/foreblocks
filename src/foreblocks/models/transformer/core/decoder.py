@@ -68,8 +68,8 @@ from foreblocks.models.transformer.runtime.state import (
     DecoderLayerState,
     DecoderState,
 )
-from foreblocks.modules.attention.cache.kv import StaticKVCache
-from foreblocks.modules.attention.multi_att import MultiAttention
+from foreblocks.attention.cache.kv import StaticKVCache
+from foreblocks.attention.multi_att import MultiAttention
 from foreblocks.modules.skip.gateskip import ResidualGate
 from foreblocks.ui.node_spec import node
 

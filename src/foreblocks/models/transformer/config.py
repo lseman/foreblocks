@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field, fields, replace
 from enum import StrEnum
 from typing import Any, Literal
 
-from foreblocks.modules.attention.config import (
+from foreblocks.attention.config import (
     AttentionCacheConfig,
     AttentionConfig,
     AttentionFeatureConfig,

@@ -3,7 +3,7 @@ import unittest
 
 import torch
 
-from foreblocks.modules.attention.implementations.autocor_att import (
+from foreblocks.attention.implementations.autocor_att import (
     AutoCorrelation,
     AutoCorrelationLayer,
 )
@@ -75,8 +75,8 @@ class TestAutoCorrelation(unittest.TestCase):
         self.assertEqual(out.shape, (2, 24, 32))
 
     def test_through_multiattention(self):
-        from foreblocks.modules.attention.config import AttentionConfig
-        from foreblocks.modules.attention.multi_att import MultiAttention
+        from foreblocks.attention.config import AttentionConfig
+        from foreblocks.attention.multi_att import MultiAttention
 
         m = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=32, n_heads=4, dropout=0.0, attention_type="autocor", freq_modes=8

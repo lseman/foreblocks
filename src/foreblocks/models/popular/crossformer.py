@@ -17,12 +17,12 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from foreblocks.modules.attention.config import (
+from foreblocks.attention.config import (
     AttentionConfig,
     AttentionShapeConfig,
     AttentionVariantConfig,
 )
-from foreblocks.modules.attention.multi_att import MultiAttention
+from foreblocks.attention.multi_att import MultiAttention
 
 
 class CrossFormer(nn.Module):

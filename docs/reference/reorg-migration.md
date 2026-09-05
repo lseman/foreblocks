@@ -24,7 +24,7 @@ Relative imports were first normalized to absolute `foreblocks.…` form so move
 | `foreblocks.transformer.norms` | `foreblocks.layers.norms` | group/layer/rms/temporal/revin nn.Modules |
 | `foreblocks.transformer.embeddings` | `foreblocks.layers.embeddings` | rotary, alibi, positional, time embeds |
 | `foreblocks.layers.graph` | `foreblocks.layers.graph` | unchanged (already a layer family) |
-| `foreblocks.transformer.attention` | `foreblocks.modules.attention` | multi_att, variants, modules/linear_att, cache, utils |
+| `foreblocks.transformer.attention` | `foreblocks.attention` | multi_att, variants, modules/linear_att, cache, utils |
 | `foreblocks.transformer.moe` | `foreblocks.modules.moe` | experts, routers, ff |
 | `foreblocks.transformer.skip` | `foreblocks.modules.skip` | gateskip, mod |
 | `foreblocks.blocks.popular` | `foreblocks.models.popular` | nbeats, nha, timesnet (merged) |
@@ -32,12 +32,12 @@ Relative imports were first normalized to absolute `foreblocks.…` form so move
 | `foreblocks.core.heads` | `foreblocks.modules.heads` | head families + head modules |
 | `foreblocks.transformer.popular` | `foreblocks.models.popular` | informer, autoformer, … (merged with blocks.popular) |
 | `foreblocks.transformer` | `foreblocks.models.transformer` | transformer, tf_*, patching, fusions, sype, mhc, transformer_tuner |
-| `foreblocks.custom_mamba.blocks` | `foreblocks.sequence.mamba` | HybridMamba family |
-| `foreblocks.custom_mamba` | `foreblocks.sequence.mamba` | package root |
-| `foreblocks.mamba` | `foreblocks.sequence.mamba` | older Mamba backbone |
-| `foreblocks.custom_raven` | `foreblocks.sequence.raven` | raven blocks + configuration |
+| `foreblocks.custom_mamba.blocks` | `foreblocks.models.sequence.mamba` | HybridMamba family |
+| `foreblocks.custom_mamba` | `foreblocks.models.sequence.mamba` | package root |
+| `foreblocks.mamba` | `foreblocks.models.sequence.mamba` | older Mamba backbone |
+| `foreblocks.custom_raven` | `foreblocks.models.sequence.raven` | raven blocks + configuration |
 | `foreblocks.kan` | `foreblocks.kan` | **unchanged** (kept top-level per decision) |
-| `foreblocks.custom_att` | `foreblocks.experimental.attention_kernels` | vendored sub-project (own setup.py) |
+| `foreblocks.custom_att` | `foreblocks.ops.experimental.attention_kernels` | vendored sub-project (own setup.py) |
 
 Unchanged top-level: `core` (model, att, sampling, extend), `data`, `training`, `evaluation`,
 `ts_handler`, `mltracker`, `ui`, `studio`, `third_party`, `config.py`, `models` (forecasting,

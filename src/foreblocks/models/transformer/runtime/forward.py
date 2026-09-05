@@ -18,7 +18,7 @@ from foreblocks.models.transformer.runtime.outputs import TransformerDecoderOutp
 from foreblocks.models.transformer.runtime.residual_state import AttentionResidualState
 from foreblocks.models.transformer.runtime.routing import patchify_gateskip_active_mask
 from foreblocks.models.transformer.runtime.state import DecoderLayerState, DecoderState
-from foreblocks.modules.attention.cache.kv import StaticKVCache
+from foreblocks.attention.cache.kv import StaticKVCache
 
 
 @dataclass(frozen=True)

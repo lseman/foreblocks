@@ -24,20 +24,20 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from foreblocks.modules.attention.implementations.linear_att.deltanet import (
+from foreblocks.attention.implementations.linear_att.deltanet import (
     DeltaNetBackend,
 )
-from foreblocks.modules.attention.implementations.linear_att.gated_delta import (
+from foreblocks.attention.implementations.linear_att.gated_delta import (
     GatedDeltaNetBackend,
 )
-from foreblocks.modules.attention.implementations.linear_att.gated_deltanet2 import (
+from foreblocks.attention.implementations.linear_att.gated_deltanet2 import (
     GatedDeltaNet2Backend,
 )
-from foreblocks.modules.attention.implementations.linear_att.gla import GLABackend
-from foreblocks.modules.attention.implementations.linear_att.kimi import KimiAttentionBackend
+from foreblocks.attention.implementations.linear_att.gla import GLABackend
+from foreblocks.attention.implementations.linear_att.kimi import KimiAttentionBackend
 
 # ── Custom backends ──────────────────────────────────────────────────────────
-from foreblocks.modules.attention.implementations.linear_att.rda import RDABackend
+from foreblocks.attention.implementations.linear_att.rda import RDABackend
 
 # ── FLA availability ─────────────────────────────────────────────────────────
 from foreblocks.ops.attention.fla_backend import (

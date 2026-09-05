@@ -8,7 +8,7 @@ the KV providers, and paged_stream_decode_standard.
 import pytest
 import torch
 
-from foreblocks.modules.attention.cache import (
+from foreblocks.attention.cache import (
     DenseKVProvider,
     PagedKVCache,
     PagedKVProvider,

@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from foreblocks.modules.attention.implementations.frequency_att import (
+from foreblocks.attention.implementations.frequency_att import (
     FrequencyAttention,
 )
 

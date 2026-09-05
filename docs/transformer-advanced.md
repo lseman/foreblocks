@@ -218,7 +218,7 @@ ForeBlocks uses a structured `AttentionConfig` with sub-configurations:
 
 ```python
 from foreblocks.models.transformer.config import TransformerConfig
-from foreblocks.modules.attention.config import (
+from foreblocks.attention.config import (
     AttentionConfig,
     AttentionShapeConfig,
     AttentionCacheConfig,

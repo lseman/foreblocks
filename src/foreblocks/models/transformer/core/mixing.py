@@ -25,10 +25,10 @@ import torch.nn.functional as F
 
 from foreblocks.layers.norms import create_norm_layer
 from foreblocks.models.transformer.config import TransformerConfig
-from foreblocks.modules.attention.enums import PositionEncoding
-from foreblocks.modules.attention.multi_att import MultiAttention
+from foreblocks.attention.enums import PositionEncoding
+from foreblocks.attention.multi_att import MultiAttention
 
-from foreblocks.modules.attention.mixing import (
+from foreblocks.attention.mixing import (
     Axis,
     MixingAttentionBlock,
     make_sequence_block,

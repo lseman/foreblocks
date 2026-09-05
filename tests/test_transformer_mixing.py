@@ -10,7 +10,7 @@ from foreblocks.models.transformer import (
 )
 from foreblocks.models.transformer.core.encoder import TransformerEncoder
 from foreblocks.models.transformer.runtime.outputs import TransformerEncoderOutput
-from foreblocks.modules.attention import (
+from foreblocks.attention import (
     AttentionCacheConfig,
     AttentionConfig,
     AttentionPositionConfig,
