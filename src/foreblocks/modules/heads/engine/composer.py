@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.head_helper.
+"""foreblocks.modules.heads.engine.composer.
 
 Composable forecasting head pipeline with serial, parallel, and hybrid staging.
 
@@ -25,9 +25,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
 
-from foreblocks.modules.heads.contracts import HeadOutput
-from foreblocks.modules.heads.head_state import HeadStateManager
-from foreblocks.modules.heads.head_types import (
+from foreblocks.modules.heads.core.contracts import HeadOutput
+from foreblocks.modules.heads.core.state import HeadStateManager
+from foreblocks.modules.heads.core.types import (
     ActiveHead,
     AlphaWeights,
     BaseRunState,
@@ -43,7 +43,7 @@ from foreblocks.modules.heads.head_types import (
     SerialNoneMerge,
     SerialNoneState,
 )
-from foreblocks.modules.heads.projection_registry import ProjectionRegistry
+from foreblocks.modules.heads.core.projection import ProjectionRegistry
 from foreblocks.ui.node_spec import node
 
 

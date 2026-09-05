@@ -9,8 +9,8 @@ from foreblocks.modules.heads.config import (
     ParallelStageConfig,
     StageKind,
 )
-from foreblocks.modules.heads.contracts import HeadShape, infer_head_shape
-from foreblocks.modules.heads.head_types import HeadSpec
+from foreblocks.modules.heads.core.contracts import HeadShape, infer_head_shape
+from foreblocks.modules.heads.core.types import HeadSpec
 
 
 def infer_stage_shape(

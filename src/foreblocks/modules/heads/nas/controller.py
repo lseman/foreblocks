@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import torch
 
-from foreblocks.modules.heads.graph import HeadGraph
+from foreblocks.modules.heads.engine.graph import HeadGraph
 from foreblocks.modules.heads.nas.schedules import CosineTemperatureSchedule
 
 

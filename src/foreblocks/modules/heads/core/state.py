@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.head_state.
+"""foreblocks.modules.heads.core.state.
 
 Per-head mutable state management for NAS alpha mixing and enable/disable masks.
 
@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.modules.heads.head_types import ActiveHead, AlphaWeights, HeadSpec
+from foreblocks.modules.heads.core.types import ActiveHead, AlphaWeights, HeadSpec
 
 
 class HeadStateManager(nn.Module):

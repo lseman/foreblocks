@@ -1,7 +1,19 @@
 """foreblocks.modules.heads.
 
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the forecasting head composition and projection modules area of Foreblocks.
+Composable forecasting head pipeline with serial, parallel, and hybrid staging.
+
+For the head engine (HeadComposer, HeadGraph), import from
+``foreblocks.modules.heads.engine``.
+For head implementations (RevIN, PatchEmbed, etc.), import from
+``foreblocks.modules.heads.modules``.
+
+Top-level re-exports:
+- HeadComposer: serial/parallel/hybrid head composition
+- HeadGraph: graph-based head orchestration
+- HeadOutput, HeadShape: tensor contracts
+- HeadSpec, HeadStage: head/ stage declarations
+- DAIN, RevIN, PatchEmbed, HaarWaveletTopK, etc.: head implementations
+- HeadComposerConfig, StageKind, NASMode: configuration
 
 """
 
@@ -17,12 +29,24 @@ from foreblocks.modules.heads.config import (
     StageKind,
     StructuredOutputPolicy,
 )
-from foreblocks.modules.heads.contracts import HeadOutput, HeadShape
-from foreblocks.modules.heads.graph import HeadGraph, HeadGraphState, HeadStage
-from foreblocks.modules.heads.head_helper import HeadComposer, HeadSpec
-from foreblocks.modules.heads.heads import (
-    DAIN,
+from foreblocks.modules.heads.core.contracts import (
+    HeadOutput,
+    HeadShape,
+)
+from foreblocks.modules.heads.core.types import HeadSpec
+from foreblocks.modules.heads.engine.composer import HeadComposer
+from foreblocks.modules.heads.engine.execution import (
+    build_stage_composer,
+    execute_stage,
+)
+from foreblocks.modules.heads.engine.graph import (
+    HeadGraph,
+    HeadGraphState,
+    HeadStage,
+)
+from foreblocks.modules.heads.modules import (
     Chronos2EmbedHead,
+    DAIN,
     DAINHead,
     DecompositionBlock,
     DecompositionHead,
@@ -91,4 +115,6 @@ __all__ = [
     "Time2VecHead",
     "TimeAttention",
     "TimeAttentionHead",
+    "build_stage_composer",
+    "execute_stage",
 ]

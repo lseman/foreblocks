@@ -118,7 +118,7 @@ def scheduled_sampling_fn(epoch):
 
     return tf_ratio
 
-from foreblocks.modules.heads.head_helper import HeadSpec, HeadComposer
+from foreblocks.modules.heads.engine.composer import HeadSpec, HeadComposer
 from foreblocks.modules.heads.modules.revin_head import RevINHead
 from foreblocks.modules.heads.modules.decomposition_head import DecompositionBlock
 from foreblocks.modules.heads.modules.multiscale_conv_head import MultiScaleConvHead

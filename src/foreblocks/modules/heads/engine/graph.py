@@ -14,14 +14,14 @@ from foreblocks.modules.heads.config import (
     SerialStageConfig,
     StageKind,
 )
-from foreblocks.modules.heads.contracts import HeadShape
-from foreblocks.modules.heads.execution import (
+from foreblocks.modules.heads.core.contracts import HeadShape
+from foreblocks.modules.heads.engine.execution import (
     build_stage_composer,
     execute_stage,
     infer_stage_shape,
 )
-from foreblocks.modules.heads.head_helper import HeadComposer
-from foreblocks.modules.heads.head_types import HeadSpec, RunStateList
+from foreblocks.modules.heads.engine.composer import HeadComposer
+from foreblocks.modules.heads.core.types import HeadSpec, RunStateList
 
 
 @dataclass(frozen=True)

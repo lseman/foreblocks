@@ -12,8 +12,9 @@ from foreblocks.modules.heads.config import (
     SerialStageConfig,
     StageKind,
 )
-from foreblocks.modules.heads.head_helper import HeadComposer
-from foreblocks.modules.heads.head_types import HeadSpec, RunStateList
+from foreblocks.modules.heads.engine.composer import HeadComposer
+from foreblocks.modules.heads.core.types import HeadSpec, RunStateList
+from foreblocks.modules.heads.engine.alignment import infer_stage_shape
 
 
 def build_stage_composer(
@@ -63,5 +64,6 @@ def execute_stage(
 ) -> tuple[torch.Tensor, RunStateList]:
     return composer.forward_pre(value)
 
+__all__ = ["build_stage_composer", "execute_stage", "infer_stage_shape"]
 
-__all__ = ["build_stage_composer", "execute_stage"]
+

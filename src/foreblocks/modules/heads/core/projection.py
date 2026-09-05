@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.projection_registry.
+"""foreblocks.modules.heads.core.projection.
 
 Unified factory and registry for projection and fusion helper modules.
 

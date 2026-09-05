@@ -22,7 +22,7 @@ import torch.nn as nn
 
 from foreblocks.config import TrainingConfig
 from foreblocks.core.training.state.history import TrainingHistory
-from foreblocks.modules.heads.head_helper import HeadComposer
+from foreblocks.modules.heads.engine.composer import HeadComposer
 
 try:
     import matplotlib.pyplot as plt

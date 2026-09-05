@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.head_types.
+"""foreblocks.modules.heads.core.types.
 
 Type definitions and run-state dataclasses for head composition.
 
