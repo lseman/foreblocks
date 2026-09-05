@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.time2vec_head.
+"""foreblocks.modules.heads.blocks.time2vec_head.
 
 Time2Vec-style periodic temporal encoding projected back to feature dimensions.
 

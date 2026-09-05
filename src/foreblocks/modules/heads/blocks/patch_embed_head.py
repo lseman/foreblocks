@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.patch_embed_head.
+"""foreblocks.modules.heads.blocks.patch_embed_head.
 
 Local patch embedding via depthwise convolution with learned interpolation.
 

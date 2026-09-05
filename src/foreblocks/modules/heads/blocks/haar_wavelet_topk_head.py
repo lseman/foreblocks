@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.haar_wavelet_topk_head.
+"""foreblocks.modules.heads.blocks.haar_wavelet_topk_head.
 
 Haar wavelet decomposition with Top-K sparse detail preservation.
 

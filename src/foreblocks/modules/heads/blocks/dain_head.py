@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.dain_head.
+"""foreblocks.modules.heads.blocks.dain_head.
 
 Deep Adaptive Input Normalization with shift, scale, and gating.
 

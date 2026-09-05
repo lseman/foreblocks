@@ -5,7 +5,7 @@ Composable forecasting head pipeline with serial, parallel, and hybrid staging.
 For the head engine (HeadComposer, HeadGraph), import from
 ``foreblocks.modules.heads.engine``.
 For head implementations (RevIN, PatchEmbed, etc.), import from
-``foreblocks.modules.heads.modules``.
+``foreblocks.modules.heads.blocks``.
 
 Top-level re-exports:
 - HeadComposer: serial/parallel/hybrid head composition
@@ -44,7 +44,7 @@ from foreblocks.modules.heads.engine.graph import (
     HeadGraphState,
     HeadStage,
 )
-from foreblocks.modules.heads.modules import (
+from foreblocks.modules.heads.blocks import (
     Chronos2EmbedHead,
     DAIN,
     DAINHead,

@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.dropoutts_head.
+"""foreblocks.modules.heads.blocks.dropoutts_head.
 
 Training-time temporal dropout with timestep, span, feature, and mixed modes.
 

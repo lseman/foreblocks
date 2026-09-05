@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.decomposition_head.
+"""foreblocks.modules.heads.blocks.decomposition_head.
 
 Learnable trend-seasonal decomposition via depthwise moving average.
 

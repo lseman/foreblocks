@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.time_attention_head.
+"""foreblocks.modules.heads.blocks.time_attention_head.
 
 Per-feature Transformer block over time with rotary positional embeddings.
 

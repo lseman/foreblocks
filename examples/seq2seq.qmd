@@ -119,9 +119,9 @@ def scheduled_sampling_fn(epoch):
     return tf_ratio
 
 from foreblocks.modules.heads.engine.composer import HeadSpec, HeadComposer
-from foreblocks.modules.heads.modules.revin_head import RevINHead
-from foreblocks.modules.heads.modules.decomposition_head import DecompositionBlock
-from foreblocks.modules.heads.modules.multiscale_conv_head import MultiScaleConvHead
+from foreblocks.modules.heads.blocks.revin_head import RevINHead
+from foreblocks.modules.heads.blocks.decomposition_head import DecompositionBlock
+from foreblocks.modules.heads.blocks.multiscale_conv_head import MultiScaleConvHead
 # specs = [
 #     HeadSpec(head=RevINHead(feature_dim=input_size), name="revin", combine="invert"),
 #     # Use hidden_dim=input_size to keep encoder input size unchanged (=1 here)

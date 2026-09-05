@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.revin_head.
+"""foreblocks.modules.heads.blocks.revin_head.
 
 Reversible Instance Normalization (RevIN) — per-variable, over-time normalization.
 

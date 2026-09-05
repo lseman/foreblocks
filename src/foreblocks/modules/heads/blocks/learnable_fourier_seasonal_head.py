@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.learnable_fourier_seasonal_head.
+"""foreblocks.modules.heads.blocks.learnable_fourier_seasonal_head.
 
 Learnable per-channel seasonal decomposition via Fourier bases.
 

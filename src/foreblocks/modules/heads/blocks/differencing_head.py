@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.differencing_head.
+"""foreblocks.modules.heads.blocks.differencing_head.
 
 First-order time differencing with reversible inversion.
 

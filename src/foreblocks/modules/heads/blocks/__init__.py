@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.
+"""foreblocks.modules.heads.blocks.
 
 Reusable head modules for time-series preprocessing and feature transformation.
 
@@ -26,35 +26,35 @@ Core API:
 
 """
 
-from foreblocks.modules.heads.modules.chronos2_embed_head import Chronos2EmbedHead
-from foreblocks.modules.heads.modules.dain_head import DAIN, DAINHead
-from foreblocks.modules.heads.modules.decomposition_head import (
+from foreblocks.modules.heads.blocks.chronos2_embed_head import Chronos2EmbedHead
+from foreblocks.modules.heads.blocks.dain_head import DAIN, DAINHead
+from foreblocks.modules.heads.blocks.decomposition_head import (
     DecompositionBlock,
     DecompositionHead,
 )
-from foreblocks.modules.heads.modules.differencing_head import (
+from foreblocks.modules.heads.blocks.differencing_head import (
     Differencing,
     DifferencingHead,
 )
-from foreblocks.modules.heads.modules.dropoutts_head import DropoutTSHead
-from foreblocks.modules.heads.modules.fft_topk_head import FFTTopK, FFTTopKHead
-from foreblocks.modules.heads.modules.haar_wavelet_topk_head import (
+from foreblocks.modules.heads.blocks.dropoutts_head import DropoutTSHead
+from foreblocks.modules.heads.blocks.fft_topk_head import FFTTopK, FFTTopKHead
+from foreblocks.modules.heads.blocks.haar_wavelet_topk_head import (
     HaarWaveletTopK,
     HaarWaveletTopKHead,
 )
-from foreblocks.modules.heads.modules.learnable_fourier_seasonal_head import (
+from foreblocks.modules.heads.blocks.learnable_fourier_seasonal_head import (
     LearnableFourierSeasonal,
     LearnableFourierSeasonalHead,
 )
-from foreblocks.modules.heads.modules.multikernel_conv_head import MultiKernelConvHead
-from foreblocks.modules.heads.modules.multiscale_conv_head import (
+from foreblocks.modules.heads.blocks.multikernel_conv_head import MultiKernelConvHead
+from foreblocks.modules.heads.blocks.multiscale_conv_head import (
     MultiScaleConv,
     MultiScaleConvHead,
 )
-from foreblocks.modules.heads.modules.patch_embed_head import PatchEmbed, PatchEmbedHead
-from foreblocks.modules.heads.modules.revin_head import RevIN, RevINHead
-from foreblocks.modules.heads.modules.time2vec_head import Time2Vec, Time2VecHead
-from foreblocks.modules.heads.modules.time_attention_head import (
+from foreblocks.modules.heads.blocks.patch_embed_head import PatchEmbed, PatchEmbedHead
+from foreblocks.modules.heads.blocks.revin_head import RevIN, RevINHead
+from foreblocks.modules.heads.blocks.time2vec_head import Time2Vec, Time2VecHead
+from foreblocks.modules.heads.blocks.time_attention_head import (
     TimeAttention,
     TimeAttentionHead,
 )

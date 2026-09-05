@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.fft_topk_head.
+"""foreblocks.modules.heads.blocks.fft_topk_head.
 
 Frequency-domain top-K magnitude extraction for seasonal decomposition.
 

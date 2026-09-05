@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.chronos2_embed_head.
+"""foreblocks.modules.heads.blocks.chronos2_embed_head.
 
 Chronos-2 embedding extraction as a trainable feature head.
 

@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.multiscale_conv_head.
+"""foreblocks.modules.heads.blocks.multiscale_conv_head.
 
 Multi-scale pyramid head with recursive pooling, spectral filtering, and coarse-to-fine fusion.
 

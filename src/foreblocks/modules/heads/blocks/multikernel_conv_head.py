@@ -1,4 +1,4 @@
-"""foreblocks.modules.heads.modules.multikernel_conv_head.
+"""foreblocks.modules.heads.blocks.multikernel_conv_head.
 
 Multi-kernel depthwise convolution with parallel branch fusion.
 
