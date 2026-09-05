@@ -18,7 +18,8 @@ transformer/
 │   ├── attention_backends.py  # LazyAttentionBackendMixin + backend registry
 │   ├── construction.py    # build_positional_encoder, build_layer_modules
 │   ├── encoder.py          # TransformerEncoderLayer, TransformerEncoder
-│   └── decoder.py          # TransformerDecoderLayer, TransformerDecoder
+│   ├── decoder.py          # TransformerDecoderLayer, TransformerDecoder
+│   └── mixing.py           # sequence-then-variate attention for [B,V,N,D]
 ├── features/              # Standalone nn.Module building blocks, no cross-imports between them
 │   ├── mhc.py               # MHCHyperConnection + stream init/collapse/norm helpers
 │   ├── residuals.py          # AttentionResidual, BlockAttentionResidual
@@ -28,6 +29,7 @@ transformer/
 └── runtime/                # Non-nn.Module execution plumbing consumed by core/
     ├── execution.py          # *Strategy / *Mixin objects that run a sublayer block
     ├── forward.py              # prepare_*/execute_*/build_* — one encoder/decoder forward pass
+    ├── contiguous.py           # masked-horizon preparation, projection, and quantile loss
     ├── decoding.py              # GenerationEngine, beam_search, speculative_decode
     ├── routing.py                # Mixture-of-Depths gather/scatter helpers
     ├── cache.py                   # DecoderCacheManager
@@ -48,6 +50,59 @@ classes subclass the base), and `foreblocks.modules.attention` imports back
 into `transformer/features` and `transformer/core`, forming a genuine import
 cycle. Don't eagerly import across those seams at module scope — follow the
 existing lazy-facade pattern in the `__init__.py` you're touching.
+
+## Multivariate mixing
+
+Set `TransformerConfig.use_variate_attention=True` to preserve input channels
+as `[B, V, N, D]` inside the encoder. Each layer attends over the `N` sequence
+positions independently per variate, then over the `V` variates independently
+per sequence position. The default `variate_fuse="linear"` restores the usual
+`[B, N, D]` encoder output; use `"mean"` or `"none"` for masked averaging or
+an unfused `[B, V, N, D]` output. Variate attention is always non-causal.
+
+```python
+from foreblocks.models.transformer import TransformerConfig
+from foreblocks.models.transformer.core.encoder import TransformerEncoder
+
+config = TransformerConfig(
+    input_size=num_variates,
+    use_variate_attention=True,
+)
+model = TransformerEncoder(config)
+encoded = model(values)
+output = encoded.last_hidden_state  # values [B,N,V] -> output [B,N,D]
+```
+
+`MixingTransformer` remains available as the lower-level embedding block for
+callers that already own `[B, V, N, D]` tensors.
+
+### Single-pass contiguous decoding
+
+Enable `use_contiguous_patch_decoding=True` with non-overlapping patches. The
+forecast path appends learned missing-value tokens for the complete horizon and
+runs the bidirectional encoder/mixing stack once. Targets and past-only
+covariates are hidden over the horizon; past-future covariates remain visible.
+
+```python
+config = TransformerConfig(
+    input_size=num_targets + num_past_only + num_known_future,
+    use_variate_attention=True,
+    use_contiguous_patch_decoding=True,
+    patch_encoder=True,
+    patch_len=32,
+    patch_stride=32,
+)
+model = TransformerEncoder(config)
+quantile_forecast = model.decode_contiguous(
+    target,                       # [B, context, targets]
+    horizon=128,
+    past_only_covariates=past,    # [B, context, past-only]
+    past_future_covariates=known, # [B, context + horizon, known-future]
+)  # [B, horizon, targets, 9]
+```
+
+`forecast_contiguous` is the differentiable training entry point;
+`contiguous_quantile_loss` computes pinball loss for the configured quantiles.
 
 ## Naming convention
 

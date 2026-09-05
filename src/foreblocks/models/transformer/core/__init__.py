@@ -22,12 +22,18 @@ if TYPE_CHECKING:
         TransformerEncoder,
         TransformerEncoderLayer,
     )
+    from foreblocks.models.transformer.core.mixing import (
+        MixingTransformer,
+        StackedMixingTransformer,
+    )
 
 __all__ = [
     "LAYER_ATTENTION_BACKENDS",
     "BaseTransformer",
     "BaseTransformerLayer",
     "LayerAttentionBackendSpec",
+    "MixingTransformer",
+    "StackedMixingTransformer",
     "TransformerDecoder",
     "TransformerDecoderLayer",
     "TransformerEncoder",
@@ -45,6 +51,8 @@ _MODULE_BY_NAME = {
     "TransformerDecoderLayer": "decoder",
     "TransformerEncoder": "encoder",
     "TransformerEncoderLayer": "encoder",
+    "MixingTransformer": "mixing",
+    "StackedMixingTransformer": "mixing",
 }
 
 

@@ -32,12 +32,18 @@ from foreblocks.models.transformer.core.base import (
     BaseTransformer,
     BaseTransformerLayer,
 )
+from foreblocks.models.transformer.core.mixing import MixingTransformer
 from foreblocks.models.transformer.features.mhc import mhc_init_streams
 from foreblocks.models.transformer.features.patching import PatchInfo
 from foreblocks.models.transformer.features.residuals import (
     AttentionResidual,
     BlockAttentionResidual,
     normalize_attention_residual_mode,
+)
+from foreblocks.models.transformer.runtime.contiguous import (
+    contiguous_quantile_loss as compute_contiguous_quantile_loss,
+    prepare_contiguous_forecast,
+    project_contiguous_quantiles,
 )
 from foreblocks.models.transformer.runtime.execution import (
     MHCExecutionMixin,
@@ -342,6 +348,8 @@ class TransformerEncoder(BaseTransformer):
             # but usually handled by kwargs or specific layers.
 
         self.use_time_encoding = use_time_encoding
+        self.use_variate_attention = bool(config.use_variate_attention)
+        self.variate_fuse = str(config.variate_fuse)
         self.ct_patchtst = bool(ct_patchtst)
         self.ct_patch_len = int(ct_patch_len)
         self.ct_patch_stride = int(ct_patch_stride)
@@ -375,14 +383,41 @@ class TransformerEncoder(BaseTransformer):
             if (self.ct_patchtst and self.ct_patch_fuse == "linear")
             else None
         )
+        self.variate_output_fuse = (
+            nn.Linear(self.input_size * self.d_model, self.d_model)
+            if (self.use_variate_attention and self.variate_fuse == "linear")
+            else None
+        )
+        self.missing_token = (
+            nn.Parameter(torch.empty(self.d_model))
+            if self.use_variate_attention
+            else None
+        )
+        self.forecast_quantiles = tuple(config.forecast_quantiles)
+        self.contiguous_patch_head = (
+            nn.Linear(
+                self.d_model,
+                self.patch_len * len(self.forecast_quantiles),
+            )
+            if config.use_contiguous_patch_decoding
+            else None
+        )
 
         # These modules are created after BaseTransformer has applied the
         # model-wide initialization policy, so initialize them explicitly.
         # Otherwise they retain PyTorch defaults and have a seed-dependent
         # scale that is inconsistent with the rest of the transformer.
-        for module in (self.time_encoder, self.ct_patch_embed, self.ct_channel_fuse):
+        for module in (
+            self.time_encoder,
+            self.ct_patch_embed,
+            self.ct_channel_fuse,
+            self.variate_output_fuse,
+            self.contiguous_patch_head,
+        ):
             if module is not None:
                 module.apply(self._init_weights)
+        if self.missing_token is not None:
+            nn.init.normal_(self.missing_token, mean=0.0, std=self.initializer_range)
 
         # FIX: stash last patched mask + patch info to avoid decoder mismatch bugs
         self.last_memory_key_padding_mask: torch.Tensor | None = None
@@ -448,8 +483,212 @@ class TransformerEncoder(BaseTransformer):
         dropout: float,
         informer_like: bool,
     ) -> nn.Module:
+        if config.use_variate_attention:
+            attention = dataclasses.replace(
+                config.attention,
+                shape=dataclasses.replace(config.attention.shape, dropout=dropout),
+                variant=dataclasses.replace(
+                    config.attention.variant, name=layer_attention_type
+                ),
+            )
+            layer_config = dataclasses.replace(
+                config, attention=attention, dropout=dropout
+            )
+            return MixingTransformer(
+                layer_config,
+                use_variate_attention=True,
+                variate_position_encoding=config.variate_position_encoding,
+            )
         return TransformerEncoderLayer(
             config, layer_attention_type=layer_attention_type, dropout=dropout
+        )
+
+    def _fuse_variate_hidden(
+        self,
+        hidden_states: torch.Tensor,
+        padding_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if self.variate_fuse == "none":
+            return hidden_states
+        if self.variate_fuse == "mean":
+            if padding_mask is None:
+                return hidden_states.mean(dim=1)
+            valid = (~padding_mask).unsqueeze(-1).to(dtype=hidden_states.dtype)
+            return (hidden_states * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
+        if self.variate_output_fuse is None:
+            raise RuntimeError("linear variate fusion is not initialized")
+        if padding_mask is not None:
+            hidden_states = hidden_states.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+        batch_size, num_variates, token_length, d_model = hidden_states.shape
+        hidden_states = hidden_states.permute(0, 2, 1, 3).reshape(
+            batch_size, token_length, num_variates * d_model
+        )
+        return self.variate_output_fuse(hidden_states)
+
+    def _fuse_variate_mask(
+        self, padding_mask: torch.Tensor | None
+    ) -> torch.Tensor | None:
+        if padding_mask is None or self.variate_fuse == "none":
+            return padding_mask
+        return padding_mask.all(dim=1)
+
+    def _forward_variate_stack(
+        self,
+        x: torch.Tensor,
+        src_mask: torch.Tensor | None,
+        src_key_padding_mask: torch.Tensor | None,
+        *,
+        output_hidden_states: bool,
+        output_attentions: bool,
+        return_dict: bool,
+        preserve_variate_axis: bool = False,
+    ) -> torch.Tensor | TransformerEncoderOutput:
+        use_ckpt = self.training and self.use_gradient_checkpointing
+        used_indices: list[int] = []
+        hidden_states = [x] if output_hidden_states else None
+        sequence_attentions: list[torch.Tensor] = []
+        variate_attentions: list[torch.Tensor] = []
+
+        for index in range(self.num_layers):
+            layer = self._resolve_layer(index)
+            if not isinstance(layer, MixingTransformer):
+                raise RuntimeError(
+                    "variate attention requires MixingTransformer layers"
+                )
+            used_indices.append(index)
+            if use_ckpt and not output_attentions:
+
+                def run_layer(
+                    value: torch.Tensor, mixing_layer: MixingTransformer = layer
+                ) -> torch.Tensor:
+                    return mixing_layer(
+                        value,
+                        src_key_padding_mask,
+                        sequence_mask=src_mask,
+                    )[0]
+
+                x = self._run_with_checkpoint(run_layer, x, use_checkpoint=True)
+                sequence_weights = variate_weights = None
+            else:
+                x, sequence_weights, variate_weights = layer(
+                    x,
+                    src_key_padding_mask,
+                    sequence_mask=src_mask,
+                    need_weights=output_attentions,
+                )
+            if hidden_states is not None:
+                hidden_states.append(x)
+            if sequence_weights is not None:
+                sequence_attentions.append(sequence_weights)
+            if variate_weights is not None:
+                variate_attentions.append(variate_weights)
+
+        self._finalize_layer_stack(used_indices)
+        x = self.final_norm(x)
+        if hidden_states is not None:
+            hidden_states[-1] = x
+
+        fused_mask = (
+            src_key_padding_mask
+            if preserve_variate_axis
+            else self._fuse_variate_mask(src_key_padding_mask)
+        )
+        fused_output = (
+            x
+            if preserve_variate_axis
+            else self._fuse_variate_hidden(x, src_key_padding_mask)
+        )
+        self.last_memory_key_padding_mask = fused_mask
+        if hidden_states is not None and not preserve_variate_axis:
+            hidden_states = [
+                self._fuse_variate_hidden(state, src_key_padding_mask)
+                for state in hidden_states
+            ]
+
+        if return_dict:
+            return TransformerEncoderOutput(
+                last_hidden_state=fused_output,
+                hidden_states=(
+                    tuple(hidden_states) if hidden_states is not None else None
+                ),
+                aux_loss=self.aux_loss,
+                padding_mask=fused_mask,
+                attentions=(
+                    tuple(sequence_attentions) if sequence_attentions else None
+                ),
+                variate_attentions=(
+                    tuple(variate_attentions) if variate_attentions else None
+                ),
+            )
+        return fused_output
+
+    def forecast_contiguous(
+        self,
+        target: torch.Tensor,
+        horizon: int = 0,
+        *,
+        past_only_covariates: torch.Tensor | None = None,
+        past_future_covariates: torch.Tensor | None = None,
+        target_mask: torch.Tensor | None = None,
+        past_only_mask: torch.Tensor | None = None,
+        past_future_mask: torch.Tensor | None = None,
+        context_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Forecast an entire horizon from masked future patches in one pass.
+
+        Inputs use Foreblocks' time-major convention. ``target`` and
+        ``past_only_covariates`` are ``[B, context, C]``. Known-future
+        covariates are ``[B, context + horizon, C_known]`` and remain visible
+        over the horizon. The result is ``[B, horizon, C_target, Q]``.
+        """
+        if self.contiguous_patch_head is None:
+            raise RuntimeError(
+                "contiguous decoding is disabled; set "
+                "use_contiguous_patch_decoding=True"
+            )
+        prepared = prepare_contiguous_forecast(
+            target,
+            horizon,
+            input_size=self.input_size,
+            patch_length=self.patch_len,
+            past_only_covariates=past_only_covariates,
+            past_future_covariates=past_future_covariates,
+            target_mask=target_mask,
+            past_only_mask=past_only_mask,
+            past_future_mask=past_future_mask,
+            context_mask=context_mask,
+        )
+        encoded = self(
+            prepared.values,
+            src_key_padding_mask=prepared.attention_padding,
+            value_mask=prepared.value_mask,
+            preserve_variate_axis=True,
+            return_dict=False,
+        )
+        if not isinstance(encoded, torch.Tensor) or encoded.ndim != 4:
+            raise RuntimeError("contiguous decoding requires 4D variate states")
+        return project_contiguous_quantiles(
+            encoded,
+            self.contiguous_patch_head,
+            prepared,
+            patch_length=self.patch_len,
+            num_quantiles=len(self.forecast_quantiles),
+        )
+
+    @torch.no_grad()
+    def decode_contiguous(self, *args, **kwargs) -> torch.Tensor:
+        """Inference-only alias for :meth:`forecast_contiguous`."""
+        return self.forecast_contiguous(*args, **kwargs)
+
+    def contiguous_quantile_loss(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Pinball loss for ``[B,H,C,Q]`` contiguous forecasts."""
+        return compute_contiguous_quantile_loss(
+            predictions, targets, self.forecast_quantiles, mask
         )
 
     def forward(
@@ -459,6 +698,8 @@ class TransformerEncoder(BaseTransformer):
         src_key_padding_mask: torch.Tensor | None = None,  # [B,T] bool
         time_features: torch.Tensor | None = None,  # [B, T, F_tf]
         gateskip_active_mask: torch.Tensor | None = None,  # [B,T] bool
+        value_mask: torch.Tensor | None = None,
+        preserve_variate_axis: bool = False,
         output_hidden_states: bool | None = None,
         output_attentions: bool | None = None,
         return_dict: bool | None = None,
@@ -468,7 +709,11 @@ class TransformerEncoder(BaseTransformer):
         )
         self.mod_aux_loss = 0.0
         prepared = prepare_encoder_input(
-            self, src, src_key_padding_mask, gateskip_active_mask
+            self,
+            src,
+            src_key_padding_mask,
+            gateskip_active_mask,
+            value_mask=value_mask,
         )
         x = prepared.hidden_states
         src_key_padding_mask = prepared.padding_mask
@@ -487,7 +732,13 @@ class TransformerEncoder(BaseTransformer):
         # Only apply input-level positional encoding for non-RoPE/ALiBi modes.
         # RoPE and ALiBi handle position encoding internally inside attention.
         if self.pos_encoding_type in ("sinusoidal", "learnable"):
-            x = self.pos_encoder(x)
+            if self.use_variate_attention:
+                batch_size, num_variates, token_length, d_model = x.shape
+                x = self.pos_encoder(
+                    x.reshape(batch_size * num_variates, token_length, d_model)
+                ).reshape(batch_size, num_variates, token_length, d_model)
+            else:
+                x = self.pos_encoder(x)
 
         # Time encoding only for timestep-space by default (encoder patching skips it)
         if (
@@ -497,14 +748,33 @@ class TransformerEncoder(BaseTransformer):
             and (time_features is not None)
         ):
             time_emb = self.time_encoder(time_features)  # [B, T, D]
-            if time_emb.shape[:2] != x.shape[:2]:
+            expected_shape = (
+                (x.shape[0], x.shape[2]) if self.use_variate_attention else x.shape[:2]
+            )
+            if time_emb.shape[:2] != expected_shape:
                 raise ValueError(
                     f"Time features shape {time_emb.shape} incompatible with input {x.shape}"
                 )
-            x = x + time_emb
+            x = x + (time_emb[:, None] if self.use_variate_attention else time_emb)
 
         if self.training and self.dropout > 0:
             x = F.dropout(x, p=self.dropout, training=True)
+
+        if self.use_variate_attention:
+            return self._forward_variate_stack(
+                x,
+                src_mask,
+                src_key_padding_mask,
+                output_hidden_states=output_hidden_states,
+                output_attentions=output_attentions,
+                return_dict=return_dict,
+                preserve_variate_axis=preserve_variate_axis,
+            )
+
+        if preserve_variate_axis:
+            raise ValueError(
+                "preserve_variate_axis requires use_variate_attention=True"
+            )
 
         self._validate_attention_residual_runtime()
         self._validate_mod_runtime()

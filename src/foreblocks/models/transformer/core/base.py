@@ -361,7 +361,10 @@ class BaseTransformer(nn.Module, ABC):
             self.d_model, self.patch_len, self.patch_stride, pad_end=self.patch_pad_end
         )
 
-        self.input_adapter = nn.Linear(input_size, self.d_model)
+        # Variate mixing preserves each input channel as its own token stream,
+        # so its shared scalar adapter consumes one channel at a time.
+        adapter_input_size = 1 if config.use_variate_attention else input_size
+        self.input_adapter = nn.Linear(adapter_input_size, self.d_model)
         # Only instantiate input-level positional encoding when pos_encoding_type
         # demands it (sinusoidal / learnable). RoPE and ALiBi handle position
         # encoding internally inside the attention module.

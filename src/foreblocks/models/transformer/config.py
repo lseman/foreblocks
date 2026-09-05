@@ -119,12 +119,28 @@ class TransformerConfig:
     ct_patch_stride: int = 8
     ct_patch_pad_end: bool = True
     ct_patch_fuse: Literal["mean", "linear"] = "linear"
+    use_variate_attention: bool = False
+    variate_fuse: Literal["mean", "linear", "none"] = "linear"
+    variate_position_encoding: bool = False
+    use_contiguous_patch_decoding: bool = False
+    forecast_quantiles: tuple[float, ...] = (
+        0.1,
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+        0.9,
+    )
     output_hidden_states: bool = False
     output_attentions: bool = False
     return_dict: bool = True
     options: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        self.forecast_quantiles = tuple(float(q) for q in self.forecast_quantiles)
         if self.attention is None:
             self.attention = AttentionConfig(
                 shape=AttentionShapeConfig(
@@ -158,6 +174,7 @@ class TransformerConfig:
         if self.custom_norm not in {"rms", "layer", "layernorm", "rmsnorm"}:
             raise ValueError(f"unsupported custom_norm: {self.custom_norm}")
         if self.attention.position.encoding not in {
+            "none",
             "rope",
             "alibi",
             "sinusoidal",
@@ -186,6 +203,14 @@ class TransformerConfig:
             raise ValueError("mhc_n_streams and mhc_sinkhorn_iters must be positive")
         if self.attention_residual_block_size <= 0:
             raise ValueError("attention_residual_block_size must be positive")
+        if self.variate_fuse not in {"mean", "linear", "none"}:
+            raise ValueError("variate_fuse must be 'mean', 'linear', or 'none'")
+        if not self.forecast_quantiles:
+            raise ValueError("forecast_quantiles must not be empty")
+        if any(not 0.0 < quantile < 1.0 for quantile in self.forecast_quantiles):
+            raise ValueError("forecast_quantiles must be strictly between 0 and 1")
+        if tuple(sorted(self.forecast_quantiles)) != self.forecast_quantiles:
+            raise ValueError("forecast_quantiles must be sorted")
         unsupported = sorted(set(self.options) - _SUPPORTED_OPTIONS)
         if unsupported:
             raise ValueError(
@@ -244,6 +269,47 @@ class TransformerConfig:
                 "decoder use_mhc does not support static/paged KV caching; "
                 "use dynamic full-sequence execution"
             )
+        if role == "decoder" and self.use_variate_attention:
+            raise ValueError("use_variate_attention is only supported by the encoder")
+        if role == "encoder" and self.use_variate_attention:
+            incompatible = [
+                name
+                for name, enabled in {
+                    "ct_patchtst": self.ct_patchtst,
+                    "use_attention_residual": self.use_attention_residual,
+                    "use_gateskip": self.use_gateskip,
+                    "use_mhc": self.use_mhc,
+                    "use_mod": self.use_mod,
+                    "use_moe": self.use_moe,
+                }.items()
+                if enabled
+            ]
+            if incompatible:
+                raise ValueError(
+                    "use_variate_attention is incompatible with: "
+                    + ", ".join(incompatible)
+                )
+            routed_attention = str(self.attention.architecture)
+            if self.share_layers and (
+                "hybrid" in routed_attention or routed_attention.endswith("3to1")
+            ):
+                raise ValueError(
+                    "use_variate_attention with share_layers requires one "
+                    "attention backend, not a hybrid or 3to1 architecture"
+                )
+        if role == "encoder" and self.use_contiguous_patch_decoding:
+            if not self.use_variate_attention:
+                raise ValueError(
+                    "use_contiguous_patch_decoding requires use_variate_attention=True"
+                )
+            if not self.patch_encoder:
+                raise ValueError(
+                    "use_contiguous_patch_decoding requires patch_encoder=True"
+                )
+            if self.patch_stride != self.patch_len:
+                raise ValueError(
+                    "contiguous patch decoding requires patch_stride == patch_len"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

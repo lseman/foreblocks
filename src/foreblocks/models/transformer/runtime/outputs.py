@@ -42,6 +42,7 @@ class TransformerEncoderOutput(TransformerOutput):
     padding_mask: torch.Tensor | None = None
     attentions: tuple[torch.Tensor, ...] | None = None
     router_states: tuple[object, ...] | None = None
+    variate_attentions: tuple[torch.Tensor, ...] | None = None
 
 
 @dataclass

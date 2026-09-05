@@ -4,6 +4,10 @@ Re-exports the ModernTransformerTuner for auto-hyperparameter selection.
 
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from foreblocks.models.transformer.config import AttentionMode, TransformerConfig
 from foreblocks.models.transformer.generation import GenerationConfig
 from foreblocks.models.transformer.runtime.outputs import (
@@ -30,10 +34,18 @@ from foreblocks.models.transformer.tuner import (
     ModernTransformerTuner,
 )
 
+if TYPE_CHECKING:
+    from foreblocks.models.transformer.core.mixing import (
+        MixingTransformer,
+        StackedMixingTransformer,
+    )
+
 __all__ = [
     "AttentionMode",
     "GenerationConfig",
     "ModernTransformerTuner",
+    "MixingTransformer",
+    "StackedMixingTransformer",
     "TransformerDecoderOutput",
     "TransformerEncoderOutput",
     "TransformerGenerationOutput",
@@ -50,3 +62,11 @@ __all__ = [
     "patchify_gateskip_active_mask",
     "scatter_mixture_of_depths_output",
 ]
+
+
+def __getattr__(name: str):
+    if name not in {"MixingTransformer", "StackedMixingTransformer"}:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from foreblocks.models.transformer import core
+
+    return getattr(core, name)

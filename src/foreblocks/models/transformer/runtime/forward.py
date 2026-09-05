@@ -197,8 +197,10 @@ class EncoderPreparationOwner(Protocol):
     ct_patch_len: int
     ct_patch_stride: int
     ct_patch_pad_end: bool
+    use_variate_attention: bool
     input_adapter: nn.Module
     patcher: PatchTokenizer
+    missing_token: torch.Tensor | None
 
     def _ct_patchify(self, src: torch.Tensor) -> tuple[torch.Tensor, PatchInfo]: ...
 
@@ -216,6 +218,7 @@ def prepare_encoder_input(
     src: torch.Tensor,
     padding_mask: torch.Tensor | None,
     active_mask: torch.Tensor | None,
+    value_mask: torch.Tensor | None = None,
 ) -> PreparedEncoderInput:
     """Project or patch encoder input and transform its token-aligned masks."""
     if src.ndim != 3:
@@ -232,7 +235,93 @@ def prepare_encoder_input(
             f"Sequence length {sequence_length} exceeds max {owner.max_seq_len}"
         )
 
+    if owner.use_variate_attention:
+        batch_size, _, num_variates = src.shape
+        value_mask_bvt = None
+        if value_mask is not None:
+            if value_mask.shape == (batch_size, sequence_length):
+                value_mask_bvt = value_mask[:, None, :].expand(-1, num_variates, -1)
+            elif value_mask.shape == (batch_size, num_variates, sequence_length):
+                value_mask_bvt = value_mask
+            elif value_mask.shape == (batch_size, sequence_length, num_variates):
+                value_mask_bvt = value_mask.transpose(1, 2)
+            else:
+                raise ValueError(
+                    "value_mask must be [B,T], [B,V,T], or [B,T,V], got "
+                    f"{tuple(value_mask.shape)}"
+                )
+            value_mask_bvt = value_mask_bvt.to(device=src.device, dtype=torch.bool)
+            src = src.masked_fill(value_mask_bvt.transpose(1, 2), 0.0)
+
+        hidden_states = src.transpose(1, 2).reshape(
+            batch_size * num_variates, sequence_length, 1
+        )
+        hidden_states = owner.input_adapter(hidden_states)
+        if value_mask_bvt is not None:
+            if owner.missing_token is None:
+                raise RuntimeError("variate value masking requires a missing token")
+            flat_value_mask = value_mask_bvt.reshape(
+                batch_size * num_variates, sequence_length, 1
+            )
+            hidden_states = (
+                hidden_states
+                + flat_value_mask.to(dtype=hidden_states.dtype) * owner.missing_token
+            )
+
+        def expand_variate_mask(mask: torch.Tensor | None, name: str):
+            if mask is None:
+                return None
+            if mask.shape == (batch_size, sequence_length):
+                mask = mask[:, None, :].expand(-1, num_variates, -1)
+            elif mask.shape == (batch_size, sequence_length, num_variates):
+                mask = mask.transpose(1, 2)
+            elif mask.shape != (batch_size, num_variates, sequence_length):
+                raise ValueError(
+                    f"{name} must be [B,T], [B,V,T], or [B,T,V], "
+                    f"got {tuple(mask.shape)}"
+                )
+            return mask.reshape(batch_size * num_variates, sequence_length)
+
+        padding_mask = expand_variate_mask(padding_mask, "src_key_padding_mask")
+        active_mask = expand_variate_mask(active_mask, "gateskip_active_mask")
+        patch_info = None
+        if owner.patch_encoder:
+            hidden_states, patch_info = owner.patcher(hidden_states)
+            padding_mask = patchify_padding_mask(
+                padding_mask,
+                T=sequence_length,
+                patch_len=owner.patch_len,
+                stride=owner.patch_stride,
+                pad_end=owner.patch_pad_end,
+            )
+            active_mask = patchify_gateskip_active_mask(
+                active_mask,
+                T=sequence_length,
+                patch_len=owner.patch_len,
+                stride=owner.patch_stride,
+                pad_end=owner.patch_pad_end,
+            )
+
+        token_length = hidden_states.shape[1]
+        if token_length > owner.max_seq_len:
+            raise ValueError(
+                f"Encoder token length {token_length} exceeds "
+                f"max_seq_len={owner.max_seq_len}"
+            )
+        hidden_states = hidden_states.reshape(
+            batch_size, num_variates, token_length, -1
+        )
+        if padding_mask is not None:
+            padding_mask = padding_mask.reshape(batch_size, num_variates, token_length)
+        if active_mask is not None:
+            active_mask = active_mask.reshape(batch_size, num_variates, token_length)
+        return PreparedEncoderInput(
+            hidden_states, padding_mask, active_mask, patch_info
+        )
+
     patch_info: PatchInfo | None = None
+    if value_mask is not None:
+        raise ValueError("value_mask requires use_variate_attention=True")
     if owner.ct_patchtst:
         hidden_states, patch_info = owner._ct_patchify(src)
         patch_len, stride, pad_end = (
