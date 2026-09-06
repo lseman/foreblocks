@@ -254,6 +254,38 @@ def triton_apply_rope(
     )
     return out_q, out_k
 
+def triton_apply_rope_pair(
+    q: torch.Tensor,  # [B, Hq, T, D]
+    k: torch.Tensor,  # [B, Hkv, T, D]
+    cos_q: torch.Tensor,  # [T_max, D//2]
+    sin_q: torch.Tensor,  # [T_max, D//2]
+    cos_k: torch.Tensor,  # [T_max, D//2]
+    sin_k: torch.Tensor,  # [T_max, D//2]
+    seqlen_offset: int | torch.Tensor = 0,
+    block_t: int | None = None,
+    interleaved: bool = False,
+    conjugate: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply RoPE to q and k with potentially different cos/sin tables.
+
+    Unlike triton_apply_rope (which applies the same cos/sin to both inputs),
+    this function accepts separate cos/sin for q and k, making it suitable for
+    scaled RoPE where k uses a different rotation schedule. Each tensor is
+    processed in its own kernel launch with only the necessary cos/sin data,
+    avoiding the 2x waste of applying both cos/sin pairs to both tensors.
+    """
+    if not _TRITON_AVAILABLE:
+        raise RuntimeError("Triton is not available")
+    if cos_q.dim() != 2 or sin_q.dim() != 2:
+        raise ValueError("triton_apply_rope_pair expects 2D cos/sin caches")
+    out_q = _triton_apply_rope_single_bhtd(
+        q, cos_q, sin_q, seqlen_offset, block_t, interleaved, conjugate=conjugate
+    )
+    out_k = _triton_apply_rope_single_bhtd(
+        k, cos_k, sin_k, seqlen_offset, block_t, interleaved, conjugate=conjugate
+    )
+    return out_q, out_k
+
 
 def triton_apply_rope_bthd(
     x: torch.Tensor,  # [B, T, H, D]

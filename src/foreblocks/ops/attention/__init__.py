@@ -230,11 +230,14 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fused_rope import triton_apply_rope
+    from foreblocks.ops.attention.fused_rope import triton_apply_rope, triton_apply_rope_pair
 except Exception:
 
     def triton_apply_rope(*args, **kwargs):  # type: ignore[misc]
         raise RuntimeError("Triton is not available; triton_apply_rope cannot be used.")
+
+    def triton_apply_rope_pair(*args, **kwargs):  # type: ignore[misc]
+        raise RuntimeError("Triton is not available; triton_apply_rope_pair cannot be used.")
 
 
 try:
@@ -289,4 +292,5 @@ __all__ = [
     "fla_kda_forward",
     "triton_paged_decode",
     "triton_apply_rope",
+    "triton_apply_rope_pair",
 ]

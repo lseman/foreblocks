@@ -13,6 +13,7 @@ Core API:
 
 """
 
+import torch.nn as nn
 import torch
 from torch import Tensor
 
@@ -611,6 +612,77 @@ class PagedKVCache:
             else:
                 parts.append(self.storage_latent[b, global_blk, :, :])
         return torch.cat(parts, dim=0)
+    def upproject_latent_stream(
+        self,
+        k_up_proj: nn.Module,
+        v_up_proj: nn.Module,
+    ) -> tuple[Tensor, Tensor]:
+        """Stream latent blocks through up-projection, returning [B, Hkv, T, D] K/V.
+
+        Avoids the O(T) Python loop overhead of gather_latent_batched by reading
+        blocks directly and up-projecting each one, then concatenating the result.
+        This is the fast path for MLA-mode paged decode where the stream-decode
+        kernel needs the full K/V tensor.
+        """
+        if not self.use_latent_cache:
+            raise RuntimeError("upproject_latent_stream requires latent cache mode.")
+        max_len = int(self.seq_len.max().item())
+        if max_len == 0:
+            empty = self.storage_latent.new_zeros((self.B, 0, self.latent_dim))
+            B_empty = empty.size(0)
+            return (
+                k_up_proj(empty).view(B_empty, 0, self.Hkv, self.D).transpose(1, 2),
+                v_up_proj(empty).view(B_empty, 0, self.Hkv, self.D).transpose(1, 2),
+            )
+
+        k_parts: list[Tensor] = []
+        v_parts: list[Tensor] = []
+        for b in range(self.B):
+            seq_len_b = int(self.seq_len[b].item())
+            if seq_len_b == 0 or not self.block_table[b]:
+                continue
+            parts_k: list[Tensor] = []
+            parts_v: list[Tensor] = []
+            blocks = self.block_table[b]
+            last_blk_idx = len(blocks) - 1
+            for blk_idx, global_blk in enumerate(blocks):
+                if blk_idx == last_blk_idx:
+                    offset = (
+                        self.write_pos[b][1]
+                        if blk_idx == self.write_pos[b][0]
+                        else self.block_size
+                    )
+                    latent_blk = self.storage_latent[b, global_blk, :offset, :]
+                else:
+                    latent_blk = self.storage_latent[b, global_blk, :, :]
+                # Up-project: [T_block, L] -> [T_block, Hkv, D]
+                k_blk = k_up_proj(latent_blk).view(
+                    latent_blk.size(0), self.Hkv, self.D
+                )
+                v_blk = v_up_proj(latent_blk).view(
+                    latent_blk.size(0), self.Hkv, self.D
+                )
+                # Transpose to [Hkv, T_block, D]
+                parts_k.append(k_blk.transpose(0, 1))
+                parts_v.append(v_blk.transpose(0, 1))
+            k_parts.append(torch.cat(parts_k, dim=1))  # [Hkv, seq_len_b, D]
+            v_parts.append(torch.cat(parts_v, dim=1))
+
+        # Build output [B, Hkv, T, D]
+        k_out = self.storage_k.new_zeros(
+            self.B, self.Hkv, max_len, self.D
+        )
+        v_out = self.storage_v.new_zeros(
+            self.B, self.Hkv, max_len, self.D
+        )
+        b_idx = 0
+        for b in range(self.B):
+            seq_len_b = int(self.seq_len[b].item())
+            if seq_len_b > 0 and b_idx < len(k_parts):
+                k_out[b, :, :seq_len_b, :] = k_parts[b_idx]
+                v_out[b, :, :seq_len_b, :] = v_parts[b_idx]
+                b_idx += 1
+        return k_out, v_out
 
     # ---------------------------------------------------------------------
     # Reset / stats

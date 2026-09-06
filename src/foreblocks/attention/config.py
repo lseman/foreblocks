@@ -26,7 +26,7 @@ class AttentionShapeConfig:
 
 @dataclass(frozen=True)
 class AttentionCacheConfig:
-    use_paged_cache: bool = True
+    use_paged_cache: bool = False
     block_size: int = 128
     max_blocks: int = 2048
     use_mla: bool = True

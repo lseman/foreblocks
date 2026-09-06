@@ -67,11 +67,25 @@ class DenseKVProvider(KVProvider):
         k_up_proj: nn.Module | None = None,
         v_up_proj: nn.Module | None = None,
     ):
-        self.layer_state = layer_state
+        self.layer_state = layer_state or {}
         self.cross_attention = cross_attention
         self.use_mla = bool(use_mla)
         self.k_up_proj = k_up_proj
         self.v_up_proj = v_up_proj
+        # Per-batch state (populated lazily on first batch_idx call)
+        self._batch_states: list[dict] | None = None
+
+    def _get_batch_state(self, b: int) -> dict:
+        """Get or create per-batch state dict."""
+        if self._batch_states is None:
+            # Initialize from existing layer_state keys (shared mode)
+            shared = dict(self.layer_state)
+            self._batch_states = [shared]
+        while len(self._batch_states) <= b:
+            # Copy shared state for new batch members
+            prev = self._batch_states[-1] if self._batch_states else {}
+            self._batch_states.append({k: v for k, v in prev.items()})
+        return self._batch_states[b]
 
     def get_kv(
         self,
@@ -83,9 +97,49 @@ class DenseKVProvider(KVProvider):
         if self.cross_attention:
             return new_k, new_v
 
-        if self.layer_state is None:
-            self.layer_state = {}
+        # Batched (per-token) mode
+        if batch_idx is not None:
+            state = self._get_batch_state(batch_idx)
+            if self.use_mla:
+                if kv_latent is None:
+                    raise ValueError("MLA path expects kv_latent in DenseKVProvider.get_kv")
+                if self.k_up_proj is None or self.v_up_proj is None:
+                    raise RuntimeError(
+                        "MLA projections are not configured in DenseKVProvider"
+                    )
+                prev_latent = state.get("kv_latent")
+                if isinstance(prev_latent, torch.Tensor):
+                    latent_full = torch.cat([prev_latent, kv_latent], dim=0)
+                else:
+                    latent_full = kv_latent
+                state["kv_latent"] = latent_full
+                T = latent_full.size(0)
+                Hkv = new_k.size(0)
+                D = new_k.size(1)
+                k_full = (
+                    self.k_up_proj(latent_full)
+                    .view(T, Hkv, D)
+                    .transpose(0, 1)
+                )
+                v_full = (
+                    self.v_up_proj(latent_full)
+                    .view(T, Hkv, D)
+                    .transpose(0, 1)
+                )
+                return k_full, v_full
 
+            prev_k = state.get("k")
+            prev_v = state.get("v")
+            if isinstance(prev_k, torch.Tensor):
+                k_full = torch.cat([prev_k, new_k], dim=1)
+                v_full = torch.cat([prev_v, new_v], dim=1)
+            else:
+                k_full, v_full = new_k, new_v
+            state["k"] = k_full
+            state["v"] = v_full
+            return k_full, v_full
+
+        # Shared (prefill) mode — concatenate across batch dim
         if self.use_mla:
             if kv_latent is None:
                 raise ValueError("MLA path expects kv_latent in DenseKVProvider.get_kv")
@@ -94,9 +148,10 @@ class DenseKVProvider(KVProvider):
                     "MLA projections are not configured in DenseKVProvider"
                 )
 
-            if "kv_latent" in self.layer_state:
+            prev_latent = self.layer_state.get("kv_latent")
+            if isinstance(prev_latent, torch.Tensor):
                 latent_full = torch.cat(
-                    [self.layer_state["kv_latent"], kv_latent], dim=1
+                    [prev_latent, kv_latent], dim=1
                 )
             else:
                 latent_full = kv_latent
@@ -115,9 +170,11 @@ class DenseKVProvider(KVProvider):
             )
             return k_full, v_full
 
-        if "k" in self.layer_state:
-            k_full = torch.cat([self.layer_state["k"], new_k], dim=2)
-            v_full = torch.cat([self.layer_state["v"], new_v], dim=2)
+        prev_k = self.layer_state.get("k")
+        prev_v = self.layer_state.get("v")
+        if isinstance(prev_k, torch.Tensor):
+            k_full = torch.cat([prev_k, new_k], dim=2)
+            v_full = torch.cat([prev_v, new_v], dim=2)
         else:
             k_full, v_full = new_k, new_v
 
@@ -132,20 +189,51 @@ class DenseKVProvider(KVProvider):
         batch_idx: int,
         kv_latent: torch.Tensor | None = None,
     ) -> None:
-        raise RuntimeError("DenseKVProvider.append is not used in batched mode.")
+        """Append new KV tokens for a single batch member.
+
+        Used when the caller wants to accumulate state incrementally
+        (e.g. during token-by-token decode) rather than calling get_kv
+        which triggers concatenation + up-projection on every call.
+        """
+        if self.use_mla:
+            if kv_latent is None:
+                raise ValueError("MLA append expects kv_latent.")
+            state = self._get_batch_state(batch_idx)
+            prev = state.get("kv_latent")
+            if isinstance(prev, torch.Tensor):
+                state["kv_latent"] = torch.cat([prev, kv_latent], dim=0)
+            else:
+                state["kv_latent"] = kv_latent
+            return
+
+        state = self._get_batch_state(batch_idx)
+        prev_k = state.get("k")
+        prev_v = state.get("v")
+        if isinstance(prev_k, torch.Tensor):
+            state["k"] = torch.cat([prev_k, k], dim=1)
+            state["v"] = torch.cat([prev_v, v], dim=1)
+        else:
+            state["k"] = k
+            state["v"] = v
 
     def get_current_length(self, batch_idx: int) -> int:
-        if self.cross_attention or self.layer_state is None:
+        if self.cross_attention:
             return 0
+        if self._batch_states is not None and 0 <= batch_idx < len(self._batch_states):
+            state = self._batch_states[batch_idx]
+        else:
+            state = self.layer_state
         if self.use_mla:
-            latent_prev = self.layer_state.get("kv_latent")
-            if isinstance(latent_prev, torch.Tensor):
-                return int(latent_prev.size(1))
+            latent = state.get("kv_latent")
+            if isinstance(latent, torch.Tensor):
+                return int(latent.size(0))  # per-batch: [T, L]
             return 0
-        k_prev = self.layer_state.get("k")
+        k_prev = state.get("k")
         if not isinstance(k_prev, torch.Tensor):
             return 0
-        return int(k_prev.size(2))
+        if self._batch_states is not None and 0 <= batch_idx < len(self._batch_states):
+            return int(k_prev.size(1))  # per-batch: [H, T]
+        return int(k_prev.size(2))  # shared mode: [B, H, T]
 
 
 class StaticKVCache:
@@ -390,12 +478,11 @@ class PagedKVProvider(KVProvider):
                     if self._is_active(b):
                         self.append(new_k[b], new_v[b], b, kv_latent=kv_latent[b])
 
-            latent = self.cache.gather_latent_batched()  # [B, T, L]
-            B, T, _ = latent.shape
-            Hkv = new_k.size(1)
-            D = new_k.size(3)
-            k = self.k_up_proj(latent).view(B, T, Hkv, D).transpose(1, 2)
-            v = self.v_up_proj(latent).view(B, T, Hkv, D).transpose(1, 2)
+            # Fast path: stream latent blocks through up-projection without
+            # materializing the full [B, T, L] latent tensor.
+            k, v = self.cache.upproject_latent_stream(
+                self.k_up_proj, self.v_up_proj
+            )
             return k, v
 
         if batch_idx is not None:

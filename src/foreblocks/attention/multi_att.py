@@ -50,7 +50,7 @@ from foreblocks.attention.variants.base import (
 )
 from foreblocks.attention.variants.registry import ATTENTION_VARIANTS
 from foreblocks.attention.variants.standard import StandardAttentionImpl
-from foreblocks.ops.attention import triton_apply_rope, triton_paged_decode
+from foreblocks.ops.attention import triton_apply_rope, triton_apply_rope_pair, triton_paged_decode
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -935,16 +935,14 @@ class MultiAttention(nn.Module):
                         seqlen_offset=seqlen_offset,
                     )
                 else:
-                    q_tr, _ = triton_apply_rope(
+                    # Scaled RoPE: different cos/sin for k. Use the dedicated
+                    # pair function so each tensor is processed with only its
+                    # own cos/sin tables (no wasted work processing both).
+                    q_tr, k_tr = triton_apply_rope_pair(
                         q,
                         k,
                         cos_q,
                         sin_q,
-                        seqlen_offset=seqlen_offset,
-                    )
-                    _, k_tr = triton_apply_rope(
-                        q,
-                        k,
                         cos_k,
                         sin_k,
                         seqlen_offset=seqlen_offset,
