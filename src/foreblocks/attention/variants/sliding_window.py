@@ -35,7 +35,9 @@ class SlidingWindowAttentionImpl:
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
-        q, k, v, _ = self.context._prepare_qkv_attention(query, key, value, layer_state)
+        q, k, v, q_start_pos = self.context._prepare_qkv_attention(
+            query, key, value, layer_state
+        )
 
         if (
             self.context.use_flash_sliding
@@ -48,6 +50,7 @@ class SlidingWindowAttentionImpl:
                     k.size(2),
                     q.device,
                     is_causal,
+                    q_start_pos=q_start_pos,
                 )
                 combined = window_mask.view(1, 1, q.size(2), k.size(2))
                 if attn_mask is not None:
@@ -86,6 +89,7 @@ class SlidingWindowAttentionImpl:
             is_causal,
             need_weights,
             apply_gate=True,
+            q_start_pos=q_start_pos,
         )
         return self.context._finalize_projected_output(out, B, T_q), weights, layer_state
 
@@ -99,10 +103,11 @@ class SlidingWindowAttentionImpl:
         is_causal,
         need_weights,
         apply_gate: bool = True,
+        q_start_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
-
+        q_start_pos = q_start_pos
         if T_q <= self.context.chunk_size:
             scores = torch.matmul(q, k.transpose(-2, -1)) * self.context.scale
             window_mask = self.context._create_sliding_window_mask(
@@ -142,8 +147,9 @@ class SlidingWindowAttentionImpl:
             scores = (
                 torch.matmul(q_chunk, k_chunk.transpose(-2, -1)) * self.context.scale
             )
-
             q_pos = torch.arange(i, end_i, device=q.device).unsqueeze(1)
+            if q_start_pos is not None:
+                q_pos = q_pos + q_start_pos
             k_pos = torch.arange(start_k, end_k, device=q.device).unsqueeze(0)
             if is_causal:
                 local_mask = (k_pos > q_pos) | (

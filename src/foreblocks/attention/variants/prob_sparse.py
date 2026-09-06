@@ -39,7 +39,9 @@ class ProbSparseAttentionImpl:
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
-        q, k, v, _ = self.context._prepare_qkv_attention(query, key, value, layer_state)
+        q, k, v, q_start_pos = self.context._prepare_qkv_attention(
+            query, key, value, layer_state
+        )
         out, weights = self._prob_sparse_attention(
             q,
             k,
@@ -48,6 +50,7 @@ class ProbSparseAttentionImpl:
             key_padding_mask,
             is_causal,
             need_weights,
+            q_start_pos,
         )
         return self.context._finalize_projected_output(out, B, T_q), weights, layer_state
 
@@ -60,6 +63,7 @@ class ProbSparseAttentionImpl:
         key_padding_mask: torch.Tensor | None,
         is_causal: bool,
         need_weights: bool,
+        q_start_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
@@ -93,7 +97,16 @@ class ProbSparseAttentionImpl:
         scores = torch.matmul(top_q, k.transpose(-2, -1)) * self.context.scale
 
         if is_causal and not self.context.cross_attention:
-            q_pos = top_idx.unsqueeze(-1)
+            if q_start_pos is not None:
+                # During autoregressive decoding: top_idx are relative positions,
+                # so add the cache offset to get absolute token positions.
+                batch = q.size(0)
+                offsets = q_start_pos.to(device=q.device, dtype=torch.long).view(
+                    batch, 1, 1, 1
+                )
+                q_pos = top_idx.unsqueeze(-1) + offsets
+            else:
+                q_pos = top_idx
             k_pos = torch.arange(T_k, device=q.device).view(1, 1, 1, T_k)
             scores = scores.masked_fill(k_pos > q_pos, float("-inf"))
 

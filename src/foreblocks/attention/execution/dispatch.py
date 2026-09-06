@@ -147,6 +147,7 @@ class AttentionKernelDispatcher:
                 dropout_p=context.dropout_p if context.training else 0.0,
                 scale=context.scale,
                 need_weights=need_weights,
+                causal=is_causal and not context.cross_attention,
             )
             out, weights = result if isinstance(result, tuple) else (result, None)
             return self._finalize(out), weights
@@ -177,9 +178,6 @@ class AttentionKernelDispatcher:
             else:
                 return self._finalize(out), None
 
-        if k.size(1) != q.size(1):
-            k = context._repeat_kv(k)
-            v = context._repeat_kv(v)
 
         scores = torch.matmul(q, k.transpose(-2, -1)) * context.scale
         scores = context._apply_learned_temperature(scores)

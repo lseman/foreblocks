@@ -980,6 +980,7 @@ class MultiAttention(nn.Module):
         T_k: int,
         device: torch.device,
         is_causal: bool = True,
+        q_start_pos: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return self.mask_processor.sliding_window(
             T_q,
@@ -987,6 +988,7 @@ class MultiAttention(nn.Module):
             window_size=self.window_size,
             device=device,
             is_causal=is_causal,
+            q_start_pos=q_start_pos,
         )
 
     def _apply_masks(

@@ -42,7 +42,9 @@ class NSAAttentionImpl:
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
-        q, k, v, _ = self.context._prepare_qkv_attention(query, key, value, layer_state)
+        q, k, v, q_start_pos = self.context._prepare_qkv_attention(
+            query, key, value, layer_state
+        )
         out, weights = self._nsa_attention(
             q,
             k,
@@ -51,6 +53,7 @@ class NSAAttentionImpl:
             key_padding_mask,
             is_causal,
             need_weights,
+            q_start_pos,
         )
         return self.context._finalize_projected_output(out, B, T_q), weights, layer_state
 
@@ -63,6 +66,7 @@ class NSAAttentionImpl:
         key_padding_mask: torch.Tensor | None,
         is_causal: bool,
         need_weights: bool,
+        q_start_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if self.context.nsa_gate_proj is None:
             return self.context._compute_attention(
@@ -83,6 +87,7 @@ class NSAAttentionImpl:
                 attn_mask,
                 key_padding_mask,
                 is_causal,
+                q_start_pos,
             )
         )
         selected_out = self._nsa_selected_blocks_branch(
@@ -95,6 +100,7 @@ class NSAAttentionImpl:
             block_scores,
             block_mask,
             block_size,
+            q_start_pos,
         )
         sliding_out, _ = SlidingWindowAttentionImpl(self.context).manual(
             q,
@@ -105,6 +111,7 @@ class NSAAttentionImpl:
             is_causal,
             need_weights=False,
             apply_gate=False,
+            q_start_pos=q_start_pos,
         )
 
         # Per-branch independent sigmoid gates g_c ∈ [0, 1] (paper Eq. 5).
@@ -128,6 +135,7 @@ class NSAAttentionImpl:
         attn_mask: torch.Tensor | None,
         key_padding_mask: torch.Tensor | None,
         is_causal: bool,
+        q_start_pos: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
@@ -198,6 +206,7 @@ class NSAAttentionImpl:
         block_scores: torch.Tensor,
         block_mask: torch.Tensor,
         block_size: int,
+        q_start_pos: torch.Tensor | None = None,
     ) -> torch.Tensor:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
@@ -222,11 +231,19 @@ class NSAAttentionImpl:
         scores = scores.masked_fill(~selected_tokens, float("-inf"))
 
         if is_causal and not self.context.cross_attention:
-            causal_mask = torch.triu(
-                torch.ones(T_q, T_k, device=q.device, dtype=torch.bool),
-                diagonal=1,
-            )
-            scores = scores.masked_fill(causal_mask.view(1, 1, T_q, T_k), float("-inf"))
+            if q_start_pos is not None:
+                # Use absolute positions for causal mask during decoding
+                q_pos = torch.arange(T_q, device=q.device).view(1, 1, T_q, 1)
+                # q_start_pos is [B], reshape to [B, 1, 1, 1] for proper broadcasting
+                q_pos = q_pos + q_start_pos.view(-1, 1, 1, 1)
+                k_pos = torch.arange(T_k, device=q.device).view(1, 1, 1, T_k)
+                causal = k_pos > q_pos
+            else:
+                causal = torch.triu(
+                    torch.ones(T_q, T_k, device=q.device, dtype=torch.bool),
+                    diagonal=1,
+                )
+        scores = scores.masked_fill(causal, float("-inf"))
 
         scores = self.context._apply_masks(scores, attn_mask, key_padding_mask)
 

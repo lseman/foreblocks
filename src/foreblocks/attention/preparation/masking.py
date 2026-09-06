@@ -70,9 +70,12 @@ class AttentionMaskProcessor:
         window_size: int,
         device: torch.device,
         is_causal: bool = True,
+        q_start_pos: torch.Tensor | None = None,
     ) -> torch.Tensor:
         query_index = torch.arange(query_length, device=device).unsqueeze(1)
         key_index = torch.arange(key_length, device=device).unsqueeze(0)
+        if q_start_pos is not None and is_causal:
+            query_index = query_index + q_start_pos
         if is_causal:
             return (key_index > query_index) | (
                 key_index < query_index - window_size + 1
@@ -170,9 +173,9 @@ def build_attention_mask(
 def to_additive_mask(blocked: torch.Tensor | None, *, dtype: torch.dtype):
     if blocked is None:
         return None
-    return torch.zeros(blocked.shape, device=blocked.device, dtype=dtype).masked_fill(
-        blocked, float("-inf")
-    )
+    return torch.full_like(
+        blocked, float("-inf"), dtype=dtype
+    ).masked_fill_(~blocked, 0.0)
 
 
 __all__ = [

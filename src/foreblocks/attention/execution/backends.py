@@ -118,12 +118,12 @@ def register_attention_backend(
 
 
 def _flash_attention_runner(
-    q, k, v, *, attention_mask=None, dropout_p=0.0, scale=None, **_
+    q, k, v, *, attention_mask=None, dropout_p=0.0, scale=None, causal=False, **_
 ):
     if attention_mask is not None:
-        additive = torch.zeros_like(attention_mask, dtype=q.dtype).masked_fill(
-            attention_mask, float("-inf")
-        )
+        additive = torch.full_like(
+            attention_mask, float("-inf"), dtype=q.dtype
+        ).masked_fill_(~attention_mask, 0.0)
         return F.scaled_dot_product_attention(
             q,
             k,
@@ -141,11 +141,13 @@ def _flash_attention_runner(
         v.transpose(1, 2),
         dropout_p=dropout_p,
         softmax_scale=scale,
-        causal=False,
+        causal=causal,
     ).transpose(1, 2)
 
 
-def _flex_attention_runner(q, k, v, *, attention_mask=None, scale=None, **_):
+def _flex_attention_runner(
+    q, k, v, *, attention_mask=None, scale=None, causal=False, **_
+):
     from torch.nn.attention.flex_attention import flex_attention
 
     score_mod = None
@@ -165,6 +167,7 @@ def _flex_attention_runner(q, k, v, *, attention_mask=None, scale=None, **_):
         score_mod=score_mod,
         scale=scale,
         enable_gqa=q.size(1) != k.size(1),
+        enable_causal=causal,
     )
 
 
