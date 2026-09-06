@@ -179,6 +179,9 @@ class AttentionKernelDispatcher:
                 return self._finalize(out), None
 
 
+        # GQA: repeat KV heads to match query heads
+        k, v = context._repeat_kv(k), context._repeat_kv(v)
+
         scores = torch.matmul(q, k.transpose(-2, -1)) * context.scale
         scores = context._apply_learned_temperature(scores)
         scores = context._apply_logit_softcap(scores)
