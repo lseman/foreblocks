@@ -841,15 +841,62 @@ class PagedKVCache:
                 )
         return cache
 
-    def to(self, device) -> "PagedKVCache":
-        return type(self).from_state_dict(self.state_dict(), device=device)
+    def reorder_cache(self, beam_idx: Tensor) -> "PagedKVCache":
+        """Reorder cache sequences according to beam indices.
+
+        Efficient in-place reordering that copies KV data from old blocks
+        into new block allocations, avoiding the full materialization
+        and CPU round-trip of state_dict().
+        """
+        if beam_idx.numel() == 0:
+            raise ValueError(
+                f"PagedKVCache.reorder_cache requires non-empty beam_idx, got {beam_idx.numel()}"
+            )
+
+        new_batch = int(beam_idx.numel())
+        order = beam_idx.cpu().tolist()
+        new_cache = type(self)(
+            new_batch, self.Hkv, self.D, self.latent_dim,
+            block_size=self.block_size, max_blocks=self.max_blocks,
+            device=self.storage_pos.device,
+        )
+
+        for out_b, src_b in enumerate(order):
+            src_b = int(src_b)
+            positions = self.gather_positions_for_seq(src_b)
+            if self.use_latent_cache:
+                latent = self.gather_latent_for_seq(src_b)
+                if positions.numel() == 0:
+                    new_cache.rewrite_seq_latent(
+                        out_b, latent[:0], positions[:0],
+                        int(self.get_seq_length(src_b)),
+                    )
+                else:
+                    new_cache.rewrite_seq_latent(
+                        out_b, latent, positions,
+                        int(self.get_seq_length(src_b)),
+                    )
+            else:
+                k, v = self.gather_kv_for_seq(src_b)
+                beta = self.gather_beta_for_seq(src_b)
+                if k.numel() == 0:
+                    new_cache.rewrite_seq_dense(
+                        out_b, k[:0], v[:0], positions[:0],
+                        beta_ht=None, logical_seq_len=int(self.get_seq_length(src_b)),
+                    )
+                else:
+                    new_cache.rewrite_seq_dense(
+                        out_b, k, v, positions,
+                        beta_ht=beta, logical_seq_len=int(self.get_seq_length(src_b)),
+                    )
+
+        return new_cache
 
     def batch_select(self, indices: Tensor) -> "PagedKVCache":
-        state = self.state_dict()
-        order = indices.cpu().tolist()
-        state["sequences"] = [state["sequences"][i] for i in order]
-        state["config"]["batch_size"] = len(order)
-        return type(self).from_state_dict(state, device=self.storage_pos.device)
+        return self.reorder_cache(indices)
+
+    def to(self, device) -> "PagedKVCache":
+        return type(self).from_state_dict(self.state_dict(), device=device)
 
     # Tiny helpers for debug / logging
     def get_seq_len(self, b: int) -> int:

@@ -67,7 +67,7 @@ class DenseKVProvider(KVProvider):
         k_up_proj: nn.Module | None = None,
         v_up_proj: nn.Module | None = None,
     ):
-        self.layer_state = layer_state or {}
+        self.layer_state = layer_state if layer_state is not None else {}
         self.cross_attention = cross_attention
         self.use_mla = bool(use_mla)
         self.k_up_proj = k_up_proj
@@ -226,7 +226,7 @@ class DenseKVProvider(KVProvider):
         if self.use_mla:
             latent = state.get("kv_latent")
             if isinstance(latent, torch.Tensor):
-                return int(latent.size(0))  # per-batch: [T, L]
+                return int(latent.size(1))  # shared/per-batch: [B, T, L]
             return 0
         k_prev = state.get("k")
         if not isinstance(k_prev, torch.Tensor):
@@ -376,8 +376,9 @@ class StaticKVCache:
     def to(self, device) -> "StaticKVCache":
         return type(self).from_state_dict(self.state_dict(), device=device)
 
-    def batch_select(self, indices: torch.LongTensor) -> "StaticKVCache":
-        selected = indices.to(self.keys.device)
+    def reorder_cache(self, beam_idx: torch.LongTensor) -> "StaticKVCache":
+        """Reorder cache sequences according to beam indices."""
+        selected = beam_idx.to(self.keys.device)
         cache = type(self)(
             selected.numel(),
             self.keys.size(1),
@@ -390,6 +391,9 @@ class StaticKVCache:
         cache.values.copy_(self.values.index_select(0, selected))
         cache.lengths.copy_(self.lengths.index_select(0, selected))
         return cache
+
+    def batch_select(self, indices: torch.LongTensor) -> "StaticKVCache":
+        return self.reorder_cache(indices)
 
 
 class StaticKVProvider(KVProvider):
