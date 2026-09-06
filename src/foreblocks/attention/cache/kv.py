@@ -342,13 +342,6 @@ class StaticKVCache:
         self.values.zero_()
         self.lengths.zero_()
 
-    def reorder_cache(self, beam_idx: torch.LongTensor) -> None:
-        self.keys.copy_(self.keys.index_select(0, beam_idx.to(self.keys.device)))
-        self.values.copy_(self.values.index_select(0, beam_idx.to(self.values.device)))
-        self.lengths.copy_(
-            self.lengths.index_select(0, beam_idx.to(self.lengths.device))
-        )
-
     def state_dict(self) -> dict:
         return {
             "keys": self.keys.detach().cpu(),

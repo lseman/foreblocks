@@ -24,6 +24,7 @@ Core API:
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -321,9 +322,14 @@ def gateskip_apply(
 def apply_skip_to_kv(
     updated: dict[str, torch.Tensor] | None,
     skip_mask: torch.Tensor,
-    prev_layer_state: dict[str, dict[str, torch.Tensor]] | None,
+    prev_layer_state: dict[str, Any] | None,
     attn_type: str,
 ) -> dict[str, torch.Tensor] | None:
+    """Apply skip mask to K/V for tokens routed through the previous layer.
+
+    Handles both flat k/v tensors and AttentionCacheState dicts containing
+    StaticKVCache/PagedKVCache objects.
+    """
     if updated is None:
         return updated
     if prev_layer_state is None:
@@ -334,6 +340,7 @@ def apply_skip_to_kv(
     prev_kv = prev_layer_state[attn_type]
     skip_expanded = skip_mask.unsqueeze(1).unsqueeze(-1)  # [B,1,T,1]
 
+    # Handle flat k/v tensors (legacy format)
     for key in ("k", "v"):
         if key not in updated or key not in prev_kv:
             continue
@@ -347,5 +354,29 @@ def apply_skip_to_kv(
             prev_tensor = prev_tensor.to(cur_tensor.dtype)
 
         updated[key] = torch.where(skip_expanded, prev_tensor, cur_tensor)
+
+    # Handle AttentionCacheState with KVCache objects
+    for cache_key in ("static_cache", "paged_cache"):
+        if cache_key not in prev_kv:
+            continue
+        prev_cache = prev_kv[cache_key]
+        # StaticKVCache has .keys and .values tensor attributes
+        if not hasattr(prev_cache, "keys") or not hasattr(prev_cache, "values"):
+            continue
+        cur_cache = updated.get(cache_key)
+        if cur_cache is None or not hasattr(cur_cache, "keys"):
+            continue
+        # Skip tokens whose K/V should come from previous layer
+        T_cur = cur_cache.keys.size(2)
+        if skip_expanded.size(2) > T_cur:
+            se = skip_expanded[:, :, :T_cur, :]
+        else:
+            se = skip_expanded
+        cur_cache.keys.copy_(
+            torch.where(se, prev_cache.keys, cur_cache.keys)
+        )
+        cur_cache.values.copy_(
+            torch.where(se, prev_cache.values, cur_cache.values)
+        )
 
     return updated
