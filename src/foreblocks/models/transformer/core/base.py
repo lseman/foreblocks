@@ -864,6 +864,44 @@ class BaseTransformer(nn.Module, ABC):
         if self.training and self.mod_budget_scheduler is not None:
             self.mod_budget_scheduler.step()
 
+    def _run_mod_layer(
+        self,
+        layer_idx: int,
+        x: torch.Tensor,
+        gateskip_active_mask: torch.Tensor | None,
+        all_hidden_states: list[torch.Tensor] | None,
+        router_states: list[object],
+        invoke_fn: Callable[
+            [nn.Module, torch.Tensor, torch.Tensor | None],
+            tuple[torch.Tensor, object],
+        ],
+    ) -> tuple[torch.Tensor, bool]:
+        """Run one layer through Mixture-of-Depths routing.
+
+        Encapsulates the shared MoD pattern: prepare routing → gather routed
+        inputs → invoke layer → return routed output and whether the layer was used.
+
+        Parameters
+        ----------
+        invoke_fn:
+            Called as ``invoke_fn(layer, routed_indices, routed_slots)``.
+            Must return ``(x_routed, x_routed_out)`` where ``x_routed_out`` is
+            the layer's processed output.  The callable is responsible for
+            gathering tokens/masks and invoking the correct layer method.
+        """
+        layer, _, _, routed_indices, routed_slots = (
+            self._prepare_layer_routing(layer_idx, x, gateskip_active_mask)
+        )
+
+        if routed_indices is None:
+            return x, False
+
+        _, x_routed_out = invoke_fn(layer, routed_indices, routed_slots)
+        if all_hidden_states is not None:
+            all_hidden_states.append(x_routed_out)
+
+        return x_routed_out, True
+
 
 __all__ = [
     "BaseTransformerLayer",

@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from foreblocks.models.transformer.core.decoder import TransformerDecoder
     from foreblocks.models.transformer.core.encoder import TransformerEncoder
     from foreblocks.models.transformer.tuner import (
-        ModernTransformerTuner,
+        TransformerTuner,
     )
     from foreblocks.modules.blocks.enc_dec import (
         GRUDecoder,
@@ -60,7 +60,7 @@ __all__ = [
     "GRUDecoder",
     "TransformerEncoder",
     "TransformerDecoder",
-    "ModernTransformerTuner",
+    "TransformerTuner",
     "AttentionLayer",
 ]
 
@@ -74,10 +74,6 @@ def __getattr__(name):
         "GRUEncoder": (".modules.blocks.enc_dec", "GRUEncoder"),
         "LSTMDecoder": (".modules.blocks.enc_dec", "LSTMDecoder"),
         "LSTMEncoder": (".modules.blocks.enc_dec", "LSTMEncoder"),
-        "ModernTransformerTuner": (
-            ".models.transformer.tuner",
-            "ModernTransformerTuner",
-        ),
         "ModelConfig": (".config", "ModelConfig"),
         "ModelEvaluator": (".core.evaluation", "ModelEvaluator"),
         "TimeSeriesDataset": (".data", "TimeSeriesDataset"),
@@ -90,6 +86,10 @@ def __getattr__(name):
         "TransformerEncoder": (
             ".models.transformer.core.encoder",
             "TransformerEncoder",
+        ),
+        "TransformerTuner": (
+            ".models.transformer.tuner",
+            "TransformerTuner",
         ),
         "TimeSeriesHandler": (".ts_handler", "TimeSeriesHandler"),
         "create_dataloaders": (".data", "create_dataloaders"),

@@ -1,6 +1,6 @@
 """foreblocks.models.transformer.
 
-Re-exports the ModernTransformerTuner for auto-hyperparameter selection.
+Re-exports the TransformerTuner for auto-hyperparameter selection.
 
 """
 
@@ -31,7 +31,7 @@ from foreblocks.models.transformer.runtime.routing import (
     scatter_mixture_of_depths_output,
 )
 from foreblocks.models.transformer.tuner import (
-    ModernTransformerTuner,
+    TransformerTuner,
 )
 
 if TYPE_CHECKING:
@@ -43,8 +43,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AttentionMode",
     "GenerationConfig",
-    "ModernTransformerTuner",
-    "MixingTransformer",
+    "TransformerTuner",
     "StackedMixingTransformer",
     "TransformerDecoderOutput",
     "TransformerEncoderOutput",

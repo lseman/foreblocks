@@ -65,7 +65,6 @@ from foreblocks.models.transformer.runtime.routing import (
     gather_padding_mask,
     gather_sequence_tokens,
     gather_square_mask,
-    run_mod_layer,
 )
 from foreblocks.modules.skip.gateskip import ResidualGate
 from foreblocks.ui.node_spec import node
@@ -805,7 +804,7 @@ class TransformerEncoder(BaseTransformer):
         for i in range(self.num_layers):
             if self.use_mod:
 
-                def gather_and_invoke(layer, routed_indices, routed_slots):
+                def invoke_routed(layer, routed_indices, routed_slots):
                     nonlocal streams
                     x_routed = gather_sequence_tokens(x, routed_indices)
                     src_mask_routed = gather_square_mask(src_mask, routed_indices)
@@ -824,14 +823,13 @@ class TransformerEncoder(BaseTransformer):
                     )
                     return x_routed, x_routed_out
 
-                x, was_used = run_mod_layer(
-                    self,
+                x, was_used = self._run_mod_layer(
                     i,
                     x,
                     gateskip_active_mask,
                     all_hidden_states,
                     router_states,
-                    gather_and_invoke,
+                    invoke_routed,
                 )
                 if was_used:
                     used_indices.append(i)

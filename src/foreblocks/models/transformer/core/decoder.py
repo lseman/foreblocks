@@ -61,7 +61,6 @@ from foreblocks.models.transformer.runtime.routing import (
     gather_query_mask,
     gather_sequence_tokens,
     gather_square_mask,
-    run_mod_layer,
 )
 from foreblocks.models.transformer.runtime.state import (
     AttentionCacheState,
@@ -836,8 +835,7 @@ class TransformerDecoder(BaseTransformer):
                     )
                     return x_routed, x_routed_out
 
-                x, was_used = run_mod_layer(
-                    self,
+                x, was_used = self._run_mod_layer(
                     i,
                     x,
                     gateskip_active_mask,

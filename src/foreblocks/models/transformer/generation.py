@@ -1,19 +1,7 @@
-"""Generation-time configuration, independent from decoder model construction."""
+"""Generation-time configuration (re-exported from config module)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class GenerationConfig:
-    max_new_tokens: int = 1
-    return_dict: bool = True
-    use_cache: bool = True
-
-    def __post_init__(self) -> None:
-        if self.max_new_tokens < 0:
-            raise ValueError("max_new_tokens must be non-negative")
-
+from foreblocks.models.transformer.config import GenerationConfig
 
 __all__ = ["GenerationConfig"]

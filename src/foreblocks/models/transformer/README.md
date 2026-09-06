@@ -10,9 +10,10 @@ decoding (greedy / beam / speculative).
 
 ```
 transformer/
-├── config.py           # TransformerConfig, AttentionMode, ResidualConfig, CacheConfig
-├── generation.py        # GenerationConfig (generation-time knobs, not model config)
-├── tuner.py             # ModernTransformerTuner: signal-analysis-driven auto-config
+├── config.py            # TransformerConfig, AttentionMode, ResidualConfig, CacheConfig, GenerationConfig
+├── generation.py        # Re-export submodule (for backward compat)
+├── tuner.py             # TransformerTuner: signal-analysis-driven auto-config
+├── tuner_utils.py       # Signal-analysis utility functions extracted from tuner.py
 ├── core/                 # Layer + model classes (the public nn.Module surface)
 │   ├── base.py            # BaseTransformerLayer, BaseTransformer (shared ABC)
 │   ├── attention_backends.py  # LazyAttentionBackendMixin + backend registry

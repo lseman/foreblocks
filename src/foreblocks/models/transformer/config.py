@@ -424,10 +424,26 @@ class TransformerConfig:
         return kwargs
 
 
+@dataclass(frozen=True)
+class GenerationConfig:
+    """Generation-time configuration, independent from decoder model construction."""
+
+    max_new_tokens: int = 1
+    return_dict: bool = True
+    use_cache: bool = True
+
+    def __post_init__(self) -> None:
+        if self.max_new_tokens < 0:
+            raise ValueError("max_new_tokens must be non-negative")
+
+
+
+
 __all__ = [
     "AttentionConfig",
     "AttentionMode",
     "CacheConfig",
+    "GenerationConfig",
     "ResidualConfig",
     "TransformerConfig",
 ]
