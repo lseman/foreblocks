@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 
 def causal_padding(

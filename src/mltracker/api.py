@@ -77,8 +77,10 @@ app.add_middleware(
 
 
 def _mount_dashboard_static() -> None:
-    base_dir = Path(__file__).parent
-    v2_dist_dir = base_dir / "dashboard_v2" / "dist"
+    # apps/mltracker-dashboard, resolved the same way foreblocks.studio_server
+    # resolves apps/webui/dist: repo_root = src/mltracker/api.py -> src -> repo root.
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    v2_dist_dir = repo_root / "apps" / "mltracker-dashboard" / "dist"
 
     if v2_dist_dir.exists():
         app.mount(
@@ -154,7 +156,7 @@ def _run_duration_sql() -> str:
 def _coerce_float(value: Any) -> float | None:
     try:
         x = float(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
     if x != x:
         return None

@@ -115,7 +115,6 @@ class DARTSCell(nn.Module):
                 "PyramidConv",
                 "PatchEmbed",
                 "InvertedAttention",
-                "iTransformerBlock",
                 "TimeMixer",
                 "NBeats",
                 "TimesNet",

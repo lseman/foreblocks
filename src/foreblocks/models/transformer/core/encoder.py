@@ -67,7 +67,7 @@ from foreblocks.models.transformer.runtime.routing import (
     gather_square_mask,
 )
 from foreblocks.modules.skip.gateskip import ResidualGate
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 
 class TransformerEncoderLayer(

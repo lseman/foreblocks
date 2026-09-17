@@ -73,7 +73,7 @@ python -m pip install -v -e .
 ## Test
 
 ```bash
-python test_custom_att.py
+python benchmarks/attention_kernels/test_custom_att.py
 ```
 
 ## Use

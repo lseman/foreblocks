@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.layers.norms import create_norm_layer  # your norm factory
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 
 # ------------------------------------------------------------

@@ -26,8 +26,8 @@ That structure makes it easier to debug, benchmark, and reason about the search 
 | search-space definition | `darts/config.py` | defines architecture modes, op pools, and search budgets |
 | candidate generation | `darts/search/orchestrator.py` | samples candidate configs and coordinates evaluation |
 | zero-cost ranking | `darts/search/zero_cost.py` | computes cheap pre-training metrics |
-| bilevel search training | `darts/training/darts_loop.py` | runs the mixed-architecture DARTS phase |
-| multi-fidelity orchestration | `darts/search/multi_fidelity.py` | promotes top candidates and manages staged budgets |
+| bilevel search training | `darts/training/training_loop.py` | runs the mixed-architecture DARTS phase |
+| multi-fidelity orchestration | `darts/search/search.py` | promotes top candidates and manages staged budgets |
 | final fixed-model retraining | `darts/training/final_trainer.py` | retrains the derived architecture |
 | result analysis | `darts/evaluation/analyzer.py` | builds search-result summaries and plots |
 | public entry surface | `darts/trainer.py` | exposes the staged workflow as `DARTSTrainer` methods |
@@ -45,9 +45,9 @@ Internally, the call chain is roughly:
 
 ```text
 DARTSTrainer.multi_fidelity_search(...)
-  -> search/multi_fidelity.py
+  -> search/search.py (run_multi_fidelity_search)
       -> search/orchestrator.py
       -> search/zero_cost.py
-      -> training/darts_loop.py
+      -> training/training_loop.py
       -> trainer.derive_final_architecture(...)
       -> training/final_trainer.py

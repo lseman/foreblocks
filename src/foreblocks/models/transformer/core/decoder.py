@@ -70,7 +70,7 @@ from foreblocks.models.transformer.runtime.state import (
 from foreblocks.attention.cache.kv import StaticKVCache
 from foreblocks.attention.multi_att import MultiAttention
 from foreblocks.modules.skip.gateskip import ResidualGate
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 
 class TransformerDecoderLayer(

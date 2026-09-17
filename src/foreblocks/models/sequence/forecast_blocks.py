@@ -22,7 +22,7 @@ from collections.abc import Callable
 import torch
 import torch.nn as nn
 
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 
 class _SequenceModelBlock(nn.Module):

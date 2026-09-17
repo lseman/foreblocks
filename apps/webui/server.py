@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 # ──────────────────────────────────────────────────────────────────────────────
 # Node discovery endpoints you included
 # ──────────────────────────────────────────────────────────────────────────────
-from foreblocks.ui.discovery import categories_map, discover_nodes  # noqa
+from foreblocks.studio.discovery import categories_map, discover_nodes  # noqa
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.layers.embeddings import PositionalEncoding
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 
 @node(

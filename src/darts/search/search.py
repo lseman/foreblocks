@@ -89,6 +89,10 @@ def run_multi_fidelity_search(
         retrain_final_from_scratch: Re-initialise model weights before phase 5.
         discrete_arch_threshold: Threshold for ``derive_discrete_architecture``.
         phase1_progress:  If True, show a tqdm bar as phase-1 candidates finish.
+        candidate_timeout: Per-candidate wall-clock budget (seconds) for phase-1
+                          zero-cost evaluation; the outer budget is
+                          ``candidate_timeout * num_candidates``. Passed via
+                          ``**kwargs``. Default 120.0.
 
     Returns:
         Dict with keys: ``final_model``, ``candidates``, ``top_candidates``,
@@ -141,6 +145,10 @@ def run_multi_fidelity_search(
         # makes the run look stuck when one candidate is slow.
         effective_phase1_workers = 1
 
+    # Previously a hardcoded constant buried in orchestrator.py/trainer.py
+    # with no way to tune it per search-space size or epoch budget; now a
+    # documented MultiFidelitySearchConfig field (see config.py).
+    candidate_timeout = float(kwargs.pop("candidate_timeout", 120.0))
     phase1_rescore_mode = str(kwargs.pop("phase1_rescore_mode", "pool")).lower()
     phase3_reduction_factor = max(2, int(kwargs.pop("phase3_reduction_factor", 2)))
     phase3_min_epoch_budget = max(1, int(kwargs.pop("phase3_min_epoch_budget", 2)))
@@ -250,6 +258,7 @@ def run_multi_fidelity_search(
         error_log_fn=lambda e: logger.warning(
             f"[P1] future error ({type(e).__name__}): {e!r}"
         ),
+        candidate_timeout=candidate_timeout,
     )
     t_p1 = time.perf_counter() - t_p1_0
 

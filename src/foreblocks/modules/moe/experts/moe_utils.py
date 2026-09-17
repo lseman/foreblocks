@@ -59,7 +59,7 @@ def supports_grouped_prepacked() -> bool:
         return False
 
 
-@torch.jit.script
+@torch.compile
 def optimized_topk_routing(logits: torch.Tensor, k: int):
     if k == 1:
         top_v, top_i = torch.max(logits, dim=-1, keepdim=True)

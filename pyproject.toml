@@ -36,7 +36,7 @@ classifiers = [
 # Keep the default install focused on the modeling stack.
 # Heavier scientific, preprocessing, tracking, and analysis features live in extras.
 dependencies = [
-  "torch>=2.0",  # SDPBackend, autocast, compile — 2.x API used throughout
+  "torch>=2.0,<3.0",  # SDPBackend, autocast, compile — 2.x API used throughout
   "numpy>=1.24",
   "einops>=0.6", # tf/embeddings/rotary.py, third_party/flash_softpick_attn
   "tqdm>=4.64",  # training loops, preprocessing progress bars
@@ -149,6 +149,8 @@ include = [
   "foretools.*",
   "darts",
   "darts.*",
+  "mltracker",
+  "mltracker.*",
 ]
 
 

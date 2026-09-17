@@ -865,240 +865,25 @@ class Trainer:
         do_update: bool = False,
     ) -> plt.Figure:  # type: ignore[name-defined]
         _viz._require_matplotlib()
-
-        if (
-            self.conformal_engine is None
-            or getattr(self.conformal_engine, "radii", None) is None
-        ):
-            raise RuntimeError(
-                "Conformal engine not calibrated. Call calibrate_conformal() first."
-            )
-
-        val_loader = DataLoader(
-            TensorDataset(X_val, y_val), batch_size=256, shuffle=False
+        return _viz.plot_intervals(
+            self,
+            X_val,
+            y_val,
+            full_series,
+            time_index,
+            offset,
+            stride,
+            figsize,
+            show,
+            names,
+            interval_alpha,
+            pred_color,
+            interval_color,
+            aggregation,
+            show_width_plot,
+            min_count,
+            do_update,
         )
-        preds, lower, upper, y_stream = self.predict_with_intervals_streaming(
-            val_loader,
-            do_update=do_update,
-            return_numpy=True,
-        )
-
-        N, H, D = preds.shape
-        seq_len = X_val.shape[1]
-
-        if full_series is None:
-            raise ValueError("full_series must be provided for time-aligned plotting.")
-
-        series = (
-            full_series.detach().cpu().numpy()
-            if isinstance(full_series, torch.Tensor)
-            else full_series
-        )
-        if series.ndim == 1:
-            series = series[:, None]
-
-        T, S_dim = series.shape
-        D_plot = min(D, S_dim)
-        names = names or [f"Feature {i}" for i in range(D_plot)]
-
-        starts = offset + seq_len + np.arange(N) * stride
-        coverage_end = min(int(starts[-1] + H), T)
-        if time_index is None:
-            xs = np.arange(coverage_end)
-            first_forecast_x = offset + seq_len
-            xlabel = "Time Step"
-        else:
-            xs_full = np.asarray(time_index)
-            if xs_full.ndim != 1:
-                raise ValueError("time_index must be 1-dimensional.")
-            if len(xs_full) < coverage_end:
-                raise ValueError(
-                    f"time_index must have at least {coverage_end} elements, got {len(xs_full)}."
-                )
-            if offset + seq_len >= len(xs_full):
-                raise ValueError(
-                    f"time_index must include the first forecast boundary at {offset + seq_len}."
-                )
-            xs = xs_full[:coverage_end]
-            first_forecast_x = xs_full[offset + seq_len]
-            xlabel = "Time"
-
-        count = np.zeros((T,))
-
-        # Initialize based on aggregation method
-        if aggregation == "envelope":
-            agg_pred = np.zeros((T, D_plot))
-            agg_low = np.full((T, D_plot), np.inf)
-            agg_up = np.full((T, D_plot), -np.inf)
-            for k in range(N):
-                start = int(starts[k])
-                if start >= T:
-                    continue
-                end = min(start + H, T)
-                h = end - start
-                if h <= 0:
-                    continue
-                for j in range(D_plot):
-                    pred_col = j if j < D else 0
-                    agg_pred[start:end, j] += preds[k, :h, pred_col]
-                    agg_low[start:end, j] = np.minimum(
-                        agg_low[start:end, j], lower[k, :h, pred_col]
-                    )
-                    agg_up[start:end, j] = np.maximum(
-                        agg_up[start:end, j], upper[k, :h, pred_col]
-                    )
-                count[start:end] += 1
-            have = count >= min_count
-            mean_pred = np.zeros_like(agg_pred)
-            mean_pred[have] = agg_pred[have] / count[have, None]
-            mean_low = np.where(agg_low == np.inf, 0, agg_low)
-            mean_up = np.where(agg_up == -np.inf, 0, agg_up)
-
-        elif aggregation == "last":
-            mean_pred = np.full((T, D_plot), np.nan)
-            mean_low = np.full((T, D_plot), np.nan)
-            mean_up = np.full((T, D_plot), np.nan)
-            for k in range(N):
-                start = int(starts[k])
-                if start >= T:
-                    continue
-                end = min(start + H, T)
-                h = end - start
-                if h <= 0:
-                    continue
-                for j in range(D_plot):
-                    pred_col = j if j < D else 0
-                    mean_pred[start:end, j] = preds[k, :h, pred_col]
-                    mean_low[start:end, j] = lower[k, :h, pred_col]
-                    mean_up[start:end, j] = upper[k, :h, pred_col]
-                count[start:end] += 1
-            have = (~np.isnan(mean_pred[:, 0])) & (count >= min_count)
-
-        elif aggregation == "min_width":
-            mean_pred = np.full((T, D_plot), np.nan)
-            mean_low = np.full((T, D_plot), np.nan)
-            mean_up = np.full((T, D_plot), np.nan)
-            min_width = np.full((T, D_plot), np.inf)
-            for k in range(N):
-                start = int(starts[k])
-                if start >= T:
-                    continue
-                end = min(start + H, T)
-                h = end - start
-                if h <= 0:
-                    continue
-                for j in range(D_plot):
-                    pred_col = j if j < D else 0
-                    width_k = upper[k, :h, pred_col] - lower[k, :h, pred_col]
-                    for t_idx, t in enumerate(range(start, end)):
-                        if width_k[t_idx] < min_width[t, j]:
-                            min_width[t, j] = width_k[t_idx]
-                            mean_pred[t, j] = preds[k, t_idx, pred_col]
-                            mean_low[t, j] = lower[k, t_idx, pred_col]
-                            mean_up[t, j] = upper[k, t_idx, pred_col]
-                count[start:end] += 1
-            have = (~np.isnan(mean_pred[:, 0])) & (count >= min_count)
-
-        else:  # "mean"
-            acc_pred = np.zeros((T, D_plot))
-            acc_low = np.zeros((T, D_plot))
-            acc_up = np.zeros((T, D_plot))
-            for k in range(N):
-                start = int(starts[k])
-                if start >= T:
-                    continue
-                end = min(start + H, T)
-                h = end - start
-                if h <= 0:
-                    continue
-                for j in range(D_plot):
-                    pred_col = j if j < D else 0
-                    acc_pred[start:end, j] += preds[k, :h, pred_col]
-                    acc_low[start:end, j] += lower[k, :h, pred_col]
-                    acc_up[start:end, j] += upper[k, :h, pred_col]
-                count[start:end] += 1
-            have = count >= min_count
-            mean_pred = np.zeros_like(acc_pred)
-            mean_low = np.zeros_like(acc_low)
-            mean_up = np.zeros_like(acc_up)
-            for j in range(D_plot):
-                mean_pred[have, j] = acc_pred[have, j] / count[have]
-                mean_low[have, j] = acc_low[have, j] / count[have]
-                mean_up[have, j] = acc_up[have, j] / count[have]
-
-        interval_widths = mean_up - mean_low
-        n_rows = D_plot + (1 if show_width_plot else 0)
-
-        fig, axes = plt.subplots(
-            n_rows, 1, figsize=(figsize[0], figsize[1] * n_rows), sharex=True
-        )
-        axes = np.atleast_1d(axes)
-
-        for j in range(D_plot):
-            ax = axes[j]
-            ax.plot(
-                xs,
-                series[:coverage_end, j],
-                label=f"Actual {names[j]}",
-                alpha=0.8,
-                linewidth=1,
-            )
-            mask = have[:coverage_end]
-            if mask.any():
-                yp = mean_pred[:coverage_end, j]
-                yl = mean_low[:coverage_end, j]
-                yu = mean_up[:coverage_end, j]
-                ax.plot(
-                    xs[mask],
-                    yp[mask],
-                    label=f"Predicted {names[j]}",
-                    linestyle="--",
-                    color=pred_color,
-                    linewidth=1,
-                )
-                ax.fill_between(
-                    xs[mask],
-                    yl[mask],
-                    yu[mask],
-                    color=interval_color,
-                    alpha=interval_alpha,
-                    label=f"Interval ({aggregation})",
-                )
-            ax.axvline(
-                first_forecast_x,
-                color="gray",
-                linestyle="--",
-                alpha=0.5,
-                label="First forecast",
-            )
-            ax.set_title(f"{names[j]} — Forecast with Conformal Intervals")
-            ax.legend(loc="upper left", fontsize=8)
-            ax.grid(True, alpha=0.3)
-
-        if show_width_plot:
-            ax_width = axes[-1]
-            for j in range(D_plot):
-                mask = have[:coverage_end]
-                widths_j = interval_widths[:coverage_end, j]
-                ax_width.plot(
-                    xs[mask],
-                    widths_j[mask],
-                    label=f"Width {names[j]}",
-                    alpha=0.8,
-                    linewidth=1,
-                )
-            ax_width.axvline(first_forecast_x, color="gray", linestyle="--", alpha=0.5)
-            ax_width.set_ylabel("Interval Width")
-            ax_width.set_title("Adaptive Interval Widths Over Time")
-            ax_width.legend(loc="upper left", fontsize=8)
-            ax_width.grid(True, alpha=0.3)
-
-        axes[-1].set_xlabel(xlabel)
-        plt.tight_layout()
-
-        if show:
-            plt.show()
-        return fig
 
     def plot_violation_heatmap_streaming(
         self,
@@ -1110,52 +895,12 @@ class Trainer:
         sequential: bool | None = None,
     ) -> plt.Figure:  # type: ignore[name-defined]
         _viz._require_matplotlib()
-
-        if (
-            self.conformal_engine is None
-            or getattr(self.conformal_engine, "radii", None) is None
-        ):
-            raise RuntimeError(
-                "Conformal engine not calibrated. Call calibrate_conformal() first."
-            )
-
-        preds, L, U, y_true = self.predict_with_intervals_streaming(
+        return _viz.plot_violation_heatmap_streaming(
+            self,
             dataloader,
-            do_update=do_update,
-            return_numpy=True,
-            sequential=sequential,
+            feature,
+            do_update,
+            figsize,
+            show,
+            sequential,
         )
-
-        N, H, D = L.shape
-        j = int(feature)
-        if j < 0 or j >= D:
-            raise ValueError(f"feature index out of range: {j} (D={D})")
-
-        covered = (y_true >= L) & (y_true <= U)
-        miss = ~covered[:, :, j]
-
-        fig, ax = plt.subplots(figsize=figsize)
-        binary_cmap = ListedColormap(["white", "black"])
-        im = ax.imshow(
-            miss.astype(float),
-            aspect="auto",
-            interpolation="nearest",
-            cmap=binary_cmap,
-            vmin=0,
-            vmax=1,
-        )
-
-        ax.set_xlabel("Horizon")
-        ax.set_ylabel("Window index (stream order)")
-        ax.set_title(f"Conformal Misses — feature={j}")
-        ax.set_xticks(np.arange(H))
-        ax.set_xticklabels([str(h + 1) for h in range(H)])
-
-        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_ticks([0.25, 0.75])
-        cbar.set_ticklabels(["Covered", "Miss"])
-
-        plt.tight_layout()
-        if show:
-            plt.show()
-        return fig

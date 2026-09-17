@@ -281,9 +281,7 @@ ForeBlocks now uses a structured configuration system for transformers and atten
 
 ## Transformer Tuner
 
-ForeBlocks provides `ModernTransformerTuner` for auto-hyperparameter selection and feature analysis. The tuner has been modernized and now includes:
+ForeBlocks provides `TransformerTuner` for auto-hyperparameter selection and feature analysis:
 
 - **Lempel-Ziv complexity** analysis for sequence structure
 - **Continuous Wavelet Transform (CWT) energy** features for frequency domain analysis
-
-Note: `TransformerTuner` has been removed; use `ModernTransformerTuner` instead.

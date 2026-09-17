@@ -1,7 +1,0 @@
-# Build artifacts that bloat the graph
-apps/webui/dist/
-src/mltracker/dashboard_v2/dist/
-tree/build/
-
-# Docs build output (Vite chunks)
-site/docs/assets/

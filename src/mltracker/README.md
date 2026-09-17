@@ -49,13 +49,8 @@ mltracker/
 │   # - Parameter inspection
 │   # - Quick experiment management
 │
-├── dashboard_v2/                 # Web dashboard implementation (v2)
-│   # Modern web-based dashboard:
-│   # - Experiment visualization
-│   # - Metric comparison charts
-│   # - Parameter analysis
-│   # - Model performance dashboards
-│   # - Interactive filtering and sorting
+│   # (dashboard_v2 frontend now lives at apps/mltracker-dashboard/, served
+│   # from its built apps/mltracker-dashboard/dist/ via mltracker.api)
 │
 ├── mltracker_data/               # Data storage for MLTracker
 │   # Experiment data, metrics, and artifacts storage

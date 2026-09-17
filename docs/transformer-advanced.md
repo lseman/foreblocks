@@ -766,12 +766,10 @@ history = trainer.train(train_dl, val_dl, epochs=50)
 
 ## Transformer Tuner Features
 
-`ModernTransformerTuner` provides auto-hyperparameter selection and advanced feature analysis:
+`TransformerTuner` provides auto-hyperparameter selection and advanced feature analysis:
 
 - **Lempel-Ziv complexity**: Measures sequence compressibility and structural regularity
 - **CWT (Continuous Wavelet Transform) energy**: Captures frequency domain characteristics and periodic patterns
-
-Note: `TransformerTuner` has been removed; use `ModernTransformerTuner` for all tuner functionality.
 
 ## References
 

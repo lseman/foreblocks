@@ -15,7 +15,7 @@ Core API:
 
 from collections.abc import Callable
 
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 
 @node(

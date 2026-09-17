@@ -87,6 +87,17 @@ class ArchitectureConverter:
 
     @staticmethod
     def create_fixed_encoder(mixed_encoder, **kwargs) -> FixedEncoder:
+        # Explicit overrides (e.g. from a recorded Genotype) take priority
+        # over auto-resolution from the mixed encoder's current alphas —
+        # popped before the `**kwargs` passthrough below so they cannot
+        # collide with the same-named local variables passed positionally.
+        explicit_self_attention_type = kwargs.pop("self_attention_type", None)
+        explicit_self_attention_position_mode = kwargs.pop(
+            "self_attention_position_mode", None
+        )
+        explicit_ffn_mode = kwargs.pop("ffn_mode", None)
+        explicit_patching_mode = kwargs.pop("patching_mode", None)
+
         best_type = "transformer"
         self_attention_type = None
         self_attention_position_mode = None
@@ -105,6 +116,18 @@ class ArchitectureConverter:
             if preserve_soft_choices
             else _resolve_searchable_patch_mode(mixed_encoder.transformer)
         )
+
+        if explicit_self_attention_type is not None:
+            self_attention_type = str(explicit_self_attention_type).lower()
+        if explicit_self_attention_position_mode is not None:
+            self_attention_position_mode = str(
+                explicit_self_attention_position_mode
+            ).lower()
+        if explicit_ffn_mode is not None:
+            ffn_mode = str(explicit_ffn_mode).lower()
+        if explicit_patching_mode is not None:
+            patch_mode = str(explicit_patching_mode).lower()
+
         fixed_encoder = FixedEncoder(
             rnn=copy.deepcopy(mixed_encoder.transformer),
             input_dim=mixed_encoder.input_dim,
@@ -127,7 +150,20 @@ class ArchitectureConverter:
 
     @staticmethod
     def create_fixed_decoder(mixed_decoder, **kwargs) -> FixedDecoder:
+        # Explicit overrides (e.g. from a recorded Genotype) take priority
+        # over auto-resolution, mirroring the pre-existing
+        # ``cross_attention_type`` override below.
         explicit_cross_attention_type = kwargs.pop("cross_attention_type", None)
+        explicit_cross_attention_position_mode = kwargs.pop(
+            "cross_attention_position_mode", None
+        )
+        explicit_self_attention_type = kwargs.pop("self_attention_type", None)
+        explicit_self_attention_position_mode = kwargs.pop(
+            "self_attention_position_mode", None
+        )
+        explicit_ffn_mode = kwargs.pop("ffn_mode", None)
+        explicit_decode_style = kwargs.pop("decode_style", None)
+
         best_type = "transformer"
         self_attention_type = None
         self_attention_position_mode = None
@@ -141,6 +177,10 @@ class ArchitectureConverter:
         ffn_mode = _resolve_searchable_ffn_mode(mixed_decoder.transformer)
         if explicit_cross_attention_type is not None:
             cross_attention_type = str(explicit_cross_attention_type).lower()
+        if explicit_cross_attention_position_mode is not None:
+            cross_attention_position_mode = str(
+                explicit_cross_attention_position_mode
+            ).lower()
         if best_type == "transformer":
             self_attention_type = _resolve_searchable_self_attention_type(
                 mixed_decoder.transformer
@@ -148,6 +188,16 @@ class ArchitectureConverter:
             self_attention_position_mode = _resolve_searchable_self_attention_position(
                 mixed_decoder.transformer
             )
+        if explicit_self_attention_type is not None:
+            self_attention_type = str(explicit_self_attention_type).lower()
+        if explicit_self_attention_position_mode is not None:
+            self_attention_position_mode = str(
+                explicit_self_attention_position_mode
+            ).lower()
+        if explicit_ffn_mode is not None:
+            ffn_mode = str(explicit_ffn_mode).lower()
+        if explicit_decode_style is not None:
+            decode_style = str(explicit_decode_style).lower()
 
         fixed_decoder = FixedDecoder(
             rnn_type=best_type,

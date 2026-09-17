@@ -17,8 +17,8 @@ from typing import Annotated, Any
 import numpy as np
 import pandas as pd
 
-from foreblocks.ui.auto_spec import PortOutBundle
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.auto_spec import PortOutBundle
+from foreblocks.studio.node_spec import node
 
 
 @node(

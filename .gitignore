@@ -14,6 +14,12 @@ typings/
 /dist/
 /src/foreblocks/studio/dist/
 
+# Generated documentation site (rebuilt by .github/workflows/docs.yml on
+# every deploy from docs/ + site/landing/ + apps/webui/dist) — only
+# site/landing/ is hand-authored source and stays tracked.
+/site/*
+!/site/landing
+
 # Editors and IDEs
 .vscode/
 .idea/
@@ -49,11 +55,12 @@ ml-pararnn/
 # Project-specific generated directories
 src/mltracker/mltracker_data/
 mltracker_data/
-src/mltracker/dashboard_v2/node_modules/
+apps/mltracker-dashboard/node_modules/
 apps/webui/artifacts/
 apps/webui/dist/
 apps/webui/server.log
 apps/webui/nodeDefinitions*_debug.json
+apps/mltracker-dashboard/dist/
 
 # Working and temporary directories
 work/
@@ -101,3 +108,4 @@ hgs/
 aula_amanha/
 .aider*
 repos/
+datasets/

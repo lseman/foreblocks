@@ -44,7 +44,7 @@ from foreblocks.modules.heads.core.types import (
     SerialNoneState,
 )
 from foreblocks.modules.heads.core.projection import ProjectionRegistry
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 
 @node(

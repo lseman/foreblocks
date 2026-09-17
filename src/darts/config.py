@@ -13,6 +13,8 @@ from typing import Literal
 
 import torch
 
+from .architecture.op_registry import FAMILY_TO_OPS, DEFAULT_OP_NAMES
+
 
 class DARTSVariant(str, Enum):
     """DARTS algorithm variant.
@@ -154,49 +156,21 @@ DEFAULT_ARCH_MODES: list[str] = [
     "decoder_only",
 ]
 
-DEFAULT_OPS: list[str] = [
-    "Identity",
-    "TimeConv",
-    "GRN",
-    "Wavelet",
-    "Fourier",
-    "TCN",
-    "ResidualMLP",
-    "ConvMixer",
-    "MultiScaleConv",
-    "PyramidConv",
-    "PatchEmbed",
-    "InvertedAttention",
-    "DLinear",
-    "TimeMixer",
-    "NBeats",
-    "TimesNet",
-]
+# Derived from the central operation registry (architecture/op_registry.py)
+# so this search-space default can never drift out of sync with the actual
+# operations MixedOp knows how to build — see op_registry.py's docstring for
+# the drift this previously caused (SwiGLU/GeGLU/GatedGELU were reachable
+# through MixedOp but invisible here).
+DEFAULT_OPS: list[str] = list(DEFAULT_OP_NAMES)
 
+# "Identity" is always available via `require_identity` rather than through
+# family sampling, so it is excluded from every family here (matching
+# MixedOp's own hierarchical grouping, which additionally places Identity in
+# the "mlp" group only for hierarchical-search alpha bookkeeping).
 DEFAULT_OP_FAMILIES: dict[str, list[str]] = {
-    "conv": [
-        "TimeConv",
-        "TCN",
-        "ConvMixer",
-        "MultiScaleConv",
-        "PyramidConv",
-    ],
-    "frequency": [
-        "Wavelet",
-        "Fourier",
-        "DLinear",
-        "TimesNet",
-    ],
-    "attention": [
-        "PatchEmbed",
-        "InvertedAttention",
-    ],
-    "mlp": [
-        "GRN",
-        "ResidualMLP",
-        "TimeMixer",
-        "NBeats",
-    ],
+    family: [op for op in ops if op != "Identity"]
+    for family, ops in FAMILY_TO_OPS.items()
+    if [op for op in ops if op != "Identity"]
 }
 
 DEFAULT_ATTENTION_VARIANTS: list[str] = ["auto"]
@@ -370,6 +344,11 @@ class MultiFidelitySearchConfig:
     phase3_rung_epochs: list[int] | None = None
     phase3_train_max_batches: int | None = None
     phase3_val_max_batches: int | None = None
+    # Per-candidate wall-clock budget (seconds) for phase-1 zero-cost
+    # evaluation. Previously a hardcoded constant in orchestrator.py/
+    # trainer.py with no way to tune it for a larger search space or epoch
+    # budget; the outer timeout is ``candidate_timeout * num_candidates``.
+    candidate_timeout: float = 120.0
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +393,10 @@ class RobustPoolSearchConfig:
     use_weight_schemes: bool = False
     n_random: int = 0
     random_sigma: float = 0.25
-    robustness_mode: str = "spearman"
+    # Must be one of "topk_freq" | "avg_rank" | "worst_rank" (see
+    # search/robust_pool.py, which raises ValueError otherwise). Matches
+    # trainer.py's DARTSTrainer.robust_pool_search default.
+    robustness_mode: str = "topk_freq"
     topk_ref: int | None = None
     min_ops: int = 2
     max_ops: int | None = None

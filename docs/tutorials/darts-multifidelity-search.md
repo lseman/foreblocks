@@ -14,7 +14,7 @@ Core DARTS workflow, including the analyzer:
 
 ```bash
 pip install "foreblocks[darts]"
-```python
+```
 
 At this point you have a search controller, not just a single model. It knows how to generate candidates, train searched models, derive discrete architectures, and retrain the best one.
 
@@ -32,7 +32,7 @@ results = trainer.multi_fidelity_search(
     top_k=4,
     use_amp=False,
 )
-```python
+```
 
 The most useful keys are:
 
@@ -45,20 +45,25 @@ The most useful keys are:
 
 ```python
 trainer.save_best_model("best_darts_model.pth")
-```text
+```
 
 ### Bilevel search for one candidate
 
 ```python
-search_run = trainer.train_darts_model(
-    model=candidate_model,
-    train_loader=train_loader,
-    val_loader=val_loader,
+from darts import DARTSTrainConfig
+
+train_config = DARTSTrainConfig(
     epochs=15,
     arch_learning_rate=3e-3,
     model_learning_rate=1e-3,
 )
-```toml
+search_run = trainer.train_darts_model(
+    model=candidate_model,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    train_config=train_config,
+)
+```
 
 ### Retrain that fixed model
 
@@ -70,7 +75,7 @@ final_run = trainer.train_final_model(
     test_loader=test_loader,
     epochs=50,
 )
-```python
+```
 
 Use this when you want:
 

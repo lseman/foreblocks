@@ -203,7 +203,7 @@ from foreblocks.ts_handler.auto_filter import (
 ### Anomaly Detection
 
 ```python
-from foreblocks.anomaly.models import (
+from foreblocks.models.anomaly.models import (
     ReconstructionAnomalyDetector,
     ForecastingAnomalyDetector,
     TranAD,

@@ -19,7 +19,7 @@ import torch.nn as nn
 from torch import Tensor
 
 # Assuming this comes from your UI/builder framework
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 
 # ==============================================================

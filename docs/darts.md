@@ -22,7 +22,7 @@ For the DARTS workflow itself, including the analyzer and richer search-result v
 
 ```bash
 pip install "foreblocks[darts]"
-```python
+```
 
 ## When to use DARTS here
 
@@ -64,7 +64,7 @@ results = trainer.multi_fidelity_search(
 
 best_model = results["final_model"]
 trainer.save_best_model("best_darts_model.pth")
-```text
+```
 
 Useful knobs:
 
@@ -79,16 +79,21 @@ Useful knobs:
 ### `train_darts_model(...)`
 
 ```python
-search_results = trainer.train_darts_model(
-    model=candidate,
-    train_loader=train_loader,
-    val_loader=val_loader,
+from darts import DARTSTrainConfig
+
+train_config = DARTSTrainConfig(
     epochs=30,
     arch_learning_rate=3e-3,
     model_learning_rate=1e-3,
     use_bilevel_optimization=True,
 )
-```toml
+search_results = trainer.train_darts_model(
+    model=candidate,
+    train_loader=train_loader,
+    val_loader=val_loader,
+    train_config=train_config,
+)
+```
 
 Use this after the mixed architecture has converged enough that you want a discrete artifact for final training or export.
 
@@ -102,7 +107,7 @@ final_results = trainer.train_final_model(
     test_loader=test_loader,
     epochs=100,
 )
-```toml
+```
 
 ## Result structure
 
@@ -144,30 +149,21 @@ The default architecture modes are:
 - `encoder_decoder`
 - `encoder_only`
 - `decoder_only`
-- `mamba`
 
-The default operation pool includes:
+The default operation pool (`darts.config.DEFAULT_OPS`, grouped by family in
+`DEFAULT_OP_FAMILIES`) includes:
 
 - `Identity`
-- `TimeConv`
-- `GRN`
-- `Wavelet`
-- `Fourier`
-- `TCN`
-- `ResidualMLP`
-- `ConvMixer`
-- `MultiScaleConv`
-- `PyramidConv`
-- `PatchEmbed`
-- `InvertedAttention`
-- `DLinear`
-- `TimeMixer`
-- `NBeats`
-- `TimesNet`
+- `ResidualMLP`, `GRN`, `TimeMixer`, `NBeats` (`mlp` family)
+- `TimeConv`, `TCN`, `ConvMixer`, `MultiScaleConv`, `PyramidConv` (`conv` family)
+- `Fourier`, `Wavelet`, `DLinear`, `TimesNet` (`frequency` family)
+- `PatchEmbed`, `InvertedAttention` (`attention` family)
+- `SwiGLU`, `GeGLU`, `GatedGELU` (`gated_ffn` family)
+- `SSM` (`ssm` family — a lightweight S4D-style diagonal state-space block)
 
-Important note:
-
-- `mamba` is represented as an architecture mode rather than as a normal operation in the default op list
+Every operation's constructor, family, and efficiency prior is defined once
+in `darts.architecture.op_registry.OP_REGISTRY`; the search-space config and
+`MixedOp` both derive from it, so it is the single place to add a new op.
 
 ## Recommended tuning order
 

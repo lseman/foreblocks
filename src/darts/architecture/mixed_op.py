@@ -17,20 +17,8 @@ import torch.nn.functional as F
 
 from darts.search.metrics import _default_enable_flops
 
-from .advanced_ops import (
-    ConvMixerOp,
-    GatedGeLUFFNOp,
-    GeGLUFFNOp,
-    GRNOp,
-    InvertedAttentionOp,
-    PatchEmbedOp,
-    SwiGLUFFNOp,
-)
-from .conv_ops import MultiScaleConvOp, PyramidConvOp, TCNOp, TimeConvOp
-from .decomposition_ops import DLinearOp, NBeatsOp, TimesNetOp
-from .mlp_ops import IdentityOp, MLPMixerOp, ResidualMLPOp
 from .norms import RMSNorm
-from .spectral_ops import FourierOp, WaveletOp
+from .op_registry import FAMILY_TO_OPS, OP_REGISTRY
 
 
 __all__ = ["MixedOp"]
@@ -93,55 +81,14 @@ class MixedOp(nn.Module):
         self.pc_ratio = float(min(max(pc_ratio, 0.0), 1.0))
         self.pc_darts_enabled = False
 
-        # Define operation map using your existing operators
+        # Operation map and family grouping, derived from the central
+        # registry (op_registry.py) rather than duplicated literals.
         self.op_map = {
-            "Identity": lambda: IdentityOp(input_dim, latent_dim),
-            "TimeConv": lambda: TimeConvOp(input_dim, latent_dim),
-            "ResidualMLP": lambda: ResidualMLPOp(input_dim, latent_dim),
-            "Wavelet": lambda: WaveletOp(input_dim, latent_dim),
-            "Fourier": lambda: FourierOp(input_dim, latent_dim, seq_length),
-            "TCN": lambda: TCNOp(input_dim, latent_dim),
-            "ConvMixer": lambda: ConvMixerOp(input_dim, latent_dim),
-            "GRN": lambda: GRNOp(input_dim, latent_dim),
-            "MultiScaleConv": lambda: MultiScaleConvOp(input_dim, latent_dim),
-            "PyramidConv": lambda: PyramidConvOp(input_dim, latent_dim),
-            "PatchEmbed": lambda: PatchEmbedOp(input_dim, latent_dim, patch_size=16),
-            "InvertedAttention": lambda: InvertedAttentionOp(input_dim, latent_dim),
-            "TimeMixer": lambda: MLPMixerOp(input_dim, latent_dim, seq_length),
-            "DLinear": lambda: DLinearOp(input_dim, latent_dim),
-            "NBeats": lambda: NBeatsOp(input_dim, latent_dim),
-            "TimesNet": lambda: TimesNetOp(input_dim, latent_dim),
-            "SwiGLU": lambda: SwiGLUFFNOp(input_dim, latent_dim),
-            "GeGLU": lambda: GeGLUFFNOp(input_dim, latent_dim),
-            "GatedGELU": lambda: GatedGeLUFFNOp(input_dim, latent_dim),
+            name: (lambda spec=spec: spec.ctor(input_dim, latent_dim, seq_length))
+            for name, spec in OP_REGISTRY.items()
         }
-
-        # Group operations by complexity/type for hierarchical search
         self.operation_groups = {
-            "mlp": [
-                "Identity",
-                "ResidualMLP",
-                "GRN",
-                "TimeMixer",
-                "NBeats",
-            ],
-            "conv": [
-                "TimeConv",
-                "TCN",
-                "ConvMixer",
-                "MultiScaleConv",
-                "PyramidConv",
-            ],
-            "frequency": ["Fourier", "Wavelet", "DLinear", "TimesNet"],
-            "attention": [
-                "PatchEmbed",
-                "InvertedAttention",
-            ],
-            "gated_ffn": [
-                "SwiGLU",
-                "GeGLU",
-                "GatedGELU",
-            ],
+            family: list(ops) for family, ops in FAMILY_TO_OPS.items()
         }
 
         # Initialize operations
@@ -152,25 +99,11 @@ class MixedOp(nn.Module):
         else:
             self._init_flat_search()
 
-        # Operation efficiency scores (for regularization)
+        # Operation efficiency scores (for regularization) — static priors
+        # from the registry, used as-is or as a fallback until/unless
+        # ``_profile_flops`` replaces them with measured FLOPs.
         self.op_efficiency = {
-            "Identity": 1.0,
-            "ResidualMLP": 0.8,
-            "TimeConv": 0.7,
-            "TCN": 0.5,
-            "ConvMixer": 0.6,
-            "Fourier": 0.4,
-            "Wavelet": 0.4,
-            "GRN": 0.6,
-            "MultiScaleConv": 0.3,
-            "PyramidConv": 0.2,
-            "PatchEmbed": 0.7,
-            "InvertedAttention": 0.55,
-            "iTransformerBlock": 0.55,
-            "TimeMixer": 0.68,
-            "NBeats": 0.72,
-            "TimesNet": 0.60,
-            "DLinear": 0.9,
+            name: spec.efficiency for name, spec in OP_REGISTRY.items()
         }
 
         # Adaptive sampling weights
@@ -272,28 +205,14 @@ class MixedOp(nn.Module):
         self._flops_profiled = True
 
     def _apply_static_efficiency_priors(self):
-        # Pre-computed from typical time-series shapes; higher means cheaper.
-        static_priors = {
-            "Identity": 1.0,
-            "DLinear": 0.95,
-            "ResidualMLP": 0.80,
-            "NBeats": 0.78,
-            "PatchEmbed": 0.68,
-            "TimeMixer": 0.68,
-            "GRN": 0.65,
-            "TimesNet": 0.62,
-            "TimeConv": 0.60,
-            "ConvMixer": 0.58,
-            "InvertedAttention": 0.55,
-            "iTransformerBlock": 0.55,
-            "TCN": 0.50,
-            "Fourier": 0.45,
-            "Wavelet": 0.45,
-            "MultiScaleConv": 0.35,
-            "PyramidConv": 0.25,
-        }
+        """Reset efficiency scores to the registry's static priors.
+
+        Used when FLOPs profiling is disabled or unavailable; higher means
+        cheaper. See ``op_registry.OP_REGISTRY`` for the canonical values.
+        """
         for op_name in self.available_ops:
-            self.op_efficiency[op_name] = static_priors.get(op_name, 0.5)
+            spec = OP_REGISTRY.get(op_name)
+            self.op_efficiency[op_name] = spec.efficiency if spec else 0.5
         self._dynamic_efficiency_profiled = False
         self._flops_profiled = True
 

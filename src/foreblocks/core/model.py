@@ -21,7 +21,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 # =============================================================================
 # Base head wrapper

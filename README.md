@@ -257,31 +257,36 @@ The most stable first imports are exposed from the top-level `foreblocks` packag
 | `LSTMEncoder`, `LSTMDecoder`, `GRUEncoder`, `GRUDecoder` | Recurrent encoder/decoder blocks |
 | `TransformerEncoder`, `TransformerDecoder` | Transformer backbones with advanced attention variants, MoE, residual routing, and sparse options such as MoBA |
 | `AttentionLayer` | Attention module for custom architectures |
+| `TransformerTuner` | Modern transformer hyperparameter tuner |
+
+See [Public API](docs/reference/public-api.md) for the full resolution table.
 
 ## Repository map
 
 | Path | What it contains |
 | --- | --- |
-| `foreblocks/core` | `ForecastingModel`, heads, conformal utilities, sampling |
-| `foreblocks/training` | `Trainer`, training loop, quantization utilities |
-| `foreblocks/evaluation` | `ModelEvaluator`, benchmarking helpers |
+| `foreblocks/core` | `ForecastingModel`, heads, conformal utilities, sampling, plus `training/` (`Trainer`) and `evaluation/` (`ModelEvaluator`, benchmarking helpers) |
 | `foreblocks/ts_handler` | `TimeSeriesHandler`, imputation, filtering, outlier handling |
-| `foreblocks/transformer` | Transformer stack, attention variants (including MoBA), MoE, fused norms, and embeddings |
+| `foreblocks/models/transformer` | Transformer stack, attention variants (including MoBA), MoE, fused norms, and embeddings |
+| `foreblocks/models/kan` | Kolmogorov-Arnold Network backbone |
+| `foreblocks/models/sequence/mamba` | Mamba / Mamba-2 style SSM blocks for forecasting |
+| `foreblocks/models/sequence/raven` | Raven-inspired recurrent sequence blocks |
+| `foreblocks/models/popular` | Published architectures: DLinear, Informer, Autoformer, N-BEATS, TimesNet, TFT, Oryx, … |
+| `foreblocks/models/anomaly` | Anomaly detection: TranAD, OmniAnomaly, DAGMM, AnomalyTransformer, diffusion, PatchTST-based |
+| `foreblocks/modules` | Composable blocks: attention wrappers, MoE, GateSkip/MoD routing, forecasting heads |
+| `foreblocks/layers` | `nn.Module` primitives: embeddings (RoPE/ALiBi/time), norms, graph convolutions |
+| `foreblocks/ops` | Triton/CUDA kernels — the compute layer everything above calls into |
+| `foreblocks/studio` | Studio node/spec auto-discovery backend for `apps/webui` |
 | `mltracker` | experiment tracking server, logging, and TUI integration |
-| `foreblocks/kan` | Kolmogorov-Arnold Network backbone |
-| `foreblocks/mamba` | Original Mamba SSM backbone with MoE and positional encoding |
-| `foreblocks/custom_mamba` | Hybrid Mamba / Mamba-2 style SSM blocks for forecasting |
-| `foreblocks/custom_raven` | Raven-inspired recurrent sequence blocks |
-| `foreblocks/custom_att` | Experimental attention kernels and benchmarks |
-| `foreblocks/blocks` | Higher-level reusable blocks: dropout, N-BEATS, popular model blocks, graph blocks, and forecasting heads |
-| `foreblocks/layers` | Lower-level neural network layers, currently graph-focused primitives |
-| `foreblocks/blocks/wavelets.py` | Multiwavelet feature extraction blocks |
-| `foreblocks/evaluation/benchmark.py` | External forecasting baselines and spreadsheet readers |
 | `darts` | standalone DARTS NAS package: search space, search/training pipeline, evaluation, and architecture inspection |
 | `foretools` | synthetic time series, BOHB search, feature engineering, decomposition |
+| `projects/` | standalone sub-projects not part of the `foreblocks` distribution (`tree/`, `scheduling/`) |
+| `apps/` | frontends: `webui/` (Studio node editor), `mltracker-dashboard/` |
 | `examples/` | runnable demos and notebooks |
-| `site/landing/` | static landing page assets for the published site root |
+| `site/landing/` | hand-authored source for the published site root |
 | `docs/` | VitePress source for the documentation site |
+
+See [Repository Map](docs/reference/repository-map.md) for the full subpackage-level breakdown.
 
 ## Documentation map
 

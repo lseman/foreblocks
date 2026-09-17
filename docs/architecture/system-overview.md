@@ -28,14 +28,17 @@ The main `foreblocks` training flow is:
 
 | Path | Role |
 | --- | --- |
-| `foreblocks/core` | core model assembly, heads, conformal prediction, sampling |
-| `foreblocks/training` | training loop, optimizer/scheduler handling, NAS-aware training support |
-| `foreblocks/evaluation` | evaluation, prediction helpers, metrics, plotting |
+| `foreblocks/ops` | compute tier — Triton/CUDA kernels, no `nn.Module` API surface |
+| `foreblocks/layers` | reusable `nn.Module` primitives (norms, embeddings, graph) |
+| `foreblocks/attention` | attention config, variants, cache, and execution |
+| `foreblocks/modules` | composable model modules (attention wrappers, MoE, blocks, heads, skip) |
+| `foreblocks/core` | core model assembly (`model`, `att`, `sampling`, `extend`), plus `training/` (Trainer) and `evaluation/` (ModelEvaluator) |
+| `foreblocks/models` | assembled models: `popular/` (NBEATS, Informer, …), `transformer/`, `kan/`, `sequence/` (mamba, raven backbones), `anomaly/` (applications layer) |
+| `foreblocks/studio` | Studio node/spec auto-discovery backend for `apps/webui` |
 | `foreblocks/ts_handler` | preprocessing, normalization, filtering, imputation, window creation |
-| `foreblocks/transformer` | transformer stack, attention variants, MoE, norms, embeddings |
 | `darts` | neural architecture search and finalization workflow |
+| `foretools` | synthetic data generation, feature engineering, decomposition, BOHB search |
 | `mltracker` | experiment tracking support |
-| `foretools/tsgen` | synthetic data generation |
 
 ## Public API boundary
 
@@ -51,16 +54,23 @@ That boundary is safer than importing deep internal modules unless you are exten
 
 ```text
 foreblocks (main)
-├── foreblocks/core          — ForecastingModel, heads, conformal
-├── foreblocks/training      — Trainer, optimizer/scheduler
-├── foreblocks/evaluation    — ModelEvaluator, metrics
-├── foreblocks/ts_handler    — TimeSeriesHandler, preprocessing
-├── foreblocks/transformer   — Transformer stack, attention, MoE
-├── foreblocks/custom_mamba  — Hybrid Mamba SSM blocks
-├── foreblocks/custom_raven  — Raven recurrent blocks
-├── foreblocks/kan           — Kolmogorov-Arnold Network
-├── mltracker                — Experiment tracking
-└── darts (standalone)       — Neural architecture search
+├── foreblocks/ops              — compute kernels: kernels/, attention/, mamba/, raven/, graph/
+├── foreblocks/layers           — norms/, embeddings/, graph/ (nn.Module primitives)
+├── foreblocks/attention        — attention config, variants, cache, execution
+├── foreblocks/modules          — moe/, blocks/, heads/, skip/ (composable modules)
+├── foreblocks/core             — ForecastingModel, heads, conformal, sampling
+│   ├── training/                 — Trainer, optimizer/scheduler
+│   └── evaluation/                — ModelEvaluator, metrics
+├── foreblocks/models
+│   ├── popular/                 — NBEATS, Informer, Autoformer, TimesNet, …
+│   ├── transformer/              — Transformer stack, attention, MoE
+│   ├── kan/                      — Kolmogorov-Arnold Network
+│   ├── sequence/                 — mamba/ (Hybrid Mamba SSM), raven/ (recurrent)
+│   └── anomaly/                  — anomaly-detection applications layer
+├── foreblocks/studio            — Studio node/spec auto-discovery backend
+├── foreblocks/ts_handler        — TimeSeriesHandler, preprocessing
+├── mltracker                    — Experiment tracking
+└── darts (standalone)           — Neural architecture search
 
 foretools (companion)
 ├── foretools/tsgen          — Synthetic time-series generation

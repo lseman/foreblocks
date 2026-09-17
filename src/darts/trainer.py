@@ -459,11 +459,19 @@ class DARTSTrainer:
 
     # ── Architecture derivation ───────────────────────────────────────────
 
-    def derive_final_architecture(self, model: nn.Module) -> nn.Module:
-        """Create an optimised model with fixed operations based on search results."""
+    def derive_final_architecture(
+        self, model: nn.Module, *, return_genotype: bool = False
+    ):
+        """Create an optimised model with fixed operations based on search results.
+
+        Pass ``return_genotype=True`` to also get back a serializable
+        :class:`~darts.architecture.genotype.Genotype` recording every
+        discretization decision (see ``architecture/genotype.py``).
+        """
         return derive_fixed_architecture(
             model=model,
             as_probability_vector_fn=_as_probability_vector,
+            return_genotype=return_genotype,
         )
 
     # ── Core DARTS bilevel training ───────────────────────────────────────

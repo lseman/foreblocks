@@ -23,7 +23,7 @@ import torch.nn as nn
 from torch import Tensor
 
 from foreblocks.modules.blocks.enc_dec import DecoderBase, EncoderBase
-from foreblocks.ui.node_spec import node
+from foreblocks.studio.node_spec import node
 
 # ==============================================================
 # Utilities

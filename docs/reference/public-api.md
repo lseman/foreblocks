@@ -31,5 +31,28 @@ from foreblocks import (
     AttentionLayer,
     GraphForecastingModel,
     TransformerTuner,
-    ModernTransformerTuner,
 )
+```
+
+`foreblocks/__init__.py` lazy-loads (`__getattr__` + `TYPE_CHECKING`) this stable,
+deliberately small `__all__`. Anything not in it is an internal import path and
+can move without a deprecation cycle; anything in it moving is a breaking change.
+
+## Resolution targets
+
+Where each export actually lives — useful when the name alone doesn't tell you
+the subpackage:
+
+| Export | Resolves to |
+| --- | --- |
+| `AttentionLayer` | `foreblocks.core.att` |
+| `ForecastingModel`, `GraphForecastingModel` | `foreblocks.models` |
+| `Trainer` | `foreblocks.core.training` |
+| `ModelEvaluator` | `foreblocks.core.evaluation` |
+| `TimeSeriesHandler` | `foreblocks.ts_handler` |
+| `TimeSeriesDataset`, `create_dataloaders` | `foreblocks.data` |
+| `ModelConfig`, `TrainingConfig` | `foreblocks.config` |
+| `LSTMEncoder`, `LSTMDecoder`, `GRUEncoder`, `GRUDecoder` | `foreblocks.modules.blocks.enc_dec` |
+| `TransformerEncoder` | `foreblocks.models.transformer.core.encoder` |
+| `TransformerDecoder` | `foreblocks.models.transformer.core.decoder` |
+| `TransformerTuner` | `foreblocks.models.transformer.tuner` |

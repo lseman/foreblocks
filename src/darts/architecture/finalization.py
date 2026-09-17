@@ -11,6 +11,7 @@ from .bb_transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
 )
+from .genotype import CellGenotype, EdgeGenotype, Genotype, TransformerGenotype
 from .inspector import _mean_softmax_top, _softmax_top
 from .fixed_ops import FixedOp
 from ..utils.tensors import as_probability_vector as _default_as_probability_vector
@@ -20,8 +21,17 @@ def derive_final_architecture(
     model: nn.Module,
     as_probability_vector_fn: None
     | (Callable[[torch.Tensor, float], torch.Tensor]) = None,
-) -> nn.Module:
-    """Create optimized model with fixed operations based on search results."""
+    *,
+    return_genotype: bool = False,
+) -> nn.Module | tuple[nn.Module, Genotype]:
+    """Create optimized model with fixed operations based on search results.
+
+    When ``return_genotype`` is True, also returns a :class:`Genotype`
+    recording every discretization decision made (per-cell edge ops,
+    transformer sub-choices, normalization mode) so the same architecture
+    can be exported, inspected, or rebuilt later via
+    :func:`genotype.build_model_from_genotype` without re-running search.
+    """
     prob_fn = as_probability_vector_fn or _default_as_probability_vector
 
     new_model = copy.deepcopy(model)
@@ -597,6 +607,9 @@ def derive_final_architecture(
     printed_encoder_fix = False
     printed_decoder_fix = False
     printed_attention_fix = False
+    encoder_geno: TransformerGenotype | None = None
+    decoder_geno: TransformerGenotype | None = None
+    decoder_query_mode = _extract_decoder_query_mode(new_model)
 
     if (
         hasattr(new_model, "forecast_encoder")
@@ -611,19 +624,21 @@ def derive_final_architecture(
 
             print(f"   → Fixing Forecast Encoder: {type(top_encoder).__name__}")
             if isinstance(top_encoder, LightweightTransformerEncoder):
-                print(
-                    "   → Encoder Self-Attention: "
-                    f"{_extract_self_attention_type(top_encoder)}"
+                encoder_geno = TransformerGenotype(
+                    self_attention_type=_extract_self_attention_type(top_encoder),
+                    self_attention_position=_extract_self_attention_position(
+                        top_encoder
+                    ),
+                    patch_mode=_extract_encoder_patch_mode(top_encoder),
+                    ffn_mode=_extract_ffn_mode(top_encoder),
                 )
+                print(f"   → Encoder Self-Attention: {encoder_geno.self_attention_type}")
                 print(
                     "   → Encoder Attention Position: "
-                    f"{_extract_self_attention_position(top_encoder)}"
+                    f"{encoder_geno.self_attention_position}"
                 )
-                print(
-                    "   → Encoder Tokenizer: "
-                    f"{_extract_encoder_patch_mode(top_encoder)}"
-                )
-                print(f"   → Encoder FFN: {_extract_ffn_mode(top_encoder)}")
+                print(f"   → Encoder Tokenizer: {encoder_geno.patch_mode}")
+                print(f"   → Encoder FFN: {encoder_geno.ffn_mode}")
             printed_encoder_fix = True
 
             new_model.forecast_encoder = ArchitectureConverter.create_fixed_encoder(
@@ -648,32 +663,39 @@ def derive_final_architecture(
                 raise ValueError("Could not locate forecast decoder transformer")
 
             print(f"   → Fixing Forecast Decoder: {type(top_decoder).__name__}")
+            decoder_geno = TransformerGenotype(
+                decode_style=_extract_decoder_style(new_model.forecast_decoder),
+            )
             if isinstance(top_decoder, LightweightTransformerDecoder):
-                print(
-                    "   → Decoder Self-Attention: "
-                    f"{_extract_self_attention_type(top_decoder)}"
+                decoder_geno.self_attention_type = _extract_self_attention_type(
+                    top_decoder
                 )
+                decoder_geno.self_attention_position = (
+                    _extract_self_attention_position(top_decoder)
+                )
+                decoder_geno.cross_attention_type = _extract_cross_attention_type(
+                    new_model.forecast_decoder
+                )
+                decoder_geno.cross_attention_position = (
+                    _extract_cross_attention_position(new_model.forecast_decoder)
+                )
+                decoder_geno.ffn_mode = _extract_ffn_mode(top_decoder)
+                print(f"   → Decoder Self-Attention: {decoder_geno.self_attention_type}")
                 print(
                     "   → Decoder Attention Position: "
-                    f"{_extract_self_attention_position(top_decoder)}"
+                    f"{decoder_geno.self_attention_position}"
                 )
                 print(
                     "   → Decoder Cross-Attention: "
-                    f"{_extract_cross_attention_type(new_model.forecast_decoder)}"
+                    f"{decoder_geno.cross_attention_type}"
                 )
                 print(
                     "   → Decoder Cross Position: "
-                    f"{_extract_cross_attention_position(new_model.forecast_decoder)}"
+                    f"{decoder_geno.cross_attention_position}"
                 )
-                print(f"   → Decoder FFN: {_extract_ffn_mode(top_decoder)}")
-            print(
-                "   → Decoder Style: "
-                f"{_extract_decoder_style(new_model.forecast_decoder)}"
-            )
-            print(
-                "   → Decoder Query Generator: "
-                f"{_extract_decoder_query_mode(new_model)}"
-            )
+                print(f"   → Decoder FFN: {decoder_geno.ffn_mode}")
+            print(f"   → Decoder Style: {decoder_geno.decode_style}")
+            print(f"   → Decoder Query Generator: {decoder_query_mode}")
             printed_decoder_fix = True
 
             cross_attention_type = _extract_cross_attention_type(
@@ -723,9 +745,51 @@ def derive_final_architecture(
 
     if hasattr(new_model, "freeze_decoder_query_mode"):
         try:
-            new_model.freeze_decoder_query_mode(_extract_decoder_query_mode(new_model))
+            new_model.freeze_decoder_query_mode(decoder_query_mode)
         except Exception:
             pass
 
     print("✓ Architecture derivation completed")
-    return new_model
+
+    if not return_genotype:
+        return new_model
+
+    cell_genotypes = []
+    for cell_idx, cell in enumerate(getattr(new_model, "cells", [])):
+        specs = getattr(cell, "selected_edge_specs", None) or []
+        cell_genotypes.append(
+            CellGenotype(
+                cell_idx=cell_idx,
+                num_nodes=int(getattr(cell, "num_nodes", 0)),
+                edges=[
+                    EdgeGenotype(
+                        edge_idx=spec["edge_idx"],
+                        source=spec["source"],
+                        target=spec["target"],
+                        operation=spec["operation"],
+                        op_weight=spec.get("op_weight"),
+                        importance=spec.get("importance", 1.0),
+                    )
+                    for spec in specs
+                ],
+                op_distribution=dict(
+                    getattr(cell, "selected_op_distribution", {}) or {}
+                ),
+            )
+        )
+
+    genotype = Genotype(
+        arch_mode=arch_mode,
+        input_dim=getattr(new_model, "input_dim", None),
+        hidden_dim=getattr(new_model, "hidden_dim", None),
+        seq_length=getattr(new_model, "seq_length", None),
+        forecast_horizon=getattr(new_model, "forecast_horizon", None),
+        norm=getattr(new_model, "selected_norm", None),
+        cells=cell_genotypes,
+        encoder=encoder_geno,
+        decoder=decoder_geno,
+        decoder_query_mode=decoder_query_mode
+        if decoder_query_mode != "unknown"
+        else None,
+    )
+    return new_model, genotype
