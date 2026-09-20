@@ -1,12 +1,12 @@
 ---
 title: Package Reorganization — Migration Map
-description: Old → new import mappings for the ops/layers/modules/models/sequence reshape.
+description: Old → new import mappings for the ops/layers/modules/forecasting/sequence reshape.
 editLink: true
 ---
 
 # Package Reorganization — Migration Map
 
-This is the authoritative old → new mapping for the `ops / layers / modules / models / sequence`
+This is the authoritative old → new mapping for the `ops / layers / modules / forecasting / sequence`
 reshape of `foreblocks/`. Renames are **hard** (no compatibility shims); every import site in
 `foreblocks/`, `tests/`, `examples/`, and `darts/` is rewritten in the same change.
 
@@ -27,21 +27,26 @@ Relative imports were first normalized to absolute `foreblocks.…` form so move
 | `foreblocks.transformer.attention` | `foreblocks.attention` | multi_att, variants, modules/linear_att, cache, utils |
 | `foreblocks.transformer.moe` | `foreblocks.modules.moe` | experts, routers, ff |
 | `foreblocks.transformer.skip` | `foreblocks.modules.skip` | gateskip, mod |
-| `foreblocks.blocks.popular` | `foreblocks.models.popular` | nbeats, nha, timesnet (merged) |
+| `foreblocks.blocks.popular` | `foreblocks.forecasting.popular` | nbeats, nha, timesnet (merged) |
 | `foreblocks.blocks` | `foreblocks.modules.blocks` | tcn, ode, fourier, wavelets, xlstm, enc_dec, … |
 | `foreblocks.core.heads` | `foreblocks.modules.heads` | head families + head modules |
-| `foreblocks.transformer.popular` | `foreblocks.models.popular` | informer, autoformer, … (merged with blocks.popular) |
-| `foreblocks.transformer` | `foreblocks.models.transformer` | transformer, tf_*, patching, fusions, sype, mhc, transformer_tuner |
-| `foreblocks.custom_mamba.blocks` | `foreblocks.models.sequence.mamba` | HybridMamba family |
-| `foreblocks.custom_mamba` | `foreblocks.models.sequence.mamba` | package root |
-| `foreblocks.mamba` | `foreblocks.models.sequence.mamba` | older Mamba backbone |
-| `foreblocks.custom_raven` | `foreblocks.models.sequence.raven` | raven blocks + configuration |
-| `foreblocks.kan` | `foreblocks.models.kan` | moved under `models/` in a later pass (see below) |
+| `foreblocks.transformer.popular` | `foreblocks.forecasting.popular` | informer, autoformer, … (merged with blocks.popular) |
+| `foreblocks.transformer` | `foreblocks.forecasting.transformer` | transformer, tf_*, patching, fusions, sype, mhc, transformer_tuner |
+| `foreblocks.custom_mamba.blocks` | `foreblocks.forecasting.sequence.mamba` | HybridMamba family |
+| `foreblocks.custom_mamba` | `foreblocks.forecasting.sequence.mamba` | package root |
+| `foreblocks.mamba` | `foreblocks.forecasting.sequence.mamba` | older Mamba backbone |
+| `foreblocks.custom_raven` | `foreblocks.forecasting.sequence.raven` | raven blocks + configuration |
+| `foreblocks.kan` | `foreblocks.forecasting.kan` | moved under `forecasting/` in a later pass (see below) |
 | `foreblocks.custom_att` | `foreblocks.ops.experimental.attention_kernels` | vendored sub-project (own setup.py) |
 
-Unchanged top-level (at the time of this reshape): `core` (model, att, sampling, extend), `data`,
-`training`, `evaluation`, `ts_handler`, `mltracker`, `ui`, `third_party`, `config.py`, `models`
-(forecasting, graph_forecasting stay; `popular/` + `transformer/` added under it).
+After both passes, the top-level `foreblocks/` packages are: `attention`
+(`cache/`, `execution/`, `implementations/`, `preparation/`, `variants/`),
+`core` (`model`, `att`, `sampling`, `extend`, `training/`, `evaluation/`,
+`quantization/`), `data`, `forecasting` (`transformer/`, `sequence/`,
+`popular/`, `kan/`, `anomaly/`, `graph_forecasting`), `layers`, `modules`,
+`ops`, `processing` (renamed from `ts_handler`), `studio` (renamed from `ui`),
+plus `config.py` and `studio_server.py`. `mltracker`, `darts`, and `foretools`
+are sibling top-level packages under `src/`.
 
 ## Ordering note
 
@@ -55,7 +60,7 @@ reshape above:
 
 | Old import / path | New import / path | Notes |
 | --- | --- | --- |
-| `foreblocks.anomaly` | `foreblocks.models.anomaly` | nested under `models/` — it's an applications layer on `models/`+`core/`, not a foundational tier |
+| `foreblocks.anomaly` | `foreblocks.forecasting.anomaly` | nested under `forecasting/` — it's an applications layer on `forecasting/`+`core/`, not a foundational tier |
 | `foreblocks.ui` | `foreblocks.studio` | renamed to avoid colliding with the `apps/webui` frontend it serves specs to |
 | `src/tree/` | `projects/tree/` | standalone C++/CUDA library, never part of the packaged wheel |
 | `scheduling/` (repo root) | `projects/scheduling/` | standalone RL/GNN side-project, unrelated to forecasting |

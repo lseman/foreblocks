@@ -266,13 +266,15 @@ See [Public API](docs/reference/public-api.md) for the full resolution table.
 | Path | What it contains |
 | --- | --- |
 | `foreblocks/core` | `ForecastingModel`, heads, conformal utilities, sampling, plus `training/` (`Trainer`) and `evaluation/` (`ModelEvaluator`, benchmarking helpers) |
-| `foreblocks/ts_handler` | `TimeSeriesHandler`, imputation, filtering, outlier handling |
-| `foreblocks/models/transformer` | Transformer stack, attention variants (including MoBA), MoE, fused norms, and embeddings |
-| `foreblocks/models/kan` | Kolmogorov-Arnold Network backbone |
-| `foreblocks/models/sequence/mamba` | Mamba / Mamba-2 style SSM blocks for forecasting |
-| `foreblocks/models/sequence/raven` | Raven-inspired recurrent sequence blocks |
-| `foreblocks/models/popular` | Published architectures: DLinear, Informer, Autoformer, N-BEATS, TimesNet, TFT, Oryx, … |
-| `foreblocks/models/anomaly` | Anomaly detection: TranAD, OmniAnomaly, DAGMM, AnomalyTransformer, diffusion, PatchTST-based |
+| `foreblocks/attention` | Attention stack: KV-cache management, backend dispatch, variant implementations (dense, sparse, local-window, MoBA) |
+| `foreblocks/data` | CSV loading and dataset/dataloader wrappers |
+| `foreblocks/processing` | `TimeSeriesHandler`, imputation, filtering, outlier handling |
+| `foreblocks/forecasting/transformer` | Transformer stack, attention variants (including MoBA), MoE, fused norms, embeddings |
+| `foreblocks/forecasting/kan` | Kolmogorov-Arnold Network backbone |
+| `foreblocks/forecasting/sequence/mamba` | Mamba / Mamba-2 style SSM blocks for forecasting |
+| `foreblocks/forecasting/sequence/raven` | Raven-inspired recurrent sequence blocks |
+| `foreblocks/forecasting/popular` | Published architectures: DLinear, Informer, Autoformer, N-BEATS, TimesNet, TFT, Oryx, … |
+| `foreblocks/forecasting/anomaly` | Anomaly detection: TranAD, OmniAnomaly, DAGMM, AnomalyTransformer, diffusion, PatchTST-based |
 | `foreblocks/modules` | Composable blocks: attention wrappers, MoE, GateSkip/MoD routing, forecasting heads |
 | `foreblocks/layers` | `nn.Module` primitives: embeddings (RoPE/ALiBi/time), norms, graph convolutions |
 | `foreblocks/ops` | Triton/CUDA kernels — the compute layer everything above calls into |

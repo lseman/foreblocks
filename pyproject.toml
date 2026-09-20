@@ -38,7 +38,7 @@ classifiers = [
 dependencies = [
   "torch>=2.0,<3.0",  # SDPBackend, autocast, compile — 2.x API used throughout
   "numpy>=1.24",
-  "einops>=0.6", # tf/embeddings/rotary.py, third_party/flash_softpick_attn
+  "einops>=0.6", # layers/embeddings/rotary.py, forecasting/sequence/raven/blocks/raven.py
   "tqdm>=4.64",  # training loops, preprocessing progress bars
 ]
 
@@ -116,8 +116,8 @@ all = [
 # ── Development tools (not packaged) ─────────────────────────────────────
 dev = ["pytest>=7.0", "ipykernel>=6.0", "ruff", "basedpyright"]
 
-# Optional integration with flash-linear-attention, either installed from PyPI
-# or provided by the git submodule at third_party/flash-linear-attention.
+# Optional flash-linear-attention integration, installed from PyPI. FLA
+# adapters also pick up a local gitignored checkout at third_party/flash-linear-attention.
 fla = [
   "flash-linear-attention>=0.5.0",
   "triton>=3.3",

@@ -51,6 +51,8 @@ flash-attention/
 uni2ts/
 timesfm/
 ml-pararnn/
+flash-linear-attention/
+third_party/
 
 # Project-specific generated directories
 src/mltracker/mltracker_data/
@@ -69,7 +71,6 @@ working/
 old/
 foretree.old/
 agent/
-third_party/
 .openclaude/
 
 # Generated or runtime scripts

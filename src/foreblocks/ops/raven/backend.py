@@ -64,9 +64,10 @@ def import_fla_module(module_name: str) -> ModuleType:
             raise
     if not has_fla_checkout():
         raise ModuleNotFoundError(
-            "flash-linear-attention is not installed and checkout not found. "
-            "Install the `fla` extra or run "
-            "`git submodule update --init --recursive` from the repository root."
+"flash-linear-attention is not installed and checkout not found. "
+"Install the `fla` extra (flash-linear-attention on PyPI), or "
+"clone the FLA repo into `third_party/flash-linear-attention` (gitignored) "
+"from the repository root."
         )
     with fla_import_path():
         return import_module(module_name)

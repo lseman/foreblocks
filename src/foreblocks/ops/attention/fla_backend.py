@@ -1,8 +1,8 @@
 """foreblocks.ops.attention.fla_backend.
 
-Lazy adapter for the optional flash-linear-attention (FLA) submodule.
+Lazy adapter for the optional flash-linear-attention (FLA) package.
 
-Manages the FLA git submodule path, provides context managers for temporary
+Manages the FLA checkout path, provides context managers for temporary
 sys.path injection, and caches upstream module imports. Exposes typed helpers
 for delta rule, gated delta rule, GDN-2, linear attention, and GLA kernels.
 Use when your code needs to conditionally use FLA kernels without making them
