@@ -46,13 +46,13 @@ the subpackage:
 | Export | Resolves to |
 | --- | --- |
 | `AttentionLayer` | `foreblocks.core.att` |
-| `ForecastingModel`, `GraphForecastingModel` | `foreblocks.models` |
+| `ForecastingModel`, `GraphForecastingModel` | `foreblocks.forecasting` |
 | `Trainer` | `foreblocks.core.training` |
 | `ModelEvaluator` | `foreblocks.core.evaluation` |
-| `TimeSeriesHandler` | `foreblocks.ts_handler` |
+| `TimeSeriesHandler` | `foreblocks.processing` |
 | `TimeSeriesDataset`, `create_dataloaders` | `foreblocks.data` |
 | `ModelConfig`, `TrainingConfig` | `foreblocks.config` |
 | `LSTMEncoder`, `LSTMDecoder`, `GRUEncoder`, `GRUDecoder` | `foreblocks.modules.blocks.enc_dec` |
-| `TransformerEncoder` | `foreblocks.models.transformer.core.encoder` |
-| `TransformerDecoder` | `foreblocks.models.transformer.core.decoder` |
-| `TransformerTuner` | `foreblocks.models.transformer.tuner` |
+| `TransformerEncoder` | `foreblocks.forecasting.transformer.core.encoder` |
+| `TransformerDecoder` | `foreblocks.forecasting.transformer.core.decoder` |
+| `TransformerTuner` | `foreblocks.forecasting.transformer.tuner` |

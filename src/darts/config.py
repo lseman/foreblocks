@@ -13,7 +13,7 @@ from typing import Literal
 
 import torch
 
-from .architecture.op_registry import FAMILY_TO_OPS, DEFAULT_OP_NAMES
+from .architecture.ops.registry import FAMILY_TO_OPS, DEFAULT_OP_NAMES
 
 
 class DARTSVariant(str, Enum):

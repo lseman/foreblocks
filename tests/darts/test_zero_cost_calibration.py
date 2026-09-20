@@ -29,9 +29,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from darts.architecture.op_registry import build_op
+from darts.architecture.ops.registry import build_op
 from darts.search.metrics import Config, MetricsComputer
-from darts.search.weight_schemes import spearman_from_scores
+from darts.search.candidates.weight_schemes import spearman_from_scores
 
 CAPACITIES = [4, 8, 16, 32, 64, 96]
 

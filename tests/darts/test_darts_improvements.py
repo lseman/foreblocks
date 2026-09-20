@@ -10,8 +10,8 @@ from unittest.mock import patch
 import torch
 import torch.nn.functional as F
 
-from darts.architecture.darts_cell import DARTSCell
-from darts.architecture.mixed_op import MixedOp
+from darts.architecture.search.darts_cell import DARTSCell
+from darts.architecture.search.mixed_op import MixedOp
 
 # ── 1. GDAS gradient normalisation ──────────────────────────────────────────
 
@@ -296,7 +296,7 @@ class TestDiversityFinalization(unittest.TestCase):
         import importlib
         import math
 
-        from darts.architecture import finalization
+        from darts.architecture.search import finalization
 
         # Reload the module to get the updated code
         importlib.reload(finalization)

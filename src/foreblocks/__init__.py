@@ -27,10 +27,10 @@ if TYPE_CHECKING:
     from foreblocks.core.evaluation import ModelEvaluator
     from foreblocks.core.training import Trainer
     from foreblocks.data import TimeSeriesDataset, create_dataloaders
-    from foreblocks.models import ForecastingModel, GraphForecastingModel
-    from foreblocks.models.transformer.core.decoder import TransformerDecoder
-    from foreblocks.models.transformer.core.encoder import TransformerEncoder
-    from foreblocks.models.transformer.tuner import (
+    from foreblocks.forecasting import ForecastingModel, GraphForecastingModel
+    from foreblocks.forecasting.transformer.core.decoder import TransformerDecoder
+    from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
+    from foreblocks.forecasting.transformer.tuner import (
         TransformerTuner,
     )
     from foreblocks.modules.blocks.enc_dec import (
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
         LSTMDecoder,
         LSTMEncoder,
     )
-    from foreblocks.ts_handler import TimeSeriesHandler
+    from foreblocks.processing import TimeSeriesHandler
 
 # Stable top-level public API
 __all__ = [
@@ -68,8 +68,8 @@ __all__ = [
 def __getattr__(name):
     lazy_exports = {
         "AttentionLayer": (".core.att", "AttentionLayer"),
-        "ForecastingModel": (".models", "ForecastingModel"),
-        "GraphForecastingModel": (".models", "GraphForecastingModel"),
+        "ForecastingModel": (".forecasting", "ForecastingModel"),
+        "GraphForecastingModel": (".forecasting", "GraphForecastingModel"),
         "GRUDecoder": (".modules.blocks.enc_dec", "GRUDecoder"),
         "GRUEncoder": (".modules.blocks.enc_dec", "GRUEncoder"),
         "LSTMDecoder": (".modules.blocks.enc_dec", "LSTMDecoder"),
@@ -80,18 +80,18 @@ def __getattr__(name):
         "Trainer": (".core.training", "Trainer"),
         "TrainingConfig": (".config", "TrainingConfig"),
         "TransformerDecoder": (
-            ".models.transformer.core.decoder",
+            ".forecasting.transformer.core.decoder",
             "TransformerDecoder",
         ),
         "TransformerEncoder": (
-            ".models.transformer.core.encoder",
+            ".forecasting.transformer.core.encoder",
             "TransformerEncoder",
         ),
         "TransformerTuner": (
-            ".models.transformer.tuner",
+            ".forecasting.transformer.tuner",
             "TransformerTuner",
         ),
-        "TimeSeriesHandler": (".ts_handler", "TimeSeriesHandler"),
+        "TimeSeriesHandler": (".processing", "TimeSeriesHandler"),
         "create_dataloaders": (".data", "create_dataloaders"),
     }
     if name in lazy_exports:

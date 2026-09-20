@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 
 from foreblocks.layers.norms import create_norm_layer
-from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.forecasting.transformer.config import TransformerConfig
 from foreblocks.attention.enums import PositionEncoding
 from foreblocks.attention.multi_att import MultiAttention
 

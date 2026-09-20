@@ -5,7 +5,7 @@ import time
 from typing import Any
 
 from ..utils.training import create_progress_bar
-from .candidate_scoring import candidate_diversity_bonus
+from .candidates.candidate_scoring import candidate_diversity_bonus
 from .metrics import _ZC_GPU_LOCK
 
 

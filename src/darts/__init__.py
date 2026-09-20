@@ -56,7 +56,7 @@ def __getattr__(name):
         "plot_alpha_evolution": (".evaluation", "plot_alpha_evolution"),
         "plot_prediction": (".evaluation", "plot_prediction"),
         "batched_forecast": (".evaluation", "batched_forecast"),
-        "ArchitectureInspector": (".architecture.inspector", "ArchitectureInspector"),
+        "ArchitectureInspector": (".architecture.common.inspector", "ArchitectureInspector"),
     }
     if name in lazy_exports:
         module_name, attr_name = lazy_exports[name]

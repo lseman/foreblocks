@@ -162,7 +162,7 @@ The default operation pool (`darts.config.DEFAULT_OPS`, grouped by family in
 - `SSM` (`ssm` family — a lightweight S4D-style diagonal state-space block)
 
 Every operation's constructor, family, and efficiency prior is defined once
-in `darts.architecture.op_registry.OP_REGISTRY`; the search-space config and
+in `darts.architecture.ops.registry.OP_REGISTRY`; the search-space config and
 `MixedOp` both derive from it, so it is the single place to add a new op.
 
 ## Recommended tuning order

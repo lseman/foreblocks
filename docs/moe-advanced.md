@@ -550,7 +550,7 @@ Maximize expressivity: adaptive k + latent + high load balancing weight + soft c
 ```python
 from foreblocks.config import TrainingConfig
 from foreblocks.core.training.trainer import Trainer
-from foreblocks.models.transformer.core.encoder import TransformerEncoder
+from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
 
 # ── High-capacity MoE encoder ──
 encoder = TransformerEncoder(

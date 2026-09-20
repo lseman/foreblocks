@@ -1,5 +1,7 @@
-from . import ablation, metrics, robust_pool, scoring, zero_cost
-from .candidate_scoring import (
+from . import metrics, robust_pool, zero_cost
+from .candidates import scoring
+from .phases import ablation
+from .candidates.candidate_scoring import (
     candidate_diversity_bonus,
     candidate_signature,
     deduplicate_candidates,
@@ -12,14 +14,14 @@ from .orchestrator import (
     run_parallel_candidate_collection,
     select_top_candidates,
 )
-from .stats_reporting import (
+from .reporting.stats_reporting import (
     append_whatif_estimates,
     lpt_estimate,
     mean_std,
     save_csv,
     save_json,
 )
-from .weight_schemes import (
+from .candidates.weight_schemes import (
     build_weight_schemes,
     ranks_desc,
     spearman_from_scores,

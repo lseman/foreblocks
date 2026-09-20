@@ -53,7 +53,7 @@ class SoftpickAttentionImpl:
             )
 
         try:
-            from foreblocks.models.transformer.third_party.flash_softpick_attn import (
+            from foreblocks.forecasting.transformer.third_party.flash_softpick_attn import (
                 parallel_softpick_attn,
             )
 

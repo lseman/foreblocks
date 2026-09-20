@@ -26,15 +26,15 @@ __all__ = [
 
 def __getattr__(name):
     lazy_exports = {
-        "ArchitectureConverter": (".converter", "ArchitectureConverter"),
-        "DARTSCell": (".darts_cell", "DARTSCell"),
-        "derive_final_architecture": (".finalization", "derive_final_architecture"),
-        "FixedDecoder": (".fixed_encoder_decoder", "FixedDecoder"),
-        "FixedEncoder": (".fixed_encoder_decoder", "FixedEncoder"),
-        "MixedDecoder": (".mixed_encoder_decoder", "MixedDecoder"),
-        "MixedEncoder": (".mixed_encoder_decoder", "MixedEncoder"),
-        "MixedOp": (".mixed_op", "MixedOp"),
-        "TimeSeriesDARTS": (".time_series_darts", "TimeSeriesDARTS"),
+        "ArchitectureConverter": (".search.converter", "ArchitectureConverter"),
+        "DARTSCell": (".search.darts_cell", "DARTSCell"),
+        "derive_final_architecture": (".search.finalization", "derive_final_architecture"),
+        "FixedDecoder": (".search.fixed_encoder_decoder", "FixedDecoder"),
+        "FixedEncoder": (".search.fixed_encoder_decoder", "FixedEncoder"),
+        "MixedDecoder": (".search.mixed_encoder_decoder", "MixedDecoder"),
+        "MixedEncoder": (".search.mixed_encoder_decoder", "MixedEncoder"),
+        "MixedOp": (".search.mixed_op", "MixedOp"),
+        "TimeSeriesDARTS": (".search.time_series_darts", "TimeSeriesDARTS"),
     }
     if name in lazy_exports:
         module_name, attr_name = lazy_exports[name]

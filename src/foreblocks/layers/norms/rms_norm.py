@@ -15,7 +15,7 @@ Core API:
 import torch
 import torch.nn as nn
 
-from foreblocks.ops.norms_triton import (
+from foreblocks.ops.kernels.norms_triton import (
     TRITON_AVAILABLE,
     RMSNormTritonFunction,
     _should_use_triton,

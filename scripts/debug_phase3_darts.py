@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from darts.config import DEFAULT_OPS, DARTSTrainConfig  # noqa: E402
-from darts.search.phase_utils import _resolve_phase3_rung_epochs  # noqa: E402
+from darts.search.phases.phase_utils import _resolve_phase3_rung_epochs  # noqa: E402
 from darts.trainer import DARTSTrainer  # noqa: E402
 
 

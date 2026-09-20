@@ -13,7 +13,7 @@ from typing import Any
 import torch.nn as nn
 
 from .metrics import Config, ZeroCostNAS
-from .weight_schemes import build_weight_schemes
+from .candidates.weight_schemes import build_weight_schemes
 
 
 # ---------------------------------------------------------------------------

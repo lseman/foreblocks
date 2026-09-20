@@ -63,7 +63,7 @@ class TestMultiAttentionIncrementalDecode(unittest.TestCase):
         self.assertLess(err, 1e-5)
 
     def test_oryx_attention_decode(self):
-        from foreblocks.models.popular.oryx import OryxMixerBlock
+        from foreblocks.forecasting.popular.oryx import OryxMixerBlock
 
         torch.manual_seed(0)
         b = OryxMixerBlock(

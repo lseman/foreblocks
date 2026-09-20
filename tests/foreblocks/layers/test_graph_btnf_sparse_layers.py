@@ -13,7 +13,7 @@ from foreblocks.layers.graph.conv import (
     JumpKnowledge,
     SAGEConv,
 )
-from foreblocks.models import GraphForecastingModel
+from foreblocks.forecasting import GraphForecastingModel
 
 
 def _dense_adj_from_edge_index(

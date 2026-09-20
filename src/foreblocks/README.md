@@ -189,8 +189,8 @@ foreblocks/
 ### Time-Series Handler
 
 ```python
-from foreblocks.ts_handler.preprocessing import TimeSeriesHandler
-from foreblocks.ts_handler.auto_filter import (
+from foreblocks.processing.preprocessing import TimeSeriesHandler
+from foreblocks.processing.auto_filter import (
     auto_filter,
     suggest_weights,
     tune_weights,
@@ -203,7 +203,7 @@ from foreblocks.ts_handler.auto_filter import (
 ### Anomaly Detection
 
 ```python
-from foreblocks.models.anomaly.models import (
+from foreblocks.forecasting.anomaly.models import (
     ReconstructionAnomalyDetector,
     ForecastingAnomalyDetector,
     TranAD,
@@ -217,12 +217,12 @@ from foreblocks.models.anomaly.models import (
 ### Kolmogorov-Arnold Networks
 
 ```python
-from foreblocks.models.kan import (
+from foreblocks.forecasting.kan import (
     KANBackbone,
     KANModel,
     KANRouter,
 )
-from foreblocks.models.kan.poly import (
+from foreblocks.forecasting.kan.poly import (
     ChebyshevPoly,
     JacobiPoly,
     FourierPoly,

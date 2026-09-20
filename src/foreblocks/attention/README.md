@@ -59,7 +59,7 @@ all five subpackages — it is the composition root, not a shared dependency.
 There is no PEP 562 lazy-facade cycle inside `attention/` itself (unlike
 `transformer/`, which needs one internally); the only cross-package cycle is
 `attention/variants/softpick.py`'s deferred import reaching into
-`foreblocks.models.transformer.third_party`, and `transformer/`'s own lazy
+`foreblocks.forecasting.transformer.third_party`, and `transformer/`'s own lazy
 facades handle the transformer↔attention side of that cycle. Don't add a
 new eager import from `attention/` back into `transformer/` — follow
 `softpick.py`'s function-local deferred-import pattern if you need one.

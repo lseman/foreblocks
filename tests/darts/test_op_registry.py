@@ -11,8 +11,8 @@ import unittest
 
 import torch
 
-from darts.architecture.mixed_op import MixedOp
-from darts.architecture.op_registry import DEFAULT_OP_NAMES, FAMILY_TO_OPS, OP_REGISTRY, build_op
+from darts.architecture.search.mixed_op import MixedOp
+from darts.architecture.ops.registry import DEFAULT_OP_NAMES, FAMILY_TO_OPS, OP_REGISTRY, build_op
 from darts.config import DEFAULT_OP_FAMILIES, DEFAULT_OPS
 
 

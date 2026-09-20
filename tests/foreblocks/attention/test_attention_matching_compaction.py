@@ -1,6 +1,6 @@
 import torch
 
-from foreblocks.models.transformer.core.encoder import TransformerEncoderLayer
+from foreblocks.forecasting.transformer.core.encoder import TransformerEncoderLayer
 from foreblocks.attention.config import AttentionConfig
 from foreblocks.attention.multi_att import MultiAttention
 

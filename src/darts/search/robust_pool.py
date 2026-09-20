@@ -19,9 +19,9 @@ from typing import Any
 
 import numpy as np
 
-from .candidate_scoring import candidate_signature
-from .scoring import score_from_metrics
-from .weight_schemes import build_weight_schemes
+from .candidates.candidate_scoring import candidate_signature
+from .candidates.scoring import score_from_metrics
+from .candidates.weight_schemes import build_weight_schemes
 
 
 # module-level alias kept for readability

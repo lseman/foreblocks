@@ -10,9 +10,9 @@ import unittest
 
 import torch
 
-from darts.architecture.finalization import derive_final_architecture
-from darts.architecture.genotype import Genotype, build_model_from_genotype
-from darts.architecture.time_series_darts import TimeSeriesDARTS
+from darts.architecture.search.finalization import derive_final_architecture
+from darts.architecture.search.genotype import Genotype, build_model_from_genotype
+from darts.architecture.search.time_series_darts import TimeSeriesDARTS
 from darts.utils.io import load_genotype, save_genotype
 
 

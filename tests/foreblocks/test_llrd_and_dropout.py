@@ -9,7 +9,7 @@ from foreblocks.core.training.optimization.llrd import (
     WarmupCosineLR,
     get_llrd_param_groups,
 )
-from foreblocks.models.transformer.core.base import (
+from foreblocks.forecasting.transformer.core.base import (
     TransformerDecoder,
     TransformerEncoder,
 )

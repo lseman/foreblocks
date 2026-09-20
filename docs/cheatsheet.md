@@ -34,8 +34,8 @@ trainer.train(train_loader, val_loader)
 
 ```python
 from foreblocks.modules.skip.mod import LayerDropoutSchedule
-from foreblocks.models.transformer.core.encoder import TransformerEncoder
-from foreblocks.models.transformer.core.decoder import TransformerDecoder
+from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
+from foreblocks.forecasting.transformer.core.decoder import TransformerDecoder
 
 encoder = TransformerEncoder(
     input_size=8, d_model=256, num_layers=6, nhead=8,
@@ -70,7 +70,7 @@ trainer.train(train_loader, val_loader)
 
 ```python
 from foreblocks.modules.skip.mod import MoDBudgetScheduler
-from foreblocks.models.transformer.core.encoder import TransformerEncoder
+from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
 
 mod_sched = MoDBudgetScheduler(
     num_layers=6, start_keep=1.0, end_keep=0.9,
@@ -105,7 +105,7 @@ trainer.train(train_loader, val_loader)
 ## Scenario 4: Capacity + MoE
 
 ```python
-from foreblocks.models.transformer.core.encoder import TransformerEncoder
+from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
 
 encoder = TransformerEncoder(
     input_size=8, d_model=384, num_layers=6, nhead=8,
@@ -136,7 +136,7 @@ trainer.train(train_loader, val_loader)
 
 ```python
 from foreblocks.modules.skip.mod import LayerDropoutSchedule
-from foreblocks.models.transformer.core.encoder import TransformerEncoder
+from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
 
 encoder = TransformerEncoder(
     input_size=8, d_model=256, num_layers=12, nhead=8,
@@ -277,7 +277,7 @@ gradient_clip_val=1.0,
 ### Attention configuration (new)
 
 ```python
-from foreblocks.models.transformer.config import TransformerConfig
+from foreblocks.forecasting.transformer.config import TransformerConfig
 from foreblocks.attention.config import (
     AttentionConfig, AttentionShapeConfig, AttentionPositionConfig,
     AttentionVariantConfig,

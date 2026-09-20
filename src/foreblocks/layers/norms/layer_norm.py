@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.ops.norms_triton import (
+from foreblocks.ops.kernels.norms_triton import (
     TRITON_AVAILABLE,
     LayerNormTritonFunction,
     _should_use_triton,

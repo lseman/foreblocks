@@ -8,7 +8,7 @@ from darts.training.training_loop import (
     _run_model_training_epoch,
 )
 from darts.training.utils import snapshot_state_dict
-from darts.architecture.darts_cell import DARTSCell
+from darts.architecture.search.darts_cell import DARTSCell
 from darts.utils.tensors import hard_one_hot
 
 

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from foreblocks.core.model import ForecastingModel
-from foreblocks.models.transformer.runtime.outputs import (
+from foreblocks.forecasting.transformer.runtime.outputs import (
     TransformerDecoderOutput,
     TransformerEncoderOutput,
 )

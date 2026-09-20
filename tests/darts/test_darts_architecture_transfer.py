@@ -3,9 +3,9 @@ import warnings
 import torch
 import torch.nn.functional as F
 
-from darts.architecture.bb_sequence import BaseMixedSequenceBlock
-from darts.architecture.converter import ArchitectureConverter
-from darts.architecture.mixed_encoder_decoder import MixedEncoder
+from darts.architecture.blocks.sequence import BaseMixedSequenceBlock
+from darts.architecture.search.converter import ArchitectureConverter
+from darts.architecture.search.mixed_encoder_decoder import MixedEncoder
 
 
 def test_arch_weights_eval_mode_uses_softmax():

@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.models.transformer.features.sype import AdaptiveWarp, SyPERotator
+from foreblocks.forecasting.transformer.features.sype import AdaptiveWarp, SyPERotator
 from foreblocks.attention.cache.compaction import AttentionMatchingCompactor
 from foreblocks.attention.cache.decode_stream import (
     paged_stream_decode_standard,

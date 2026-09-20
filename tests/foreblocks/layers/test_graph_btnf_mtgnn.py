@@ -7,7 +7,7 @@ from foreblocks.layers.graph import (
     MTGNNGraphConstructor,
     MTGNNMixProp,
 )
-from foreblocks.models import GraphForecastingModel
+from foreblocks.forecasting import GraphForecastingModel
 
 
 def test_mtgnn_graph_constructor_respects_topk() -> None:

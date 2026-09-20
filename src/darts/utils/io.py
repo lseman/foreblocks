@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 
 if TYPE_CHECKING:
-    from ..architecture.genotype import Genotype
+    from ..architecture.search.genotype import Genotype
 
 
 logger = logging.getLogger("NASLogger")
@@ -88,7 +88,7 @@ def save_genotype(genotype: "Genotype", filepath: str) -> None:
 
 def load_genotype(filepath: str) -> "Genotype":
     """Load a :class:`Genotype` saved with :func:`save_genotype`."""
-    from ..architecture.genotype import Genotype
+    from ..architecture.search.genotype import Genotype
 
     with open(filepath) as f:
         genotype = Genotype.from_json(f.read())

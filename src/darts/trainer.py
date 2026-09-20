@@ -7,8 +7,8 @@ Heavy logic is delegated to focused sub-modules:
 - :mod:`darts.training.training_loop` — bilevel DARTS training
 - :mod:`darts.training.final_trainer` — final-model training
 - :mod:`darts.search.zero_cost`      — zero-cost NAS metrics
-- :mod:`darts.search.ablation`       — weight-scheme ablation
-- :mod:`darts.search.search`         — multi-fidelity pipeline
+- :mod:`darts.search.phases.ablation` — weight-scheme ablation
+- :mod:`darts.search.phases.search`  — multi-fidelity pipeline
 - :mod:`darts.search.robust_pool`    — op-pool robustness
 - :mod:`darts.evaluation`            — metrics & plotting
 - :mod:`darts.utils`                 — loss, training utilities, I/O
@@ -22,8 +22,8 @@ import torch
 import torch.nn as nn
 from torch.amp import GradScaler
 
-from .architecture.time_series_darts import TimeSeriesDARTS
-from .architecture.finalization import (
+from .architecture.search.time_series_darts import TimeSeriesDARTS
+from .architecture.search.finalization import (
     derive_final_architecture as derive_fixed_architecture,
 )
 from .config import (
@@ -38,12 +38,14 @@ from .config import (
 from .evaluation import plotting as _plot_mod
 from .evaluation.metrics import evaluate_on_loader
 from .search import (
-    ablation as _abl_mod,
     robust_pool as _rp_mod,
-    search as _mf_mod,
     zero_cost as _zc_mod,
 )
-from .search.candidate_config import (
+from .search.phases import (
+    ablation as _abl_mod,
+    search as _mf_mod,
+)
+from .search.candidates.candidate_config import (
     make_candidate_config,
     normalize_op_families,
 )
@@ -53,7 +55,7 @@ from .search.orchestrator import (
     run_parallel_candidate_collection,
     select_top_candidates,
 )
-from .search.lr_sensitivity import bilevel_lr_sensitivity
+from .search.phases.lr_sensitivity import bilevel_lr_sensitivity
 from .training import final_trainer as _ft_mod, training_loop as _dl_mod
 from .training.optimizers import AlphaTracker
 from .training.regularization import (
@@ -465,7 +467,7 @@ class DARTSTrainer:
         """Create an optimised model with fixed operations based on search results.
 
         Pass ``return_genotype=True`` to also get back a serializable
-        :class:`~darts.architecture.genotype.Genotype` recording every
+        :class:`~darts.architecture.search.genotype.Genotype` recording every
         discretization decision (see ``architecture/genotype.py``).
         """
         return derive_fixed_architecture(
