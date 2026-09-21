@@ -18,7 +18,7 @@ Use it when you want to tune hyperparameters, compare search strategies, or benc
 from foretools.bohb import BOHB, PruningConfig, TPEConf
 from foretools.bohb.plotter import OptimizationPlotter
 from foretools.bohb.trial import TrialPruned
-```python
+```
 
 ## Config space format
 
@@ -63,7 +63,7 @@ try:
     ).run()
 except TrialPruned:
     pass
-```text
+```
 
 If you only need a few overrides, `tpe_overrides={...}` is lighter than constructing a full config object.
 
@@ -87,7 +87,7 @@ bohb = BOHB(
     evaluate_fn=objective,
     pruning_conf=pruning,
 )
-```json
+```
 
 ## Inspecting results
 
@@ -96,7 +96,7 @@ The BOHB instance keeps a full optimization history plus ranked configurations.
 ```python
 history = bohb.get_optimization_history()
 top_configs = bohb.get_top_configs(5)
-```text
+```
 
 ## Plotting utilities
 
@@ -112,3 +112,4 @@ plotter.plot_bracket_best()
 plotter.plot_param_effect("lr")
 plotter.plot_param_importance(top_k=5)
 plotter.plot_parallel_coordinates()
+```

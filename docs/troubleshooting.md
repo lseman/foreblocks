@@ -29,7 +29,7 @@ If you want every optional runtime dependency:
 
 ```bash
 pip install "foreblocks[all]"
-```toml
+```
 
 ## Shape mismatch in the direct forecasting path
 
@@ -64,7 +64,7 @@ The normal order is:
 pre = TimeSeriesHandler(window_size=24, horizon=6)
 X_train, y_train, processed, time_feat = pre.fit_transform(train_data)
 X_val = pre.transform(val_data)
-```toml
+```
 
 This is especially important when normalization, differencing, or detrending is enabled.
 
@@ -74,9 +74,10 @@ For small local runs and debugging sessions, prefer:
 
 ```python
 config = TrainingConfig(use_amp=False)
-```bash
+```
 
 Then run:
 
 ```bash
 npm run docs:dev
+```

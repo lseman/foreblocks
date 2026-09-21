@@ -50,7 +50,7 @@ engine.calibrate(model, X_cal, y_cal, device="cuda")
 # 3. Predict: returns point predictions + lower/upper bounds
 preds, lower, upper = engine.predict(model, X_test, device="cuda")
 # preds, lower, upper: numpy arrays, shape [N, H, D]
-```toml
+```
 
 `update()` for `rolling` and `agaci` defaults to sequential (point-by-point) update to maintain exact ACI guarantees. Pass `sequential=False` for a faster batch approximation.
 
@@ -62,7 +62,7 @@ Global radius: the `q`-quantile of absolute calibration residuals. Cheapest meth
 
 ```python
 engine = ConformalPredictionEngine(method="split", quantile=0.9)
-```toml
+```
 
 ### `jackknife` (CV+)
 
@@ -78,7 +78,7 @@ engine.calibrate(
     jackknife_cv_indices=cv_indices,
 )
 preds, lower, upper = engine.predict(model, X_test)
-```toml
+```
 
 ### `rolling` (ACI)
 
@@ -91,7 +91,7 @@ engine = ConformalPredictionEngine(
     rolling_alpha=0.05,
     aci_gamma=0.01,     # learning rate for α updates
 )
-```toml
+```
 
 ### `tsp`
 
@@ -104,7 +104,7 @@ engine = ConformalPredictionEngine(
     tsp_lambda=0.01,    # exponential decay rate
     tsp_window=5000,
 )
-```toml
+```
 
 ### `cptc`
 
@@ -118,7 +118,7 @@ engine = ConformalPredictionEngine(
     cptc_tau=1.0,
 )
 engine.calibrate(model, X_cal, y_cal, state_model=my_state_fn)
-```text
+```
 
 ## Persistence
 
@@ -126,6 +126,6 @@ engine.calibrate(model, X_cal, y_cal, state_model=my_state_fn)
 engine.save("engine.pkl")
 engine2 = ConformalPredictionEngine(method="split")
 engine2.load("engine.pkl")
-```python
+```
 
 For a well-calibrated engine on exchangeable data, this should be ≥ `quantile`.

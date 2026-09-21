@@ -82,6 +82,7 @@ darts/
 ├── methodology.tex               # Methodology LaTeX documentation
 ├── transformer_block_illustrative_v2.svg # Transformer block diagram
 └── transformer_diagram.py        # Transformer diagram generation script
+```
 
 ## Core API
 

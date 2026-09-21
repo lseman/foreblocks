@@ -50,7 +50,7 @@ print(best_config, best_loss)
 plotter = OptimizationPlotter.from_bohb(bohb)
 plotter.plot_optimization_history()
 plotter.plot_param_importance()
-```text
+```
 
 This enables BOHB's trial-level pruning hook. Keep in mind that the current pruning rule is intentionally simple, so validate it against your workload before relying on it heavily.
 
@@ -61,3 +61,4 @@ Start with:
 ```python
 history = bohb.get_optimization_history()
 top5 = bohb.get_top_configs(5)
+```

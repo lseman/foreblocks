@@ -14,7 +14,7 @@ editLink: true
 
 ```python
 from foretools.tsgen import TimeSeriesGenerator
-```python
+```
 
 ## What `make()` returns
 
@@ -75,7 +75,7 @@ df, meta = gen.make(
     noise={"ar": [0.5], "ma": [0.1], "sigma": 0.4},
     return_components=True,
 )
-```json
+```
 
 ### 3. Create a train/val/test split quickly
 
@@ -95,7 +95,7 @@ train_df = dataset["train"]
 val_df = dataset["val"]
 test_df = dataset["test"]
 meta = dataset["meta"]
-```text
+```
 
 - `plot_series()` shows the observed `y` path for a single series.
 - `plot_decompose()` renders separate trend, seasonality, cycle, and noise plots.

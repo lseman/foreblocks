@@ -31,7 +31,7 @@ from foreblocks.custom_mamba import TRITON_AVAILABLE, extension_available
 
 print(TRITON_AVAILABLE)       # True if triton is installed
 print(extension_available())  # True if CUDA extension is built
-```python
+```
 
 The cache is extended automatically when `T > max_seq_len`, so setting a generous upper bound is fine.
 
@@ -63,7 +63,7 @@ block = HybridMambaBlock(
 
 x = torch.randn(8, 64, 256)  # (batch, seq_len, d_model)
 y = block(x)                 # same shape as x
-```text
+```
 ssm_out  = SSD( LayerNorm(x) )
 attn_out = SlidingWindowAttn( LayerNorm(x) )
 gate     = sigmoid( Linear( LayerNorm(x) ) )
@@ -97,7 +97,7 @@ output   = out_proj( LayerNorm(mixed) )
 
 Set `n_kv_heads` to a divisor of `num_heads` to enable GQA. With `num_heads=8, n_kv_heads=2` the model uses 4× fewer KV parameters and KV cache entries compared to MHA, matching the Llama 3 / Mistral configuration:
 
-```python
+```
 block = HybridMamba2Block(
     d_model=512,
     num_heads=16,
@@ -110,7 +110,7 @@ For use as a time-series backbone, replace the embedding + LM-head with your own
 
 ## Diagnostics
 
-```python
+```
 from foreblocks.custom_mamba import run_default_diagnostics, benchmark_block
 
 run_default_diagnostics()   # quick correctness checks for ops on current device

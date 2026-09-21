@@ -18,7 +18,7 @@ The VMD module requires the `vmd` extra:
 
 ```bash
 pip install "foreblocks[vmd]"
-```python
+```
 
 Other useful exports:
 
@@ -56,7 +56,7 @@ raw_modes, raw_freqs, optinfo = vmd.decompose(
 post_modes = optinfo["post_modes"]
 post_freqs = optinfo["post_freqs"]
 best_K, best_alpha, best_cost = optinfo["best"]
-```toml
+```
 
 ## Common controls
 
@@ -94,7 +94,7 @@ modes, freqs, best = vmd.decompose(
     boundary_method="mirror",
     apply_tapering=True,
 )
-```python
+```
 
 Important parameter groups:
 
@@ -135,7 +135,7 @@ modes, freqs, level_info = vmd.decompose(
     use_emd_hybrid=False,
     refine_modes=False,
 )
-```text
+```
 
 Notes:
 
@@ -160,3 +160,4 @@ raw_modes, raw_freqs, optinfo = optimizer.optimize(
     refine_modes=False,
     return_raw_modes=True,
 )
+```

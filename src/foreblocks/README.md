@@ -102,6 +102,7 @@ foreblocks/
 ├── studio_server.py               # Local HTTP server for the built Studio frontend
 ├── __init__.py                    # Package initialization (lazy public exports)
 └── README.md                      # This file
+```
 
 ## Core API
 

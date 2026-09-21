@@ -49,7 +49,7 @@ model = AutoDATimeseries(
 # Standard training step
 trainer = AutoDATrainer(model, lr=1e-3)
 loss = trainer.step(x, y_target)
-```python
+```
 
 ## `StackedAugmentationLayers`
 
@@ -60,7 +60,7 @@ from foretools.tsaug import StackedAugmentationLayers
 
 aug = StackedAugmentationLayers(num_layers=3, feature_dim=32)
 x_aug = aug(x)
-```python
+```
 
 Features include statistical moments, autocorrelation, spectral energy, and trend strength — computed per channel and aggregated across the batch dimension.
 
@@ -73,6 +73,6 @@ from foretools.tsaug import CompositeLoss
 
 criterion = CompositeLoss(task_loss=nn.MSELoss(), diversity_weight=0.01)
 loss = criterion(y_pred, y_true, aug_probs)
-```python
+```
 
 The `intensity` argument can be a scalar or a `(batch,)` tensor for per-sample control.

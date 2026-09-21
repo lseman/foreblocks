@@ -81,7 +81,7 @@ from foreblocks import (
     ModelConfig,
     TrainingConfig,
 )
-```python
+```
 
 Treat deeper imports as subsystem-level APIs unless a topic guide explicitly tells you to use them directly.
 

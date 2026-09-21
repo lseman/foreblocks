@@ -162,13 +162,13 @@ from foreblocks import (
     ModelConfig,
     TrainingConfig,
 )
-```python
+```
 
 ### Uncertainty
 
 ```python
 from foreblocks.training.conformal import ConformalPredictionEngine
-```python
+```
 
 ### Wavelet & frequency attention
 
@@ -183,3 +183,4 @@ enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, att_type="dwt")
 
 # Frequency-domain (FEDformer-style) attention
 enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, att_type="frequency")
+```

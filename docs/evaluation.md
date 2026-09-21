@@ -22,7 +22,7 @@ trainer = Trainer(model, ...)
 trainer.fit(train_loader, val_loader, epochs=50)
 
 evaluator = ModelEvaluator(trainer)
-```python
+```
 
 `use_amp=True` enables automatic mixed precision on CUDA; it is silently ignored on CPU.
 
@@ -34,7 +34,7 @@ metrics = evaluator.compute_metrics(X_test, y_test)
 
 # {'mse': ..., 'rmse': ..., 'mae': ..., 'mape': ...}
 print(metrics)
-```text
+```
 
 Return dict keys:
 
@@ -62,7 +62,7 @@ pip install foreblocks[plotting]
 ```python
 fig = evaluator.plot_cv_results(cv, figsize=(15, 8))
 fig.savefig("cv_results.png")
-```toml
+```
 
 Three subplots: train/val loss, learning rate schedule, and (if using distillation) task vs. distillation loss components.
 
@@ -70,3 +70,4 @@ Three subplots: train/val loss, learning rate schedule, and (if using distillati
 
 ```python
 evaluator.print_summary()
+```

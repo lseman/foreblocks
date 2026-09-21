@@ -65,6 +65,7 @@ mltracker/
 ├── __init__.py                   # Package initialization
 ├── README.md                     # This file
 └── .ruff_cache/                  # Ruff linter cache
+```
 
 ## Core API
 

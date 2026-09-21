@@ -35,7 +35,7 @@ This project targets Python 3.10 and newer.
 
 ```bash
 pip install foreblocks
-```bash
+```
 
 ### With extras
 
@@ -62,7 +62,7 @@ pip install "foreblocks[vmd,wavelets]"
 
 # Everything (large)
 pip install "foreblocks[all]"
-```toml
+```
 
 ::: info What this first run should validate
 - Your `foreblocks` import path is correct.
@@ -135,8 +135,7 @@ X, y, processed, time_feats = pre.fit_transform(raw, time_stamps=timestamps)
 
 # Transform validation data using fitted state
 X_val = pre.transform(val_raw, time_stamps=val_timestamps)
-```bash
-:::
+```
 
 Continue with [Preprocessor Guide](preprocessor) for advanced options like filtering, outlier handling, and feature engineering.
 
@@ -146,7 +145,9 @@ If the basic training loop works and you want architecture search instead of han
 
 ```bash
 pip install "foreblocks[darts]"
-```toml
+```
+
+```text
 Baseline works and metrics are acceptable?
 ├── No → improve your data
 │   ├── Raw series (single array)   → Preprocessor Guide
@@ -166,7 +167,7 @@ Baseline works and metrics are acceptable?
 │
 └── Yes, but training is slow or OOM
     └── AMP, gradient checkpointing  → Configuration Reference
-```text
+```
 
 ## Related pages
 

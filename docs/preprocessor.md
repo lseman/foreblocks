@@ -22,7 +22,7 @@ Related docs:
 
 ```python
 from foreblocks import TimeSeriesHandler
-```python
+```
 
 Return values from `fit_transform(...)`:
 - `X`: input windows
@@ -73,7 +73,7 @@ X_test = pre.transform(test_data, time_stamps=test_ts)
 
 # Invert model outputs back to data scale
 pred_real = pre.inverse_transform(pred_scaled)
-```toml
+```
 
 ---
 

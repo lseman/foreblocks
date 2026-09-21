@@ -52,7 +52,7 @@ model = KANModel(
 
 x = torch.randn(8, 48, 4)   # [B, T, C]
 y = model(x)                # [B, 24, 4] -> [B, H, C]
-```python
+```
 
 Pass a subset via the `families` argument; per-family hyperparameters are
 exposed as keyword arguments (for example `jacobi_alpha`, `jacobi_beta`,

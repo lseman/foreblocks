@@ -52,7 +52,7 @@ For any meaningful user-facing change, update:
 - avoid promising workflows that have not been validated in the repository
 - link across pages so documentation behaves like a wiki, not isolated files
 - prefer fenced code blocks with an explicit language like `python` or `bash`
-- keep configuration docs aligned with `foreblocks/config.py`
+- keep configuration docs aligned with `foreblocks/models/config.py` and `foreblocks/training/config.py`
 
 ## Local preview
 
@@ -60,9 +60,10 @@ This repository now uses VitePress for the versioned documentation site. Install
 
 ```bash
 npm install
-```bash
+```
 
 Or build a static site:
 
 ```bash
 npm run docs:build
+```

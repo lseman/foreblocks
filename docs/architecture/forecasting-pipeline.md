@@ -28,3 +28,4 @@ flowchart TD
 
     E -.->|optional| L[ConformalPredictionEngine\ncalibrate → predict intervals]
     E -.->|optional| M[DARTSSearcher\narchitecture search]
+```

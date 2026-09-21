@@ -52,3 +52,4 @@ results = analyzer.analyze(["correlations", "outliers"])
 # Run-and-plot in one step, or fetch a single analysis result
 analyzer.analyze_and_plot(["clusters"])
 corr = analyzer.get_results("correlations")
+```

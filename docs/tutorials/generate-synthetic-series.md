@@ -19,10 +19,7 @@ The generator lives in:
 
 - `foretools/tsgen/ts_gen.py`
 
-There is also a companion notebook:
-
-- `foretools/tsgen/ts_gen_complete_series.ipynb`
-- [Time Series Generator](../foretools/tsgen) documents the full API and component behavior
+The [Time Series Generator](../foretools/tsgen) page documents the full API and component behavior.
 
 ## Minimal example
 
@@ -61,3 +58,4 @@ df, meta = gen.make(
     add_calendar=True,
     return_components=True,
 )
+```

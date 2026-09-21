@@ -12,7 +12,8 @@ This page summarizes the main configuration objects exposed through the current 
 
 The canonical configuration definitions live in:
 
-- `foreblocks/config.py` for `ModelConfig` and `TrainingConfig`
+- `foreblocks/models/config.py` for `ModelConfig`
+- `foreblocks/training/config.py` for `TrainingConfig`
 
 ## `ModelConfig`
 
@@ -142,7 +143,7 @@ config = TrainingConfig(
     use_amp=False,
 )
 trainer = Trainer(model, config=config, auto_track=False)
-```toml
+```
 
 **DARTS / NAS run — architecture parameter alternation:**
 
@@ -159,7 +160,7 @@ config = TrainingConfig(
     nas_discretize_at_end=True,
     nas_log_alphas=True,
 )
-```toml
+```
 
 **Conformal prediction run — split conformal with 90 % coverage:**
 
@@ -171,7 +172,7 @@ config = TrainingConfig(
     conformal_method="split",
     conformal_quantile=0.90,
 )
-```toml
+```
 
 ## `TimeSeriesHandler` settings
 

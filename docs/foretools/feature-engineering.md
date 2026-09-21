@@ -214,7 +214,7 @@ Any scikit-learn compatible `scoring` string is accepted.
 eng.plot_rfecv_results()
 # shows: CV score vs. number of features
 #        feature importance bar chart for selected set
-```text
+```
 
 A good feature set has a monotonically decreasing MI profile with a clear elbow. Features to the right of the elbow are likely noise. A flat profile (all MI near zero) indicates either a weak signal or poor transformation choices.
 
@@ -222,7 +222,7 @@ A good feature set has a monotonically decreasing MI profile with a clear elbow.
 
 ```python
 eng.plot_rfecv_results()
-```text
+```
 
 Inspect `pairs` to verify no informative feature was dropped. Pairs with $|r| \approx 1.0$ and high MI are a sign of duplicate transformations.
 
@@ -233,7 +233,7 @@ Inspect `pairs` to verify no informative feature was dropped. Pairs with $|r| \a
 ```python
 kept = eng.transformers_["mathematical"].valid_transforms_  # {col: [transform_names]}
 power_cols = eng.transformers_["mathematical"].valid_cols_power_  # [col_names]
-```toml
+```
 
 Top interaction scores reflect pairs whose combined signal exceeds either individual column. A high-scoring interaction $x_j \cdot x_k$ that wasn't in the raw data indicates a nonlinear relationship that linear models would otherwise miss.
 
@@ -278,7 +278,7 @@ eng.plot_rfecv_results()
 report = eng.get_transformation_report()
 print(report["feature_reduction_ratio"])
 print(report["top_features"])
-```text
+```
 
 ---
 
