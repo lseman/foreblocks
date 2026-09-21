@@ -5,10 +5,11 @@ on:
     paths:
       - "docs/**"
       - "site/landing/**"
+      - "apps/studio/**"
       - "apps/webui/**"
       - "package.json"
       - "package-lock.json"
-      - "build_studio_web.sh"
+      - "scripts/build_studio_web.sh"
       - ".github/workflows/docs.yml"
   push:
     branches:
@@ -16,10 +17,11 @@ on:
     paths:
       - "docs/**"
       - "site/landing/**"
+      - "apps/studio/**"
       - "apps/webui/**"
       - "package.json"
       - "package-lock.json"
-      - "build_studio_web.sh"
+      - "scripts/build_studio_web.sh"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 

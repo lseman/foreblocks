@@ -11,7 +11,7 @@ editLink: true
 
 The `apps/webui/` directory contains a browser-based node editor for building and running foreblocks forecasting pipelines without writing code. Nodes represent pipeline stages; edges connect outputs to inputs. Execution happens on a local FastAPI backend that streams progress back to the browser via WebSocket.
 
-This is a **local, self-hosted tool** (start it with `foreblocks-studio` or `python server.py` against your own Python environment) — it is not the interactive demo published at `/studio/` on the docs site. That public playground is a separate, static, client-side-only app built from `site/landing/studio/` (see its [README](https://github.com/lseman/foreblocks/blob/main/site/landing/studio/README.md)).
+This is a **local, self-hosted tool** (start it with `foreblocks-studio` or `python server.py` against your own Python environment) — it is not the interactive demo published at `/studio/` on the docs site. That public playground is a separate, static, client-side-only app built from `apps/studio/` (see its [README](https://github.com/lseman/foreblocks/blob/main/apps/studio/README.md)).
 
 ## Starting the server
 

@@ -15,7 +15,7 @@ typings/
 /src/foreblocks/studio/dist/
 
 # Generated documentation site (rebuilt by .github/workflows/docs.yml on
-# every deploy from docs/ + site/landing/ + apps/webui/dist) — only
+# every deploy from docs/ + site/landing/ + apps/studio/dist) — only
 # site/landing/ is hand-authored source and stays tracked.
 /site/*
 !/site/landing
@@ -63,7 +63,7 @@ apps/webui/dist/
 apps/webui/server.log
 apps/webui/nodeDefinitions*_debug.json
 apps/mltracker-dashboard/dist/
-site/landing/studio/dist/
+apps/studio/dist/
 
 # Working and temporary directories
 work/

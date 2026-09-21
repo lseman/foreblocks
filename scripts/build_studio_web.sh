@@ -3,8 +3,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STUDIO_DIR="$ROOT/site/landing/studio/src"
-STUDIO_DIST="$ROOT/site/landing/studio/dist"
+STUDIO_DIR="$ROOT/apps/studio/src"
+STUDIO_DIST="$ROOT/apps/studio/dist"
 TARGET_DIR="$ROOT/site/studio"
 
 if [[ ! -d "$STUDIO_DIR" ]]; then
