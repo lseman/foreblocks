@@ -77,7 +77,7 @@ df, meta = gen.make(
 )
 ```
 
-### 3. Create a train/val/test split quickly
+### 2. Create a train/val/test split quickly
 
 `make_train_ready()` pivots the generated data into wide format and reserves the last two horizons for validation and test.
 
@@ -100,8 +100,6 @@ meta = dataset["meta"]
 - `plot_series()` shows the observed `y` path for a single series.
 - `plot_decompose()` renders separate trend, seasonality, cycle, and noise plots.
 
-If you need a richer figure that overlays all components at once, use the companion notebook `foretools/tsgen/ts_gen_complete_series.ipynb`.
-
 ## Practical behavior to know
 
 - Missingness is applied after the full signal is constructed, and only to the `y` column.
@@ -115,7 +113,7 @@ If you need a richer figure that overlays all components at once, use the compan
 1. Start with `return_components=True` so you can inspect the exact decomposition.
 2. Keep missingness and outliers off for first-pass model debugging.
 3. Add regimes, exogenous drivers, and missingness only after the baseline workflow is working.
-4. Use the notebook examples when you want publication-style plots or teaching material.
+4. Use `plot_series()` and `plot_decompose()` when you want publication-style plots or teaching material.
 
 ## Related pages
 

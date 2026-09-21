@@ -319,10 +319,14 @@ Companion tooling:
 
 Examples and notebooks:
 
-- `examples/adaptive_mrmr_demo.py`
-- `foretools/tsgen/ts_gen_complete_series.ipynb`
-- `foretools/tsgen/ts_gen_doc.ipynb`
-- `foretools/`
+- `examples/seq2seq.ipynb` — seq2seq training workflow
+- `examples/ts_handler_autoprocessing_demo.ipynb` — raw-series preprocessing with `TimeSeriesHandler`
+- `examples/darts_multifidelity_example.ipynb` — DARTS multi-fidelity search
+- `examples/graph_forecasting_model_trainer_synthetic.ipynb` — graph forecasting on synthetic data
+- `examples/mixture_of_experts_full_teaching_notebook.ipynb` — MoE routing walkthrough
+- `examples/transformer_tuner_synthetic.ipynb` — transformer hyperparameter tuning
+- `examples/foretools_tsaug_example.py` — adaptive data augmentation
+- `examples/adaptive_mrmr_demo.py` — MRMR feature selection
 
 There is a repository-local docs navigation file at [`docs/.vitepress/config.js`](docs/.vitepress/config.js).
 
