@@ -1,14 +1,14 @@
 import pytest
 import torch
 
-from foreblocks.modules.moe.experts import moe
-from foreblocks.modules.moe.experts.dispatchers import (
+from foreblocks.nn.moe import layer as moe
+from foreblocks.nn.moe.dispatchers import (
     ConfidenceCapacityDispatcher,
     DroplessPackedDispatcher,
 )
-from foreblocks.modules.moe.experts.moe import MoERoutingState
-from foreblocks.modules.moe.experts.routers import RouterOutput
-from foreblocks.modules.moe.ff import FeedForwardBlock
+from foreblocks.nn.moe.layer import MoERoutingState
+from foreblocks.nn.moe.routers import RouterOutput
+from foreblocks.nn.moe.feedforward import FeedForwardBlock
 
 
 def test_latent_moe_preserves_output_shape_and_aux():
@@ -398,7 +398,7 @@ def test_moe_full_sota_combo():
 
 def test_moe_router_output_is_dataclass():
     """Router forward returns RouterOutput dataclass, not tuple."""
-    from foreblocks.modules.moe.experts.routers import LinearRouter
+    from foreblocks.nn.moe.routers import LinearRouter
     router = LinearRouter(d_model=16, num_experts=4)
     x = torch.randn(2, 8, 16)
     out = router(x)
@@ -414,7 +414,7 @@ def test_moe_router_output_is_dataclass():
 
 def test_router_entropy_stays_tensor_in_training_forward():
     """Router entropy does not force a Python scalar inside compiled forwards."""
-    from foreblocks.modules.moe.experts.routers import AdaptiveNoisyTopKRouter
+    from foreblocks.nn.moe.routers import AdaptiveNoisyTopKRouter
 
     router = AdaptiveNoisyTopKRouter(d_model=16, num_experts=4, max_k=2)
     router.train()

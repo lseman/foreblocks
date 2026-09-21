@@ -93,7 +93,7 @@ encoder = TransformerEncoder(
 
 ### Router types
 
-ForeBlocks provides several router implementations in `foreblocks.modules.moe.experts.routers`:
+ForeBlocks provides several router implementations in `foreblocks.nn.moe.routers`:
 
 - `NoisyTopKRouter` (default, recommended)
 - `StraightThroughTopKRouter`

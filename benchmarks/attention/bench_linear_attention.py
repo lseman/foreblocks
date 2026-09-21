@@ -24,44 +24,44 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from foreblocks.attention.implementations.linear_att.deltanet import (
+from foreblocks.nn.attention.algorithms.linear.deltanet import (
     DeltaNetBackend,
 )
-from foreblocks.attention.implementations.linear_att.gated_delta import (
+from foreblocks.nn.attention.algorithms.linear.gated_delta import (
     GatedDeltaNetBackend,
 )
-from foreblocks.attention.implementations.linear_att.gated_deltanet2 import (
+from foreblocks.nn.attention.algorithms.linear.gated_deltanet2 import (
     GatedDeltaNet2Backend,
 )
-from foreblocks.attention.implementations.linear_att.gla import GLABackend
-from foreblocks.attention.implementations.linear_att.kimi import KimiAttentionBackend
+from foreblocks.nn.attention.algorithms.linear.gla import GLABackend
+from foreblocks.nn.attention.algorithms.linear.kimi import KimiAttentionBackend
 
 # ── Custom backends ──────────────────────────────────────────────────────────
-from foreblocks.attention.implementations.linear_att.rda import RDABackend
+from foreblocks.nn.attention.algorithms.linear.rda import RDABackend
 
 # ── FLA availability ─────────────────────────────────────────────────────────
-from foreblocks.ops.attention.fla_backend import (
+from foreblocks.integrations.fla.backend import (
     fla_path,
     has_fla_checkout,
 )
-from foreblocks.ops.attention.fla_delta_rule import (
+from foreblocks.integrations.fla.delta_rule import (
     can_use_fla_delta_rule,
     can_use_fla_recurrent_delta_rule,
     fla_delta_rule_forward,
 )
-from foreblocks.ops.attention.fla_gated_delta_rule import (
+from foreblocks.integrations.fla.gated_delta_rule import (
     can_use_fla_gated_delta_rule,
     fla_gated_delta_rule_forward,
 )
-from foreblocks.ops.attention.fla_gdn2 import (
+from foreblocks.integrations.fla.gated_deltanet2 import (
     can_use_fla_gdn2,
     can_use_fla_gdn2_chunk,
     fla_gdn2_chunk_forward,
     fla_gdn2_forward,
 )
-from foreblocks.ops.attention.fla_gla import can_use_fla_gla, fla_gla_forward
-from foreblocks.ops.attention.fla_kda import can_use_fla_kda, fla_kda_forward
-from foreblocks.ops.attention.fla_linear_attention import (
+from foreblocks.integrations.fla.gated_linear import can_use_fla_gla, fla_gla_forward
+from foreblocks.integrations.fla.kimi_delta import can_use_fla_kda, fla_kda_forward
+from foreblocks.integrations.fla.linear import (
     can_use_fla_linear_attn,
     fla_recurrent_linear_attn_forward,
 )

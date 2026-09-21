@@ -11,7 +11,7 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("shape", [(8192,), (3, 5, 257)])
 def test_triton_gelu_backward_matches_torch(dtype, shape):
-    from foreblocks.ops.kernels.gelu import GeluTritonFunction
+    from foreblocks.kernels.activations.gelu import GeluTritonFunction
 
     x = torch.randn(shape, device="cuda", dtype=dtype, requires_grad=True)
     x_ref = x.detach().clone().requires_grad_(True)

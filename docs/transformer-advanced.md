@@ -19,8 +19,8 @@ Deep transformers benefit from layer-dependent learning rates: early layers (fea
 #### Enable LLRD
 
 ```python
-from foreblocks.config import TrainingConfig
-from foreblocks.core.training.trainer import Trainer
+from foreblocks.training.config import TrainingConfig
+from foreblocks.training.trainer import Trainer
 
 config = TrainingConfig(
     num_epochs=100,
@@ -141,8 +141,8 @@ Deeper transformer layers often benefit from higher dropout (stochastic-depth st
 ### Enable Per-Layer Dropout
 
 ```python
-from foreblocks.modules.skip.mod import LayerDropoutSchedule
-from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
+from foreblocks.nn.routing.mod import LayerDropoutSchedule
+from foreblocks.nn.transformer.encoder import TransformerEncoder
 
 # Create the schedule
 dropout_schedule = LayerDropoutSchedule(
@@ -184,8 +184,8 @@ Layer 5: 0.200
 ### Integration with Trainer
 
 ```python
-from foreblocks.modules.skip.mod import LayerDropoutSchedule
-from foreblocks.forecasting.transformer.core.decoder import TransformerDecoder
+from foreblocks.nn.routing.mod import LayerDropoutSchedule
+from foreblocks.nn.transformer.decoder import TransformerDecoder
 
 dropout_schedule = LayerDropoutSchedule(
     num_layers=4,
@@ -217,8 +217,8 @@ No config changes needed — dropout schedule is a model-level choice, not a tra
 ForeBlocks uses a structured `AttentionConfig` with sub-configurations:
 
 ```python
-from foreblocks.forecasting.transformer.config import TransformerConfig
-from foreblocks.attention.config import (
+from foreblocks.nn.transformer.config import TransformerConfig
+from foreblocks.nn.attention.config import (
     AttentionConfig,
     AttentionShapeConfig,
     AttentionCacheConfig,
@@ -422,7 +422,7 @@ Not all tokens need all layers. MoD routes tokens to a subset of layers based on
 ### Enable MoD
 
 ```python
-from foreblocks.modules.skip.mod import MoDBudgetScheduler
+from foreblocks.nn.routing.mod import MoDBudgetScheduler
 
 budget_scheduler = MoDBudgetScheduler(
     num_layers=6,
@@ -590,7 +590,7 @@ encoder = TransformerEncoder(
 Replace standard FFN with routed expert mixture:
 
 ```python
-from foreblocks.modules.moe.ff import FeedForwardBlock
+from foreblocks.nn.moe.feedforward import FeedForwardBlock
 
 moe_ffn = FeedForwardBlock(
     d_model=256,
@@ -657,11 +657,11 @@ moe_ffn = FeedForwardBlock(
 ## Complete Example: Production Encoder-Decoder
 
 ```python
-from foreblocks.config import TrainingConfig
-from foreblocks.core.training.trainer import Trainer
-from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
-from foreblocks.forecasting.transformer.core.decoder import TransformerDecoder
-from foreblocks.modules.skip.mod import (
+from foreblocks.training.config import TrainingConfig
+from foreblocks.training.trainer import Trainer
+from foreblocks.nn.transformer.encoder import TransformerEncoder
+from foreblocks.nn.transformer.decoder import TransformerDecoder
+from foreblocks.nn.routing.mod import (
     LayerDropoutSchedule,
     MoDBudgetScheduler,
 )

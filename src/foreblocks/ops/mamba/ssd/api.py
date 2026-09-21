@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from .modular import _chunked_ssd_backward_modular, _chunked_ssd_forward_modular
 from .torch_backward import _chunked_ssd_backward_torch
-from .triton_kernels import (
+from foreblocks.kernels.mamba.ssd import (
     CHUNKED_SSD_TRITON_AVAILABLE,
     chunked_ssd_forward_triton,
     chunked_ssd_forward_triton_parallel,

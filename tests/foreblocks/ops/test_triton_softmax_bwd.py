@@ -8,7 +8,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA requ
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("dim", [-1, 0, 1])
 def test_triton_softmax_forward_and_backward_match_torch(dtype, dim):
-    from foreblocks.ops.kernels.softmax import SoftmaxTritonFunction
+    from foreblocks.kernels.activations.softmax import SoftmaxTritonFunction
 
     shape = (4, 5, 257)
     x = torch.randn(shape, device="cuda", dtype=dtype, requires_grad=True)
@@ -27,7 +27,7 @@ def test_triton_softmax_forward_and_backward_match_torch(dtype, dim):
 
 
 def test_triton_softmax_accepts_noncontiguous_input_and_gradient():
-    from foreblocks.ops.kernels.softmax import SoftmaxTritonFunction
+    from foreblocks.kernels.activations.softmax import SoftmaxTritonFunction
 
     x = torch.randn(5, 4, 257, device="cuda").transpose(0, 1).requires_grad_()
     x_ref = x.detach().clone().requires_grad_(True)

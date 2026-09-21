@@ -6,7 +6,7 @@ from ..common.norms import RMSNorm
 
 
 try:
-    from foreblocks.ops.norms_triton import (
+    from foreblocks.kernels.normalization import (
         TRITON_AVAILABLE,
         RMSNormTritonFunction,
         _should_use_triton,

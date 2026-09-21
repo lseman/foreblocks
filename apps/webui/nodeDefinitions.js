@@ -67,7 +67,7 @@ const NODE_TYPES = {
       use_amp: true
     },
     py: {
-      imports: ['from foreblocks.core.training.trainer import Trainer'],
+      imports: ['from foreblocks.training.trainer import Trainer'],
       ctor: 'Trainer',
       var_prefix: 'trainer',
       role: 'trainer',

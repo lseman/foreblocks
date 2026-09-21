@@ -228,7 +228,7 @@ def test_ssd_forward_correctness():
 
 def test_dt_prep_correctness():
     """dt_prep: Triton vs fallback."""
-    from foreblocks.ops.mamba.triton_ops import dt_prep_fallback, dt_prep_triton
+    from foreblocks.kernels.mamba.gating import dt_prep_fallback, dt_prep_triton
 
     torch.manual_seed(42)
     B, T, D = 2, 256, 512
@@ -245,7 +245,7 @@ def test_dt_prep_correctness():
 
 def test_fused_out_correctness():
     """fused_out: Triton vs fallback."""
-    from foreblocks.ops.mamba.triton_ops import fused_out_fallback, fused_out_triton
+    from foreblocks.kernels.mamba.gating import fused_out_fallback, fused_out_triton
 
     torch.manual_seed(42)
     B, T, D = 2, 256, 512
@@ -443,7 +443,7 @@ def bench_ssd_backward_sweep():
 
 def bench_dt_prep_comparison():
     """dt_prep: Triton vs fallback across sizes."""
-    from foreblocks.ops.mamba.triton_ops import dt_prep_fallback, dt_prep_triton
+    from foreblocks.kernels.mamba.gating import dt_prep_fallback, dt_prep_triton
 
     results = {}
     for T, D in [(256, 512), (1024, 2048), (4096, 4096)]:
@@ -531,7 +531,7 @@ def bench_full_block_sweep():
 
 def bench_fused_dt_comparison():
     """fused_dt: Triton vs fallback across dt_rank sizes."""
-    from foreblocks.ops.mamba.fused_dt import fused_dt_fallback, fused_dt_triton
+    from foreblocks.kernels.mamba.fused_dt import fused_dt_fallback, fused_dt_triton
 
     results = {}
     for dt_rank in [16, 64, 256]:

@@ -18,7 +18,7 @@ Core API (entry points):
 """
 
 try:
-    from foreblocks.ops.attention.fla_backend import (
+    from foreblocks.integrations.fla.backend import (
         fla_chunk_delta_rule,
         fla_chunk_gated_delta_rule,
         fla_chunk_gdn2,
@@ -118,7 +118,7 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fla_delta_rule import (
+    from foreblocks.integrations.fla.delta_rule import (
         can_use_fla_delta_rule,
         can_use_fla_recurrent_delta_rule,
         fla_delta_rule_forward,
@@ -142,7 +142,7 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fused_norm_gate import (
+    from foreblocks.kernels.normalization.gated import (
         can_use_fused_rmsnorm_sigmoid_gate,
         fused_rmsnorm_sigmoid_gate,
     )
@@ -158,7 +158,7 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fla_gated_delta_rule import (
+    from foreblocks.integrations.fla.gated_delta_rule import (
         can_use_fla_gated_delta_rule,
         fla_gated_delta_rule_forward,
     )
@@ -172,7 +172,7 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fla_linear_attention import (
+    from foreblocks.integrations.fla.linear import (
         can_use_fla_linear_attn,
         fla_recurrent_linear_attn_forward,
     )
@@ -186,7 +186,7 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fla_gla import can_use_fla_gla, fla_gla_forward
+    from foreblocks.integrations.fla.gated_linear import can_use_fla_gla, fla_gla_forward
 except Exception:
 
     def can_use_fla_gla(*args, **kwargs):  # type: ignore[misc]
@@ -197,7 +197,7 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fla_gdn2 import (
+    from foreblocks.integrations.fla.gated_deltanet2 import (
         can_use_fla_gdn2,
         can_use_fla_gdn2_chunk,
         fla_gdn2_chunk_forward,
@@ -219,7 +219,7 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fla_kda import can_use_fla_kda, fla_kda_forward
+    from foreblocks.integrations.fla.kimi_delta import can_use_fla_kda, fla_kda_forward
 except Exception:
 
     def can_use_fla_kda(*args, **kwargs):  # type: ignore[misc]
@@ -230,7 +230,7 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.fused_rope import triton_apply_rope, triton_apply_rope_pair
+    from foreblocks.kernels.attention.rotary import triton_apply_rope, triton_apply_rope_pair
 except Exception:
 
     def triton_apply_rope(*args, **kwargs):  # type: ignore[misc]
@@ -241,7 +241,7 @@ except Exception:
 
 
 try:
-    from foreblocks.ops.attention.paged_decode import triton_paged_decode
+    from foreblocks.kernels.attention.paged_decode import triton_paged_decode
 except Exception:
 
     def triton_paged_decode(*args, **kwargs):  # type: ignore[misc]

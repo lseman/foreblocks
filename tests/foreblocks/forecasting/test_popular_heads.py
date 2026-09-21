@@ -2,14 +2,14 @@ import unittest
 
 import torch
 
-from foreblocks.forecasting.popular.autoformer import Autoformer
-from foreblocks.forecasting.popular.crossformer import CrossFormer
-from foreblocks.forecasting.popular.etsformer import ETSformer
-from foreblocks.forecasting.popular.informer import Informer
-from foreblocks.forecasting.popular.nonstationary import NonStationaryTransformer
-from foreblocks.forecasting.popular.timemixer import TimeMixer
-from foreblocks.forecasting.popular.timesnet import TimesNet
-from foreblocks.forecasting.popular.timexer import TimeXer
+from foreblocks.models.baselines.autoformer import Autoformer
+from foreblocks.models.baselines.crossformer import CrossFormer
+from foreblocks.models.baselines.etsformer import ETSformer
+from foreblocks.models.baselines.informer import Informer
+from foreblocks.models.baselines.nonstationary import NonStationaryTransformer
+from foreblocks.models.baselines.timemixer import TimeMixer
+from foreblocks.models.baselines.timesnet import TimesNet
+from foreblocks.models.baselines.timexer import TimeXer
 
 
 class TestPopularHeads(unittest.TestCase):

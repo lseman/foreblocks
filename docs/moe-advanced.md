@@ -54,7 +54,7 @@ encoder = TransformerEncoder(
 ### Full Control (via FeedForwardBlock)
 
 ```python
-from foreblocks.modules.moe.ff import FeedForwardBlock
+from foreblocks.nn.moe.feedforward import FeedForwardBlock
 
 ffn = FeedForwardBlock(
     d_model=256,
@@ -88,7 +88,7 @@ ffn = FeedForwardBlock(
 
 ## Router Types
 
-ForeBlocks provides several router implementations in `foreblocks.modules.moe.experts.routers`:
+ForeBlocks provides several router implementations in `foreblocks.nn.moe.routers`:
 
 ### NoisyTopKRouter (Recommended Default)
 
@@ -548,9 +548,9 @@ Maximize expressivity: adaptive k + latent + high load balancing weight + soft c
 ## Complete Example: MoE-Heavy Encoder
 
 ```python
-from foreblocks.config import TrainingConfig
-from foreblocks.core.training.trainer import Trainer
-from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
+from foreblocks.training.config import TrainingConfig
+from foreblocks.training.trainer import Trainer
+from foreblocks.nn.transformer.encoder import TransformerEncoder
 
 # ── High-capacity MoE encoder ──
 encoder = TransformerEncoder(
@@ -608,7 +608,7 @@ history = trainer.train(train_loader, val_loader)
 
 Enable logging:
 ```python
-from foreblocks.modules.moe.experts.moe_logging import MoELogger
+from foreblocks.nn.moe.logging import MoELogger
 
 moe_logger = MoELogger()
 encoder = TransformerEncoder(

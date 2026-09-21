@@ -11,9 +11,9 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from .segment_sum import _segment_sum_log
+from foreblocks.kernels.mamba.segment_sum import _segment_sum_log
 from .torch_backward import _chunked_ssd_backward_torch
-from .triton_kernels import (
+from foreblocks.kernels.mamba.ssd import (
     chunked_ssd_forward_triton_parallel,
     chunked_ssd_forward_triton_tiled,
 )

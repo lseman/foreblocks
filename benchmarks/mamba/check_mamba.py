@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""foreblocks.forecasting.sequence.mamba.check_mamba.
+"""foreblocks.nn.sequence.mamba.check_mamba.
 
 Correctness and speed verification for Mamba2/Mamba3 block implementations.
 
@@ -32,8 +32,8 @@ from foreblocks.ops.mamba.ssd import (
     chunked_ssd_forward_reference,
     chunked_ssd_forward_triton,
 )
-from foreblocks.forecasting.sequence.mamba.mamba2 import Mamba2Block
-from foreblocks.forecasting.sequence.mamba.mamba3 import Mamba3Block
+from foreblocks.nn.sequence.mamba.mamba2 import Mamba2Block
+from foreblocks.nn.sequence.mamba.mamba3 import Mamba3Block
 
 
 def _err(a: torch.Tensor, b: torch.Tensor) -> tuple[float, float]:

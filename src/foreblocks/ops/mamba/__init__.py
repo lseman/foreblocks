@@ -16,19 +16,19 @@ Core API (entry points):
 
 """
 
-from foreblocks.ops.kernels.rms_norm import (
+from foreblocks.kernels.normalization.rms_norm import (
     TRITON_AVAILABLE as RMS_NORM_TRITON_AVAILABLE,
     rms_norm,
     rms_norm_fallback,
 )
-from foreblocks.ops.mamba.causal_conv1d import (
+from foreblocks.kernels.mamba.causal_conv1d import (
     CAUSAL_CONV1D_TRITON_AVAILABLE,
     causal_depthwise_conv1d,
     causal_depthwise_conv1d_bwd_triton,
     causal_depthwise_conv1d_reference,
     causal_depthwise_conv1d_triton,
 )
-from foreblocks.ops.mamba.fused_dt import (
+from foreblocks.kernels.mamba.fused_dt import (
     FUSED_DT_TRITON_AVAILABLE,
     fused_dt,
     fused_dt_bwd_fallback,
@@ -48,7 +48,7 @@ from foreblocks.ops.mamba.ssd import (
     chunked_ssd_forward_triton_tiled,
     segment_sum,
 )
-from foreblocks.ops.mamba.triton_ops import (
+from foreblocks.kernels.mamba.gating import (
     TRITON_AVAILABLE,
     dt_prep,
     dt_prep_bwd_triton,

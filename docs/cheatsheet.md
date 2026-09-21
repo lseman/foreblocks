@@ -33,9 +33,9 @@ trainer.train(train_loader, val_loader)
 ## Scenario 2: Fine-tuning Pretrained (SOTA)
 
 ```python
-from foreblocks.modules.skip.mod import LayerDropoutSchedule
-from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
-from foreblocks.forecasting.transformer.core.decoder import TransformerDecoder
+from foreblocks.nn.routing.mod import LayerDropoutSchedule
+from foreblocks.nn.transformer.encoder import TransformerEncoder
+from foreblocks.nn.transformer.decoder import TransformerDecoder
 
 encoder = TransformerEncoder(
     input_size=8, d_model=256, num_layers=6, nhead=8,
@@ -69,8 +69,8 @@ trainer.train(train_loader, val_loader)
 ## Scenario 3: Long Sequences + Efficiency
 
 ```python
-from foreblocks.modules.skip.mod import MoDBudgetScheduler
-from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
+from foreblocks.nn.routing.mod import MoDBudgetScheduler
+from foreblocks.nn.transformer.encoder import TransformerEncoder
 
 mod_sched = MoDBudgetScheduler(
     num_layers=6, start_keep=1.0, end_keep=0.9,
@@ -105,7 +105,7 @@ trainer.train(train_loader, val_loader)
 ## Scenario 4: Capacity + MoE
 
 ```python
-from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
+from foreblocks.nn.transformer.encoder import TransformerEncoder
 
 encoder = TransformerEncoder(
     input_size=8, d_model=384, num_layers=6, nhead=8,
@@ -135,8 +135,8 @@ trainer.train(train_loader, val_loader)
 ## Scenario 5: Unstable Training (Deep Model)
 
 ```python
-from foreblocks.modules.skip.mod import LayerDropoutSchedule
-from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
+from foreblocks.nn.routing.mod import LayerDropoutSchedule
+from foreblocks.nn.transformer.encoder import TransformerEncoder
 
 encoder = TransformerEncoder(
     input_size=8, d_model=256, num_layers=12, nhead=8,
@@ -228,19 +228,19 @@ from foreblocks import (
 )
 
 # Schedules & modules
-from foreblocks.modules.skip.mod import (
+from foreblocks.nn.routing.mod import (
     LayerDropoutSchedule,
     MoDBudgetScheduler,
 )
 
 # Config-only
-from foreblocks.config import TrainingConfig
+from foreblocks.training.config import TrainingConfig
 
 # MoE details
-from foreblocks.modules.moe.ff import FeedForwardBlock
+from foreblocks.nn.moe.feedforward import FeedForwardBlock
 
 # Advanced attention
-from foreblocks.attention.multi_att import MultiAttention
+from foreblocks.nn.attention.multihead import MultiAttention
 ```
 
 ---
@@ -277,8 +277,8 @@ gradient_clip_val=1.0,
 ### Attention configuration (new)
 
 ```python
-from foreblocks.forecasting.transformer.config import TransformerConfig
-from foreblocks.attention.config import (
+from foreblocks.nn.transformer.config import TransformerConfig
+from foreblocks.nn.attention.config import (
     AttentionConfig, AttentionShapeConfig, AttentionPositionConfig,
     AttentionVariantConfig,
 )

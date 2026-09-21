@@ -3,9 +3,9 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from foreblocks.config import TrainingConfig
-from foreblocks.core.training.conformal import ConformalPredictionEngine
-from foreblocks.core.training.trainer import Trainer
+from foreblocks.training.config import TrainingConfig
+from foreblocks.training.conformal import ConformalPredictionEngine
+from foreblocks.training.trainer import Trainer
 
 matplotlib.use("Agg")
 

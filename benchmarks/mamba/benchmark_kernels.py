@@ -102,7 +102,7 @@ def make_ssd_args(B, T, H, P, N, chunk_size=64, device="cuda"):
 
 
 def bench_dt_prep(use_triton=True, iters=50):
-    from foreblocks.ops.mamba.triton_ops import dt_prep_fallback, dt_prep_triton
+    from foreblocks.kernels.mamba.gating import dt_prep_fallback, dt_prep_triton
 
     configs = [
         (2, 256, 512),
@@ -131,7 +131,7 @@ def bench_dt_prep(use_triton=True, iters=50):
 
 
 def bench_fused_dt(use_triton=True, iters=50):
-    from foreblocks.ops.mamba.fused_dt import fused_dt_fallback, fused_dt_triton
+    from foreblocks.kernels.mamba.fused_dt import fused_dt_fallback, fused_dt_triton
 
     configs = [
         (2, 1024, 16, 8),
@@ -161,7 +161,7 @@ def bench_fused_dt(use_triton=True, iters=50):
 
 
 def bench_fused_out(use_triton=True, iters=50):
-    from foreblocks.ops.mamba.triton_ops import fused_out_fallback, fused_out_triton
+    from foreblocks.kernels.mamba.gating import fused_out_fallback, fused_out_triton
 
     configs = [
         (2, 256, 512),
@@ -452,7 +452,7 @@ def bench_full_mamba2(
 
 
 def check_correctness():
-    from foreblocks.ops.mamba.fused_dt import fused_dt_fallback, fused_dt_triton
+    from foreblocks.kernels.mamba.fused_dt import fused_dt_fallback, fused_dt_triton
     from foreblocks.ops.mamba.mamba2_combined import mamba2_split_conv1d_scan_combined
     from foreblocks.ops.mamba.ssd import (
         _chunked_ssd_forward_torch as torch_fwd,
@@ -461,7 +461,7 @@ def check_correctness():
         chunked_ssd_forward_triton_parallel as triton_parallel_fwd,
         chunked_ssd_forward_triton_tiled as triton_tiled_fwd,
     )
-    from foreblocks.ops.mamba.triton_ops import (
+    from foreblocks.kernels.mamba.gating import (
         dt_prep_fallback,
         dt_prep_triton,
         fused_out_fallback,

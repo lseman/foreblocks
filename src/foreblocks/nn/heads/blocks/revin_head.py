@@ -1,0 +1,77 @@
+"""foreblocks.nn.heads.blocks.revin_head.
+
+Reversible Instance Normalization (RevIN) — per-variable, over-time normalization.
+
+Normalizes each variable's time series to zero-mean, unit-variance using per-sample
+statistics, with optional affine parameters for learnable re-scaling. The invert()
+method recovers the original scale from normalized output. Use when your model
+needs to handle non-stationary distributions and must produce predictions in the
+original input scale.
+
+Core API:
+- RevIN: reversible instance normalization with optional affine transform
+- RevINHead: BaseHead wrapper returning (x_norm, context)
+
+"""
+
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+
+from foreblocks.nn.heads.base import BaseHead
+from foreblocks.studio.node_spec import node
+
+
+class RevIN(nn.Module):
+    def __init__(self, num_features: int, affine: bool = True, eps: float = 1e-5):
+        super().__init__()
+        self.num_features = int(num_features)
+        self.affine = bool(affine)
+        self.eps = float(eps)
+        if affine:
+            self.gamma = nn.Parameter(torch.ones(1, 1, self.num_features))
+            self.beta = nn.Parameter(torch.zeros(1, 1, self.num_features))
+        else:
+            self.register_buffer("gamma", torch.ones(1, 1, self.num_features))
+            self.register_buffer("beta", torch.zeros(1, 1, self.num_features))
+
+    @torch.no_grad()
+    def _stats(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        mu = x.mean(dim=1, keepdim=True)  # [B,1,F]
+        var = x.var(dim=1, unbiased=False, keepdim=True)  # [B,1,F]
+        sigma = torch.sqrt(var + self.eps)
+        return mu, sigma
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        mu, sigma = self._stats(x)
+        x_hat = (x - mu) / sigma
+        x_hat = x_hat * self.gamma + self.beta
+        ctx = {"mu": mu, "sigma": sigma}
+        return x_hat, ctx
+
+    def invert(self, x_hat: torch.Tensor, ctx: dict[str, torch.Tensor]) -> torch.Tensor:
+        x = (x_hat - self.beta) / (self.gamma + 1e-12)
+        return x * ctx["sigma"] + ctx["mu"]
+
+
+@node(
+    type_id="revin_head",
+    name="RevINHead",
+    category="Preprocessing",
+    outputs=["revin_head"],
+    color="bg-gradient-to-r from-yellow-400 to-red-500",
+)
+class RevINHead(BaseHead):
+    def __init__(self, feature_dim: int, affine: bool = True, eps: float = 1e-5):
+        super().__init__(
+            module=RevIN(feature_dim, affine=affine, eps=eps), name="revin"
+        )
+
+    def forward(self, x: torch.Tensor):
+        return self.module(x)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Multi-Scale Conv
+# ──────────────────────────────────────────────────────────────────────────────

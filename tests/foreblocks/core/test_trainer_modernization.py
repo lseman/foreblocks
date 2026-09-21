@@ -7,9 +7,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from foreblocks.config import TrainingConfig
-from foreblocks.core.training.execution.epochs import forward_pass
-from foreblocks.core.training.trainer import Trainer
+from foreblocks.training.config import TrainingConfig
+from foreblocks.training.execution.epochs import forward_pass
+from foreblocks.training.trainer import Trainer
 
 
 class TinyForecast(nn.Module):

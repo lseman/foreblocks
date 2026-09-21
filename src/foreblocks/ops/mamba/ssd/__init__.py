@@ -33,9 +33,9 @@ from __future__ import annotations
 from .api import chunked_ssd_forward
 from .modular import chunked_ssd_forward_modular
 from .reference import chunked_ssd_backward_reference, chunked_ssd_forward_reference
-from .segment_sum import segment_sum
+from foreblocks.kernels.mamba.segment_sum import segment_sum
 from .torch_backward import _chunked_ssd_backward_torch, _chunked_ssd_forward_torch
-from .triton_kernels import (
+from foreblocks.kernels.mamba.ssd import (
     CHUNKED_SSD_TRITON_AVAILABLE,
     chunked_ssd_backward_triton,
     chunked_ssd_forward_triton,

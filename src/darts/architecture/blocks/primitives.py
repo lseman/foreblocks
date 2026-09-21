@@ -8,7 +8,7 @@ import torch.nn.functional as F
 
 
 try:
-    from foreblocks.ops.norms_triton import (
+    from foreblocks.kernels.normalization import (
         TRITON_AVAILABLE,
         RMSNormTritonFunction,
         _should_use_triton,

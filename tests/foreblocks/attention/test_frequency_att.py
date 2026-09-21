@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from foreblocks.attention.implementations.frequency_att import (
+from foreblocks.nn.attention.algorithms.spectral.frequency import (
     FrequencyAttention,
 )
 

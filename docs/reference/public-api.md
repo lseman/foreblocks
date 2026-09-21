@@ -45,14 +45,14 @@ the subpackage:
 
 | Export | Resolves to |
 | --- | --- |
-| `AttentionLayer` | `foreblocks.core.att` |
-| `ForecastingModel`, `GraphForecastingModel` | `foreblocks.forecasting` |
-| `Trainer` | `foreblocks.core.training` |
-| `ModelEvaluator` | `foreblocks.core.evaluation` |
+| `AttentionLayer` | `foreblocks.nn.attention.layer` |
+| `ForecastingModel`, `GraphForecastingModel` | `foreblocks.models` |
+| `Trainer` | `foreblocks.training` |
+| `ModelEvaluator` | `foreblocks.evaluation` |
 | `TimeSeriesHandler` | `foreblocks.processing` |
 | `TimeSeriesDataset`, `create_dataloaders` | `foreblocks.data` |
 | `ModelConfig`, `TrainingConfig` | `foreblocks.config` |
-| `LSTMEncoder`, `LSTMDecoder`, `GRUEncoder`, `GRUDecoder` | `foreblocks.modules.blocks.enc_dec` |
-| `TransformerEncoder` | `foreblocks.forecasting.transformer.core.encoder` |
-| `TransformerDecoder` | `foreblocks.forecasting.transformer.core.decoder` |
-| `TransformerTuner` | `foreblocks.forecasting.transformer.tuner` |
+| `LSTMEncoder`, `LSTMDecoder`, `GRUEncoder`, `GRUDecoder` | `foreblocks.nn.blocks.recurrent` |
+| `TransformerEncoder` | `foreblocks.nn.transformer.encoder` |
+| `TransformerDecoder` | `foreblocks.nn.transformer.decoder` |
+| `TransformerTuner` | `foreblocks.nn.transformer.tuner` |

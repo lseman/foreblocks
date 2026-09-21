@@ -3,7 +3,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-import foreblocks.forecasting.transformer.features.patching as patching
+import foreblocks.nn.embeddings.patching as patching
+import foreblocks.kernels.patching as patch_kernels
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available() or not patching._TRITON_AVAILABLE,
@@ -44,7 +45,7 @@ def test_triton_patch_tokenizer_matches_pytorch_forward_and_backward(
     eager_input = triton_input.detach().clone().requires_grad_(True)
 
     triton_output, triton_info = triton_tokenizer(triton_input)
-    monkeypatch.setattr(patching, "_can_use_triton_patchify", lambda _x: False)
+    monkeypatch.setattr(patch_kernels, "_can_use_triton_patchify", lambda _x: False)
     eager_output, eager_info = eager_tokenizer(eager_input)
 
     tolerance = 2e-2 if dtype != torch.float32 else 1e-5

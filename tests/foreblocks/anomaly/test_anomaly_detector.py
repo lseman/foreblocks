@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from foreblocks.forecasting.anomaly import (
+from foreblocks.models.anomaly import (
     DAGMM,
     AnomalyDetectorConfig,
     AnomalyTransformer,
@@ -13,10 +13,10 @@ from foreblocks.forecasting.anomaly import (
     build_sliding_windows,
     map_window_scores,
 )
-from foreblocks.forecasting.anomaly.models.forecasting import TransformerForecaster
-from foreblocks.forecasting.anomaly.models.reconstruction import MLPVAE
-from foreblocks.forecasting.anomaly.models.representation import ContrastiveTransformerEncoder
-from foreblocks.forecasting.anomaly.models.tranad import TranAD as ModelTranAD
+from foreblocks.models.anomaly.models.forecasting import TransformerForecaster
+from foreblocks.models.anomaly.models.reconstruction import MLPVAE
+from foreblocks.models.anomaly.models.representation import ContrastiveTransformerEncoder
+from foreblocks.models.anomaly.models.tranad import TranAD as ModelTranAD
 from foreblocks.processing import outlier
 
 

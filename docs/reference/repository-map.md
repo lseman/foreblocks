@@ -28,16 +28,17 @@ This page gives a quick path through the repository for contributors and power u
 
 | Path | Purpose |
 | --- | --- |
-| [`foreblocks/__init__.py`](https://github.com/lseman/foreblocks/blob/main/src/foreblocks/__init__.py) | Top-level public exports |
-| [`foreblocks/config.py`](https://github.com/lseman/foreblocks/blob/main/src/foreblocks/config.py) | Public configuration dataclasses (`ModelConfig`, `TrainingConfig`) |
-| `foreblocks/ops/` | Low-level compute kernels (Triton/CUDA): `kernels/` (grouped_gemm, swiglu, norms), `attention/` (fused RoPE, paged/chunked), `mamba/` (SSD, conv1d), `raven/`, `graph/`, `experimental/` |
-| `foreblocks/layers/` | Reusable `nn.Module` primitives: `norms/`, `embeddings/`, `graph/` |
-| `foreblocks/attention/` | Attention config, variants (`implementations/`), KV cache (`cache/`), execution and preparation helpers |
-| `foreblocks/modules/` | Composable model modules: `moe/`, `blocks/`, `heads/`, `skip/` |
-| `foreblocks/models/` | Assembled models + composition APIs (`ForecastingModel`, `GraphForecastingModel`): `popular/` named models (NBEATS, Informer, Autoformer, TimesNet, …), `transformer/` stack, `kan/` (Kolmogorov-Arnold backbone), `sequence/` (`mamba/`, `raven/` alternative backbones), `anomaly/` (anomaly-detection applications layer) |
-| `foreblocks/core/` | Core forecasting internals (`model`, `att`, `sampling`, `extend`), plus `training/` (Trainer) and `evaluation/` (ModelEvaluator) |
-| `foreblocks/data/` | Dataset and dataloader helpers |
-| `foreblocks/ts_handler/` | Preprocessing and sequence construction |
+| [`foreblocks/__init__.py`](https://github.com/lseman/foreblocks/blob/main/src/foreblocks/__init__.py) | Top-level public exports (lazy-loaded) |
+| `foreblocks/kernels/` | Triton/CUDA accelerated kernels, grouped by op family: `attention/`, `mamba/`, `linear/`, `normalization/`, `activations/`, `elementwise/`, `graph/`, `experimental/` (vendored `attention_kernels` sub-project) |
+| `foreblocks/ops/` | Tensor operations and execution dispatch on top of `kernels/`: `attention/` (fused RoPE, paged/chunked decode), `mamba/` (SSD, conv1d) |
+| `foreblocks/integrations/` | Optional external backends: `fla/` (flash-linear-attention adapters — delta rule, gated deltanet, GLA, RAVEN), `softpick.py` |
+| `foreblocks/nn/` | Reusable `nn.Module` building blocks: `attention/`, `transformer/`, `blocks/`, `heads/`, `moe/`, `routing/`, `sequence/` (`mamba/`, `raven/`), `normalization/`, `embeddings/`, `residual/`, `graph/` |
+| `foreblocks/models/` | Assembled models + composition APIs: `forecasting.py` (`ForecastingModel`), `graph.py` (`GraphForecastingModel`), `config.py` (`ModelConfig`), `sequence.py`, `distillation.py`, `baselines/` (NBEATS, Informer, Autoformer, TimesNet, …), `kan/` (Kolmogorov-Arnold backbone), `anomaly/` (anomaly-detection applications layer) |
+| `foreblocks/training/` | Training orchestration: `trainer.py` (`Trainer`), `config.py` (`TrainingConfig`), `losses.py`, `sampling.py`, `conformal/`, `optimization/`, `execution/`, `state/`, `telemetry/` |
+| `foreblocks/evaluation/` | `model_evaluator.py` (`ModelEvaluator`), `benchmark.py`, `visualization.py` |
+| `foreblocks/quantization/` | Quantization configs and modules (`FakeQuantize`, `DynamicQuantizedLinear`) |
+| `foreblocks/data/` | Dataset and dataloader helpers (`dataset.py`, `csv.py`) |
+| `foreblocks/processing/` | Preprocessing, filtering, imputation, and sequence construction (`TimeSeriesHandler`): `core/`, `filters/`, `auto_filter/`, `transforms/`, `tools/` |
 | `foreblocks/studio/` | Studio node/spec auto-discovery backend consumed by `apps/webui` |
 | `foreblocks/studio_server.py` | Local HTTP server for the built Studio frontend (`apps/webui/dist`) |
 
@@ -45,24 +46,22 @@ This page gives a quick path through the repository for contributors and power u
 
 | Tier | Package | What lives here |
 | --- | --- | --- |
-| compute | `foreblocks/ops/` | Triton/CUDA kernels, no `nn.Module` API surface |
-| primitives | `foreblocks/layers/` | Reusable `nn.Module` primitives (norms, embeddings, graph) |
-| attention | `foreblocks/attention/` | Attention config, variants, cache, execution |
-| modules | `foreblocks/modules/` | Composable model modules (moe, blocks, heads, skip) |
-| core | `foreblocks/core/` | Model assembly internals + training + evaluation |
-| models | `foreblocks/models/` | Fully assembled models + composition, incl. `popular/`, `transformer/`, `kan/`, `sequence/`, `anomaly/` |
+| compute | `foreblocks/kernels/` | Triton/CUDA kernels, no `nn.Module` API surface |
+| ops | `foreblocks/ops/` | Tensor ops and execution dispatch on top of `kernels/` |
+| integrations | `foreblocks/integrations/` | Optional external backends (flash-linear-attention, RAVEN) |
+| primitives | `foreblocks/nn/` | Reusable `nn.Module` primitives — attention, transformer, blocks, heads, moe, routing, sequence, normalization, embeddings, graph |
+| models | `foreblocks/models/` | Fully assembled models + composition, incl. `baselines/`, `kan/`, `anomaly/` |
+| training/evaluation | `foreblocks/training/`, `foreblocks/evaluation/` | Training loop, config, and evaluation/benchmarking |
 | applications | `foreblocks/studio/` | Studio backend (node/spec discovery) — no heavy deps |
 
 Conventions:
 
-- `ops/` is pure compute. If it imports `torch.nn` as an API surface, it belongs in `layers/` or `modules/`.
-- `modules/blocks/` holds research blocks; `models/popular/` holds the named end-to-end models.
-- `models/anomaly/` is nested under `models/` because it's an applications layer built on `models/`+`core/`, not a foundational tier.
-- `studio/` (formerly `ui/`) avoids the naming collision with the `apps/webui` frontend it serves specs to.
+- `kernels/` is pure compute. If it imports `torch.nn` as an API surface, it belongs in `nn/`.
+- `nn/blocks/` holds research blocks; `models/baselines/` holds the named end-to-end models.
+- `models/anomaly/` is nested under `models/` because it's an applications layer built on `models/`+`nn/`, not a foundational tier.
+- `studio/` avoids the naming collision with the `apps/webui` frontend it serves specs to.
 - Frontend assets under `apps/webui/dist/` and `apps/mltracker-dashboard/dist/`: package only built `dist` assets; keep `node_modules`, runtime databases, and local tracker artifacts out of git and release archives.
 - `src/mltracker/mltracker_data/`: prefer `.foreblocks/mltracker_data`, `~/.foreblocks/mltracker_data`, or an explicit user-configured run directory rather than the package tree.
-
-See [Reorg Migration Map](reorg-migration) for old → new import path history.
 
 ## `foretools/`
 
@@ -91,14 +90,14 @@ distribution (no entry in `pyproject.toml`, not importable as `foreblocks.*`):
 | --- | --- |
 | Training a baseline model | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README), [Getting Started](../getting-started) |
 | Understanding architecture composition | [`src/foreblocks/models/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/models) |
-| Working with graph forecasting | [`src/foreblocks/models/graph_forecasting.py`](https://github.com/lseman/foreblocks/blob/main/src/foreblocks/models/graph_forecasting.py), [`src/foreblocks/layers/graph/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/layers/graph) |
-| Writing Triton kernels | [`src/foreblocks/ops/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/ops) |
-| Configuring runs | [`src/foreblocks/config.py`](https://github.com/lseman/foreblocks/blob/main/src/foreblocks/config.py) |
+| Working with graph forecasting | [`src/foreblocks/models/graph.py`](https://github.com/lseman/foreblocks/blob/main/src/foreblocks/models/graph.py), [`src/foreblocks/nn/graph/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/nn/graph) |
+| Writing Triton kernels | [`src/foreblocks/kernels/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/kernels) |
+| Configuring runs | [`src/foreblocks/models/config.py`](https://github.com/lseman/foreblocks/blob/main/src/foreblocks/models/config.py) (`ModelConfig`), [`src/foreblocks/training/config.py`](https://github.com/lseman/foreblocks/blob/main/src/foreblocks/training/config.py) (`TrainingConfig`) |
 | Building dataloaders | [`src/foreblocks/data/dataset.py`](https://github.com/lseman/foreblocks/blob/main/src/foreblocks/data/dataset.py) |
-| Adding preprocessing logic | [`src/foreblocks/ts_handler/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/ts_handler) |
-| Exploring transformer internals | [`src/foreblocks/models/transformer/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/models/transformer) |
+| Adding preprocessing logic | [`src/foreblocks/processing/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/processing) |
+| Exploring transformer internals | [`src/foreblocks/nn/transformer/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/nn/transformer) |
 | Working on architecture search | [`src/darts/`](https://github.com/lseman/foreblocks/tree/main/src/darts) |
-| Using SSM / Mamba-style blocks | [`src/foreblocks/models/sequence/mamba/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/models/sequence/mamba) |
+| Using SSM / Mamba-style blocks | [`src/foreblocks/nn/sequence/mamba/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/nn/sequence/mamba) |
 | Anomaly detection | [`src/foreblocks/models/anomaly/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/models/anomaly) |
 | Generating synthetic data | [`src/foretools/tsgen/`](https://github.com/lseman/foreblocks/tree/main/src/foretools/tsgen) |
 | Running hyperparameter search | [`src/foretools/bohb/`](https://github.com/lseman/foreblocks/tree/main/src/foretools/bohb) |

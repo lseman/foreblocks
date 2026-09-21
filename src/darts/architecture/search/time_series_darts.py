@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.layers.norms import RevIN
+from foreblocks.nn.normalization import RevIN
 
 from ...utils.tensors import hard_one_hot
 from ..blocks.moe import DARTSFeedForward

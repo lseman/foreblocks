@@ -16,36 +16,36 @@ from foreblocks.ops.attention.chunked_causal_linear_attention import (
     chunked_causal_linear_attn,
     fused_recurrent_causal_linear_attn,
 )
-from foreblocks.ops.attention.fla_backend import (
+from foreblocks.integrations.fla.backend import (
     fla_path,
     has_fla_checkout,
     is_fla_available,
 )
-from foreblocks.ops.attention.fla_delta_rule import (
+from foreblocks.integrations.fla.delta_rule import (
     can_use_fla_recurrent_delta_rule,
     fla_recurrent_delta_rule,
 )
-from foreblocks.ops.attention.fla_gated_delta_rule import (
+from foreblocks.integrations.fla.gated_delta_rule import (
     can_use_fla_gated_delta_rule,
     fla_gated_delta_rule_forward,
 )
-from foreblocks.ops.attention.fla_gdn2 import (
+from foreblocks.integrations.fla.gated_deltanet2 import (
     can_use_fla_gdn2_chunk,
     fla_gdn2_chunk_forward,
 )
-from foreblocks.ops.attention.fla_gla import fla_gla_forward
-from foreblocks.ops.attention.fla_kda import (
+from foreblocks.integrations.fla.gated_linear import fla_gla_forward
+from foreblocks.integrations.fla.kimi_delta import (
     can_use_fla_kda,
     fla_kda_forward,
 )
-from foreblocks.ops.attention.fla_linear_attention import (
+from foreblocks.integrations.fla.linear import (
     fla_recurrent_linear_attn_forward,
 )
-from foreblocks.ops.attention.fused_norm_gate import (
+from foreblocks.kernels.normalization.gated import (
     fused_rmsnorm_sigmoid_gate,
 )
-from foreblocks.ops.kernels.layer_norm import LayerNormTritonFunction
-from foreblocks.ops.kernels.rms_norm import (
+from foreblocks.kernels.normalization.layer_norm import LayerNormTritonFunction
+from foreblocks.kernels.normalization.rms_norm import (
     RMSNormTritonFunction,
     fused_add_rmsnorm,
 )

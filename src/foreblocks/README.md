@@ -18,178 +18,97 @@ Foreblocks provides:
 
 ```
 foreblocks/
-├── anomaly/                      # Anomaly detection models and utilities
-│   ├── models/                   # Anomaly detection model implementations
-│   │   ├── base.py              # Base anomaly detector class
-│   │   ├── reconstruction.py    # Reconstruction-based anomaly detectors
-│   │   ├── forecasting.py       # Forecasting-based anomaly detectors
-│   │   ├── representation.py    # Representation-based anomaly detectors
-│   │   ├── tranad.py            # TranAD (Transformer-based) model
-│   │   ├── omni_anomaly.py      # OmniAnomaly model
-│   │   ├── dagmm.py             # DAGMM (Deep Autoencoding Gaussian Mixture) model
-│   │   ├── anomaly_transformer.py # AnomalyTransformer model
-│   │   ├── diffusion.py         # Diffusion-based anomaly detection
-│   │   ├── frequency.py         # Frequency-domain anomaly detection
-│   │   ├── patch_tst.py         # PatchTST-based anomaly detection
-│   │   └── state_space.py       # State-space model anomaly detection
-│   ├── detector.py              # Anomaly detector interface
-│   ├── online.py                # Online anomaly detection utilities
-│   ├── calibration.py           # Anomaly score calibration
-│   ├── windows.py               # Windowing utilities for anomaly detection
-│   └── modes.py                 # Anomaly detection modes and configurations
+├── kernels/                      # Triton/CUDA accelerated kernels, no nn.Module surface
+│   ├── attention/                # Fused RoPE, paged/chunked attention kernels
+│   ├── mamba/                    # Causal conv1d, mamba2_combined, SSD, Triton ops
+│   ├── linear/                   # Grouped GEMM and related linear-algebra kernels
+│   ├── normalization/            # Layer norm, RMS norm kernels
+│   ├── activations/              # Softmax, GELU, SwiGLU kernels
+│   ├── elementwise/               # Elementwise ops
+│   ├── graph/                    # Graph message-passing kernels
+│   ├── experimental/              # Vendored attention_kernels sub-project (own setup.py)
+│   └── patching.py
 │
-├── core/                         # Core functionality
-│   ├── model.py                 # Core model base classes
-│   ├── att.py                   # Attention utilities
-│   ├── sampling.py              # Sampling utilities
-│   ├── extend.py                # Extension utilities
-│   ├── __init__.py
-│   ├── evaluation/              # Evaluation and benchmarking
-│   │   ├── benchmark.py         # Benchmarking utilities
-│   │   ├── model_evaluator.py   # Model evaluation interface
-│   │   └── __init__.py
-│   └── training/                # Training utilities
-│       ├── trainer.py           # Main trainer implementation
-│       ├── training_loop.py     # Training loop implementation
-│       ├── losses.py            # Loss functions
-│       ├── history.py           # Training history tracking
-│       ├── logging.py           # Training logging utilities
-│       ├── visualization.py     # Training visualization
-│       ├── quantization.py      # Model quantization
-│       ├── conformal.py         # Conformal prediction utilities
-│       ├── conformal_trainer.py # Conformal training implementation
-│       ├── batch_io.py          # Batch I/O utilities
-│       ├── nas.py               # Neural Architecture Search utilities
-│       └── llrd.py              # Layer-wise learning rate decay
+├── ops/                           # Tensor ops and execution dispatch on top of kernels/
+│   ├── attention/                # fused_rope, paged_decode, chunked linear attention
+│   └── mamba/                    # ssd, causal_conv1d, mamba2_combined
 │
-├── data/                         # Data loading and preprocessing utilities
+├── integrations/                  # Optional external backends
+│   ├── fla/                      # flash-linear-attention adapters (delta rule, GLA, RAVEN, …)
+│   └── softpick.py
 │
-├── experimental/                 # Experimental features and research code
+├── nn/                            # Reusable nn.Module primitives
+│   ├── attention/                 # Attention config, variants, KV cache, layer.py (AttentionLayer)
+│   ├── transformer/                # Encoder/decoder stack, patching, fusions, tuner
+│   ├── blocks/                    # Research blocks: TCN, ODE, Fourier, wavelets, xLSTM, recurrent.py (LSTM/GRU enc-dec)
+│   ├── heads/                     # Head composition: engine/composer.py (HeadComposer), core/types.py (HeadSpec), blocks/
+│   ├── moe/                       # Experts, routers, feed-forward MoE
+│   ├── routing/                   # Gate/skip routing (GateSkip, MoD)
+│   ├── sequence/                  # mamba/, raven/ alternative sequence backbones
+│   ├── normalization/             # Group/layer/RMS/temporal/RevIN norm modules
+│   ├── embeddings/                # Rotary, ALiBi, positional, time embeddings
+│   ├── residual/                  # Residual connection utilities
+│   └── graph/                     # Graph neural network layers
 │
-├── layers/                       # Neural network layer implementations
-│   ├── embeddings/              # Embedding layers
-│   │   └── rotary.py            # Rotary Positional Encoding (RoPE)
-│   ├── graph/                   # Graph neural network layers
-│   │   ├── layers/              # Graph layer implementations
-│   │   │   └── message_passing.py # Message passing layers
-│   │   └── spatiotemporal/      # Spatiotemporal graph layers
-│   └── norms/                   # Normalization layers
+├── models/                        # Assembled models + composition APIs
+│   ├── forecasting.py             # ForecastingModel, BaseHead
+│   ├── graph.py                   # GraphForecastingModel
+│   ├── config.py                  # ModelConfig
+│   ├── distillation.py            # DistilledForecastingModel, QuantizedForecastingModel
+│   ├── sequence.py                 # Sequence-model composition
+│   ├── baselines/                 # Named end-to-end models (NBEATS, Informer, Autoformer, TimesNet, …)
+│   ├── kan/                       # Kolmogorov-Arnold Networks: backbone.py, model.py, router.py, poly/ (Chebyshev, Jacobi, …)
+│   └── anomaly/                   # Anomaly-detection applications layer
+│       ├── models/                # TranAD, OmniAnomaly, DAGMM, AnomalyTransformer, PatchTST, diffusion, …
+│       ├── detector.py
+│       ├── online.py
+│       ├── calibration.py
+│       └── windows.py
 │
-├── models/                       # Model implementations
-│   ├── kan/                     # Kolmogorov-Arnold Network models
-│   │   ├── __init__.py
-│   │   ├── backbone.py          # KAN backbone implementation
-│   │   ├── model.py             # KAN model implementation
-│   │   ├── router.py            # KAN router implementation
-│   │   └── poly/                # Polynomial basis functions
-│   │       ├── types.py         # Polynomial types
-│   │       ├── utils.py         # Polynomial utilities
-│   │       ├── hahn.py          # Hahn polynomials
-│   │       ├── chebyshev.py     # Chebyshev polynomials
-│   │       ├── jacobi.py        # Jacobi polynomials
-│   │       ├── gegenbauer.py    # Gegenbauer polynomials
-│   │       ├── laguerre.py      # Laguerre polynomials
-│   │       ├── hermite.py       # Hermite polynomials
-│   │       ├── wavelet.py       # Wavelet polynomials
-│   │       └── fourier.py       # Fourier polynomials
-│   ├── graph_forecasting.py     # Graph forecasting models
-│   └── ...                      # Other model implementations
+├── training/                      # Training orchestration
+│   ├── trainer.py                 # Trainer
+│   ├── config.py                  # TrainingConfig
+│   ├── sampling.py                # ScheduledSampling
+│   ├── losses.py
+│   ├── conformal/                 # Conformal prediction
+│   ├── optimization/              # nas.py, llrd.py (layer-wise LR decay)
+│   ├── execution/
+│   ├── state/
+│   └── telemetry/
 │
-├── modules/                      # Reusable neural network modules and components
+├── evaluation/                    # Evaluation and benchmarking
+│   ├── model_evaluator.py         # ModelEvaluator
+│   ├── benchmark.py
+│   └── visualization.py
 │
-├── ops/                          # Custom operations and kernels
-│   ├── attention/               # Attention operations
-│   │   ├── fused_rope.py        # Fused Rotary Positional Encoding
-│   │   ├── paged_decode.py      # Paged attention decode
-│   │   ├── chunked_causal_linear_attention.py # Chunked causal linear attention
-│   │   ├── fused_norm_gate.py   # Fused norm-gate operations
-│   │   ├── fla_backend.py       # FLA (Flash Linear Attention) backend
-│   │   ├── fla_delta_rule.py    # FLA delta rule
-│   │   ├── fla_gated_delta_rule.py # FLA gated delta rule
-│   │   ├── fla_gdn2.py          # FLA GDN2
-│   │   ├── gla.py               # FLA GLA
-│   │   ├── kda.py               # FLA KDA
-│   │   └── linear_attention.py  # FLA linear attention
-│   ├── kernels/                 # Low-level kernels
-│   │   ├── layer_norm.py        # Layer normalization kernel
-│   │   ├── rms_norm.py          # RMS normalization kernel
-│   │   ├── grouped_gemm.py      # Grouped GEMM kernel
-│   │   ├── swiglu.py            # SwiGLU activation kernel
-│   │   ├── softmax.py           # Softmax kernel (Triton)
-│   │   └── gelu.py              # GELU kernel (Triton)
-│   ├── mamba/                   # Mamba/state-space model operations
-│   │   ├── causal_conv1d.py     # Causal convolution 1D
-│   │   ├── fused_dt.py          # Fused delta-time operations
-│   │   ├── mamba2_combined.py   # Mamba2 combined operations
-│   │   ├── ssd.py               # State Space Duality
-│   │   └── triton_ops.py        # Triton operations for Mamba
-│   ├── graph/                   # Graph operations
-│   │   └── message_passing.py   # Graph message passing operations
-│   └── raven/                   # Raven operations
+├── quantization/                  # FakeQuantize, DynamicQuantizedLinear
 │
-├── sequence/                     # Sequence modeling utilities and components
+├── data/                          # Dataset and dataloader helpers
+│   ├── dataset.py                 # TimeSeriesDataset, create_dataloaders
+│   └── csv.py
 │
-├── ts_handler/                   # Time-series preprocessing and filtering pipeline
-│   ├── preprocessing.py         # TimeSeriesHandler main class
-│   ├── utils.py                 # Time-series utilities
-│   ├── diagnostics.py           # Time-series diagnostics
-│   ├── plotting.py              # Time-series plotting utilities
-│   ├── transforms.py            # Time-series transformations
-│   ├── time_features.py         # Time feature extraction
-│   ├── windowing.py             # Windowing utilities
-│   ├── pipeline.py              # Processing pipeline
-│   ├── auto_configure.py        # Auto-configuration utilities
-│   ├── filters/                 # Signal processing filters
-│   │   ├── utils.py             # Filter utilities
-│   │   ├── savgol.py            # Savitzky-Golay filter
-│   │   ├── kalman.py            # Kalman filter (pure NumPy implementation)
-│   │   ├── lowess.py            # LOESS/LOWESS filter
-│   │   ├── wiener.py            # Wiener filter
-│   │   ├── emd.py               # Empirical Mode Decomposition
-│   │   ├── ssa.py               # Singular Spectrum Analysis
-│   │   └── stl.py               # STL decomposition
-│   └── auto_filter/             # Automatic filter selection and tuning
-│       ├── __init__.py
-│       ├── metrics.py           # Filter scoring metrics
-│       ├── runner.py            # Auto-filter execution
-│       ├── tuning.py            # Optuna-based tuning (tune_weights, tune_filter)
-│       ├── heuristics.py        # Heuristic weight suggestion
-│       ├── visualization.py     # Filter result visualization
-│       ├── registry.py          # Filter registry
-│       └── filters/             # Filter implementations
-│           ├── classical.py     # Classical filters
-│           ├── wavelet.py       # Wavelet filters
-│           ├── tv.py            # Total variation denoising
-│           ├── lowess.py        # LOESS filters
-│           ├── smoothers.py     # Smoothing filters
-│           ├── penalized.py     # Penalized filters
-│           ├── ssa.py           # SSA filters
-│           ├── kalman_rts.py    # Kalman RTS smoother
-│           ├── bilateral.py     # Bilateral filter
-│           ├── decomposition.py # Decomposition filters
-│           └── deep.py          # Deep learning filters
+├── processing/                    # Time-series preprocessing and filtering pipeline (TimeSeriesHandler)
+│   ├── core/
+│   ├── transforms/                # Time-series transformations, time features, windowing
+│   ├── filters/                   # Savitzky-Golay, Kalman (pure NumPy), LOESS, Wiener, EMD, SSA, STL
+│   ├── auto_filter/                # Optuna-based auto-tuning (auto_filter, tune_weights, tune_filter)
+│   └── tools/
 │
-├── ui/                           # User interface components and studio server
-│   ├── auto_spec.py             # Auto specification utilities
-│   ├── discovery.py             # Model discovery utilities
-│   ├── node_spec.py             # Node specification utilities
-│   └── __init__.py
+├── studio/                        # Node/spec auto-discovery backend for apps/webui
+│   ├── auto_spec.py
+│   ├── discovery.py
+│   └── node_spec.py
 │
-├── third_party/                  # Third-party integrations and utilities
-│   ├── flash_softpick_attn.py   # Flash softpick attention
-│   └── vsgd.py                  # Variational SGD utilities
-│
-├── config.py                     # Library configuration
-├── studio_server.py              # Studio server implementation
-├── __init__.py                   # Package initialization
-└── README.md                     # This file
+├── studio_server.py               # Local HTTP server for the built Studio frontend
+├── __init__.py                    # Package initialization (lazy public exports)
+└── README.md                      # This file
 
 ## Core API
 
 ### Time-Series Handler
 
 ```python
-from foreblocks.processing.preprocessing import TimeSeriesHandler
+from foreblocks.processing import TimeSeriesHandler
 from foreblocks.processing.auto_filter import (
     auto_filter,
     suggest_weights,
@@ -203,29 +122,26 @@ from foreblocks.processing.auto_filter import (
 ### Anomaly Detection
 
 ```python
-from foreblocks.forecasting.anomaly.models import (
-    ReconstructionAnomalyDetector,
-    ForecastingAnomalyDetector,
+from foreblocks.models.anomaly import (
+    ForeblocksAnomalyDetector,  # generic wrapper: reconstruction/forecasting/representation/hybrid modes
     TranAD,
     OmniAnomaly,
     DAGMM,
     AnomalyTransformer,
-    PatchTSTAnomalyDetector,
 )
 ```
 
 ### Kolmogorov-Arnold Networks
 
 ```python
-from foreblocks.forecasting.kan import (
-    KANBackbone,
+from foreblocks.models.kan import (
+    Backbone,
     KANModel,
-    KANRouter,
+    TokenRouter,
 )
-from foreblocks.forecasting.kan.poly import (
-    ChebyshevPoly,
-    JacobiPoly,
-    FourierPoly,
+from foreblocks.models.kan.poly import (
+    ChebyshevPolynomials,
+    JacobiPolynomials,
     # ... other polynomial bases
 )
 ```
@@ -233,14 +149,9 @@ from foreblocks.forecasting.kan.poly import (
 ### Custom Operations & Kernels
 
 ```python
-from foreblocks.ops.attention import fused_rope, paged_decode
-from foreblocks.ops.kernels import (
-    SoftmaxTritonFunction,
-    GeluTritonFunction,
-    layer_norm,
-    rms_norm,
-    swiglu,
-)
+from foreblocks.ops.attention import triton_apply_rope, triton_paged_decode
+from foreblocks.kernels.normalization.rms_norm import rms_norm
+from foreblocks.kernels.activations.swiglu import swiglu_gate
 from foreblocks.ops.mamba import (
     causal_conv1d,
     mamba2_combined,

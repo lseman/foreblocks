@@ -26,14 +26,14 @@ from collections.abc import Iterable
 from foreblocks.studio.auto_spec import build_node_spec
 
 ALLOWED_PACKAGES = [
-    "foreblocks.modules.blocks",
-    "foreblocks.core",
-    "foreblocks.modules.heads",
+    "foreblocks.nn.blocks",
+    "foreblocks.models",
+    "foreblocks.nn.heads",
     "foreblocks.data",
-    "foreblocks.forecasting.popular",
-    "foreblocks.forecasting.transformer",
-    "foreblocks.forecasting.sequence.forecast_blocks",
-    "foreblocks.core.training",
+    "foreblocks.models.baselines",
+    "foreblocks.nn.transformer",
+    "foreblocks.models.sequence",
+    "foreblocks.training",
 ]
 
 

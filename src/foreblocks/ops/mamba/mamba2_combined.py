@@ -17,10 +17,10 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from foreblocks.ops.mamba.causal_conv1d import causal_depthwise_conv1d
-from foreblocks.ops.mamba.fused_dt import fused_dt
+from foreblocks.kernels.mamba.causal_conv1d import causal_depthwise_conv1d
+from foreblocks.kernels.mamba.fused_dt import fused_dt
 from foreblocks.ops.mamba.ssd import chunked_ssd_forward
-from foreblocks.ops.mamba.triton_ops import fused_out
+from foreblocks.kernels.mamba.gating import fused_out
 
 
 def _repeat_group_params(

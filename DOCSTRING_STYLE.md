@@ -22,7 +22,7 @@ Core API:
 
 **Example** (mhc.py):
 ```python
-"""foreblocks.forecasting.transformer.features.mhc.
+"""foreblocks.nn.residual.hyper_connections.
 
 Multi-stream information routing via learned, manifold-constrained gating.
 

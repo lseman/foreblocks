@@ -4,16 +4,16 @@ import pytest
 import torch
 import torch.nn as nn
 
-from foreblocks.config import TrainingConfig
-from foreblocks.core.training.optimization.llrd import (
+from foreblocks.training.config import TrainingConfig
+from foreblocks.training.optimization.llrd import (
     WarmupCosineLR,
     get_llrd_param_groups,
 )
-from foreblocks.forecasting.transformer.core.base import (
+from foreblocks.nn.transformer.base import (
     TransformerDecoder,
     TransformerEncoder,
 )
-from foreblocks.modules.skip.mod import LayerDropoutSchedule
+from foreblocks.nn.routing.mod import LayerDropoutSchedule
 
 
 class TestLayerDropoutSchedule:

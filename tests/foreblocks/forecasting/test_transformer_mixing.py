@@ -3,14 +3,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from foreblocks.forecasting.transformer import (
+from foreblocks.nn.transformer import (
     MixingTransformer,
     StackedMixingTransformer,
     TransformerConfig,
 )
-from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
-from foreblocks.forecasting.transformer.runtime.outputs import TransformerEncoderOutput
-from foreblocks.attention import (
+from foreblocks.nn.transformer.encoder import TransformerEncoder
+from foreblocks.nn.transformer.runtime.outputs import TransformerEncoderOutput
+from foreblocks.nn.attention import (
     AttentionCacheConfig,
     AttentionConfig,
     AttentionPositionConfig,

@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from foreblocks.forecasting.popular.oryx import OryxMixerBlock, OryxTransformer
+from foreblocks.models.baselines.oryx import OryxMixerBlock, OryxTransformer
 
 
 class TestOryxMixer(unittest.TestCase):

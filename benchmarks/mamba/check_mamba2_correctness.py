@@ -202,7 +202,7 @@ def check_dt_prep(
     T: int = 128,
     D: int = 512,
 ) -> dict:
-    from foreblocks.ops.mamba.triton_ops import dt_prep_fallback, dt_prep_triton
+    from foreblocks.kernels.mamba.gating import dt_prep_fallback, dt_prep_triton
 
     device = _device()
     torch.manual_seed(42)
@@ -225,7 +225,7 @@ def check_fused_out(
     T: int = 128,
     D: int = 512,
 ) -> dict:
-    from foreblocks.ops.mamba.triton_ops import fused_out, fused_out_fallback
+    from foreblocks.kernels.mamba.gating import fused_out, fused_out_fallback
 
     device = _device()
     torch.manual_seed(42)
@@ -250,7 +250,7 @@ def check_causal_conv1d(
     T: int = 128,
     K: int = 3,
 ) -> dict:
-    from foreblocks.ops.mamba.causal_conv1d import (
+    from foreblocks.kernels.mamba.causal_conv1d import (
         CAUSAL_CONV1D_TRITON_AVAILABLE,
         causal_depthwise_conv1d_reference,
         causal_depthwise_conv1d_triton,
@@ -533,7 +533,7 @@ def check_step_vs_parallel(
     d_conv: int = 4,
     num_heads: int = 4,
 ) -> dict:
-    from foreblocks.forecasting.sequence.mamba import Mamba2Block
+    from foreblocks.nn.sequence.mamba import Mamba2Block
 
     device = _device()
     torch.manual_seed(0)
@@ -577,7 +577,7 @@ def check_attention_mask(
     d_model: int = 64,
     num_heads: int = 4,
 ) -> dict:
-    from foreblocks.forecasting.sequence.mamba import Mamba2Block
+    from foreblocks.nn.sequence.mamba import Mamba2Block
 
     device = _device()
     torch.manual_seed(42)
@@ -633,7 +633,7 @@ def check_mamba2_block_torch_path(
     d_conv: int = 4,
     num_heads: int = 4,
 ) -> dict:
-    from foreblocks.forecasting.sequence.mamba import Mamba2Block
+    from foreblocks.nn.sequence.mamba import Mamba2Block
 
     device = _device()
     dtype = _dtype()

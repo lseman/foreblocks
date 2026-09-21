@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 
-from foreblocks.core.model import ForecastingModel
-from foreblocks.forecasting.transformer.runtime.outputs import (
+from foreblocks.models.forecasting import ForecastingModel
+from foreblocks.nn.transformer.runtime.outputs import (
     TransformerDecoderOutput,
     TransformerEncoderOutput,
 )

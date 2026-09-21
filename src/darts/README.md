@@ -68,10 +68,10 @@ darts/
 │       └── activation_diversity.py # Activation diversity metrics
 │
 ├── training/                     # Training utilities and loops
-│   (Shared with foreblocks/core/training/)
+│   (Shared with foreblocks/training/)
 │
 ├── evaluation/                   # Model evaluation and benchmarking
-│   (Shared with foreblocks/core/evaluation/)
+│   (Shared with foreblocks/evaluation/)
 │
 ├── search/                       # Search and optimization utilities
 ├── trainer.py                    # Main trainer implementation

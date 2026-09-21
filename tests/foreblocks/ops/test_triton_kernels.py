@@ -14,16 +14,16 @@ These require CUDA + a working Triton install and are skipped otherwise.
 import pytest
 import torch
 
-from foreblocks.layers.embeddings.rotary import apply_rotary_emb
-from foreblocks.attention.cache.decode_stream import (
+from foreblocks.nn.embeddings.rotary import apply_rotary_emb
+from foreblocks.nn.attention.cache.decode_stream import (
     paged_stream_decode_standard,
 )
-from foreblocks.attention.cache.paged import PagedKVCache
-from foreblocks.ops.attention.fused_rope import (
+from foreblocks.nn.attention.cache.paged import PagedKVCache
+from foreblocks.kernels.attention.rotary import (
     triton_apply_rope,
     triton_apply_rope_bthd,
 )
-from foreblocks.ops.attention.paged_decode import triton_paged_decode
+from foreblocks.kernels.attention.paged_decode import triton_paged_decode
 
 triton = pytest.importorskip("triton")
 pytestmark = pytest.mark.skipif(

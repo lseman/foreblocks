@@ -1,4 +1,4 @@
-"""foreblocks.ops.experimental.attention_kernels.bench.
+"""foreblocks.kernels.experimental.attention_kernels.bench.
 
 Benchmark entry points and measurement helpers for custom attention kernels vs SDPA.
 
@@ -19,7 +19,7 @@ import time
 import torch
 import torch.nn.functional as F
 
-from foreblocks.ops.experimental.attention_kernels import (
+from foreblocks.kernels.experimental.attention_kernels import (
     flash_attn_backward_backend,
     flash_attn_func,
 )

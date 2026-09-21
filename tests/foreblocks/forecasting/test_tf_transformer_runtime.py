@@ -1,45 +1,45 @@
 import pytest
 import torch
 
-from foreblocks.forecasting.transformer import GenerationConfig, TransformerConfig
-from foreblocks.forecasting.transformer.core.decoder import TransformerDecoder
-from foreblocks.forecasting.transformer.core.encoder import (
+from foreblocks.nn.transformer import GenerationConfig, TransformerConfig
+from foreblocks.nn.transformer.decoder import TransformerDecoder
+from foreblocks.nn.transformer.encoder import (
     TransformerEncoder,
     TransformerEncoderLayer,
 )
-from foreblocks.forecasting.transformer.runtime.outputs import (
+from foreblocks.nn.transformer.runtime.outputs import (
     TransformerDecoderOutput,
     TransformerEncoderOutput,
 )
-from foreblocks.forecasting.transformer.runtime.residual_state import (
+from foreblocks.nn.transformer.runtime.residual_state import (
     AttentionResidualState,
     append_attention_residual_update,
     init_attention_residual_state,
 )
-from foreblocks.forecasting.transformer.runtime.routing import (
+from foreblocks.nn.transformer.runtime.routing import (
     scatter_mixture_of_depths_output,
 )
-from foreblocks.forecasting.transformer.runtime.state import (
+from foreblocks.nn.transformer.runtime.state import (
     AttentionCacheState,
     DecoderLayerState,
     DecoderState,
 )
-from foreblocks.attention.cache import KVCacheProtocol
-from foreblocks.attention.cache.kv import StaticKVCache
-from foreblocks.attention.config import (
+from foreblocks.nn.attention.cache import KVCacheProtocol
+from foreblocks.nn.attention.cache.kv import StaticKVCache
+from foreblocks.nn.attention.config import (
     AttentionConfig,
     AttentionPositionConfig,
     AttentionShapeConfig,
     AttentionVariantConfig,
 )
-from foreblocks.attention.execution.backends import (
+from foreblocks.nn.attention.execution.backends import (
     ATTENTION_BACKENDS,
     register_attention_backend,
 )
-from foreblocks.attention.multi_att import MultiAttention
-from foreblocks.attention.preparation.masking import build_attention_mask
-from foreblocks.modules.skip.gateskip import BudgetScheduler
-from foreblocks.modules.skip.mod import MoDBudgetScheduler
+from foreblocks.nn.attention.multihead import MultiAttention
+from foreblocks.nn.attention.preparation.masking import build_attention_mask
+from foreblocks.nn.routing.gateskip import BudgetScheduler
+from foreblocks.nn.routing.mod import MoDBudgetScheduler
 
 
 def _optimizer_param_ids(optimizer: torch.optim.Optimizer) -> set[int]:

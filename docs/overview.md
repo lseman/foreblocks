@@ -35,7 +35,6 @@ The docs are organized to make that split explicit while still showing how the p
 | --- | --- |
 | Run a first end-to-end training loop | [Getting Started](getting-started) |
 | Quick config reference | [Cheat Sheet](cheatsheet) |
-| Upgrade for SOTA features (LLRD, dropout schedule) | [Upgrade Guide](upgrade-guide) |
 | Start from raw multivariate series | [Preprocessor Guide](preprocessor) |
 | Understand stable top-level imports | [Public API](reference/public-api) |
 | Customize model blocks or training internals | [Custom Blocks Guide](custom_blocks) |

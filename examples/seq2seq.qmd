@@ -64,7 +64,7 @@ model_params = {
     "output_size": 1,
 }
 
-# from foreblocks.layers.embeddings import RoPEPositionalEncoding
+# from foreblocks.nn.embeddings import RoPEPositionalEncoding
 
 # 1. Create encoder and decoder
 # 1. Create encoder and decoder
@@ -118,10 +118,10 @@ def scheduled_sampling_fn(epoch):
 
     return tf_ratio
 
-from foreblocks.modules.heads.engine.composer import HeadSpec, HeadComposer
-from foreblocks.modules.heads.blocks.revin_head import RevINHead
-from foreblocks.modules.heads.blocks.decomposition_head import DecompositionBlock
-from foreblocks.modules.heads.blocks.multiscale_conv_head import MultiScaleConvHead
+from foreblocks.nn.heads.engine.composer import HeadSpec, HeadComposer
+from foreblocks.nn.heads.blocks.revin_head import RevINHead
+from foreblocks.nn.heads.blocks.decomposition_head import DecompositionBlock
+from foreblocks.nn.heads.blocks.multiscale_conv_head import MultiScaleConvHead
 # specs = [
 #     HeadSpec(head=RevINHead(feature_dim=input_size), name="revin", combine="invert"),
 #     # Use hidden_dim=input_size to keep encoder input size unchanged (=1 here)
@@ -229,7 +229,7 @@ import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
 
 from foreblocks import Trainer
-from foreblocks.forecasting.popular.oryx import OryxTransformer
+from foreblocks.models.baselines.oryx import OryxTransformer
 
 # Synthetic sequence training example for Oryx.
 torch.manual_seed(0)
@@ -370,7 +370,7 @@ else:
 Pass it as the `ForecastingModel` `encoder` (backbone) with `model_type="hybrid_mamba"`. MoE auxiliary (load-balancing) losses accumulate in `BlockStack.aux_loss` and flow into the training loss automatically via `ForecastingModel.get_aux_loss()`.
 
 ```{python}
-from foreblocks.forecasting.sequence import BlockStack
+from foreblocks.nn.sequence import BlockStack
 
 import torch
 import torch.nn as nn
@@ -379,8 +379,8 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, TensorDataset
 
 from foreblocks import ForecastingModel, Trainer
-from foreblocks.config import TrainingConfig
-from foreblocks.forecasting.sequence.forecast_blocks import Mamba2ModelBlock, RavenModelBlock
+from foreblocks.training.config import TrainingConfig
+from foreblocks.models.sequence import Mamba2ModelBlock, RavenModelBlock
 
 torch.manual_seed(7)
 np.random.seed(7)

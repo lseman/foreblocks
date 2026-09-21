@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from foreblocks.attention.implementations.dwt_att import DWTAttention
+from foreblocks.nn.attention.algorithms.spectral.wavelet import DWTAttention
 
 
 class TestDWTAttention(unittest.TestCase):
@@ -45,8 +45,8 @@ class TestDWTAttention(unittest.TestCase):
         self.assertTrue(torch.isfinite(out).all().item())
 
     def test_through_multiattention(self):
-        from foreblocks.attention.config import AttentionConfig
-        from foreblocks.attention.multi_att import MultiAttention
+        from foreblocks.nn.attention.config import AttentionConfig
+        from foreblocks.nn.attention.multihead import MultiAttention
 
         m = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=32, n_heads=4, dropout=0.0, attention_type="dwt", freq_modes=8

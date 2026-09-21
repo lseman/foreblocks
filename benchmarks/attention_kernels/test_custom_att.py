@@ -10,7 +10,7 @@ import math
 
 import torch
 
-from foreblocks.ops.experimental.attention_kernels import (
+from foreblocks.kernels.experimental.attention_kernels import (
     flash_attn_backward_backend,
     flash_attn_func,
 )

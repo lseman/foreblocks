@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from foreblocks.forecasting.anomaly import (
+from foreblocks.models.anomaly import (
     AnomalyDetectorConfig,
     BNAdaptiveWrapper,
     EMAStatistics,
@@ -20,7 +20,7 @@ from foreblocks.forecasting.anomaly import (
     isotonic_calibrate,
     iTransformer,
 )
-from foreblocks.forecasting.anomaly.models.state_space import PatchSSMBlock, S6Block
+from foreblocks.models.anomaly.models.state_space import PatchSSMBlock, S6Block
 
 # ── PatchMamba tests ──
 
@@ -212,7 +212,7 @@ def test_streaming_detector_smoke():
 
 
 def test_patch_mamba_block_registered():
-    from foreblocks.forecasting.anomaly.modes import list_blocks, resolve_block
+    from foreblocks.models.anomaly.modes import list_blocks, resolve_block
 
     blocks = list_blocks()
     assert "patch_mamba" in blocks
@@ -221,7 +221,7 @@ def test_patch_mamba_block_registered():
 
 
 def test_i_transformer_block_registered():
-    from foreblocks.forecasting.anomaly.modes import list_blocks, resolve_block
+    from foreblocks.models.anomaly.modes import list_blocks, resolve_block
 
     blocks = list_blocks()
     assert "i_transformer" in blocks

@@ -2,9 +2,9 @@ import unittest
 
 import torch
 
-from foreblocks.attention.config import AttentionConfig
-from foreblocks.attention.multi_att import MultiAttention
-from foreblocks.attention.variants import moba as moba_module
+from foreblocks.nn.attention.config import AttentionConfig
+from foreblocks.nn.attention.multihead import MultiAttention
+from foreblocks.nn.attention.variants import moba as moba_module
 
 
 class TestMoBAAttention(unittest.TestCase):

@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from foreblocks.modules.heads import (
+from foreblocks.nn.heads import (
     AlignmentMode,
     HeadComposerConfig,
     HeadGraph,
@@ -14,7 +14,7 @@ from foreblocks.modules.heads import (
     ParallelStageConfig,
     StageKind,
 )
-from foreblocks.modules.heads.nas import (
+from foreblocks.nn.heads.nas import (
     CosineTemperatureSchedule,
     HeadNASController,
 )

@@ -2,7 +2,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from foreblocks.forecasting.sequence.mamba import (
+from foreblocks.nn.sequence.mamba import (
     CHUNKED_SSD_TRITON_AVAILABLE,
     RMS_NORM_TRITON_AVAILABLE,
     ROTARY_TRITON_AVAILABLE,

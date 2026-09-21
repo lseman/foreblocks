@@ -60,15 +60,15 @@ function buildImports(config) {
 
   if (hasSelectedHeads(heads)) {
     base.push("");
-    base.push("from foreblocks.core.heads.head_helper import HeadComposer, HeadSpec");
+    base.push("from foreblocks.nn.heads import HeadComposer, HeadSpec");
     if (heads.useRevIN) {
-      base.push("from foreblocks.core.heads.revin_head import RevINHead");
+      base.push("from foreblocks.nn.heads.blocks.revin_head import RevINHead");
     }
     if (heads.useDecomposition) {
-      base.push("from foreblocks.core.heads.decomposition_head import DecompositionBlock");
+      base.push("from foreblocks.nn.heads.blocks.decomposition_head import DecompositionBlock");
     }
     if (heads.useMultiScaleConv) {
-      base.push("from foreblocks.core.heads.multiscale_conv_head import MultiScaleConvHead");
+      base.push("from foreblocks.nn.heads.blocks.multiscale_conv_head import MultiScaleConvHead");
     }
   }
 

@@ -1,6 +1,6 @@
 import torch
 
-from foreblocks.layers.graph.tggc import (
+from foreblocks.nn.graph.spatiotemporal.tggc import (
     GraphGegenbauerConv,
     LatentCorrelationLayer,
     TemporalSpectralFilter,

@@ -2,12 +2,12 @@ import unittest
 
 import torch
 
-from foreblocks.forecasting.transformer.features.residuals import (
+from foreblocks.nn.residual.attention_residual import (
     AttentionResidual,
     BlockAttentionResidual,
     normalize_attention_residual_mode,
 )
-from foreblocks.modules.skip.gateskip import (
+from foreblocks.nn.routing.gateskip import (
     BudgetScheduler,
     GateStats,
     ResidualGate,
@@ -15,7 +15,7 @@ from foreblocks.modules.skip.gateskip import (
     _exact_topk_keep_mask,
     gateskip_apply,
 )
-from foreblocks.modules.skip.mod import (
+from foreblocks.nn.routing.mod import (
     MoDBudgetScheduler,
     MoDRouter,
     mod_routed_indices,

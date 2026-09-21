@@ -167,7 +167,7 @@ from foreblocks import (
 ### Uncertainty
 
 ```python
-from foreblocks.core import ConformalPredictionEngine
+from foreblocks.training.conformal import ConformalPredictionEngine
 ```python
 
 ### Wavelet & frequency attention

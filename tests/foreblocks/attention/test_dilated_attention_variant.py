@@ -1,7 +1,7 @@
 import torch
 
-from foreblocks.attention.config import AttentionConfig
-from foreblocks.attention.multi_att import MultiAttention
+from foreblocks.nn.attention.config import AttentionConfig
+from foreblocks.nn.attention.multihead import MultiAttention
 
 
 def test_dilated_sliding_window_output_shape_and_weights():

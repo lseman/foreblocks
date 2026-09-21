@@ -1,0 +1,1125 @@
+"""foreblocks.models.forecasting.
+
+Forecasting model wrappers and head composition utilities.
+
+Defines the BaseHead wrapper and the ForecastingModel class used by foreblocks
+to assemble modular forecasting pipelines. BaseHead standardizes aux_loss
+handling, naming, and attribute delegation for wrapped modules. ForecastingModel
+provides head-based modular forecasting with support for multiple strategies
+(seq2seq, autoregressive, direct, transformer_seq2seq) and model types.
+
+Core API:
+- BaseHead: base class for all heads in the forecasting model
+- ForecastingModel: head-based modular forecasting model for time series tasks
+
+"""
+
+import contextlib
+from collections.abc import Callable
+from typing import Any
+
+import torch
+import torch.nn as nn
+
+from foreblocks.nn.heads.base import BaseHead
+from foreblocks.studio.node_spec import node
+
+# =============================================================================
+# Base head wrapper
+# =============================================================================
+
+
+
+
+# =============================================================================
+# ForecastingModel
+# =============================================================================
+
+
+@node(
+    type_id="forecasting_model",
+    name="Forecasting Model",
+    category="Models",
+    outputs=["model"],
+    infer=True,
+    color="bg-gradient-to-br from-blue-700 to-blue-800",
+)
+class ForecastingModel(nn.Module):
+    VALID_STRATEGIES = ("seq2seq", "autoregressive", "direct", "transformer_seq2seq")
+    BACKBONE_MODEL_TYPES = ("mamba", "mamba2", "mamba3", "hybrid_mamba", "raven")
+    VALID_MODEL_TYPES = (
+        "lstm",
+        "gru",
+        "transformer",
+        "informer-like",
+        "head_only",
+        "mamba",
+        "mamba2",
+        "mamba3",
+        "hybrid_mamba",
+        "raven",
+    )
+
+    def __init__(
+        self,
+        *,
+        # Core modules
+        encoder: nn.Module | None = None,
+        decoder: nn.Module | None = None,
+        head: nn.Module | None = None,
+        # Strategy & shape
+        forecasting_strategy: str = "seq2seq",
+        model_type: str = "lstm",
+        target_len: int = 5,
+        output_size: int | None = None,
+        hidden_size: int = 64,
+        # Processing modules
+        input_preprocessor: nn.Module | None = None,
+        output_postprocessor: nn.Module | None = None,
+        input_normalization: nn.Module | None = None,
+        output_normalization: nn.Module | None = None,
+        output_block: nn.Module | None = None,
+        input_skip_connection: bool = False,
+        # Attention
+        attention_module: nn.Module | None = None,
+        # Training
+        teacher_forcing_ratio: float = 0.5,
+        scheduled_sampling_fn: Callable[[int | None], float] | None = None,
+        # Time embeddings
+        time_feature_embedding_enc: nn.Module | None = None,
+        time_feature_embedding_dec: nn.Module | None = None,
+        # Transformer-style decoding prompt length
+        label_len: int | None = None,
+        # Optional HeadComposer to own pre/inverse processing
+        head_composer: nn.Module | None = None,
+    ) -> None:
+        super().__init__()
+
+        # === Validate ===
+        if forecasting_strategy not in self.VALID_STRATEGIES:
+            raise ValueError(f"Invalid forecasting strategy: {forecasting_strategy}")
+        if model_type not in self.VALID_MODEL_TYPES:
+            raise ValueError(f"Invalid model type: {model_type}")
+        if target_len <= 0:
+            raise ValueError("target_len must be positive")
+        if label_len is not None and label_len < 0:
+            raise ValueError("label_len must be non-negative")
+
+        # === Store Core Params ===
+        self.strategy = forecasting_strategy
+        self.model_type = model_type
+        self.target_len = int(target_len)
+        self.hidden_size = hidden_size
+        self.teacher_forcing_ratio = float(max(0.0, min(1.0, teacher_forcing_ratio)))
+        self.scheduled_sampling_fn = scheduled_sampling_fn
+        self.input_skip_connection = input_skip_connection
+
+        # === Wrap processors in heads ===
+        self.input_preprocessor = self._wrap_head(
+            input_preprocessor or nn.Identity(), "input_preprocessor"
+        )
+        self.output_postprocessor = self._wrap_head(
+            output_postprocessor or nn.Identity(), "output_postprocessor"
+        )
+        self.input_normalization = self._wrap_head(
+            input_normalization or nn.Identity(), "input_normalization"
+        )
+        self.output_normalization = self._wrap_head(
+            output_normalization or nn.Identity(), "output_normalization"
+        )
+        self.output_block = self._wrap_head(
+            output_block or nn.Identity(), "output_block"
+        )
+
+        # === Time Embeddings ===
+        self.time_feature_embedding_enc = time_feature_embedding_enc
+        self.time_feature_embedding_dec = time_feature_embedding_dec
+
+        # === Attention ===
+        self.use_attention = attention_module is not None
+        self.attention_module = attention_module
+
+        # === Architecture ===
+        self.encoder = encoder
+        self.decoder = decoder
+        self.head = head if head is not None else nn.Identity()
+
+        # Infer sizes (only needed for non-direct strategies)
+        self.input_size = getattr(encoder, "input_size", None) if encoder else None
+        self.output_size = output_size or (
+            getattr(decoder, "output_size", None) if decoder else None
+        )
+        if self.strategy != "direct" and self.output_size is None:
+            raise ValueError(
+                "For non-direct strategies, provide output_size or a decoder with .output_size"
+            )
+
+        # label_len is a prompt length for transformer decoding
+        self.label_len = int(label_len) if label_len is not None else target_len // 2
+
+        # Aux (kept for backward compatibility)
+        self._kl: torch.Tensor | None = None
+        self._mem_model_bridge: nn.Module | None = None
+        self._direct_backbone_projection: nn.Module | None = None
+
+        # Small cache for causal masks to avoid re-allocating every step
+        self._mask_cache: dict[tuple[int, torch.device], torch.Tensor] = {}
+
+        # === Decoder input/feedback projection bridges (if decoder exists) ===
+        if self.decoder is not None:
+            self._decoder_input_size = getattr(
+                self.decoder, "input_size", self.input_size or self.output_size
+            )
+            if (
+                self._decoder_input_size
+                and self.input_size
+                and self.input_size != self._decoder_input_size
+            ):
+                self.dec_init_proj = nn.Linear(
+                    self.input_size, self._decoder_input_size
+                )
+            else:
+                self.dec_init_proj = nn.Identity()
+            if (
+                self._decoder_input_size
+                and self.output_size
+                and self.output_size != self._decoder_input_size
+            ):
+                self.dec_feedback_proj = nn.Linear(
+                    self.output_size, self._decoder_input_size
+                )
+            else:
+                self.dec_feedback_proj = nn.Identity()
+        else:
+            self._decoder_input_size = None
+            self.dec_init_proj = nn.Identity()
+            self.dec_feedback_proj = nn.Identity()
+
+        # === Output layers (seq2seq paths) ===
+        self._setup_output_layers()
+
+        # === Validate configuration ===
+        self._validate_configuration()
+
+        # === HeadComposer (optional) ===
+        self.head_composer = head_composer
+        if self.head_composer is not None:
+            self._to_model_device_dtype(self.head_composer)
+
+    # -------------------------------------------------------------------------
+    # Properties
+    # -------------------------------------------------------------------------
+    @property
+    def pred_len(self) -> int:
+        return self.target_len
+
+    # -----------------------------
+    # Composer helpers (kept minimal)
+    # -----------------------------
+    def set_head_composer(self, composer: nn.Module) -> "ForecastingModel":
+        self.head_composer = composer
+        self._to_model_device_dtype(self.head_composer)
+        return self
+
+    def clear_head_composer(self) -> "ForecastingModel":
+        self.head_composer = None
+        return self
+
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+    def add_head(
+        self, head: nn.Module, position: str = "input", name: str | None = None
+    ):
+        if not isinstance(head, BaseHead):
+            head = BaseHead(head, name or f"{position}_head")
+
+        if position == "encoder":
+            self.encoder = head.module
+        elif position == "decoder":
+            self.decoder = head.module
+        elif position == "attention":
+            self.attention_module = head.module
+            self.use_attention = True
+        elif position == "input":
+            old = self.input_preprocessor.module
+            self.input_preprocessor = (
+                head
+                if isinstance(old, nn.Identity)
+                else BaseHead(
+                    nn.Sequential(old, head.module), "input_preprocessor_chain"
+                )
+            )
+        elif position == "output":
+            old = self.output_postprocessor.module
+            self.output_postprocessor = (
+                head
+                if isinstance(old, nn.Identity)
+                else BaseHead(
+                    nn.Sequential(old, head.module), "output_postprocessor_chain"
+                )
+            )
+        elif position == "input_norm":
+            self.input_normalization = head
+        elif position == "output_norm":
+            self.output_normalization = head
+        elif position == "head":
+            self.head = head.module
+            self._setup_output_layers()
+        else:
+            raise ValueError(f"Invalid position: {position}")
+
+        return self
+
+    def remove_head(self, position: str) -> "ForecastingModel":
+        if position == "encoder":
+            self.encoder = None
+        elif position == "decoder":
+            self.decoder = None
+        elif position == "attention":
+            self.attention_module = None
+            self.use_attention = False
+        elif position == "input":
+            self.input_preprocessor = BaseHead(nn.Identity(), "input_preprocessor")
+        elif position == "output":
+            self.output_postprocessor = BaseHead(nn.Identity(), "output_postprocessor")
+        elif position == "input_norm":
+            self.input_normalization = BaseHead(nn.Identity(), "input_normalization")
+        elif position == "output_norm":
+            self.output_normalization = BaseHead(nn.Identity(), "output_normalization")
+        elif position == "head":
+            self.head = nn.Identity()
+        else:
+            raise ValueError(f"Invalid position: {position}")
+        return self
+
+    def list_heads(self) -> dict[str, Any]:
+        heads: dict[str, Any] = {}
+        if self.encoder:
+            heads["encoder"] = type(self.encoder).__name__
+        if self.decoder:
+            heads["decoder"] = type(self.decoder).__name__
+        if self.attention_module:
+            heads["attention"] = type(self.attention_module).__name__
+
+        for name in [
+            "input_preprocessor",
+            "output_postprocessor",
+            "input_normalization",
+            "output_normalization",
+        ]:
+            head = getattr(self, name, None)
+            if isinstance(head, BaseHead):
+                heads[name] = {
+                    "name": head.name,
+                    "type": type(head.module).__name__,
+                    "is_identity": isinstance(head.module, nn.Identity),
+                }
+
+        if hasattr(self, "head"):
+            heads["head"] = type(self.head).__name__
+        return heads
+
+    def get_aux_loss(self) -> torch.Tensor:
+        device = self._get_model_device_dtype()[0]
+        loss = torch.zeros((), device=device)
+
+        # Heads
+        for head_name in [
+            "input_preprocessor",
+            "output_postprocessor",
+            "input_normalization",
+            "output_normalization",
+        ]:
+            head = getattr(self, head_name, None)
+            if isinstance(head, BaseHead):
+                loss = loss + head.get_aux_loss().to(device)
+
+        # Encoder / decoder
+        if hasattr(self, "encoder") and hasattr(self.encoder, "aux_loss"):
+            aux = self.encoder.aux_loss
+            loss = loss + (aux if torch.is_tensor(aux) else loss.new_tensor(aux))
+
+        if hasattr(self, "decoder") and hasattr(self.decoder, "aux_loss"):
+            aux = self.decoder.aux_loss
+            loss = loss + (aux if torch.is_tensor(aux) else loss.new_tensor(aux))
+
+        # Model-level aux_loss (if you ever add it)
+        if hasattr(self, "aux_loss"):
+            aux = self.aux_loss
+            loss = loss + (aux if torch.is_tensor(aux) else loss.new_tensor(aux))
+
+        # in get_aux_loss()
+        if self.head_composer is not None and hasattr(
+            self.head_composer, "get_aux_loss"
+        ):
+            loss = loss + self.head_composer.get_aux_loss().to(device)
+        elif self.head_composer is not None and hasattr(self.head_composer, "aux_loss"):
+            aux = self.head_composer.aux_loss
+            loss = loss + (aux if torch.is_tensor(aux) else loss.new_tensor(aux))
+
+        return loss
+
+    def get_kl(self) -> torch.Tensor | None:
+        return self._kl
+
+    def get_model_size(self) -> dict[str, Any]:
+        params = sum(p.numel() for p in self.parameters())
+        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        buffers = sum(b.numel() for b in self.buffers())
+        size_bytes = sum(p.numel() * p.element_size() for p in self.parameters()) + sum(
+            b.numel() * b.element_size() for b in self.buffers()
+        )
+        return {
+            "parameters": params,
+            "trainable_parameters": trainable_params,
+            "buffers": buffers,
+            "total_elements": params + buffers,
+            "size_mb": size_bytes / 1024**2,
+            "is_quantized": False,
+        }
+
+    def benchmark_inference(
+        self, input_tensor: torch.Tensor, num_runs: int = 100, warmup_runs: int = 10
+    ) -> dict[str, Any]:
+        import time
+
+        self.eval()
+        device, dtype = self._get_model_device_dtype()
+        if dtype is not None and input_tensor.is_floating_point():
+            input_tensor = input_tensor.to(device=device, dtype=dtype)
+        else:
+            input_tensor = input_tensor.to(device=device)
+        with torch.no_grad():
+            for _ in range(warmup_runs):
+                _ = self(input_tensor)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        start = time.time()
+        with torch.no_grad():
+            for _ in range(num_runs):
+                _ = self(input_tensor)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        end = time.time()
+        avg = (end - start) / num_runs
+        return {
+            "avg_inference_time_ms": avg * 1000.0,
+            "throughput_samples_per_sec": 1.0 / avg if avg > 0 else float("inf"),
+            "device": str(device),
+        }
+
+    def attribute_forward(
+        self,
+        src: torch.Tensor,
+        time_features: torch.Tensor | None = None,
+        targets: torch.Tensor | None = None,
+        epoch: int | None = None,
+        output_idx: int | None = None,
+    ) -> torch.Tensor:
+        was_training = self.training
+        self.train()
+        try:
+            with self._dropout_disabled():
+                src = src.requires_grad_()
+                out = self.forward(
+                    src, targets=targets, time_features=time_features, epoch=epoch
+                )
+                return out[..., output_idx] if output_idx is not None else out
+        finally:
+            if not was_training:
+                self.eval()
+
+    # -------------------------------------------------------------------------
+    # Private / setup
+    # -------------------------------------------------------------------------
+    def _wrap_head(self, module: nn.Module, name: str) -> BaseHead:
+        if isinstance(module, BaseHead):
+            return module
+        return BaseHead(module, name)
+
+    def _get_model_device_dtype(self) -> tuple[torch.device, torch.dtype | None]:
+        ref_param = next(self.parameters(), None)
+        if ref_param is not None:
+            return ref_param.device, ref_param.dtype
+        ref_buffer = next(self.buffers(), None)
+        if ref_buffer is not None:
+            return ref_buffer.device, ref_buffer.dtype
+        return torch.device("cpu"), None
+
+    def _to_model_device_dtype(self, module: nn.Module) -> None:
+        device, dtype = self._get_model_device_dtype()
+        if dtype is not None:
+            module.to(device=device, dtype=dtype)
+        else:
+            module.to(device=device)
+
+    def _validate_configuration(self) -> None:
+        if self.strategy != "direct" and self.decoder is None:
+            raise ValueError(f"Strategy '{self.strategy}' requires a decoder")
+
+        if self.strategy in ("seq2seq", "transformer_seq2seq"):
+            if self.encoder is None or self.decoder is None:
+                raise ValueError(
+                    f"Strategy '{self.strategy}' requires both encoder and decoder"
+                )
+
+        if self.use_attention and self.attention_module is None:
+            raise ValueError("use_attention=True but attention_module is None")
+
+    def _setup_output_layers(self) -> None:
+        if self.decoder is None:
+            self.output_head = nn.Identity()
+            self.project_output = nn.Identity()
+            return
+
+        encoder_hidden = (
+            getattr(self.encoder, "hidden_size", self.hidden_size)
+            if self.encoder is not None
+            else self.hidden_size
+        )
+        decoder_hidden = getattr(self.decoder, "hidden_size", self.hidden_size)
+        if self.output_size is None:
+            raise ValueError(
+                "output_size must be provided (or decoder must have .output_size) "
+                "for non-direct strategies."
+            )
+
+        out_dim = (
+            (decoder_hidden + encoder_hidden) if self.use_attention else decoder_hidden
+        )
+        self.output_head = self._create_output_projection(out_dim, self.output_size)
+
+        if self.input_size and self.input_size != self.output_size:
+            self.project_output = nn.Linear(self.input_size, self.output_size)
+        else:
+            self.project_output = nn.Identity()
+
+    def _create_output_projection(self, in_dim: int, out_dim: int) -> nn.Module:
+        hidden_dim = max(in_dim // 2, out_dim)
+        return nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, out_dim),
+        )
+
+    # -------------------------------------------------------------------------
+    # Core helpers
+    # -------------------------------------------------------------------------
+    def _preprocess_input(self, src: torch.Tensor) -> torch.Tensor:
+        processed = self.input_preprocessor(src)
+        if self.input_skip_connection:
+            processed = processed + src
+        return self.input_normalization(processed)
+
+    def _finalize_output(self, x: torch.Tensor) -> torch.Tensor:
+        return self.output_postprocessor(self.output_normalization(x))
+
+    def _get_strategy_fn(self):
+        return {
+            "direct": self._forward_direct,
+            "autoregressive": self._forward_autoregressive,
+            "seq2seq": self._forward_seq2seq,
+            "transformer_seq2seq": self._forward_seq2seq,
+        }[self.strategy]
+
+    def _run_strategy(
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor | None,
+        time_features: torch.Tensor | None,
+        epoch: int | None,
+    ) -> torch.Tensor:
+        return self._get_strategy_fn()(src, targets, time_features, epoch)
+
+    def _project_decoder_output(self, out: torch.Tensor) -> torch.Tensor:
+        if self.output_size is not None and out.size(-1) == self.output_size:
+            return out
+        return self.output_head(out)
+
+    @staticmethod
+    def _unwrap_sequence_output(result: Any, *, source: str) -> torch.Tensor:
+        if hasattr(result, "last_hidden_state"):
+            output = result.last_hidden_state
+        elif isinstance(result, tuple):
+            output = result[0]
+        else:
+            output = result
+        if not isinstance(output, torch.Tensor):
+            raise TypeError(
+                f"{source} must return a tensor, a tuple whose first item is a "
+                "tensor, or an object with tensor-valued last_hidden_state"
+            )
+        return output
+
+    def _encode_memory(
+        self,
+        src: torch.Tensor,
+        time_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.encoder is None:
+            raise RuntimeError("Encoder is required for this strategy.")
+        enc = (
+            self.encoder(src, time_features=time_features)
+            if time_features is not None
+            else self.encoder(src)
+        )
+        enc_out = self._unwrap_sequence_output(enc, source="encoder")
+        return self._align_memory_to_decoder(enc_out)
+
+    @staticmethod
+    def _targets_to_horizon(
+        targets: torch.Tensor | None,
+        horizon: int,
+        *,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        if targets is None:
+            return None
+        if targets.size(1) >= horizon:
+            return targets[:, :horizon, :]
+        pad = torch.zeros(
+            batch_size,
+            horizon - targets.size(1),
+            targets.size(2),
+            device=device,
+            dtype=dtype,
+        )
+        return torch.cat([targets, pad], dim=1)
+
+    def _next_decoder_input(
+        self,
+        output: torch.Tensor,
+        targets: torch.Tensor | None,
+        t: int,
+        use_tf: bool,
+    ) -> torch.Tensor:
+        if use_tf and targets is not None:
+            return targets[:, t : t + 1, :]
+        return output if output.dim() == 3 else output.unsqueeze(1)
+
+    def _rollout_decoder(
+        self,
+        *,
+        decoder_input: torch.Tensor,
+        steps: int,
+        targets: torch.Tensor | None,
+        epoch: int | None,
+        step_fn: Callable[[torch.Tensor, int], torch.Tensor],
+        select_fn: Callable[[torch.Tensor], torch.Tensor] = lambda x: x,
+        aggregate: str = "cat",
+    ) -> torch.Tensor:
+        use_tf = self._should_use_teacher_forcing(targets, epoch)
+        outputs = []
+
+        for t in range(steps):
+            step_out = step_fn(decoder_input, t)
+            selected = select_fn(step_out)
+            outputs.append(selected)
+
+            if t < steps - 1:
+                next_in = self._next_decoder_input(selected, targets, t, use_tf)
+                decoder_input = self.dec_feedback_proj(next_in)
+
+        if aggregate == "cat":
+            return torch.cat(outputs, dim=1)
+        if aggregate == "stack":
+            return torch.stack(outputs, dim=1)
+        raise ValueError(f"Unknown aggregate mode: {aggregate}")
+
+    def _should_use_teacher_forcing(
+        self,
+        targets: torch.Tensor | None = None,
+        epoch: int | None = None,
+        fallback_device: str = "cpu",
+    ) -> bool:
+        if (not self.training) or (targets is None):
+            return False
+        # avoid randomness during tracing
+        if self._is_fx_tracing() or torch.jit.is_tracing():
+            return False
+        if self.scheduled_sampling_fn is not None and epoch is not None:
+            ratio = float(self.scheduled_sampling_fn(epoch))
+        else:
+            ratio = self.teacher_forcing_ratio
+        ratio = float(max(0.0, min(1.0, ratio)))
+        device = getattr(targets, "device", torch.device(fallback_device))
+        return torch.rand((1,), device=device).item() < ratio
+
+    def _prepare_decoder_hidden(self, encoder_hidden: Any) -> Any:
+        if self.encoder is None or not getattr(self.encoder, "bidirectional", False):
+            return encoder_hidden
+        # Bidirectional RNN handling
+        if isinstance(encoder_hidden, tuple):  # LSTM
+            h_n, c_n = encoder_hidden
+            return (self._merge_bidirectional(h_n), self._merge_bidirectional(c_n))
+        return self._merge_bidirectional(encoder_hidden)
+
+    def _merge_bidirectional(self, hidden: torch.Tensor) -> torch.Tensor:
+        assert hidden.size(0) % 2 == 0, (
+            "Expected even number of layers for bidirectional RNN"
+        )
+        num_layers = hidden.size(0) // 2
+        reshaped = hidden.reshape(num_layers, 2, *hidden.shape[1:])
+        return reshaped.sum(dim=1)
+
+    def _get_attention_query(
+        self, decoder_output: torch.Tensor, decoder_hidden: Any
+    ) -> torch.Tensor:
+        if hasattr(self.decoder, "is_transformer") and self.decoder.is_transformer:
+            return decoder_hidden.permute(1, 0, 2)  # (batch, seq_len, hidden)
+        return (
+            decoder_hidden[0][-1]
+            if isinstance(decoder_hidden, tuple)
+            else decoder_hidden[-1]
+        )
+
+    @staticmethod
+    def _is_fx_tracing() -> bool:
+        try:
+            import torch.fx  # noqa: F401
+
+            # If this ever changes upstream, we still return False gracefully
+            return False
+        except Exception:
+            return False
+
+    def _disable_dropout(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Dropout):
+                m.p = 0.0
+
+    @contextlib.contextmanager
+    def _dropout_disabled(self):
+        original: list[tuple[nn.Dropout, float]] = []
+        for module in self.modules():
+            if isinstance(module, nn.Dropout):
+                original.append((module, module.p))
+                module.p = 0.0
+        try:
+            yield
+        finally:
+            for module, p in original:
+                module.p = p
+
+    def _decoder_model_dim(self) -> int | None:
+        if self.decoder is None:
+            return None
+        for name in ("d_model", "model_dim", "embed_dim", "dim", "hidden_dim"):
+            if hasattr(self.decoder, name) and isinstance(
+                getattr(self.decoder, name), int
+            ):
+                return getattr(self.decoder, name)
+        return None
+
+    def _align_memory_to_decoder(self, memory: torch.Tensor) -> torch.Tensor:
+        d_model = self._decoder_model_dim()
+        if d_model is None or memory is None or memory.size(-1) == d_model:
+            return memory
+        if self._mem_model_bridge is None:
+            self._mem_model_bridge = nn.Linear(memory.size(-1), d_model).to(
+                device=memory.device,
+                dtype=memory.dtype,
+            )
+        else:
+            self._mem_model_bridge = self._mem_model_bridge.to(
+                device=memory.device,
+                dtype=memory.dtype,
+            )
+        return self._mem_model_bridge(memory)
+
+    def _supports_time(self, module: nn.Module) -> bool:
+        return (
+            hasattr(module, "supports_time_features")
+            or "time" in " ".join(dir(module)).lower()
+        )
+
+    # --- mask cache helpers ---------------------------------------------------
+    def _causal_mask(self, L: int, device: torch.device) -> torch.Tensor:
+        key = (L, device)
+        mask = self._mask_cache.get(key)
+        if mask is None or mask.device != device:
+            mask = torch.triu(
+                torch.ones(L, L, dtype=torch.bool, device=device), diagonal=1
+            )
+            self._mask_cache[key] = mask
+        return mask
+
+    # -------------------------------------------------------------------------
+    # Forward (Public) — finalize exactly once here
+    # -------------------------------------------------------------------------
+    def forward(
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
+    ) -> torch.Tensor:
+        if src.dim() != 3:
+            raise ValueError(
+                f"ForecastingModel expects src with shape [B, T, F], got {tuple(src.shape)}"
+            )
+
+        if self.head_composer is not None:
+            # Composer owns preprocessing; avoid legacy double-processing
+            x_enc, comp_state = self.head_composer.forward_pre(src)  # [B, T, F’]
+        else:
+            x_enc = self._preprocess_input(src)
+            comp_state = None
+
+        # Strategy (RAW)
+        raw = self._run_strategy(x_enc, targets, time_features, epoch)
+
+        # Composer inverse BEFORE final postprocess/normalization
+        if self.head_composer is not None:
+            raw = self.head_composer.inverse_post(raw, comp_state)
+
+        return self._finalize_output(raw)
+
+    # -------------------------------------------------------------------------
+    # Forward strategies — all return RAW predictions (no finalize inside)
+    # -------------------------------------------------------------------------
+    def _forward_direct(
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
+    ) -> torch.Tensor:
+        if self.model_type in self.BACKBONE_MODEL_TYPES and self.encoder is not None:
+            return self._forward_backbone_direct(src, time_features=time_features)
+
+        out = self.head(src)
+        if out.dim() == 2 and self.output_size is not None:
+            expected = self.target_len * self.output_size
+            if out.size(-1) == expected:
+                out = out.reshape(out.size(0), self.target_len, self.output_size)
+        return out  # RAW
+
+    def _forward_backbone_direct(
+        self,
+        src: torch.Tensor,
+        time_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if self.encoder is None:
+            raise RuntimeError(
+                f"Model type '{self.model_type}' requires an encoder/backbone module."
+            )
+        if self.output_size is None:
+            raise ValueError(
+                f"Model type '{self.model_type}' requires output_size for direct forecasting."
+            )
+
+        if time_features is not None:
+            try:
+                encoded = self.encoder(src, time_features=time_features)
+            except TypeError:
+                encoded = self.encoder(src)
+        else:
+            encoded = self.encoder(src)
+
+        memory = encoded[0] if isinstance(encoded, tuple) else encoded
+        features = memory[:, -1, :] if memory.dim() == 3 else memory
+        out_dim = self.target_len * self.output_size
+
+        if (
+            self._direct_backbone_projection is None
+            or not isinstance(self._direct_backbone_projection, nn.Linear)
+            or self._direct_backbone_projection.in_features != features.size(-1)
+            or self._direct_backbone_projection.out_features != out_dim
+        ):
+            self._direct_backbone_projection = nn.Linear(features.size(-1), out_dim).to(
+                device=features.device,
+                dtype=features.dtype,
+            )
+        else:
+            self._direct_backbone_projection = self._direct_backbone_projection.to(
+                device=features.device,
+                dtype=features.dtype,
+            )
+
+        out = self._direct_backbone_projection(features)
+        return out.view(features.size(0), self.target_len, self.output_size)
+
+    def _forward_autoregressive(
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
+    ) -> torch.Tensor:
+        if self.decoder is None:
+            raise RuntimeError("Autoregressive strategy requires a decoder.")
+        decoder_input = self.dec_init_proj(src[:, -1:, :])
+
+        def step_fn(x_in: torch.Tensor, _: int) -> torch.Tensor:
+            out = self._unwrap_sequence_output(self.decoder(x_in), source="decoder")
+            return self.output_head(out)  # map to output dims; keep RAW
+
+        return self._rollout_decoder(
+            decoder_input=decoder_input,
+            steps=self.target_len,
+            targets=targets,
+            epoch=epoch,
+            step_fn=step_fn,
+            aggregate="cat",
+        )  # RAW
+
+    def _forward_seq2seq(
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
+    ) -> torch.Tensor:
+        if self.encoder is None or self.decoder is None:
+            raise RuntimeError("Seq2seq strategy requires both encoder and decoder.")
+        strategy = {
+            "informer-like": self._forward_informer_style,
+            "transformer": self._forward_transformer_style,
+        }.get(self.model_type, self._forward_rnn_style)
+        return strategy(src, targets, time_features, epoch)  # RAW
+
+    def _forward_rnn_style(
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
+    ) -> torch.Tensor:
+        enc_out, enc_hidden = self.encoder(src)
+        dec_hidden = self._prepare_decoder_hidden(enc_hidden)
+        decoder_input = self.dec_init_proj(src[:, -1:, :])
+
+        def step_fn(x_in: torch.Tensor, _: int) -> torch.Tensor:
+            nonlocal dec_hidden
+            dec_out, dec_hidden = self.decoder(x_in, dec_hidden)
+            if self.use_attention:
+                context, _ = self.attention_module(dec_hidden, enc_out)
+                dec_out = torch.cat([dec_out, context], dim=-1)
+            return self.output_head(dec_out)  # RAW mapping
+
+        return self._rollout_decoder(
+            decoder_input=decoder_input,
+            steps=self.target_len,
+            targets=targets,
+            epoch=epoch,
+            step_fn=step_fn,
+            select_fn=lambda out: out.squeeze(1) if out.dim() == 3 else out,
+            aggregate="stack",
+        )  # RAW
+
+    def _forward_transformer_style(
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
+    ) -> torch.Tensor:
+        device = src.device
+        memory = self._encode_memory(src, time_features=time_features)
+
+        decoder_input = (
+            src[:, -self.label_len :, :]
+            if (self.label_len and self.label_len > 0)
+            else src[:, -1:, :]
+        )
+        decoder_input = self.dec_init_proj(decoder_input)
+        prompt_len = decoder_input.size(1)
+
+        outputs = []
+        use_tf = self._should_use_teacher_forcing(targets, epoch)
+
+        for t in range(self.pred_len):
+            L_tgt = decoder_input.size(1)
+            tgt_mask = self._causal_mask(L_tgt, device=device)
+            mtp_base = None
+            if self.training and (targets is not None):
+                n_future = max(0, L_tgt - prompt_len)
+                if n_future > 0:
+                    gt_now = self.dec_feedback_proj(targets[:, :n_future, :])
+                    mtp_base = torch.cat(
+                        [decoder_input[:, :prompt_len, :], gt_now], dim=1
+                    )
+                else:
+                    mtp_base = decoder_input
+            try:
+                out = self.decoder(
+                    decoder_input,
+                    memory,
+                    tgt_mask=tgt_mask,
+                    mtp_targets=mtp_base,
+                )
+            except TypeError:
+                out = self.decoder(decoder_input, memory)
+            out = self._unwrap_sequence_output(out, source="decoder")
+            out = self.output_head(out)  # RAW mapping
+            outputs.append(out[:, -1:, :] if out.size(1) > 1 else out)
+
+            if t < self.pred_len - 1:
+                next_in = self._next_decoder_input(outputs[-1], targets, t, use_tf)
+                next_in = self.dec_feedback_proj(next_in)
+                decoder_input = torch.cat([decoder_input, next_in], dim=1)
+
+        return torch.cat(outputs, dim=1)  # RAW
+
+    def _forward_informer_style(
+        self,
+        src: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        time_features: torch.Tensor | None = None,
+        epoch: int | None = None,
+        *,
+        teacher_forcing: str = "none",  # "none" | "prefix" | "scheduled"
+        teacher_forcing_k: int = 0,  # used when teacher_forcing == "prefix"
+    ) -> torch.Tensor:
+        B, L_enc, F_in = src.shape
+        L_label = int(self.label_len)
+        H = int(self.pred_len)
+        device, dtype = src.device, src.dtype
+
+        # Clamp to avoid slicing issues
+        L_label = max(0, min(L_label, L_enc))
+        L_dec = L_label + H
+
+        # ----- Encoder -----
+        enc_out = self._encode_memory(src, time_features=time_features)
+
+        # ----- Build decoder features: [known label] + [future zeros] -----
+        dec_known_feats = (
+            src[:, -L_label:, :] if L_label > 0 else src[:, :0, :]
+        )  # [B, L_label, F_in]
+        dec_future_feats = torch.zeros(
+            B, H, F_in, device=device, dtype=dtype
+        )  # [B, H, F_in]
+
+        # Project known part
+        dec_known_emb = self.dec_init_proj(dec_known_feats)  # [B, L_label, d_model]
+
+        # Prepare future segment default (zeros) in d_model
+        zeros_emb = self.dec_init_proj(dec_future_feats)  # [B, H, d_model]
+
+        # ----- Teacher forcing over the horizon (no last_src_step, direct fill) -----
+        use_tf = self.training and teacher_forcing != "none" and targets is not None
+        tgt_full = None
+        if use_tf:
+            # Ensure targets cover H steps (pad if shorter)
+            tgt_full = self._targets_to_horizon(
+                targets,
+                H,
+                batch_size=B,
+                device=targets.device,
+                dtype=targets.dtype,
+            )
+
+            # Project GT to d_model (if output features differ from input features,
+            # provide a dedicated proj)
+            gt_emb = self.dec_init_proj(tgt_full[:, :H, :])  # [B, H, d_model]
+
+            # Choose which horizon positions to force
+            if teacher_forcing == "prefix":
+                k = max(0, min(int(teacher_forcing_k), H))
+                force_mask = torch.zeros(B, H, dtype=torch.bool, device=device)
+                if k > 0:
+                    force_mask[:, :k] = True
+            elif teacher_forcing == "scheduled":
+                ratio = (
+                    self.scheduled_sampling_fn(epoch)
+                    if (self.scheduled_sampling_fn and epoch is not None)
+                    else self.teacher_forcing_ratio
+                )
+                p = float(max(0.0, min(1.0, ratio)))
+                force_mask = torch.rand(B, H, device=device) < p  # [B, H]
+            else:
+                force_mask = torch.zeros(B, H, dtype=torch.bool, device=device)
+
+            # Mix: GT where forced, zeros elsewhere
+            dec_future_emb = torch.where(
+                force_mask.unsqueeze(-1), gt_emb, zeros_emb
+            )  # [B, H, d_model]
+        else:
+            dec_future_emb = zeros_emb
+            force_mask = torch.zeros(B, H, dtype=torch.bool, device=device)
+
+        mtp_base = None
+        if self.training and (targets is not None):
+            if tgt_full is None:
+                tgt_full = self._targets_to_horizon(
+                    targets,
+                    H,
+                    batch_size=B,
+                    device=targets.device,
+                    dtype=targets.dtype,
+                )
+            gt_future_in = self.dec_feedback_proj(tgt_full[:, :H, :])  # [B, H, dec_in]
+            mtp_base = torch.cat(
+                [dec_known_emb, gt_future_in], dim=1
+            )  # [B, L_dec, dec_in]
+
+        # Final decoder input
+        dec_input = torch.cat(
+            [dec_known_emb, dec_future_emb], dim=1
+        )  # [B, L_dec, d_model]
+
+        # ----- Optional decoder time features -----
+        dec_time = None
+        if isinstance(time_features, dict) and "dec" in time_features:
+            dec_time = time_features["dec"]  # [B, L_dec, ...]
+        elif time_features is not None and not isinstance(time_features, dict):
+            tf = time_features
+            if tf.size(1) >= L_enc:
+                tf_known = tf[:, -L_label:, ...] if L_label > 0 else tf[:, :0, ...]
+                tf_zeros = torch.zeros(
+                    B, H, *tf.shape[2:], device=device, dtype=tf.dtype
+                )
+                dec_time = torch.cat([tf_known, tf_zeros], dim=1)  # [B, L_dec, *]
+
+        # ----- Masks -----
+        # Causal mask over the entire decoder sequence (label + horizon)
+        tgt_mask = self._causal_mask(L_dec, device=device)
+
+        # K/V padding mask:
+        #   - known label segment: valid (False)
+        #   - horizon segment: mask only positions that remain zeros
+        #     (i.e., NOT teacher-forced)
+        if H > 0:
+            horiz_placeholder = ~force_mask  # True -> mask K/V
+            kpm_known = torch.zeros(B, L_label, dtype=torch.bool, device=device)
+            tgt_key_padding_mask = torch.cat(
+                [kpm_known, horiz_placeholder], dim=1
+            )  # [B, L_dec]
+        else:
+            tgt_key_padding_mask = torch.zeros(
+                B, L_dec, dtype=torch.bool, device=device
+            )
+
+        # ----- Decode -----
+        try:
+            dec_out_full = self.decoder(
+                dec_input,
+                enc_out,
+                tgt_mask=tgt_mask,
+                memory_mask=None,
+                tgt_key_padding_mask=tgt_key_padding_mask,
+                memory_key_padding_mask=None,
+                time_features=dec_time,
+                mtp_targets=mtp_base,
+            )
+        except TypeError:
+            try:
+                dec_out_full = self.decoder(
+                    dec_input,
+                    enc_out,
+                    tgt_mask=tgt_mask,
+                    tgt_key_padding_mask=tgt_key_padding_mask,
+                )
+            except TypeError:
+                dec_out_full = self.decoder(dec_input, enc_out)
+
+        dec_out_full = self._unwrap_sequence_output(dec_out_full, source="decoder")
+
+        # Keep only the forecast window
+        dec_out = dec_out_full[:, -H:, :]  # [B, H, d_model]
+        return self._project_decoder_output(dec_out)

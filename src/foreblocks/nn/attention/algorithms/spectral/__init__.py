@@ -1,0 +1,1 @@
+"""Spectral modules for Foreblocks."""

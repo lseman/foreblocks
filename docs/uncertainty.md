@@ -8,7 +8,7 @@ editLink: true
 [[toc]]
 # Uncertainty Quantification
 
-`foreblocks.core.ConformalPredictionEngine` provides post-hoc prediction intervals for any trained `nn.Module`. It requires no model retraining — calibration uses a held-out set after training is complete.
+`foreblocks.training.conformal.ConformalPredictionEngine` provides post-hoc prediction intervals for any trained `nn.Module`. It requires no model retraining — calibration uses a held-out set after training is complete.
 
 ## Concepts
 
@@ -33,7 +33,7 @@ The engine supports ten methods ranging from basic split conformal to online ada
 
 ```python
 import numpy as np
-from foreblocks.core import ConformalPredictionEngine
+from foreblocks.training.conformal import ConformalPredictionEngine
 
 # 1. Split your data: train / calibration / test
 # X_cal, y_cal: held-out calibration split (never seen during training)

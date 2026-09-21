@@ -2,10 +2,10 @@ import unittest
 
 import torch
 
-from foreblocks.layers.embeddings import LearnablePositionalEncoding, PositionalEncoding
-from foreblocks.forecasting.transformer.core.encoder import TransformerEncoder
-from foreblocks.attention.config import AttentionConfig
-from foreblocks.attention.multi_att import MultiAttention
+from foreblocks.nn.embeddings import LearnablePositionalEncoding, PositionalEncoding
+from foreblocks.nn.transformer.encoder import TransformerEncoder
+from foreblocks.nn.attention.config import AttentionConfig
+from foreblocks.nn.attention.multihead import MultiAttention
 
 
 class TestSyPETransformer(unittest.TestCase):

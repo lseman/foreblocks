@@ -1,4 +1,4 @@
-"""Correctness tests for foreblocks.layers.embeddings.
+"""Correctness tests for foreblocks.nn.embeddings.
 
 Covers the sinusoidal, learnable, and Informer time embeddings. RoPE
 (rotary.py) is already exercised on GPU in tests/test_triton_kernels.py and
@@ -6,13 +6,13 @@ via its usage in the attention paths.
 """
 import torch
 
-from foreblocks.layers.embeddings.informer_time_embedding import (
+from foreblocks.nn.embeddings.informer_time_embedding import (
     InformerTimeEmbedding,
 )
-from foreblocks.layers.embeddings.learnable_positional_encoding import (
+from foreblocks.nn.embeddings.learnable_positional_encoding import (
     LearnablePositionalEncoding,
 )
-from foreblocks.layers.embeddings.positional_encoding import PositionalEncoding
+from foreblocks.nn.embeddings.positional_encoding import PositionalEncoding
 
 
 # ------------------------------------------------------------ PositionalEncoding

@@ -1,13 +1,13 @@
 import torch
 
-from foreblocks.layers.graph import (
+from foreblocks.nn.graph import (
     GraphWaveNetBlock,
     MTGNNBlock,
     MTGNNDilatedInception,
     MTGNNGraphConstructor,
     MTGNNMixProp,
 )
-from foreblocks.forecasting import GraphForecastingModel
+from foreblocks.models import GraphForecastingModel
 
 
 def test_mtgnn_graph_constructor_respects_topk() -> None:
