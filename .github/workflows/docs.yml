@@ -93,14 +93,7 @@ jobs:
         run: npm run docs:build
 
       - name: Build Studio playground
-        run: |
-          cd site/landing/studio/src
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
-          npm run build -- --base /studio/ --outDir ../dist --emptyOutDir
+        run: scripts/build_studio_web.sh
 
       - name: Assemble root landing page
         run: |
@@ -111,7 +104,6 @@ jobs:
           cp site/landing/logo_light.svg site/logo_light.svg
           cp -R site/landing/imgs site/imgs
           if [ -f site/landing/CNAME ]; then cp site/landing/CNAME site/CNAME; fi
-          cp -a site/landing/studio/dist site/studio
           touch site/.nojekyll
 
       - name: Upload Pages artifact

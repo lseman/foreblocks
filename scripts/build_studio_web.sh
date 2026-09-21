@@ -3,9 +3,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STUDIO_DIR="$ROOT/apps/webui"
-STUDIO_DIST="$STUDIO_DIR/dist"
-TARGET_DIR="$ROOT/apps/webui/dist"
+STUDIO_DIR="$ROOT/site/landing/studio/src"
+STUDIO_DIST="$ROOT/site/landing/studio/dist"
+TARGET_DIR="$ROOT/site/studio"
 
 if [[ ! -d "$STUDIO_DIR" ]]; then
   echo "❌ Studio directory not found: $STUDIO_DIR"
@@ -23,29 +23,23 @@ command -v npm >/dev/null 2>&1 || {
 }
 
 echo "🧱 Building foreBlocks Studio frontend..."
-rm -rf "$STUDIO_DIST"
 cd "$STUDIO_DIR"
 if [[ -f package-lock.json ]]; then
   npm ci --no-audit --no-fund
 else
   npm install --no-audit --no-fund
 fi
-npm run build -- --base /studio/
+npm run build -- --base /studio/ --outDir ../dist --emptyOutDir
 
 if [[ ! -f "$STUDIO_DIST/index.html" ]]; then
   echo "❌ Studio build failed: $STUDIO_DIST/index.html not found"
   exit 1
 fi
 
-echo "📦 Publishing Studio build to apps/webui..."
-# Ensure source and target are different to avoid cp self-copy error
-if [[ "$STUDIO_DIST" == "$TARGET_DIR" ]]; then
-  echo "⚠️ STUDIO_DIST and TARGET_DIR are the same, skipping copy"
-else
-  rm -rf "$TARGET_DIR"
-  mkdir -p "$TARGET_DIR"
-  cp -a "$STUDIO_DIST/." "$TARGET_DIR/"
-fi
+echo "📦 Publishing Studio build to site/studio..."
+rm -rf "$TARGET_DIR"
+mkdir -p "$TARGET_DIR"
+cp -a "$STUDIO_DIST/." "$TARGET_DIR/"
 
-echo "✅ Studio assets compiled and copied to apps/webui"
+echo "✅ Studio assets compiled and copied to site/studio"
 echo "Access the app at /studio/ on the remote server"

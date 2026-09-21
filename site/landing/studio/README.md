@@ -19,13 +19,12 @@ self-hosted against a real `foreblocks` install via the `foreblocks-studio` comm
 ## Building
 
 ```bash
-cd src
-npm install
-npm run build -- --base /studio/ --outDir ../dist --emptyOutDir
+scripts/build_studio_web.sh
 ```
 
-`.github/workflows/docs.yml` runs this same build during CI and copies `dist/` to
-`site/studio/` as part of the published docs site.
+Builds into `dist/` (sibling of `src/`) and publishes to `site/studio/` at the repo
+root. `.github/workflows/docs.yml` runs this same script during CI as part of the
+published docs site.
 
 ## Local development
 
