@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from .aux import BaseFeatureTransformer, AutoencoderConfig
+from .support import BaseFeatureTransformer, AutoencoderConfig
 
 
 # ---------------------------------------------------------------------------

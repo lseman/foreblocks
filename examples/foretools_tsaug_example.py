@@ -6,19 +6,14 @@ Demonstrates:
   2. Forecasting on synthetic autoregressive data
   3. Visualization of augmentation policies
 
-Run: python example.py
+Run: python foretools_tsaug_example.py
 """
-
-import sys
 
 import numpy as np
 import torch
 import torch.nn as nn
-from autoda_timeseries import AutoDATimeseries, AutoDATrainer, extract_features
+from foretools.tsaug import AutoDATimeseries, AutoDATrainer, extract_features
 from torch.utils.data import DataLoader, TensorDataset
-
-
-sys.path.insert(0, "/home/claude")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -315,7 +310,7 @@ def demonstrate_augmentations():
     print("DEMO: Augmentation Transformations")
     print("=" * 70)
 
-    from autoda_timeseries.transformations import TRANSFORM_NAMES, TRANSFORMATIONS
+    from foretools.tsaug.transformations import TRANSFORM_NAMES, TRANSFORMATIONS
 
     # Create a simple sine wave
     t = torch.linspace(0, 4 * np.pi, 100)

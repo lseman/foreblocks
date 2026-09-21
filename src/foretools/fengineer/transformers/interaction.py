@@ -5,9 +5,9 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold, StratifiedKFold
 
-from foretools.aux.adaptive_mi import AdaptiveMI
+from foretools.stats.adaptive_mi import AdaptiveMI
 
-from .aux import BaseFeatureTransformer
+from .support import BaseFeatureTransformer
 
 # Optional parallelism
 try:

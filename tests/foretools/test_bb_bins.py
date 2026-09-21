@@ -2,7 +2,7 @@ import importlib.util
 
 import numpy as np
 
-from foretools.aux.bb_bins import BayesianBlocks
+from foretools.stats.bb_bins import BayesianBlocks
 
 ASTROPY_AVAILABLE = importlib.util.find_spec("astropy") is not None
 

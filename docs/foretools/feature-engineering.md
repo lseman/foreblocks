@@ -254,7 +254,7 @@ $K \to 1$ means the same features are selected regardless of which training fold
 
 ```python
 from foretools.fengineer import FeatureEngineer
-from foretools.fengineer.transformers.config import FeatureConfig
+from foretools.fengineer.transformers import FeatureConfig
 
 cfg = FeatureConfig(
     selector_method="mrmr",   # "mi" | "mrmr" | "rfecv" | "boruta" | "auto"

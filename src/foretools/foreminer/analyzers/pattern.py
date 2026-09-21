@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import scipy.stats as sps
 
-from ...aux.adaptive_mi import AdaptiveMI, _mi_to_coeff, _spearman_fast
-from ...aux.distance_correlation import DistanceCorrelation
+from ...stats.adaptive_mi import AdaptiveMI, _mi_to_coeff, _spearman_fast
+from ...stats.distance_correlation import DistanceCorrelation
 from ..core import AnalysisConfig, AnalysisStrategy
 from .distribution import DistributionAnalyzer
 
@@ -797,7 +797,7 @@ class PatternDetector(AnalysisStrategy):
         pairs = pairs[:20]
 
         # Prepare AMI instance
-        from ...aux.adaptive_mi import AdaptiveMI
+        from ...stats.adaptive_mi import AdaptiveMI
 
         ami = AdaptiveMI(
             subsample=1000, random_state=int(getattr(config, "random_state", 42))

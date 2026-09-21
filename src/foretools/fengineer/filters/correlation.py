@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 
-from foretools.aux.adaptive_mi import AdaptiveMI
+from foretools.stats.adaptive_mi import AdaptiveMI
 
 
 class CorrelationFilter:

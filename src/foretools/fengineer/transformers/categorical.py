@@ -7,7 +7,7 @@ from sklearn.feature_selection import chi2, f_regression
 from sklearn.model_selection import GroupKFold, KFold, StratifiedKFold, TimeSeriesSplit
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 
-from .aux import BaseFeatureTransformer
+from .support import BaseFeatureTransformer
 
 
 class CategoricalTransformer(BaseFeatureTransformer):

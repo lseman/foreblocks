@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
-from .aux import BaseFeatureTransformer, require_fitted
+from .support import BaseFeatureTransformer, require_fitted
 
 if TYPE_CHECKING:
     pass

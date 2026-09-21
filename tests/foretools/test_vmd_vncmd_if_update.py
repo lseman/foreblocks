@@ -33,9 +33,18 @@ def _load_module(name: str, path: pathlib.Path):
 
 
 _ensure_package("foretools", ROOT / "foretools")
-_ensure_package("foretools.emd_like", ROOT / "foretools" / "emd_like")
-_load_module("foretools.emd_like.common", ROOT / "foretools" / "emd_like" / "common.py")
-core_module = _load_module("foretools.emd_like.core", ROOT / "foretools" / "emd_like" / "core.py")
+_ensure_package("foretools.decomposition", ROOT / "foretools" / "decomposition")
+_ensure_package(
+    "foretools.decomposition.emd", ROOT / "foretools" / "decomposition" / "emd"
+)
+_load_module(
+    "foretools.decomposition.emd.common",
+    ROOT / "foretools" / "decomposition" / "emd" / "common.py",
+)
+core_module = _load_module(
+    "foretools.decomposition.emd.core",
+    ROOT / "foretools" / "decomposition" / "emd" / "core.py",
+)
 VMDCore = core_module.VMDCore
 
 

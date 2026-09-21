@@ -1,7 +1,7 @@
 """mRMR (Minimum Redundancy Maximum Relevance) feature selector.
 
-Wraps :class:`foretools.aux.adaptive_mrmr.AdaptiveMRMR` and exposes it
-through the :class:`FeatureSelectorABC` interface.
+Wraps :class:`foretools.fengineer.selectors.adaptive_mrmr.AdaptiveMRMR` and
+exposes it through the :class:`FeatureSelectorABC` interface.
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
-from foretools.aux.adaptive_mi import AdaptiveMI
-from foretools.aux.adaptive_mrmr import AdaptiveMRMR
+from foretools.stats.adaptive_mi import AdaptiveMI
 
+from .adaptive_mrmr import AdaptiveMRMR
 from .base import FeatureSelectorABC
 from .mi_selector import MISelector
 

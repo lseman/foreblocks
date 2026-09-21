@@ -70,8 +70,11 @@ Conventions:
 | `foretools/tsgen/` | Synthetic time-series generation |
 | `foretools/bohb/` | BOHB, TPE configuration, pruning, and optimization plots |
 | `foretools/foreminer/` | Exploratory analysis and diagnostics |
-| `foretools/fengineer/` | Feature engineering utilities |
-| `foretools/emd_like/` | Decomposition tools |
+| `foretools/fengineer/` | Feature engineering: `transformers/`, `selectors/`, `filters/` |
+| `foretools/decomposition/` | Signal decomposition: `emd/` (EMD/EEMD/CEEMDAN/VMD), `ewt/` (Empirical Wavelet Transform) |
+| `foretools/stats/` | Standalone statistical utilities: mutual information, distance correlation, HSIC, Bayesian Blocks binning |
+| `foretools/arima/` | ARIMA model utilities |
+| `foretools/benchmarking/` | Benchmarking frameworks |
 | `foretools/tsaug/` | AutoDA-Timeseries: automated data augmentation with adaptive policy |
 
 ## `projects/`

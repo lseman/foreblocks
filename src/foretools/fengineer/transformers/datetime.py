@@ -3,7 +3,7 @@ import re
 import numpy as np
 import pandas as pd
 
-from .aux import BaseFeatureTransformer
+from .support import BaseFeatureTransformer
 
 
 class DateTimeTransformer(BaseFeatureTransformer):

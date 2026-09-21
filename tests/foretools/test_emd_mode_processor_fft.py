@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from foretools.emd_like.analysis.mode_processor import ModeProcessor
+from foretools.decomposition.emd.analysis.mode_processor import ModeProcessor
 
 
 def test_dominant_frequency_uses_numpy_fft_without_pyfftw() -> None:

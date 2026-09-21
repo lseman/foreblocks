@@ -13,10 +13,10 @@ __all__ = [
 def __getattr__(name):
     lazy_exports = {
         "FeatureEngineer": (".fengineer.fengineer", "FeatureEngineer"),
-        "AdaptiveMI": (".aux.adaptive_mi", "AdaptiveMI"),
-        "AdaptiveMRMR": (".aux.adaptive_mrmr", "AdaptiveMRMR"),
-        "DistanceCorrelation": (".aux.distance_correlation", "DistanceCorrelation"),
-        "HSIC": (".aux.hsic", "HSIC"),
+        "AdaptiveMI": (".stats.adaptive_mi", "AdaptiveMI"),
+        "AdaptiveMRMR": (".fengineer.selectors.adaptive_mrmr", "AdaptiveMRMR"),
+        "DistanceCorrelation": (".stats.distance_correlation", "DistanceCorrelation"),
+        "HSIC": (".stats.hsic", "HSIC"),
     }
     if name in lazy_exports:
         module_name, attr_name = lazy_exports[name]

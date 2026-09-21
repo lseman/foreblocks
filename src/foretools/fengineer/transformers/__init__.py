@@ -17,11 +17,11 @@ Each transformer lives in its own file under this package:
   - ``statistical.py`` — Row-wise statistical features
   - ``woe.py`` — Weight of Evidence encoding (binary classification)
 
-Infrastructure (in ``aux/``):
-  - ``aux/base.py`` — ABC base class, shared utilities, decorators
-  - ``aux/config.py`` — FeatureConfig with nested sub-configs
-  - ``aux/stats_safe.py`` — Safe statistical functions (skew, kurtosis)
-  - ``aux/binning_strategies.py`` — Standalone binning strategy functions
+Infrastructure (in ``support/``):
+  - ``support/base.py`` — ABC base class, shared utilities, decorators
+  - ``support/config.py`` — FeatureConfig with nested sub-configs
+  - ``support/stats_safe.py`` — Safe statistical functions (skew, kurtosis)
+  - ``support/binning_strategies.py`` — Standalone binning strategy functions
 
 Usage
 -----
@@ -44,7 +44,7 @@ Usage
 >>> cfg = FeatureConfig()
 """
 
-from .aux import (
+from .support import (
     BaseFeatureTransformer,
     cached_fit,
     require_fitted,

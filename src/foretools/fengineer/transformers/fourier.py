@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy import fft
 
-from .aux import BaseFeatureTransformer, require_fitted
+from .support import BaseFeatureTransformer, require_fitted
 
 if TYPE_CHECKING:
     pass

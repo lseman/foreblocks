@@ -14,7 +14,7 @@ import pandas as pd
 from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 
-from foretools.aux.adaptive_mi import AdaptiveMI
+from foretools.stats.adaptive_mi import AdaptiveMI
 
 from .base import FeatureSelectorABC
 from .redundancy import RedundancyPruner

@@ -49,7 +49,7 @@ plotting = ["matplotlib>=3.6"]
 scientific = [
   "pandas>=1.5",       # CSV loader, foretools, DARTS analyzer
   "scipy>=1.10",       # signal processing, interpolation, statistical routines
-  "numba>=0.57",       # ts_handler/outlier.py and foretools accelerators
+  "numba>=0.57",       # processing/core/outlier.py and foretools accelerators
   "scikit-learn>=1.2", # preprocessing, feature engineering, metrics
   "joblib>=1.3",       # parallel preprocessing and foretools helpers
   "statsmodels>=0.14", # preprocessing diagnostics and filters

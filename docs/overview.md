@@ -120,11 +120,11 @@ Stable surfaces, configuration maps, and repository orientation.
 
 | Area | Purpose |
 | --- | --- |
-| `foreblocks/core` | model assembly, heads, conformal utilities |
+| `foreblocks/models` | model assembly, heads, conformal utilities |
 | `foreblocks/training` | trainer loop, optimizer/scheduler integration |
 | `foreblocks/evaluation` | evaluator, metrics, benchmark helpers |
-| `foreblocks/ts_handler` | preprocessing, filtering, imputation, window creation |
-| `foreblocks/transformer` | transformer stack, attention variants, MoE, norms, embeddings |
+| `foreblocks/processing` | preprocessing, filtering, imputation, window creation |
+| `foreblocks/nn/transformer` | transformer stack, attention variants, MoE, norms, embeddings |
 | `darts` | architecture search configs, search loops, analysis |
 | `mltracker` | experiment tracking and local dashboards |
 | `foretools` | synthetic data, BOHB, VMD, exploratory tooling |

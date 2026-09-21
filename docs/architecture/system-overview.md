@@ -28,14 +28,14 @@ The main `foreblocks` training flow is:
 
 | Path | Role |
 | --- | --- |
-| `foreblocks/ops` | compute tier — Triton/CUDA kernels, no `nn.Module` API surface |
-| `foreblocks/layers` | reusable `nn.Module` primitives (norms, embeddings, graph) |
-| `foreblocks/attention` | attention config, variants, cache, and execution |
-| `foreblocks/modules` | composable model modules (attention wrappers, MoE, blocks, heads, skip) |
-| `foreblocks/core` | core model assembly (`model`, `att`, `sampling`, `extend`), plus `training/` (Trainer) and `evaluation/` (ModelEvaluator) |
-| `foreblocks/models` | assembled models: `popular/` (NBEATS, Informer, …), `transformer/`, `kan/`, `sequence/` (mamba, raven backbones), `anomaly/` (applications layer) |
+| `foreblocks/kernels` | compute tier — Triton/CUDA kernels, no `nn.Module` API surface |
+| `foreblocks/ops` | tensor ops and execution dispatch on top of `kernels/` |
+| `foreblocks/nn` | reusable `nn.Module` primitives: attention config/variants/cache, transformer stack, blocks, heads, MoE, routing, sequence backbones, norms, embeddings, graph |
+| `foreblocks/models` | assembled models: `forecasting.py` (`ForecastingModel`), `graph.py`, `baselines/` (NBEATS, Informer, …), `kan/`, `anomaly/` (applications layer) |
+| `foreblocks/training` | Trainer, config, sampling, conformal prediction, optimization (LLRD, NAS) |
+| `foreblocks/evaluation` | ModelEvaluator, benchmarking, metrics |
 | `foreblocks/studio` | Studio node/spec auto-discovery backend for `apps/webui` |
-| `foreblocks/ts_handler` | preprocessing, normalization, filtering, imputation, window creation |
+| `foreblocks/processing` | preprocessing, normalization, filtering, imputation, window creation |
 | `darts` | neural architecture search and finalization workflow |
 | `foretools` | synthetic data generation, feature engineering, decomposition, BOHB search |
 | `mltracker` | experiment tracking support |
@@ -54,31 +54,34 @@ That boundary is safer than importing deep internal modules unless you are exten
 
 ```text
 foreblocks (main)
-├── foreblocks/ops              — compute kernels: kernels/, attention/, mamba/, raven/, graph/
-├── foreblocks/layers           — norms/, embeddings/, graph/ (nn.Module primitives)
-├── foreblocks/attention        — attention config, variants, cache, execution
-├── foreblocks/modules          — moe/, blocks/, heads/, skip/ (composable modules)
-├── foreblocks/core             — ForecastingModel, heads, conformal, sampling
-│   ├── training/                 — Trainer, optimizer/scheduler
-│   └── evaluation/                — ModelEvaluator, metrics
+├── foreblocks/kernels           — Triton/CUDA compute: attention/, mamba/, linear/, normalization/, activations/, graph/
+├── foreblocks/ops                — tensor ops + dispatch on top of kernels/: attention/, mamba/
+├── foreblocks/integrations       — optional external backends: fla/ (flash-linear-attention), softpick
+├── foreblocks/nn                 — attention/, transformer/, blocks/, heads/, moe/, routing/, sequence/, normalization/, embeddings/, graph/
 ├── foreblocks/models
-│   ├── popular/                 — NBEATS, Informer, Autoformer, TimesNet, …
-│   ├── transformer/              — Transformer stack, attention, MoE
+│   ├── forecasting.py            — ForecastingModel
+│   ├── graph.py                  — GraphForecastingModel
+│   ├── baselines/                — NBEATS, Informer, Autoformer, TimesNet, …
 │   ├── kan/                      — Kolmogorov-Arnold Network
-│   ├── sequence/                 — mamba/ (Hybrid Mamba SSM), raven/ (recurrent)
 │   └── anomaly/                  — anomaly-detection applications layer
-├── foreblocks/studio            — Studio node/spec auto-discovery backend
-├── foreblocks/ts_handler        — TimeSeriesHandler, preprocessing
-├── mltracker                    — Experiment tracking
-└── darts (standalone)           — Neural architecture search
+├── foreblocks/training           — Trainer, config, sampling, conformal, optimization (LLRD, NAS)
+├── foreblocks/evaluation         — ModelEvaluator, benchmarking, metrics
+├── foreblocks/quantization       — FakeQuantize, DynamicQuantizedLinear
+├── foreblocks/studio             — Studio node/spec auto-discovery backend
+├── foreblocks/processing         — TimeSeriesHandler, preprocessing, filtering
+├── mltracker                     — Experiment tracking
+└── darts (standalone)            — Neural architecture search
 
 foretools (companion)
-├── foretools/tsgen          — Synthetic time-series generation
-├── foretools/bohb           — Bayesian hyperparameter search
-├── foretools/emd_like       — VMD / EMD decomposition
-├── foretools/tsaug          — AutoDA augmentation
-├── foretools/fengineer      — Feature engineering pipeline
-└── foretools/foreminer      — Changepoint detection & mining
+├── foretools/tsgen           — Synthetic time-series generation
+├── foretools/bohb            — Bayesian hyperparameter search
+├── foretools/decomposition   — emd/ (VMD, EMD-family), ewt/ (Empirical Wavelet Transform)
+├── foretools/tsaug           — AutoDA augmentation
+├── foretools/fengineer       — Feature engineering pipeline
+├── foretools/foreminer       — Changepoint detection & mining
+├── foretools/stats           — mutual information, distance correlation, HSIC, Bayesian Blocks binning
+├── foretools/arima           — ARIMA model utilities
+└── foretools/benchmarking    — benchmarking frameworks
 ```
 
 ## Choosing where to start

@@ -7,7 +7,7 @@ from scipy import stats
 
 from sklearn.preprocessing import PowerTransformer
 
-from .aux import BaseFeatureTransformer, safe_kurtosis, safe_skew
+from .support import BaseFeatureTransformer, safe_kurtosis, safe_skew
 
 
 class MathematicalTransformer(BaseFeatureTransformer):

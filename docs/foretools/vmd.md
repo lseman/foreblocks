@@ -8,7 +8,7 @@ editLink: true
 [[toc]]
 # VMD Decomposition
 
-`foretools/emd_like` provides a decomposition toolkit covering Variational Mode Decomposition (VMD), empirical mode decomposition variants, hierarchical decomposition, multivariate support, and Optuna-based parameter search.
+`foretools/decomposition/emd` provides a decomposition toolkit covering Variational Mode Decomposition (VMD), empirical mode decomposition variants, hierarchical decomposition, multivariate support, and Optuna-based parameter search.
 
 Use it when you want to split a signal into interpretable oscillatory modes before forecasting, diagnostics, denoising, or downstream feature extraction.
 
@@ -33,7 +33,7 @@ Other useful exports:
 
 ```python
 import numpy as np
-from foretools.emd_like import FastVMD
+from foretools.decomposition.emd import FastVMD
 
 fs = 100.0
 t = np.arange(0, 10, 1 / fs)
@@ -148,7 +148,7 @@ Notes:
 If you want more control than `FastVMD`, use `VMDOptimizer` directly.
 
 ```python
-from foretools.emd_like import FFTWManager, VMDOptimizer
+from foretools.decomposition.emd import FFTWManager, VMDOptimizer
 
 fftw = FFTWManager()
 optimizer = VMDOptimizer(fftw)

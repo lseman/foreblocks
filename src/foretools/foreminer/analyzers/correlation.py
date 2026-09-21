@@ -6,9 +6,9 @@ import pandas as pd
 from scipy.stats import rankdata
 from sklearn.decomposition import PCA
 
-from ...aux.adaptive_mi import AdaptiveMI
-from ...aux.distance_correlation import DistanceCorrelation
-from ...aux.hsic import HSIC
+from ...stats.adaptive_mi import AdaptiveMI
+from ...stats.distance_correlation import DistanceCorrelation
+from ...stats.hsic import HSIC
 from ..core import AnalysisConfig, AnalysisStrategy
 
 

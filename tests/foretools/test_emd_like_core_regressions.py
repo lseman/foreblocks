@@ -3,10 +3,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from foretools.emd_like.config import VMDOptions, VMDParameters
-from foretools.emd_like.core import VMDCore
-from foretools.emd_like.pipeline import FastVMD, VMDOptimizer
-from foretools.emd_like.support.fft import FFTWManager
+from foretools.decomposition.emd.config import VMDOptions, VMDParameters
+from foretools.decomposition.emd.core import VMDCore
+from foretools.decomposition.emd.pipeline import FastVMD, VMDOptimizer
+from foretools.decomposition.emd.support.fft import FFTWManager
 
 
 @pytest.fixture(scope="module")

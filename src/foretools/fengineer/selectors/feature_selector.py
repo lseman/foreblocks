@@ -15,9 +15,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from foretools.aux.adaptive_mi import AdaptiveMI
-from foretools.aux.adaptive_mrmr import AdaptiveMRMR
+from foretools.stats.adaptive_mi import AdaptiveMI
 
+from .adaptive_mrmr import AdaptiveMRMR
 from .boruta import BorutaSelector
 from .mi_selector import MISelector
 from .mrmr_selector import MRMRSelector

@@ -17,13 +17,13 @@ from .analyzers.cluster import ClusterAnalyzer
 from .analyzers.correlation import CorrelationAnalyzer
 from .analyzers.dimension import DimensionalityAnalyzer
 from .analyzers.distribution import DistributionAnalyzer
-from .analyzers.feat import FeatureEngineeringAnalyzer
+from .analyzers.features import FeatureEngineeringAnalyzer
 from .analyzers.graph import GraphAnalyzer
 from .analyzers.group import CategoricalGroupAnalyzer
 from .analyzers.missing import MissingnessAnalyzer
 from .analyzers.outlier import OutlierAnalyzer
 from .analyzers.pattern import PatternDetector
-from .analyzers.ts import TimeSeriesAnalyzer
+from .analyzers.timeseries import TimeSeriesAnalyzer
 from .core import (
     OPTIONAL_IMPORTS,
     AnalysisConfig,
@@ -117,7 +117,7 @@ class DatasetAnalyzer:
             GraphAnalyzer(),
         ]
         if self.time_col:
-            from .analyzers.ts import TimeSeriesAnalyzer
+            from .analyzers.timeseries import TimeSeriesAnalyzer
 
             strategies.append(TimeSeriesAnalyzer())
 

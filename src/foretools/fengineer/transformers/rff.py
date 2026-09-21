@@ -14,9 +14,9 @@ import pandas as pd
 from scipy.spatial.distance import pdist
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 
-from foretools.aux.adaptive_mi import AdaptiveMI
+from foretools.stats.adaptive_mi import AdaptiveMI
 
-from .aux import BaseFeatureTransformer, require_fitted
+from .support import BaseFeatureTransformer, require_fitted
 
 if TYPE_CHECKING:
     pass

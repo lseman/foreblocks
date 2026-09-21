@@ -15,7 +15,7 @@ from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
 
-from .aux import BaseFeatureTransformer, require_fitted
+from .support import BaseFeatureTransformer, require_fitted
 
 if TYPE_CHECKING:
     pass

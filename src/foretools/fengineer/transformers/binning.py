@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
-from .aux import (
+from .support import (
     BaseFeatureTransformer,
     require_fitted,
     doane_edges,
@@ -91,7 +91,7 @@ class BinningTransformer(BaseFeatureTransformer):
     def _resolve_strategies_for_col(
         self, x: np.ndarray, y_col: np.ndarray | None
     ) -> list[str]:
-        from .aux import safe_skew
+        from .support import safe_skew
 
         strategies = [str(s).lower() for s in self.strategies]
         if "auto" not in strategies:
@@ -200,7 +200,7 @@ class BinningTransformer(BaseFeatureTransformer):
         x: np.ndarray, edges: np.ndarray, min_count: int
     ) -> np.ndarray:
         """Merge weak bins until support constraints are met."""
-        from .aux import _enforce_min_support_edges
+        from .support import _enforce_min_support_edges
 
         return _enforce_min_support_edges(x, edges, min_count)
 
@@ -257,7 +257,7 @@ class BinningTransformer(BaseFeatureTransformer):
                         if y is None:
                             continue
                         y_arr = pd.Series(y).reindex(data.index).values
-                        from .aux import mdlp_edges
+                        from .support import mdlp_edges
 
                         edges = mdlp_edges(col_values, y_arr, max_bins=dynamic_max_bins)
                         edges = self._enforce_support(col_values, edges, min_count)

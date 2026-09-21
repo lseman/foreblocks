@@ -9,8 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .aux import BaseFeatureTransformer, require_fitted
-from .aux import safe_row_kurtosis, safe_row_skew
+from .support import BaseFeatureTransformer, require_fitted
+from .support import safe_row_kurtosis, safe_row_skew
 
 
 class StatisticalTransformer(BaseFeatureTransformer):

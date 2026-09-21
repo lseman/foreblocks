@@ -16,7 +16,7 @@ Use `foreblocks` when you are building and training forecasting models. Use `for
 | --- | --- | --- |
 | `foretools/tsgen` | create synthetic series with known structure and ground-truth components | [Time Series Generator](tsgen) |
 | `foretools/bohb` | run budgeted hyperparameter optimization with Hyperband + TPE | [BOHB Search](bohb) |
-| `foretools/emd_like` | decompose signals into oscillatory modes with VMD, EMD-family methods, hierarchical VMD, and multivariate support | [VMD Decomposition](vmd) |
+| `foretools/decomposition/emd` | decompose signals into oscillatory modes with VMD, EMD-family methods, hierarchical VMD, and multivariate support | [VMD Decomposition](vmd) |
 | `foretools/fengineer` | automated feature engineering with transforms, interactions, MI selection, and RFECV | [Feature Engineering](feature-engineering) |
 | `foretools/tsaug` | data augmentation — jitter, scaling, time-warp, window-slice, and AutoDA search | [AutoDA Augmentation](tsaug) |
 

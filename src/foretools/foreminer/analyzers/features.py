@@ -6,7 +6,7 @@ import scipy.stats as sps
 from scipy.stats import jarque_bera, shapiro
 from sklearn.preprocessing import PowerTransformer, QuantileTransformer
 
-from ...aux.hsic import HSIC  # your class
+from ...stats.hsic import HSIC  # your class
 from ..core import AnalysisConfig, AnalysisStrategy
 
 
@@ -502,7 +502,7 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
         from sklearn.linear_model import RidgeCV
         from sklearn.model_selection import KFold
 
-        from ...aux.hsic import HSIC
+        from ...stats.hsic import HSIC
 
         rs = getattr(cfg, "random_state", 42)
         n_splits = getattr(cfg, "rank_cv_splits", 5)
@@ -804,7 +804,7 @@ class FeatureEngineeringAnalyzer(AnalysisStrategy):
         import numpy as np
         import pandas as pd
 
-        from ...aux.hsic import HSIC
+        from ...stats.hsic import HSIC
 
         rng = np.random.default_rng(getattr(cfg, "random_state", 42))
 
