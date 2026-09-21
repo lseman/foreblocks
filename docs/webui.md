@@ -11,6 +11,8 @@ editLink: true
 
 The `apps/webui/` directory contains a browser-based node editor for building and running foreblocks forecasting pipelines without writing code. Nodes represent pipeline stages; edges connect outputs to inputs. Execution happens on a local FastAPI backend that streams progress back to the browser via WebSocket.
 
+This is a **local, self-hosted tool** (start it with `foreblocks-studio` or `python server.py` against your own Python environment) — it is not the interactive demo published at `/studio/` on the docs site. That public playground is a separate, static, client-side-only app built from `site/landing/studio/` (see its [README](https://github.com/lseman/foreblocks/blob/main/site/landing/studio/README.md)).
+
 ## Starting the server
 
 ```bash
@@ -18,15 +20,19 @@ cd apps/webui
 npm install         # first time only
 npm run build       # compile the React frontend into dist/
 python server.py    # starts on http://localhost:8000
-```text
+```
+
+```bash
 pip install fastapi uvicorn torch matplotlib
+```
+
 ```text
 Browser (React + ReactFlow)
   ↓  POST /execute  (generated Python code + workflow graph)
 FastAPI server  →  ThreadPoolExecutor worker
   ↓  WebSocket /ws/{task_id}  (live events)
 Browser receives: logs, progress, node results, artifacts
-```text
+```
 
 - `sync=false` (default): returns immediately with a `task_id`; poll or subscribe via WebSocket for results
 - `sync=true`: waits up to `timeout_sec` and returns inline results if finished in time
@@ -34,7 +40,7 @@ Browser receives: logs, progress, node results, artifacts
 Response:
 ```json
 {"success": true, "task_id": "uuid4", "results": null}
-```json
+```
 
 States: `queued` → `running` → `success` | `error`
 
@@ -44,7 +50,7 @@ Retrieve timestamped execution logs.
 
 ```json
 {"task_id": "...", "logs": ["[10:42:01] ⏳ Starting execution", ...]}
-```toml
+```
 
 `set_result(node_id, result_type, data)` — `node_id` should match the node's ID in the workflow graph. `result_type` is one of the type strings from the table above.
 

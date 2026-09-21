@@ -63,6 +63,7 @@ apps/webui/dist/
 apps/webui/server.log
 apps/webui/nodeDefinitions*_debug.json
 apps/mltracker-dashboard/dist/
+site/landing/studio/dist/
 
 # Working and temporary directories
 work/
