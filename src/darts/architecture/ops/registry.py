@@ -19,12 +19,14 @@ parallel literal.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import torch.nn as nn
 
-from .advanced import (
+from .conv import MultiScaleConvOp, PyramidConvOp, TCNOp, TimeConvOp
+from .decomposition import DLinearOp, NBeatsOp, TimesNetOp
+from .misc import (
     ConvMixerOp,
     GatedGeLUFFNOp,
     GeGLUFFNOp,
@@ -33,8 +35,6 @@ from .advanced import (
     PatchEmbedOp,
     SwiGLUFFNOp,
 )
-from .conv import MultiScaleConvOp, PyramidConvOp, TCNOp, TimeConvOp
-from .decomposition import DLinearOp, NBeatsOp, TimesNetOp
 from .mlp import IdentityOp, MLPMixerOp, ResidualMLPOp
 from .spectral import FourierOp, WaveletOp
 from .ssm import SSMOp

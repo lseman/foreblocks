@@ -4,7 +4,6 @@ import torch.nn.functional as F
 
 from ..common.norms import ChannelRMSNorm, RMSNorm
 
-
 try:
     from foreblocks.kernels.normalization import (
         TRITON_AVAILABLE,
@@ -78,7 +77,7 @@ class FourierOp(nn.Module):
         B, L, C = x.shape
 
         # Build a fixed-length FFT reference window for stable frequency bins.
-        if L < self.seq_length:
+        if self.seq_length > L:
             x_padded = F.pad(x, (0, 0, 0, self.seq_length - L))
         else:
             x_padded = x[:, : self.seq_length]

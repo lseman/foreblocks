@@ -1,12 +1,12 @@
-"""Training-time helper utilities for DARTS search."""
+"""Temperature/concentration scheduling for Gumbel-softmax and DrNAS search.
 
-from enum import Enum
+:class:`TemperatureScheduler` anneals the softmax temperature (and, for
+DrNAS, the Dirichlet concentration) over the search according to a
+configurable schedule (cosine, linear, ...).
+"""
+
 
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.amp import GradScaler
 
 
 class TemperatureScheduler:

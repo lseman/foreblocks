@@ -21,11 +21,10 @@ def compute_snip(
         ]
         if not per_tensor:
             return 0.0
-        return float(torch.stack(per_tensor).mean().item())
+        return float(torch.stack(per_tensor).sum().item())
 
     state_backup = {k: v.detach().clone() for k, v in model.state_dict().items()}
     snip_value = 0.0
-    snip_count = 0
     try:
         for module in model.modules():
             if hasattr(module, "reset_parameters"):
@@ -60,11 +59,8 @@ def compute_snip(
         for (_, p), g in zip(init_weight_params, init_grads):
             if g is not None and torch.isfinite(g).all():
                 snip_value += (g * p).abs().sum().item()
-                snip_count += 1
     finally:
         model.load_state_dict(state_backup, strict=False)
         model.zero_grad()
 
-    if snip_count == 0:
-        return 0.0
-    return snip_value / snip_count
+    return snip_value

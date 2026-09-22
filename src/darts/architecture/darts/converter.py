@@ -1,26 +1,21 @@
-"""Searchable mixed blocks and fixed deployment wrappers."""
+"""Convert a searched (mixed-op) encoder/decoder into its fixed deployment form.
+
+:class:`ArchitectureConverter` reads a :class:`MixedEncoder`/:class:`MixedDecoder`'s
+learned alphas, resolves the winning discrete choice for each searchable axis,
+and builds the corresponding :class:`FixedEncoder`/:class:`FixedDecoder`.
+"""
 
 from __future__ import annotations
 
 import copy
-from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from ..blocks.bridges import LearnedPoolingBridge
 from ..blocks.sequence import (
     ArchitectureNormalizer,
-    BaseFixedSequenceBlock,
-    SearchableDecomposition,
     SequenceStateAdapter,
 )
-from ..blocks.transformers import (
-    LightweightTransformerDecoder,
-    LightweightTransformerEncoder,
-)
-from .fixed_encoder_decoder import FixedDecoder, FixedEncoder
 from ..common.freeze import (
     _freeze_transformer_cross_attention,
     _freeze_transformer_cross_attention_position,
@@ -37,14 +32,10 @@ from ..common.freeze import (
     _resolve_searchable_self_attention_position,
     _resolve_searchable_self_attention_type,
 )
-
+from .fixed_encoder_decoder import FixedDecoder, FixedEncoder
 
 __all__ = [
-    "MixedEncoder",
-    "MixedDecoder",
     "ArchitectureConverter",
-    "FixedEncoder",
-    "FixedDecoder",
 ]
 
 
@@ -278,6 +269,7 @@ class ArchitectureConverter:
                     mixed_encoder.context_proj.state_dict()
                 )
             if hasattr(mixed_encoder, "searchable_decomp"):
+                fixed_encoder.decomposition_temperature = mixed_encoder.temperature
                 fixed_encoder.searchable_decomp = copy.deepcopy(
                     mixed_encoder.searchable_decomp
                 ).to(next(fixed_encoder.parameters()).device)
@@ -352,6 +344,7 @@ class ArchitectureConverter:
                     mixed_decoder.normalizer.state_dict()
                 )
             if hasattr(mixed_decoder, "searchable_decomp"):
+                fixed_decoder.decomposition_temperature = mixed_decoder.temperature
                 fixed_decoder.searchable_decomp = copy.deepcopy(
                     mixed_decoder.searchable_decomp
                 ).to(next(fixed_decoder.parameters()).device)

@@ -10,7 +10,6 @@ touch one of them.
 
 from importlib import import_module
 
-
 __all__ = [
     "ArchitectureConverter",
     "DARTSCell",
@@ -26,15 +25,15 @@ __all__ = [
 
 def __getattr__(name):
     lazy_exports = {
-        "ArchitectureConverter": (".search.converter", "ArchitectureConverter"),
-        "DARTSCell": (".search.darts_cell", "DARTSCell"),
-        "derive_final_architecture": (".search.finalization", "derive_final_architecture"),
-        "FixedDecoder": (".search.fixed_encoder_decoder", "FixedDecoder"),
-        "FixedEncoder": (".search.fixed_encoder_decoder", "FixedEncoder"),
-        "MixedDecoder": (".search.mixed_encoder_decoder", "MixedDecoder"),
-        "MixedEncoder": (".search.mixed_encoder_decoder", "MixedEncoder"),
-        "MixedOp": (".search.mixed_op", "MixedOp"),
-        "TimeSeriesDARTS": (".search.time_series_darts", "TimeSeriesDARTS"),
+        "ArchitectureConverter": (".darts.converter", "ArchitectureConverter"),
+        "DARTSCell": (".darts.darts_cell", "DARTSCell"),
+        "derive_final_architecture": (".darts.finalization", "derive_final_architecture"),
+        "FixedDecoder": (".darts.fixed_encoder_decoder", "FixedDecoder"),
+        "FixedEncoder": (".darts.fixed_encoder_decoder", "FixedEncoder"),
+        "MixedDecoder": (".darts.mixed_encoder_decoder", "MixedDecoder"),
+        "MixedEncoder": (".darts.mixed_encoder_decoder", "MixedEncoder"),
+        "MixedOp": (".darts.mixed_op", "MixedOp"),
+        "TimeSeriesDARTS": (".darts.time_series_darts", "TimeSeriesDARTS"),
     }
     if name in lazy_exports:
         module_name, attr_name = lazy_exports[name]

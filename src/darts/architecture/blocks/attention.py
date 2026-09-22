@@ -1,39 +1,36 @@
-"""Attention modules: SelfAttention, AttentionBridge, LearnedPoolingBridge."""
+"""Multi-head self-attention with a searchable backend (SDP/linear/ProbSparse/...)."""
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .positional import RotaryPositionalEncoding
-from ..common.norms import RMSNorm
-from ..common.utils import (
+from ..common.attention_math import (
     _causal_mask,
     _make_alibi_slopes,
     _seasonal_relative_bias,
     _sinusoidal_features,
 )
-
+from .positional import RotaryPositionalEncoding
 
 __all__ = [
     "SelfAttention",
-    "AttentionBridge",
-    "LearnedPoolingBridge",
 ]
 
 
 class SelfAttention(nn.Module):
     """Self-attention block with selectable attention kernels.
 
-    Supported modes: ``sdp``, ``linear``, ``probsparse``, ``cosine``,
-    ``local``, ``auto``.
+    Modes: ``sdp``, ``linear``, ``probsparse``, ``cosine``, ``local``.
+    Linear attention uses prefix sufficient statistics in causal mode;
+    ProbSparse uses causal query sampling and prefix context.
     """
 
     MODES: tuple[str, ...] = ("sdp", "linear", "probsparse", "cosine", "local")
+    CAUSAL_MODES: tuple[str, ...] = MODES
     POSITION_MODES: tuple[str, ...] = (
         "rope", "alibi", "none", "seasonal",
         "sinusoidal", "learned", "relative",
@@ -55,12 +52,14 @@ class SelfAttention(nn.Module):
         variant_gdas: bool = False,
     ):
         super().__init__()
+        self.MODES = self.CAUSAL_MODES if causal else self.MODES
         resolved_attention_type = str(attention_type).lower()
         resolved_position_mode = str(position_mode).lower()
-        assert resolved_attention_type in (*self.MODES, "auto"), (
-            "attention_type must be one of "
-            f"{(*self.MODES, 'auto')}, got {resolved_attention_type!r}"
-        )
+        if resolved_attention_type not in (*self.MODES, "auto"):
+            raise ValueError(
+                f"attention_type must be one of {(*self.MODES, 'auto')}, "
+                f"got {resolved_attention_type!r}"
+            )
         assert resolved_position_mode in (*self.POSITION_MODES, "auto"), (
             "position_mode must be one of "
             f"{(*self.POSITION_MODES, 'auto')}, got {resolved_position_mode!r}"
@@ -119,10 +118,28 @@ class SelfAttention(nn.Module):
         self.relative_pos_bias = nn.Parameter(
             torch.zeros(2 * rope_max_seq_len - 1, self.heads)
         )
-        # Deterministic generator for ProbSparse sampling: reduces variance in
-        # the architecture gradient since alphas are trying to estimate which
-        # kernel is best.
-        self._probsparse_gen = torch.Generator().manual_seed(0xC0FFEE)
+        # ProbSparse sampling is seeded afresh per forward, so evaluating a
+        # searched and fixed model uses the same sampled keys.
+
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys,
+        unexpected_keys, error_msgs,
+    ):
+        # Searches created while causal linear/ProbSparse were disabled have
+        # three logits. Preserve those learned choices on load.
+        key = prefix + "attn_alphas"
+        saved = state_dict.get(key)
+        if (
+            self.causal and self.searchable and isinstance(saved, torch.Tensor)
+            and saved.shape == (3,) and self.attn_alphas.shape == (5,)
+        ):
+            expanded = saved.new_full((5,), -30.0)
+            expanded[[0, 3, 4]] = saved
+            state_dict[key] = expanded
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys,
+            unexpected_keys, error_msgs,
+        )
 
     def set_temperature(self, temperature: float) -> None:
         self.temperature = max(float(temperature), 1e-3)
@@ -267,7 +284,8 @@ class SelfAttention(nn.Module):
         return None
 
     def _apply_position_mode(
-        self, q: torch.Tensor, k: torch.Tensor, position_mode: str
+        self, q: torch.Tensor, k: torch.Tensor, position_mode: str,
+        *, materialize_bias: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         query_len = q.size(-2)
         key_len = k.size(-2)
@@ -281,10 +299,11 @@ class SelfAttention(nn.Module):
             q, k, _ = self._apply_learned_pos(q, k, query_len, key_len)
             return q, k, None
         if position_mode == "relative":
-            q, k, bias = self._apply_relative_pos(
+            if not materialize_bias:
+                return q, k, None
+            return self._apply_relative_pos(
                 q, k, query_len, key_len, q.device, q.dtype
             )
-            return q, k, bias
         if position_mode == "none":
             return q, k, None
         if position_mode == "seasonal":
@@ -299,12 +318,61 @@ class SelfAttention(nn.Module):
             k = k + scale * pos_k
             bias = self._build_relative_bias(
                 position_mode, query_len, key_len, q.device, q.dtype
-            )
+            ) if materialize_bias else None
             return q, k, bias
         bias = self._build_relative_bias(
             position_mode, query_len, key_len, q.device, q.dtype
-        )
+        ) if materialize_bias else None
         return q, k, bias
+
+    def _linear_lag_weights(
+        self, position_mode: str, length: int, dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Positive per-head lag weights for Toeplitz position biases."""
+        lags = torch.arange(1 - length, length, device=device)
+        if position_mode == "relative":
+            bias = self.relative_pos_bias[length - 1 - lags].transpose(0, 1)
+            bias = bias.to(dtype=dtype)
+        elif position_mode == "alibi":
+            slopes = self.alibi_slopes.to(device=device, dtype=dtype)
+            bias = -slopes[:, None] * lags.abs().to(dtype)[None, :]
+        elif position_mode == "seasonal":
+            periods = torch.tensor(
+                [4.0, 8.0, 16.0, 24.0, 48.0], device=device, dtype=dtype
+            )
+            wave = torch.cos(
+                2.0 * torch.pi * lags.to(dtype)[None, :] / periods[:, None]
+            ).mean(dim=0)
+            slopes = self.alibi_slopes.to(device=device, dtype=dtype)
+            bias = 0.1 * slopes[:, None] * wave[None, :]
+        else:
+            raise ValueError(f"No lag bias for position mode {position_mode!r}")
+        if self.causal:
+            valid = lags[None, :] >= 0
+            maximum = bias.masked_fill(~valid, float("-inf")).amax(
+                dim=-1, keepdim=True
+            )
+            weights = (bias - maximum).exp().masked_fill(~valid, 0.0)
+        else:
+            weights = (bias - bias.amax(dim=-1, keepdim=True)).exp()
+        return weights
+
+    @staticmethod
+    def _lag_convolution(signal: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+        """Sum a Toeplitz lag kernel over time with FFT convolution."""
+        length = signal.size(2)
+        fft_size = 1 << (3 * length - 3).bit_length()
+        signal_fft = torch.fft.rfft(signal, n=fft_size, dim=2)
+        weight_fft = torch.fft.rfft(weights, n=fft_size, dim=1)
+        weight_fft = weight_fft.reshape(
+            1, weights.size(0), weight_fft.size(1),
+            *([1] * (signal.dim() - 3)),
+        )
+        result = torch.fft.irfft(
+            signal_fft * weight_fft, n=fft_size, dim=2
+        )
+        return result[:, :, length - 1 : 2 * length - 1]
 
     def _sdp_kernel(
         self,
@@ -346,29 +414,58 @@ class SelfAttention(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
+        position_bias: torch.Tensor | None,
         T: int,
+        position_mode: str | None = None,
     ) -> torch.Tensor:
         dropout_p = self.dropout_p if self.training else 0.0
-        if self.causal:
-            # Causal linear (ELU+1 Performer) requires a recurrent cumsum
-            # formulation for correctness; fall back to FlashAttention-backed
-            # SDP which is still efficient and numerically exact.
-            return F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=None,
-                dropout_p=dropout_p,
-                is_causal=True,
-                scale=self.scale,
+        accum_dtype = (
+            torch.float32
+            if q.dtype in (torch.float16, torch.bfloat16)
+            else q.dtype
+        )
+        q_feat = F.elu(q.to(accum_dtype) * self.scale) + 1.0
+        k_feat = F.elu(k.to(accum_dtype)) + 1.0
+        values = v.to(accum_dtype)
+        if position_mode in {"alibi", "seasonal", "relative"}:
+            lag_weights = self._linear_lag_weights(
+                position_mode, T, accum_dtype, q.device
             )
-        q_feat = F.elu(q * self.scale) + 1.0
-        k_feat = F.elu(k) + 1.0
-        kv = torch.einsum("bhtd,bhtv->bhdv", k_feat, v)
-        k_sum = k_feat.sum(dim=2)
-        denom = torch.einsum("bhtd,bhd->bht", q_feat, k_sum).clamp_min(1e-6)
-        out_linear = torch.einsum("bhtd,bhdv->bhtv", q_feat, kv)
-        return out_linear / denom.unsqueeze(-1)
+            key_sum = self._lag_convolution(k_feat, lag_weights)
+            kv_sum = self._lag_convolution(
+                k_feat.unsqueeze(-1) * values.unsqueeze(-2), lag_weights
+            )
+            denom = (q_feat * key_sum).sum(dim=-1).clamp_min(1e-6)
+            output = (q_feat.unsqueeze(-1) * kv_sum).sum(dim=-2)
+            output = (output / denom.unsqueeze(-1)).to(v.dtype)
+            return F.dropout(output, p=dropout_p) if dropout_p else output
+        if position_bias is not None:
+            # Public kernel callers can still supply an arbitrary pairwise
+            # bias, which has no lag representation and requires pairwise work.
+            scores = torch.matmul(q_feat, k_feat.transpose(-2, -1))
+            logits = scores.clamp_min(1e-12).log() + position_bias.to(accum_dtype)
+            if self.causal:
+                logits = logits.masked_fill(
+                    _causal_mask(T, q.device).reshape(1, 1, T, T),
+                    float("-inf"),
+                )
+            weights = F.softmax(logits, dim=-1)
+            if dropout_p:
+                weights = F.dropout(weights, p=dropout_p)
+            return torch.matmul(weights, values).to(v.dtype)
+        if self.causal:
+            key_prefix = k_feat.cumsum(dim=2)
+            kv_prefix = (k_feat.unsqueeze(-1) * values.unsqueeze(-2)).cumsum(dim=2)
+            denom = (q_feat * key_prefix).sum(dim=-1).clamp_min(1e-6)
+            out_linear = (q_feat.unsqueeze(-1) * kv_prefix).sum(dim=-2)
+        else:
+            kv = torch.einsum("bhtd,bhtv->bhdv", k_feat, values)
+            key_sum = k_feat.sum(dim=2)
+            denom = torch.einsum("bhtd,bhd->bht", q_feat, key_sum).clamp_min(1e-6)
+            out_linear = torch.einsum("bhtd,bhdv->bhtv", q_feat, kv)
+        output = out_linear / denom.unsqueeze(-1)
+        output = output.to(v.dtype)
+        return F.dropout(output, p=dropout_p) if dropout_p else output
 
     def _cosine_kernel(
         self,
@@ -437,11 +534,15 @@ class SelfAttention(nn.Module):
         T: int,
     ) -> torch.Tensor:
         dropout_p = self.dropout_p if self.training else 0.0
+        if self.causal:
+            return self._causal_probsparse_kernel(q, k, v, position_bias, T)
         c = self.PROBSPARSE_C
         n_top = min(T, max(1, int(c * math.log(T + 1))))
         n_sample = min(T, max(1, int(c * math.log(T + 1))))
         # Deterministic sampling: reduces variance in alpha gradients.
-        cpu_idx = torch.randperm(T, generator=self._probsparse_gen)[:n_sample]
+        cpu_idx = torch.randperm(
+            T, generator=torch.Generator().manual_seed(0xC0FFEE)
+        )[:n_sample]
         sample_idx = cpu_idx.to(q.device)
         k_sample = k[:, :, sample_idx, :]
         q_scores = torch.matmul(q, k_sample.transpose(-2, -1)) * self.scale
@@ -470,6 +571,80 @@ class SelfAttention(nn.Module):
         out_sparse.scatter_(2, idx_exp, out_top)
         return out_sparse
 
+    def _causal_probsparse_kernel(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        position_bias: torch.Tensor | None,
+        T: int,
+    ) -> torch.Tensor:
+        """Sparse exact queries over causal prefixes; lazy queries use prefix means.
+
+        Each query samples only earlier keys and is selected using only earlier
+        query sparsity scores. This makes outputs invariant to future tokens.
+        """
+        c = self.PROBSPARSE_C
+        query_pos = torch.arange(T, device=q.device, dtype=torch.long)
+        max_sample = min(T, max(1, int(c * math.log(T + 1))))
+        sample_slots = torch.arange(max_sample, device=q.device, dtype=torch.long)
+        sample_counts = torch.minimum(
+            query_pos + 1,
+            (c * torch.log(query_pos.to(torch.float64) + 2)).long().clamp_min(1),
+        )
+        valid_sample = sample_slots.unsqueeze(0) < sample_counts.unsqueeze(1)
+        # A stable per-(query, slot) hash keeps earlier samples unchanged when
+        # the sequence is extended. Repeated samples are permitted.
+        sample_idx = (
+            (query_pos.unsqueeze(1) * 1013904223
+             + sample_slots.unsqueeze(0) * 2654435761) % (2**31)
+        ) % (query_pos.unsqueeze(1) + 1)
+        sampled_keys = k[:, :, sample_idx, :]
+        sampled_scores = (q.unsqueeze(-2) * sampled_keys).sum(dim=-1) * self.scale
+        largest = sampled_scores.masked_fill(
+            ~valid_sample.reshape(1, 1, T, max_sample), float("-inf")
+        ).amax(dim=-1)
+        sample_mean = (
+            sampled_scores
+            * valid_sample.reshape(1, 1, T, max_sample)
+        ).sum(dim=-1) / sample_counts.clamp_min(1)
+        sparsity = largest - sample_mean
+
+        # Online top-u: a query is exact if it enters the top-u at its own
+        # position. Global top-k would let future queries change past outputs.
+        leaders = sparsity.new_empty((*sparsity.shape[:2], 0))
+        selected = []
+        for t in range(T):
+            candidates = torch.cat((leaders, sparsity[:, :, t : t + 1]), dim=-1)
+            budget = min(t + 1, max(1, int(c * math.log(t + 2))))
+            leaders, indices = candidates.topk(budget, dim=-1)
+            selected.append((indices == candidates.size(-1) - 1).any(dim=-1))
+        active = torch.stack(selected, dim=-1)
+
+        prefix_mean = v.cumsum(dim=2) / (
+            query_pos + 1
+        ).to(v.dtype).reshape(1, 1, T, 1)
+        output = prefix_mean.clone()
+        key_pos = query_pos.unsqueeze(0)
+        for batch in range(q.size(0)):
+            for head in range(q.size(1)):
+                chosen = active[batch, head].nonzero(as_tuple=True)[0]
+                if chosen.numel() == 0:
+                    continue
+                scores = q[batch, head, chosen] @ k[batch, head].transpose(0, 1)
+                scores = scores * self.scale
+                if position_bias is not None:
+                    scores = scores + position_bias[0, head, chosen]
+                scores = scores.masked_fill(
+                    key_pos > chosen.unsqueeze(1), float("-inf")
+                )
+                weights = F.softmax(scores, dim=-1)
+                if self.training and self.dropout_p:
+                    weights = F.dropout(weights, p=self.dropout_p)
+                exact = weights @ v[batch, head]
+                output[batch, head].index_copy_(0, chosen, exact)
+        return output
+
     def _apply_kernel(
         self,
         mode: str,
@@ -480,16 +655,21 @@ class SelfAttention(nn.Module):
         B: int,
         H: int,
         T: int,
+        position_mode: str | None = None,
     ) -> torch.Tensor:
         if mode == "sdp":
             return self._sdp_kernel(q, k, v, position_bias, T)
         if mode == "linear":
-            return self._linear_kernel(q, k, v, T)
+            return self._linear_kernel(
+                q, k, v, position_bias, T, position_mode=position_mode
+            )
         if mode == "cosine":
             return self._cosine_kernel(q, k, v, position_bias, T)
         if mode == "local":
             return self._local_kernel(q, k, v, position_bias, T)
-        return self._probsparse_kernel(q, k, v, position_bias, B, H, T)
+        if mode == "probsparse":
+            return self._probsparse_kernel(q, k, v, position_bias, B, H, T)
+        raise ValueError(f"Unsupported attention mode: {mode!r}")
 
     def _attn_mix_weights(self, tau: float | None = None) -> torch.Tensor:
         """Soft weights over MODES; honours ``variant_gdas``.
@@ -523,27 +703,44 @@ class SelfAttention(nn.Module):
         pos_weights = self._position_mix_weights()
         pos_idx = int(torch.argmax(pos_weights.detach()).item())
         position_mode = self.POSITION_MODES[pos_idx]
-        q, k, position_bias = self._apply_position_mode(q_raw, k_raw, position_mode)
         pos_scalar = pos_weights[pos_idx] if self.position_searchable else None
+        weights = self._attn_mix_weights() if self.searchable else None
+        single_path = self.searchable and self.variant_gdas and self.training
+        selected_idx = (
+            int(torch.argmax(weights.detach()).item())
+            if single_path and weights is not None else None
+        )
+        active_mode = (
+            self.MODES[selected_idx] if selected_idx is not None
+            else self.attention_type if not self.searchable else None
+        )
+        q, k, position_bias = self._apply_position_mode(
+            q_raw, k_raw, position_mode,
+            materialize_bias=active_mode != "linear",
+        )
 
         if self.searchable:
-            weights = self._attn_mix_weights()
-            if self.variant_gdas and self.training:
+            if single_path:
                 # Single path: only the argmax kernel runs (~5x speedup). STE
                 # gradient on alphas flows via the weights[idx] multiplier.
-                idx = int(torch.argmax(weights.detach()).item())
+                idx = selected_idx
                 out = weights[idx] * self._apply_kernel(
-                    self.MODES[idx], q, k, v, position_bias, B, H, T
+                    self.MODES[idx], q, k, v, position_bias, B, H, T,
+                    position_mode,
                 )
             else:
                 out = sum(
                     weights[i]
-                    * self._apply_kernel(self.MODES[i], q, k, v, position_bias, B, H, T)
+                    * self._apply_kernel(
+                        self.MODES[i], q, k, v, position_bias, B, H, T,
+                        position_mode,
+                    )
                     for i in range(len(self.MODES))
                 )
         else:
             out = self._apply_kernel(
-                self.attention_type, q, k, v, position_bias, B, H, T
+                self.attention_type, q, k, v, position_bias, B, H, T,
+                position_mode,
             )
 
         if pos_scalar is not None:
@@ -551,4 +748,3 @@ class SelfAttention(nn.Module):
 
         out = out.transpose(1, 2).reshape(B, T, D)
         return self.out_proj(out)
-

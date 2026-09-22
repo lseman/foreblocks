@@ -38,18 +38,26 @@ class CompatibilityHelper:
         enable_gqa=False,
     ):
         """Simplified SDPA fallback using matmul and masking"""
-        _ = enable_gqa
-        scale = scale or (query.size(-1) ** -0.5)
+        if enable_gqa:
+            if query.size(-3) % key.size(-3) != 0:
+                raise ValueError("Query heads must be divisible by key/value heads")
+            key = key.repeat_interleave(query.size(-3) // key.size(-3), dim=-3)
+            value = value.repeat_interleave(query.size(-3) // value.size(-3), dim=-3)
+        scale = query.size(-1) ** -0.5 if scale is None else scale
         attn = torch.matmul(query, key.transpose(-2, -1)) * scale
 
+        if is_causal:
+            causal = torch.ones(
+                (query.size(-2), key.size(-2)),
+                dtype=torch.bool,
+                device=query.device,
+            ).tril()
+            attn = attn.masked_fill(~causal, float("-inf"))
         if attn_mask is not None:
-            attn += attn_mask
-        elif is_causal:
-            L = query.size(-2)
-            causal_mask = torch.triu(
-                torch.full((L, L), float("-inf"), device=query.device), diagonal=1
-            )
-            attn = attn + causal_mask
+            if attn_mask.dtype == torch.bool:
+                attn = attn.masked_fill(~attn_mask, float("-inf"))
+            else:
+                attn = attn + attn_mask
 
         attn = F.softmax(attn, dim=-1)
         if dropout_p > 0.0:

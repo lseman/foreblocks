@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 def _dynamic_arch_update_freq(
     epoch: int, epochs: int, warmup_epochs: int, base_freq: int
 ) -> int:

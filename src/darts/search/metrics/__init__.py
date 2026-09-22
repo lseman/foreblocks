@@ -7,9 +7,15 @@ Implementation lives in :mod:`config`, :mod:`compatibility`,
 
 from .activation_diversity import compute_activation_diversity
 from .compatibility import CompatibilityHelper
-from .computer import MetricsComputer, _ZC_GPU_LOCK, _zc_trace
+from .computer import _ZC_GPU_LOCK as _ZC_GPU_LOCK, MetricsComputer
 from .conditioning import compute_conditioning
-from .config import Config, Result, _default_enable_flops, _get_presets, _torch_version_tuple
+from .config import (
+    Config,
+    Result,
+    _default_enable_flops as _default_enable_flops,
+    _get_presets as _get_presets,
+    _torch_version_tuple as _torch_version_tuple,
+)
 from .fisher import compute_fisher
 from .flops import compute_activation_flops
 from .grasp import compute_grasp
@@ -20,7 +26,6 @@ from .sensitivity import compute_sensitivity
 from .snip import compute_snip
 from .synflow import compute_synflow
 from .zero_cost_nas import ZeroCostNAS
-
 
 __all__ = [
     "CompatibilityHelper",

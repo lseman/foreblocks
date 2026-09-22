@@ -1,18 +1,22 @@
-"""Searchable mixed blocks and fixed deployment wrappers."""
+"""Differentiable (search-time) transformer encoder/decoder blocks.
+
+:class:`MixedEncoder` and :class:`MixedDecoder` wrap a searchable
+transformer with per-axis architecture alphas (self-/cross-attention type,
+FFN variant, patching, decoder style, ...) for bilevel DARTS training.
+"""
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ...utils.tensors import hard_one_hot
 from ..blocks.bridges import LearnedPoolingBridge
 from ..blocks.sequence import (
     ArchitectureNormalizer,
-    BaseFixedSequenceBlock,
     SearchableDecomposition,
     SequenceStateAdapter,
 )
@@ -20,15 +24,10 @@ from ..blocks.transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
 )
-from ...utils.tensors import hard_one_hot
-
 
 __all__ = [
     "MixedEncoder",
     "MixedDecoder",
-    "ArchitectureConverter",
-    "FixedEncoder",
-    "FixedDecoder",
 ]
 
 
@@ -234,7 +233,7 @@ class MixedDecoder(nn.Module):
             self.memory_query_options = [4, 8, 16]
         if self.default_memory_num_queries not in self.memory_query_options:
             self.memory_query_options = sorted(
-                set(self.memory_query_options + [self.default_memory_num_queries])
+                {*self.memory_query_options, self.default_memory_num_queries}
             )
         self.default_memory_query_idx = self.memory_query_options.index(
             self.default_memory_num_queries

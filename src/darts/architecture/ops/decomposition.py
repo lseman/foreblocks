@@ -4,7 +4,6 @@ import torch.nn.functional as F
 
 from ..common.norms import RMSNorm
 
-
 try:
     from foreblocks.kernels.normalization import (
         TRITON_AVAILABLE,

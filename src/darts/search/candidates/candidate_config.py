@@ -131,7 +131,7 @@ def _select_family_operations(
         selected_non_identity = [rng.choice(ops_no_id)]
 
     selected_ops = (
-        ["Identity"] + selected_non_identity
+        ["Identity", *selected_non_identity]
         if require_identity
         else selected_non_identity
     )

@@ -1,34 +1,15 @@
-"""Searchable mixed blocks and fixed deployment wrappers."""
+"""Layer-component helpers shared by mixed/fixed encoder-decoder wrappers.
+
+Collects a named sub-layer (e.g. ``"attention"``, ``"ffn"``) across a
+model's stack of blocks, and averages per-component discrete-mode
+probabilities across layers for logging/inspection.
+"""
 
 from __future__ import annotations
-
-import copy
-from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from ..blocks.bridges import LearnedPoolingBridge
-from ..blocks.sequence import (
-    ArchitectureNormalizer,
-    BaseFixedSequenceBlock,
-    SearchableDecomposition,
-    SequenceStateAdapter,
-)
-from ..blocks.transformers import (
-    LightweightTransformerDecoder,
-    LightweightTransformerEncoder,
-)
-
-
-__all__ = [
-    "MixedEncoder",
-    "MixedDecoder",
-    "ArchitectureConverter",
-    "FixedEncoder",
-    "FixedDecoder",
-]
 
 
 def _layer_component(layer, key: str):

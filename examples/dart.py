@@ -19,11 +19,11 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from foreblocks.darts import DARTSTrainer
-from darts.architecture.search.time_series_darts import TimeSeriesDARTS
+from darts import DARTSTrainer
+from darts.architecture.darts.time_series_darts import TimeSeriesDARTS
 
 # %%
-from foreblocks.darts.transformer_diagram import draw_selected_transformer_architecture
+from darts.visualization import draw_selected_transformer_architecture
 
 
 warnings.filterwarnings("ignore")

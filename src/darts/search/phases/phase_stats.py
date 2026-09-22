@@ -1,32 +1,23 @@
 """
-Multi-fidelity architecture search pipeline.
+Run-stats payload construction and persistence for the multi-fidelity search
+pipeline (:mod:`darts.search.phases.multi_fidelity`).
 
-Phases:
-1. Parallel zero-cost evaluation of ``num_candidates`` random architectures.
-2. Select top-*k* candidates by aggregate score.
-3. Short DARTS training + architecture derivation for each top candidate.
-4. Select the best derived model by validation loss.
-5. Full final training of the best model.
-
-Public entry-point: :func:`run_multi_fidelity_search`.
+Builds the per-run system info, phase-3 candidate/CSV rows, and the combined
+stats.json payload, then writes them (plus the what-if parallelism and
+phase-1 benchmark CSVs) to disk.
 """
 
 from __future__ import annotations
 
-import concurrent.futures
-import copy
 import datetime
-import logging
 import os
-import time
-from typing import Any
 
 import torch
 
-from ...utils.training import reset_model_parameters
-from ..candidates.candidate_scoring import rescore_candidates_poolwise
-from .stats_reporting import append_whatif_estimates, mean_std, save_csv, save_json
-
+from ..reporting.stats_reporting import (
+    save_csv,
+    save_json,
+)
 
 # ---------------------------------------------------------------------------
 # Public entry-point
@@ -43,15 +34,8 @@ def _p3_csv_rows(run_id, cid, cand, t_total, t_search, t_derive, val_loss):
         cand.get("hidden_dim"),
         len(cand.get("selected_ops", [])),
     ]
-    p1_row = base + [cand.get("phase1_dt", 0.0), "", "", "", ""]
-    p3_row = [
-        run_id,
-        "phase3",
-        cid,
-        cand.get("score", 0.0),
-        cand.get("hidden_dim"),
-        len(cand.get("selected_ops", [])),
-    ] + ["", t_total, t_search, t_derive, float(val_loss)]
+    p1_row = [*base, cand.get("phase1_dt", 0.0), "", "", "", ""]
+    p3_row = [run_id, "phase3", cid, cand.get("score", 0.0), cand.get("hidden_dim"), len(cand.get("selected_ops", [])), "", t_total, t_search, t_derive, float(val_loss)]
     p1_row[1] = "phase1"
     return [p1_row, p3_row]
 
@@ -154,10 +138,4 @@ def _persist_stats(
             rows=bench_rows,
         )
     logger.info(f"Stats saved to: {out_base}")
-
-
-# ---------------------------------------------------------------------------
-# Bilevel LR Sensitivity Sweep
-# ---------------------------------------------------------------------------
-
 

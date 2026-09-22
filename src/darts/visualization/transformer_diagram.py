@@ -16,7 +16,7 @@ Main stylistic goals
 
 Quick start
 -----------
-from transformer_diagram import (
+from darts.visualization import (
     make_encoder_layers,
     make_decoder_layers,
     draw_single_block,
@@ -55,7 +55,6 @@ from matplotlib.patches import Circle, FancyBboxPatch, PathPatch
 from matplotlib.path import Path
 
 from darts.config import DEFAULT_OP_FAMILIES
-
 
 # -----------------------------------------------------------------------------
 # Global styling
@@ -748,7 +747,7 @@ class TransformerBlock:
     INNER_TOP_PAD = 0.26
     INNER_BOTTOM_PAD = 0.22
 
-    OUTSIDE_STACK_TYPES = {"embedding", "tokenizer", "query_input", "memory", "output"}
+    OUTSIDE_STACK_TYPES = frozenset({"embedding", "tokenizer", "query_input", "memory", "output"})
 
     def __init__(
         self,
@@ -809,11 +808,7 @@ class TransformerBlock:
     def _is_outside_stack(self, idx: int) -> bool:
         spec = self.layers[idx]
         t = spec.get("type", "").lower()
-        if t in self.OUTSIDE_STACK_TYPES:
-            return True
-        if self._is_final_norm(idx):
-            return True
-        return False
+        return t in self.OUTSIDE_STACK_TYPES or self._is_final_norm(idx)
 
     def _repeat_core_indices(self) -> list[int]:
         return [i for i in range(len(self.layers)) if not self._is_outside_stack(i)]
@@ -1945,7 +1940,7 @@ def _draw_selected_operation_node_panel(
     single_cell: bool,
 ) -> bool:
     selected_edges = sorted(
-        list(cell_spec.get("selected_edges", [])),
+        cell_spec.get("selected_edges", []),
         key=lambda edge_spec: int(edge_spec.get("edge_idx", 0)),
     )
     if not selected_edges:

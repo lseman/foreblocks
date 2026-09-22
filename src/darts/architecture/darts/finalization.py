@@ -6,21 +6,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .converter import ArchitectureConverter
+from ...utils.tensors import as_probability_vector as _default_as_probability_vector
 from ..blocks.transformers import (
     LightweightTransformerDecoder,
     LightweightTransformerEncoder,
 )
-from .genotype import CellGenotype, EdgeGenotype, Genotype, TransformerGenotype
 from ..common.inspector import _mean_softmax_top, _softmax_top
 from ..ops.fixed import FixedOp
-from ...utils.tensors import as_probability_vector as _default_as_probability_vector
+from .converter import ArchitectureConverter
+from .genotype import CellGenotype, EdgeGenotype, Genotype, TransformerGenotype
 
 
 def derive_final_architecture(
     model: nn.Module,
-    as_probability_vector_fn: None
-    | (Callable[[torch.Tensor, float], torch.Tensor]) = None,
+    as_probability_vector_fn: Callable[[torch.Tensor, float], torch.Tensor]
+    | None = None,
     *,
     return_genotype: bool = False,
 ) -> nn.Module | tuple[nn.Module, Genotype]:
@@ -524,7 +524,7 @@ def derive_final_architecture(
                     hard_logits[top_idx] = 12.0
                     new_model.norm_alpha.copy_(hard_logits)
                 new_model.norm_alpha.requires_grad_(False)
-                setattr(new_model, "selected_norm", norm_name)
+                new_model.selected_norm = norm_name
 
             # Print decomposition status near normalization for clearer architecture trace.
             if hasattr(new_model, "forecast_encoder"):
@@ -540,8 +540,8 @@ def derive_final_architecture(
             edge_importance = None
             if (
                 hasattr(cell, "edge_importance")
-                and getattr(cell, "edge_importance") is not None
-                and len(getattr(cell, "edge_importance")) == len(cell.edges)
+                and cell.edge_importance is not None
+                and len(cell.edge_importance) == len(cell.edges)
             ):
                 with torch.no_grad():
                     edge_importance = (

@@ -29,9 +29,9 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from .converter import ArchitectureConverter
 from ..ops.fixed import FixedOp
 from ..ops.registry import build_op
+from .converter import ArchitectureConverter
 
 __all__ = ["EdgeGenotype", "CellGenotype", "TransformerGenotype", "Genotype", "build_model_from_genotype"]
 
@@ -89,7 +89,7 @@ class Genotype:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Genotype":
+    def from_dict(cls, data: dict[str, Any]) -> Genotype:
         data = dict(data)
         cells = [
             CellGenotype(
@@ -120,7 +120,7 @@ class Genotype:
         return json.dumps(self.to_dict(), indent=2)
 
     @classmethod
-    def from_json(cls, text: str) -> "Genotype":
+    def from_json(cls, text: str) -> Genotype:
         return cls.from_dict(json.loads(text))
 
 

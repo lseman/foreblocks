@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 try:
     from foreblocks.kernels.normalization import (
         TRITON_AVAILABLE,

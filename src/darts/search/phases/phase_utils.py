@@ -1,32 +1,17 @@
-"""
-Multi-fidelity architecture search pipeline.
+"""Shared helpers for the multi-fidelity search pipeline.
 
-Phases:
-1. Parallel zero-cost evaluation of ``num_candidates`` random architectures.
-2. Select top-*k* candidates by aggregate score.
-3. Short DARTS training + architecture derivation for each top candidate.
-4. Select the best derived model by validation loss.
-5. Full final training of the best model.
-
-Public entry-point: :func:`run_multi_fidelity_search`.
+ASHA-style rung-epoch budget resolution and the phase-1 (zero-cost) timing
+benchmark used by :mod:`darts.search.phases.multi_fidelity`.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
-import copy
-import datetime
-import logging
-import os
 import time
-from typing import Any
 
-import torch
-
-from ...utils.training import reset_model_parameters
-from ..candidates.candidate_scoring import rescore_candidates_poolwise
-from ..reporting.stats_reporting import append_whatif_estimates, mean_std, save_csv, save_json
-
+from ..reporting.stats_reporting import (
+    mean_std,
+)
 
 # ---------------------------------------------------------------------------
 # Public entry-point

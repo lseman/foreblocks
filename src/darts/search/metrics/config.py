@@ -14,8 +14,8 @@ def _torch_version_tuple(version: str | None = None) -> tuple[int, int]:
 
 
 def _default_enable_flops() -> bool:
-    """Disable FLOP proxy scoring on older PyTorch tracer stacks."""
-    return _torch_version_tuple() >= (2, 12)
+    """The hook-based FLOP estimate works independently of tracer versions."""
+    return True
 
 
 @dataclass

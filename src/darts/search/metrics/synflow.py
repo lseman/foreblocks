@@ -5,12 +5,14 @@ def compute_synflow(computer, model, inputs):
     """SynFlow score: sum(|p * grad|) after weight linearization."""
 
     def _compute():
-        was_training = model.training
+        module_modes = [(module, module.training) for module in model.modules()]
         params = [p for p in model.parameters() if p.requires_grad]
         original_data = [p.detach().clone() for p in params]
+        buffers = [b for b in model.buffers()]
+        original_buffers = [b.detach().clone() for b in buffers]
 
         try:
-            model.train()
+            model.eval()
             with torch.no_grad():
                 for p in params:
                     p.abs_()
@@ -44,8 +46,10 @@ def compute_synflow(computer, model, inputs):
             with torch.no_grad():
                 for p, p0 in zip(params, original_data):
                     p.copy_(p0)
+                for buffer, original in zip(buffers, original_buffers):
+                    buffer.copy_(original)
             model.zero_grad()
-            if not was_training:
-                model.eval()
+            for module, training in module_modes:
+                module.training = training
 
     return computer._compute_safely(_compute)

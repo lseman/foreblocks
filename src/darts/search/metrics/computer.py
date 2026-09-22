@@ -8,15 +8,13 @@ from typing import Any, cast
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
 
 from .activation_diversity import compute_activation_diversity
 from .compatibility import CompatibilityHelper
 from .conditioning import compute_conditioning
 from .config import Config, Result
 from .fisher import compute_fisher
-from .flops import compute_activation_flops
+from .flops import compute_activation_flops, module_flops
 from .grasp import compute_grasp
 from .jacobian import compute_jacobian
 from .naswot import compute_naswot
@@ -24,7 +22,6 @@ from .params import compute_params
 from .sensitivity import compute_sensitivity
 from .snip import compute_snip
 from .synflow import compute_synflow
-
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -77,10 +74,10 @@ class MetricsComputer:
             or "scaled_dot_product" in msg
             or "flash_attention" in msg
             or "efficient_attention" in msg
-            or "sdp" in msg
-            and "derivative" in msg
-            or "derivative for" in msg
-            and "not implemented" in msg
+            or ("sdp" in msg
+            and "derivative" in msg)
+            or ("derivative for" in msg
+            and "not implemented" in msg)
         )
 
     @staticmethod
@@ -221,25 +218,8 @@ class MetricsComputer:
                 activations[name] = act.detach()
 
                 # FLOPS counting inline
-                input_shape = inp[0].shape
-                output_shape = out.shape if not isinstance(out, tuple) else out[0].shape
-
-                if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-                    kernel_ops = (
-                        np.prod(module.kernel_size)
-                        * module.in_channels
-                        // module.groups
-                    )
-                    output_elements = np.prod(output_shape)
-                    flops = output_elements * kernel_ops * 2
-                elif isinstance(module, nn.Linear):
-                    flops = (
-                        input_shape[0] * module.in_features * module.out_features * 2
-                    )
-                else:
-                    flops = 0
-
-                flops_count[name] = flops
+                output = out[0] if isinstance(out, tuple) else out
+                flops_count[name] = flops_count.get(name, 0) + module_flops(module, output)
 
             return hook
 
@@ -285,7 +265,8 @@ class MetricsComputer:
             with _zc_trace("activation_metrics"):
                 results.update(
                     self._compute_activation_metrics(
-                        activations, conv_linear_modules, relu_modules, flops_count
+                        activations, conv_linear_modules, relu_modules, flops_count,
+                        batch_size=inputs.size(0),
                     )
                 )
 
@@ -365,12 +346,15 @@ class MetricsComputer:
         return results
 
     def _compute_activation_metrics(
-        self, activations, conv_linear_modules, relu_modules, flops_count
+        self, activations, conv_linear_modules, relu_modules, flops_count,
+        batch_size=None,
     ):
         """Compute metrics that only need stored activations."""
         results = {}
         naswot_modules = relu_modules if relu_modules else conv_linear_modules
-        results["naswot"] = compute_naswot(self, activations, naswot_modules)
+        results["naswot"] = compute_naswot(
+            self, activations, naswot_modules, batch_size=batch_size
+        )
         results["activation_diversity"] = compute_activation_diversity(
             self, activations, relu_modules
         )
@@ -595,4 +579,3 @@ class MetricsComputer:
             shared_outputs=shared_outputs,
             shared_inputs=shared_inputs,
         )
-

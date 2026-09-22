@@ -4,7 +4,7 @@ import torch
 def compute_fisher(computer, model, x, y, loss_fn, weights, grads_first_order):
     """Fisher score from squared parameter gradients."""
     if not bool(getattr(computer.config, "fisher_per_sample", True)):
-        # Mean over parameter tensors of ||grad||^2; accumulate on-device.
+        # Squared norm of the batch gradient; accumulate on-device.
         per_tensor = [
             g.pow(2).sum()
             for g in grads_first_order
@@ -12,11 +12,11 @@ def compute_fisher(computer, model, x, y, loss_fn, weights, grads_first_order):
         ]
         if not per_tensor:
             return 0.0
-        return float(torch.stack(per_tensor).mean().item())
+        return float(torch.stack(per_tensor).sum().item())
 
     # True Fisher needs per-sample gradients, which a single batched backward
     # cannot recover (it sums grads across the batch). We keep the per-sample
-    # loop but accumulate each sample's mean ||grad||^2 on-device, syncing only
+    # loop but accumulate each sample's ||grad||^2 on-device, syncing only
     # once at the end instead of once per (sample, parameter) pair.
     x_f = x.detach()
     y_f = y.detach()
@@ -45,7 +45,7 @@ def compute_fisher(computer, model, x, y, loss_fn, weights, grads_first_order):
         stacked = torch.stack(sq)
         stacked = stacked[torch.isfinite(stacked)]
         if stacked.numel() > 0:
-            per_sample.append(stacked.mean())
+            per_sample.append(stacked.sum())
 
     if not per_sample:
         return 0.0

@@ -11,7 +11,6 @@ import copy
 import math
 import re
 import warnings
-from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -22,11 +21,10 @@ from foreblocks.nn.normalization import RevIN
 
 from ...utils.tensors import hard_one_hot
 from ..blocks.moe import DARTSFeedForward
+from ..common.norms import RMSNorm
 from .darts_cell import DARTSCell
 from .mixed_encoder_decoder import MixedDecoder, MixedEncoder
 from .mixed_op import MixedOp
-from ..common.norms import RMSNorm
-
 
 __all__ = ["TimeSeriesDARTS"]
 
@@ -958,12 +956,13 @@ class TimeSeriesDARTS(nn.Module):
         style_weights = self._build_decoder_style_weights(self.forecast_decoder)
         if style_weights is None or style_weights.numel() < 2:
             return self._decode_autoregressive_path(
-                x_seq,
-                decoder_targets,
-                teacher_forcing_ratio,
-                memory,
-                encoder_output,
-                decoder_hidden,
+                x_seq=x_seq,
+                x_future=x_future,
+                decoder_targets=decoder_targets,
+                teacher_forcing_ratio=teacher_forcing_ratio,
+                memory=memory,
+                encoder_output=encoder_output,
+                decoder_hidden=decoder_hidden,
             )
 
         # Resolve decoder style: select best path via argmax
@@ -975,7 +974,7 @@ class TimeSeriesDARTS(nn.Module):
         ]
         # Clamp to available methods
         idx = min(idx, len(decode_methods) - 1)
-        return decode_methods[idx](
+        decoded = decode_methods[idx](
             x_seq,
             x_future,
             decoder_targets,
@@ -984,6 +983,10 @@ class TimeSeriesDARTS(nn.Module):
             encoder_output,
             decoder_hidden,
         )
+        # Keep the selected path connected to its architecture logit. With
+        # hard Gumbel weights this is the straight-through DARTS gradient.
+        gate = 1.0 + style_weights[idx] - style_weights[idx].detach()
+        return gate * decoded
 
     # Analysis methods
     def get_all_alphas(self) -> dict[str, torch.Tensor]:
@@ -1014,9 +1017,7 @@ class TimeSeriesDARTS(nn.Module):
                 return None
             first = layers[0]
             self_attn = None
-            if isinstance(first, dict):
-                self_attn = first.get("self_attn")
-            elif hasattr(first, "get"):
+            if isinstance(first, dict) or hasattr(first, "get"):
                 self_attn = first.get("self_attn")
             elif hasattr(first, "__contains__") and "self_attn" in first:
                 self_attn = first["self_attn"]
@@ -1042,9 +1043,7 @@ class TimeSeriesDARTS(nn.Module):
                 return None
             first = layers[0]
             cross_attn = None
-            if isinstance(first, dict):
-                cross_attn = first.get("cross_attn")
-            elif hasattr(first, "get"):
+            if isinstance(first, dict) or hasattr(first, "get"):
                 cross_attn = first.get("cross_attn")
             elif hasattr(first, "__contains__") and "cross_attn" in first:
                 cross_attn = first["cross_attn"]
@@ -1070,9 +1069,7 @@ class TimeSeriesDARTS(nn.Module):
                 return None
             first = layers[0]
             attn = None
-            if isinstance(first, dict):
-                attn = first.get(key)
-            elif hasattr(first, "get"):
+            if isinstance(first, dict) or hasattr(first, "get"):
                 attn = first.get(key)
             elif hasattr(first, "__contains__") and key in first:
                 attn = first[key]
@@ -1096,9 +1093,7 @@ class TimeSeriesDARTS(nn.Module):
                 return None
             first = layers[0]
             ffn = None
-            if isinstance(first, dict):
-                ffn = first.get("ffn")
-            elif hasattr(first, "get"):
+            if isinstance(first, dict) or hasattr(first, "get"):
                 ffn = first.get("ffn")
             elif hasattr(first, "__contains__") and "ffn" in first:
                 ffn = first["ffn"]
@@ -1274,9 +1269,7 @@ class TimeSeriesDARTS(nn.Module):
                 if layers:
                     first = layers[0]
                     self_attn = None
-                    if isinstance(first, dict):
-                        self_attn = first.get("self_attn")
-                    elif hasattr(first, "get"):
+                    if isinstance(first, dict) or hasattr(first, "get"):
                         self_attn = first.get("self_attn")
                     elif hasattr(first, "__contains__") and "self_attn" in first:
                         self_attn = first["self_attn"]
@@ -1311,9 +1304,7 @@ class TimeSeriesDARTS(nn.Module):
                             for name, weight in zip(pos_modes, probs)
                         }
                     ffn = None
-                    if isinstance(first, dict):
-                        ffn = first.get("ffn")
-                    elif hasattr(first, "get"):
+                    if isinstance(first, dict) or hasattr(first, "get"):
                         ffn = first.get("ffn")
                     elif hasattr(first, "__contains__") and "ffn" in first:
                         ffn = first["ffn"]
@@ -1363,10 +1354,7 @@ class TimeSeriesDARTS(nn.Module):
                     first = layers[0]
                     self_attn = None
                     cross_attn = None
-                    if isinstance(first, dict):
-                        self_attn = first.get("self_attn")
-                        cross_attn = first.get("cross_attn")
-                    elif hasattr(first, "get"):
+                    if isinstance(first, dict) or hasattr(first, "get"):
                         self_attn = first.get("self_attn")
                         cross_attn = first.get("cross_attn")
                     elif hasattr(first, "__contains__") and "self_attn" in first:
@@ -1436,9 +1424,7 @@ class TimeSeriesDARTS(nn.Module):
                             for name, weight in zip(cross_pos_modes, probs)
                         }
                     ffn = None
-                    if isinstance(first, dict):
-                        ffn = first.get("ffn")
-                    elif hasattr(first, "get"):
+                    if isinstance(first, dict) or hasattr(first, "get"):
                         ffn = first.get("ffn")
                     elif hasattr(first, "__contains__") and "ffn" in first:
                         ffn = first["ffn"]

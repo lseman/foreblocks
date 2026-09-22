@@ -1,4 +1,4 @@
-"""Attention modules: SelfAttention, AttentionBridge, LearnedPoolingBridge."""
+"""Encoder-to-decoder context bridges: attention pooling vs. learned-query pooling."""
 
 from __future__ import annotations
 
@@ -9,19 +9,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .positional import RotaryPositionalEncoding
-from .primitives import RMSNorm
-from ..common.norms import RMSNorm
-from ..common.utils import (
-    _causal_mask,
+from ..common.attention_math import (
     _make_alibi_slopes,
     _seasonal_relative_bias,
     _sinusoidal_features,
 )
-
+from .positional import RotaryPositionalEncoding
+from .primitives import RMSNorm
 
 __all__ = [
-    "SelfAttention",
     "AttentionBridge",
     "LearnedPoolingBridge",
 ]

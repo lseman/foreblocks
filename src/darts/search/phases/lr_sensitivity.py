@@ -1,33 +1,13 @@
-"""
-Multi-fidelity architecture search pipeline.
+"""Bilevel learning-rate sensitivity sweep.
 
-Phases:
-1. Parallel zero-cost evaluation of ``num_candidates`` random architectures.
-2. Select top-*k* candidates by aggregate score.
-3. Short DARTS training + architecture derivation for each top candidate.
-4. Select the best derived model by validation loss.
-5. Full final training of the best model.
-
-Public entry-point: :func:`run_multi_fidelity_search`.
+Public entry-point: :func:`bilevel_lr_sensitivity`.
 """
 
 from __future__ import annotations
 
-import concurrent.futures
-import copy
-import datetime
-import logging
-import os
-import time
-from typing import Any
-
 import torch
 
 from ...config import DARTSTrainConfig
-from ...utils.training import reset_model_parameters
-from ..candidates.candidate_scoring import rescore_candidates_poolwise
-from ..reporting.stats_reporting import append_whatif_estimates, mean_std, save_csv, save_json
-
 
 # ---------------------------------------------------------------------------
 # Public entry-point

@@ -9,11 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
 
 import torch
 
-from .architecture.ops.registry import FAMILY_TO_OPS, DEFAULT_OP_NAMES
+from .architecture.ops.registry import DEFAULT_OP_NAMES, FAMILY_TO_OPS
 
 
 class DARTSVariant(str, Enum):
@@ -50,7 +49,7 @@ class DARTSVariant(str, Enum):
     AUTO = "auto"
 
     @classmethod
-    def resolve_auto(cls, n_samples: int = 0) -> "DARTSVariant":
+    def resolve_auto(cls, n_samples: int = 0) -> DARTSVariant:
         """Resolve AUTO to a concrete variant based on dataset size."""
         if n_samples < 10_000:
             return cls.R_DARTS

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import math
+
 import torch
 import torch.nn.functional as F
-
 
 __all__ = [
     "_make_alibi_slopes",

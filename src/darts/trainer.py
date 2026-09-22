@@ -8,7 +8,7 @@ Heavy logic is delegated to focused sub-modules:
 - :mod:`darts.training.final_trainer` — final-model training
 - :mod:`darts.search.zero_cost`      — zero-cost NAS metrics
 - :mod:`darts.search.phases.ablation` — weight-scheme ablation
-- :mod:`darts.search.phases.search`  — multi-fidelity pipeline
+- :mod:`darts.search.phases.multi_fidelity` — multi-fidelity pipeline
 - :mod:`darts.search.robust_pool`    — op-pool robustness
 - :mod:`darts.evaluation`            — metrics & plotting
 - :mod:`darts.utils`                 — loss, training utilities, I/O
@@ -22,10 +22,10 @@ import torch
 import torch.nn as nn
 from torch.amp import GradScaler
 
-from .architecture.search.time_series_darts import TimeSeriesDARTS
-from .architecture.search.finalization import (
+from .architecture.darts.finalization import (
     derive_final_architecture as derive_fixed_architecture,
 )
+from .architecture.darts.time_series_darts import TimeSeriesDARTS
 from .config import (
     DEFAULT_ARCH_MODES,
     DEFAULT_ATTENTION_VARIANTS,
@@ -41,10 +41,6 @@ from .search import (
     robust_pool as _rp_mod,
     zero_cost as _zc_mod,
 )
-from .search.phases import (
-    ablation as _abl_mod,
-    search as _mf_mod,
-)
 from .search.candidates.candidate_config import (
     make_candidate_config,
     normalize_op_families,
@@ -55,19 +51,22 @@ from .search.orchestrator import (
     run_parallel_candidate_collection,
     select_top_candidates,
 )
+from .search.phases import (
+    ablation as _abl_mod,
+    multi_fidelity as _mf_mod,
+)
 from .search.phases.lr_sensitivity import bilevel_lr_sensitivity
 from .training import final_trainer as _ft_mod, training_loop as _dl_mod
 from .training.optimizers import AlphaTracker
 from .training.regularization import (
     default_as_probability_vector as _as_probability_vector,
 )
-from .utils.training import (
+from .utils.training_helpers import (
     autocast_ctx,
     create_progress_bar,
     get_loss_function,
     unpack_forecasting_batch,
 )
-
 
 _DEFAULT_OPS = list(SEARCH_DEFAULT_OPS)
 
@@ -318,12 +317,16 @@ class DARTSTrainer:
 
     def _create_bilevel_loaders(self, train_loader, seed: int = 42):
         dataset = train_loader.dataset
+        if len(dataset) < 2:
+            raise ValueError("Bilevel search requires at least two training samples")
         train_size = int(0.7 * len(dataset))
+        train_size = min(max(train_size, 1), len(dataset) - 1)
         arch_size = len(dataset) - train_size
-        g = torch.Generator().manual_seed(int(seed))
-        train_ds, arch_ds = torch.utils.data.random_split(
-            dataset, [train_size, arch_size], generator=g
-        )
+        # Dataset order is chronological for forecasting. Random splitting lets
+        # later windows influence weight fitting while earlier windows guide
+        # architecture selection, which leaks future information.
+        train_ds = torch.utils.data.Subset(dataset, range(train_size))
+        arch_ds = torch.utils.data.Subset(dataset, range(train_size, train_size + arch_size))
         _pin = train_loader.pin_memory
         train_model_loader = torch.utils.data.DataLoader(
             train_ds,
@@ -467,7 +470,7 @@ class DARTSTrainer:
         """Create an optimised model with fixed operations based on search results.
 
         Pass ``return_genotype=True`` to also get back a serializable
-        :class:`~darts.architecture.search.genotype.Genotype` recording every
+        :class:`~darts.architecture.darts.genotype.Genotype` recording every
         discretization decision (see ``architecture/genotype.py``).
         """
         return derive_fixed_architecture(

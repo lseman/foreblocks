@@ -1,20 +1,18 @@
-"""Searchable mixed blocks and fixed deployment wrappers."""
+"""Fixed (post-search) transformer encoder/decoder wrappers.
+
+:class:`FixedEncoder` and :class:`FixedDecoder` wrap a transformer with a
+single, already-resolved discrete choice per searchable axis (no alphas),
+for deployment after :class:`~.converter.ArchitectureConverter` derives them
+from a searched :class:`MixedEncoder`/:class:`MixedDecoder`.
+"""
 
 from __future__ import annotations
 
-import copy
-from collections.abc import Sequence
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from ..blocks.bridges import LearnedPoolingBridge
 from ..blocks.sequence import (
-    ArchitectureNormalizer,
     BaseFixedSequenceBlock,
-    SearchableDecomposition,
-    SequenceStateAdapter,
 )
 from ..blocks.transformers import (
     LightweightTransformerDecoder,
@@ -23,18 +21,13 @@ from ..blocks.transformers import (
 from ..common.freeze import (
     _freeze_transformer_cross_attention,
     _freeze_transformer_cross_attention_position,
-    _freeze_transformer_decoder_style,
     _freeze_transformer_ffn_mode,
     _freeze_transformer_patch_mode,
     _freeze_transformer_self_attention,
     _freeze_transformer_self_attention_position,
 )
 
-
 __all__ = [
-    "MixedEncoder",
-    "MixedDecoder",
-    "ArchitectureConverter",
     "FixedEncoder",
     "FixedDecoder",
 ]
@@ -108,10 +101,11 @@ class FixedEncoder(BaseFixedSequenceBlock):
         self.normalizer = None
         self.context_proj = None
         self.searchable_decomp = None
+        self.decomposition_temperature = 1.0
 
     def forward(self, x: torch.Tensor) -> tuple:
         if self.searchable_decomp is not None:
-            x = self.searchable_decomp(x, temperature=0.01)
+            x = self.searchable_decomp(x, temperature=self.decomposition_temperature)
 
         if self.rnn_type == "transformer":
             output, context, state = self.rnn(
@@ -217,6 +211,7 @@ class FixedDecoder(BaseFixedSequenceBlock):
             _freeze_transformer_ffn_mode(self.rnn, self.ffn_mode)
         self.normalizer = None
         self.searchable_decomp = None
+        self.decomposition_temperature = 1.0
 
     def forward(
         self,
@@ -226,7 +221,9 @@ class FixedDecoder(BaseFixedSequenceBlock):
         encoder_output: torch.Tensor = None,
     ) -> tuple:
         if self.searchable_decomp is not None:
-            tgt = self.searchable_decomp(tgt, temperature=0.01)
+            tgt = self.searchable_decomp(
+                tgt, temperature=self.decomposition_temperature
+            )
 
         batch_size = tgt.size(0)
         num_layers = getattr(self.rnn, "num_layers", 1)

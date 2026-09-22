@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 
 from darts.architecture.blocks.sequence import BaseMixedSequenceBlock
-from darts.architecture.search.converter import ArchitectureConverter
-from darts.architecture.search.mixed_encoder_decoder import MixedEncoder
+from darts.architecture.darts.converter import ArchitectureConverter
+from darts.architecture.darts.mixed_encoder_decoder import MixedEncoder
 
 
 def test_arch_weights_eval_mode_uses_softmax():

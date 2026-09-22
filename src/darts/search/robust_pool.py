@@ -19,10 +19,9 @@ from typing import Any
 
 import numpy as np
 
-from .candidates.candidate_scoring import candidate_signature
+from .candidates.pool_scoring import candidate_signature
 from .candidates.scoring import score_from_metrics
 from .candidates.weight_schemes import build_weight_schemes
-
 
 # module-level alias kept for readability
 _sig_from_cfg = candidate_signature
@@ -116,7 +115,7 @@ def robust_initial_pool_over_op_pools(
             max(1, hi - (1 if require_identity else 0)),
         )
         picked = py_rng_pools.sample(ops_no_id, k=min(k, len(ops_no_id)))
-        return ["Identity"] + picked if require_identity else picked
+        return ["Identity", *picked] if require_identity else picked
 
     op_pools: list[list[str]] = []
     seen: set = set()
@@ -146,7 +145,7 @@ def robust_initial_pool_over_op_pools(
                 require_identity=require_identity,
             )
 
-        def _eval_one(candidate_id: int) -> dict[str, Any]:  # noqa: ARG001
+        def _eval_one(candidate_id: int) -> dict[str, Any]:
             cfg = _make_config()
             try:
                 model = trainer._build_candidate_model(cfg)

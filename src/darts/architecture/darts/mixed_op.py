@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import Any
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
@@ -17,16 +17,14 @@ import torch.nn.functional as F
 
 from darts.search.metrics import _default_enable_flops
 
-from ..common.norms import RMSNorm
 from ..ops.registry import FAMILY_TO_OPS, OP_REGISTRY
-
 
 __all__ = ["MixedOp"]
 
 class MixedOp(nn.Module):
     """Enhanced MixedOp using your existing operators with better search strategy"""
 
-    _efficiency_cache: dict[Any, dict[str, float]] = {}
+    _efficiency_cache: ClassVar[dict[Any, dict[str, float]]] = {}
     _flops_warning_emitted: bool = False
 
     def __init__(
@@ -196,7 +194,7 @@ class MixedOp(nn.Module):
                     for name, score in inverse_scores.items()
                 }
             else:
-                profiled_eff = {name: 1.0 for name in inverse_scores}
+                profiled_eff = dict.fromkeys(inverse_scores, 1.0)
 
             self.op_efficiency.update(profiled_eff)
             MixedOp._efficiency_cache[cache_key] = copy.deepcopy(profiled_eff)

@@ -5,13 +5,13 @@ Model persistence and summary utilities.
 from __future__ import annotations
 
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn as nn
 
 if TYPE_CHECKING:
-    from ..architecture.search.genotype import Genotype
+    from ..architecture.darts.genotype import Genotype
 
 
 logger = logging.getLogger("NASLogger")
@@ -79,16 +79,16 @@ def load_model_checkpoint(
     return ckpt
 
 
-def save_genotype(genotype: "Genotype", filepath: str) -> None:
+def save_genotype(genotype: Genotype, filepath: str) -> None:
     """Save a discretized architecture record to *filepath* as JSON."""
     with open(filepath, "w") as f:
         f.write(genotype.to_json())
     print(f"Genotype saved to {filepath}")
 
 
-def load_genotype(filepath: str) -> "Genotype":
+def load_genotype(filepath: str) -> Genotype:
     """Load a :class:`Genotype` saved with :func:`save_genotype`."""
-    from ..architecture.search.genotype import Genotype
+    from ..architecture.darts.genotype import Genotype
 
     with open(filepath) as f:
         genotype = Genotype.from_json(f.read())

@@ -10,7 +10,6 @@ import torch.nn.functional as F
 from matplotlib.gridspec import GridSpec
 from scipy import stats
 
-
 warnings.filterwarnings("ignore")
 
 
@@ -166,9 +165,7 @@ class StreamlinedDARTSAnalyzer:
             )
             first_layer = layers[0] if layers else None
             cross_attn = None
-            if isinstance(first_layer, dict):
-                cross_attn = first_layer.get("cross_attn")
-            elif hasattr(first_layer, "get"):
+            if isinstance(first_layer, dict) or hasattr(first_layer, "get"):
                 cross_attn = first_layer.get("cross_attn")
             elif hasattr(first_layer, "__contains__") and "cross_attn" in first_layer:
                 cross_attn = first_layer["cross_attn"]
@@ -304,9 +301,7 @@ class StreamlinedDARTSAnalyzer:
         )
         first_layer = layers[0] if layers else None
         cross_attn = None
-        if isinstance(first_layer, dict):
-            cross_attn = first_layer.get("cross_attn")
-        elif hasattr(first_layer, "get"):
+        if isinstance(first_layer, dict) or hasattr(first_layer, "get"):
             cross_attn = first_layer.get("cross_attn")
         elif hasattr(first_layer, "__contains__") and "cross_attn" in first_layer:
             cross_attn = first_layer["cross_attn"]
@@ -445,7 +440,7 @@ class StreamlinedDARTSAnalyzer:
                 weight_col = f"{comp}_weight"
                 if weight_col in trained_df.columns:
                     weights = {}
-                    for comp_value in final_analysis[f"{comp}s"].keys():
+                    for comp_value in final_analysis[f"{comp}s"]:
                         if pd.notna(comp_value):
                             mask = trained_df[comp] == comp_value
                             weights[comp_value] = trained_df[mask][weight_col].mean()

@@ -1,4 +1,9 @@
-"""Training-time helper utilities for DARTS search."""
+"""Architecture-alpha regularization for DARTS search.
+
+:class:`ArchitectureRegularizer` applies one or more :class:`RegularizationType`
+penalties (entropy, KL-divergence, L2, diversity, sparsity, ...) to the
+architecture alphas during bilevel training.
+"""
 
 from enum import Enum
 
@@ -6,7 +11,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.amp import GradScaler
 
 from ..utils.tensors import as_probability_vector as default_as_probability_vector
 

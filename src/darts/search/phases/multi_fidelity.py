@@ -13,7 +13,6 @@ Public entry-point: :func:`run_multi_fidelity_search`.
 
 from __future__ import annotations
 
-import concurrent.futures
 import copy
 import datetime
 import logging
@@ -24,12 +23,19 @@ from typing import Any
 import torch
 
 from ...config import DARTSTrainConfig
-from ...utils.training import reset_model_parameters
-from ..candidates.candidate_scoring import rescore_candidates_poolwise
+from ...utils.training_helpers import reset_model_parameters
+from ..candidates.pool_scoring import rescore_candidates_poolwise
+from ..reporting.stats_reporting import (
+    append_whatif_estimates,
+    mean_std,
+)
+from .phase_stats import (
+    _build_stats_payload,
+    _build_sys_info,
+    _p3_csv_rows,
+    _persist_stats,
+)
 from .phase_utils import _resolve_phase3_rung_epochs, _run_phase1_benchmark
-from ..reporting.stats import _build_stats_payload, _build_sys_info, _p3_csv_rows, _persist_stats
-from ..reporting.stats_reporting import append_whatif_estimates, mean_std, save_csv, save_json
-
 
 # ---------------------------------------------------------------------------
 # Public entry-point

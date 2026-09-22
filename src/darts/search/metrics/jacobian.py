@@ -122,7 +122,7 @@ def compute_jacobian(
                 normalized = trace_est / (d_in + computer.config.eps)
                 return float(np.clip(np.log(normalized + computer.config.eps), -12, 12))
             except Exception:
-                print(f"Jacobian failed: {str(e)}")
+                print(f"Jacobian failed: {e!s}")
                 return computer._finite_difference_jacobian(model, inputs)
 
         finally:

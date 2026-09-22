@@ -9,12 +9,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from .bridges import AttentionBridge
+from ...utils.tensors import hard_one_hot
 from .attention import SelfAttention
+from .bridges import AttentionBridge
 from .moe import DARTSFeedForward
 from .primitives import RMSNorm
-from ...utils.tensors import hard_one_hot
-
 
 __all__ = [
     "LightweightTransformerEncoder",
@@ -273,7 +272,7 @@ class LightweightTransformerEncoder(nn.Module):
         B, L, C = x.shape
         x_t = x.transpose(1, 2)
         stride = max(1, patch_size // 2)
-        if L < patch_size:
+        if patch_size > L:
             x_t = F.pad(x_t, (0, patch_size - L))
 
         patches = x_t.unfold(2, patch_size, stride)
@@ -305,7 +304,7 @@ class LightweightTransformerEncoder(nn.Module):
     def _build_variate_tokens(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
         x_var = x.transpose(1, 2)
-        if T != self.target_seq_len:
+        if self.target_seq_len != T:
             x_var = F.interpolate(
                 x_var, size=self.target_seq_len, mode="linear", align_corners=False
             )

@@ -6,7 +6,6 @@ from .regularization import ArchitectureRegularizer, RegularizationType
 from .schedulers import TemperatureScheduler
 from .training_loop import train_darts_model
 
-
 __all__ = [
     "AlphaTracker",
     "ArchitectureRegularizer",

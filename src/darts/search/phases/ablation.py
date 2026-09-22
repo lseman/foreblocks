@@ -27,7 +27,6 @@ from ..candidates.weight_schemes import (
     topk_overlap_from_scores as _topk_overlap,
 )
 
-
 # ---------------------------------------------------------------------------
 # Public entry-point
 # ---------------------------------------------------------------------------

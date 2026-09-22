@@ -13,8 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from ..utils.training import unpack_forecasting_batch
-
+from ..utils.training_helpers import unpack_forecasting_batch
 
 if TYPE_CHECKING:
     pass
@@ -150,7 +149,7 @@ def compute_final_metrics(
 # ---------------------------------------------------------------------------
 
 
-class _null_ctx:  # noqa: N801
+class _null_ctx:
     """No-op context manager used when AMP is disabled."""
 
     def __enter__(self):

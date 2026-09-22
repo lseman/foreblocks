@@ -16,7 +16,6 @@ import torch.nn.functional as F
 
 from .primitives import GeGLUFFN, ReluFFN, SwiGLUFFN
 
-
 __all__ = ["DARTSFeedForward", "DARTSMoEFeedForward"]
 
 

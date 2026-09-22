@@ -1,11 +1,15 @@
-"""Training-time helper utilities for DARTS search."""
+"""Bilevel architecture optimizer stepping and alpha tracking.
 
-from enum import Enum
+:class:`BilevelOptimizer` drives the outer (architecture) optimization step
+against the inner (model-weight) training loop; :class:`AlphaTracker`
+extracts, iterates over, and logs the per-edge/component architecture
+alphas of a searched model.
+"""
+
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.amp import GradScaler
 
 from .regularization import default_as_probability_vector
@@ -196,9 +200,7 @@ class AlphaTracker:
                 return []
             out = []
             for layer in layers:
-                if isinstance(layer, dict):
-                    item = layer.get(key)
-                elif hasattr(layer, "get"):
+                if isinstance(layer, dict) or hasattr(layer, "get"):
                     item = layer.get(key)
                 elif hasattr(layer, "__contains__") and key in layer:
                     item = layer[key]

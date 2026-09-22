@@ -1,35 +1,17 @@
-"""Searchable mixed blocks and fixed deployment wrappers."""
+"""Resolve and freeze a searched transformer block's winning discrete choices.
+
+Given a searchable (mixed-op) transformer component, these helpers pick the
+highest-weight alpha for each searchable axis (self-/cross-attention type and
+position, FFN mode, patch mode, decoder style, ...) and lock the module to
+that single choice for post-search deployment.
+"""
 
 from __future__ import annotations
 
-import copy
-from collections.abc import Sequence
-
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-from ..blocks.bridges import LearnedPoolingBridge
-from ..blocks.sequence import (
-    ArchitectureNormalizer,
-    BaseFixedSequenceBlock,
-    SearchableDecomposition,
-    SequenceStateAdapter,
-)
-from ..blocks.transformers import (
-    LightweightTransformerDecoder,
-    LightweightTransformerEncoder,
-)
-from .helpers import _collect_layer_components, _mean_component_mode_probs
-
-
-__all__ = [
-    "MixedEncoder",
-    "MixedDecoder",
-    "ArchitectureConverter",
-    "FixedEncoder",
-    "FixedDecoder",
-]
+from .block_wrappers import _collect_layer_components, _mean_component_mode_probs
 
 
 def _resolve_searchable_self_attention_type(module_obj, fallback: str = "sdp") -> str:
@@ -73,14 +55,17 @@ def _freeze_transformer_self_attention(module_obj, attention_type: str) -> None:
 
     for layer in layers:
         self_attn = None
-        if isinstance(layer, dict):
-            self_attn = layer.get("self_attn")
-        elif hasattr(layer, "get"):
+        if isinstance(layer, dict) or hasattr(layer, "get"):
             self_attn = layer.get("self_attn")
         elif hasattr(layer, "__contains__") and "self_attn" in layer:
             self_attn = layer["self_attn"]
         if self_attn is None:
             continue
+        if resolved not in self_attn.MODES:
+            raise ValueError(
+                f"Attention mode {resolved!r} is unavailable for this "
+                f"{'causal' if self_attn.causal else 'noncausal'} layer"
+            )
         self_attn.attention_type = resolved
         self_attn.searchable = False
         if hasattr(self_attn, "attn_alphas"):
@@ -130,9 +115,7 @@ def _freeze_transformer_self_attention_position(module_obj, position_mode: str) 
         return
     for layer in layers:
         self_attn = None
-        if isinstance(layer, dict):
-            self_attn = layer.get("self_attn")
-        elif hasattr(layer, "get"):
+        if isinstance(layer, dict) or hasattr(layer, "get"):
             self_attn = layer.get("self_attn")
         elif hasattr(layer, "__contains__") and "self_attn" in layer:
             self_attn = layer["self_attn"]
@@ -188,9 +171,7 @@ def _freeze_transformer_cross_attention(module_obj, attention_type: str) -> None
 
     for layer in layers:
         cross_attn = None
-        if isinstance(layer, dict):
-            cross_attn = layer.get("cross_attn")
-        elif hasattr(layer, "get"):
+        if isinstance(layer, dict) or hasattr(layer, "get"):
             cross_attn = layer.get("cross_attn")
         elif hasattr(layer, "__contains__") and "cross_attn" in layer:
             cross_attn = layer["cross_attn"]
@@ -247,9 +228,7 @@ def _freeze_transformer_cross_attention_position(
         return
     for layer in layers:
         cross_attn = None
-        if isinstance(layer, dict):
-            cross_attn = layer.get("cross_attn")
-        elif hasattr(layer, "get"):
+        if isinstance(layer, dict) or hasattr(layer, "get"):
             cross_attn = layer.get("cross_attn")
         elif hasattr(layer, "__contains__") and "cross_attn" in layer:
             cross_attn = layer["cross_attn"]
@@ -295,9 +274,7 @@ def _freeze_transformer_ffn_mode(module_obj, ffn_mode: str) -> None:
         module_obj.use_moe = resolved == "moe"
     for layer in layers:
         ffn = None
-        if isinstance(layer, dict):
-            ffn = layer.get("ffn")
-        elif hasattr(layer, "get"):
+        if isinstance(layer, dict) or hasattr(layer, "get"):
             ffn = layer.get("ffn")
         elif hasattr(layer, "__contains__") and "ffn" in layer:
             ffn = layer["ffn"]
@@ -432,4 +409,3 @@ def _freeze_transformer_decoder_style(module_obj, decode_style: str) -> None:
             delattr(module_obj, "decode_style_alphas")
         except AttributeError:
             pass
-

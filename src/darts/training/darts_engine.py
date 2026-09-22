@@ -31,14 +31,11 @@ Usage::
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 from typing import Any
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
 
 # ---------------------------------------------------------------------------
 # MixedOp variant hooks

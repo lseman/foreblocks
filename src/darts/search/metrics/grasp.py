@@ -53,7 +53,7 @@ def compute_grasp(computer, model, x, y, loss, loss_fn, weights):
         if not scores:
             return 0.0
 
-        value = -sum(scores) / max(len(scores), 1)
+        value = -sum(scores)
         if not np.isfinite(value):
             return 0.0
         return float(value)

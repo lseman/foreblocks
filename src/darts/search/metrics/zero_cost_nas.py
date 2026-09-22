@@ -292,6 +292,9 @@ class ZeroCostNAS:
             per_metric_total[name] = per_metric_total.get(name, 0) + 1
 
             try:
+                if isinstance(res, Result) and not res.success:
+                    per_metric_errors[name] = res.error or "Metric failed"
+                    continue
                 if isinstance(res, Result):
                     val = float(res.value)
                 else:

@@ -4,7 +4,6 @@ import torch.nn.functional as F
 
 from ..common.norms import ChannelRMSNorm, RMSNorm
 
-
 try:
     from foreblocks.kernels.normalization import (
         TRITON_AVAILABLE,
@@ -127,7 +126,7 @@ class PatchEmbedOp(nn.Module):
         residual = self.residual_proj(x)
 
         x_t = x.transpose(1, 2)
-        if L < self.patch_size:
+        if self.patch_size > L:
             x_t = F.pad(x_t, (0, self.patch_size - L))
 
         patches = x_t.unfold(dimension=2, size=self.patch_size, step=self.stride)

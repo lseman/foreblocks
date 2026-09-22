@@ -14,41 +14,39 @@ import sys
 import time
 from typing import Any
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.amp import GradScaler
 
 from ..config import DARTSEngineConfig
 from ..evaluation.metrics import compute_final_metrics
-from ..training.dynamic_scheduling import (
-    _dynamic_arch_update_freq,
-    _dynamic_inner_arch_iters,
+from ..training.architecture_step import (
+    ArchitectureLossConfig,
+    compose_architecture_loss,
 )
-from ..training.architecture_step import ArchitectureLossConfig, compose_architecture_loss
 from ..training.darts_engine import (
     compute_backward_loss,
     configure_mixed_op_for_variant,
 )
-from ..training.edge_regularization import (
-    _extract_edge_probs,
+from ..training.dynamic_scheduling import (
+    _dynamic_arch_update_freq,
+    _dynamic_inner_arch_iters,
 )
 from ..training.optimizers import BilevelOptimizer
-from ..training.regularization import ArchitectureRegularizer, RegularizationType
-from ..training.schedulers import TemperatureScheduler
 from ..training.perturbation_hessian import (
     _apply_darts_pt_perturbation,
     _restore_model_params,
     compute_implicit_arch_gradient_correction,
-    finite_difference_hessian_penalty,
 )
+from ..training.regularization import ArchitectureRegularizer, RegularizationType
+from ..training.schedulers import TemperatureScheduler
 from ..training.utils import (
     _log_arch_gradients,
     _maybe_prune,
     _safe_load_state,
     snapshot_state_dict,
 )
-from ..utils.training import (
+from ..utils.training_helpers import (
     autocast_ctx,
     build_arch_param_groups,
     capture_progressive_state,
@@ -57,7 +55,6 @@ from ..utils.training import (
     split_arch_and_model_params,
     unpack_forecasting_batch,
 )
-
 
 # ---------------------------------------------------------------------------
 # Public entry-point
@@ -823,20 +820,22 @@ def _run_model_training_epoch(
             batch_x = batch_x.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
 
-        with _crash_trace(f"epoch {epoch + 1}: train batch {batch_idx} forward", device):
-            with autocast_ctx(device, enabled=use_amp):
-                if engine_variant == "bi_darts" and engine_cfg is not None:
-                    raw_loss = compute_backward_loss(
-                        model=model,
-                        x=batch_x,
-                        y=batch_y,
-                        loss_fn=loss_fn,
-                        backward_loss_weight=engine_cfg.bi_darts.backward_loss_weight,
-                        backward_passes=engine_cfg.bi_darts.backward_passes,
-                    )
-                else:
-                    raw_loss = loss_fn(model(batch_x), batch_y)
-                loss = raw_loss / accumulation_steps
+        with (
+            _crash_trace(f"epoch {epoch + 1}: train batch {batch_idx} forward", device),
+            autocast_ctx(device, enabled=use_amp),
+        ):
+            if engine_variant == "bi_darts" and engine_cfg is not None:
+                raw_loss = compute_backward_loss(
+                    model=model,
+                    x=batch_x,
+                    y=batch_y,
+                    loss_fn=loss_fn,
+                    backward_loss_weight=engine_cfg.bi_darts.backward_loss_weight,
+                    backward_passes=engine_cfg.bi_darts.backward_passes,
+                )
+            else:
+                raw_loss = loss_fn(model(batch_x), batch_y)
+            loss = raw_loss / accumulation_steps
 
         with _crash_trace(f"epoch {epoch + 1}: train batch {batch_idx} backward", device):
             scaler.scale(loss).backward()
@@ -916,9 +915,11 @@ def _run_validation_epoch(
             with _crash_trace(f"val batch {batch_idx} transfer", device):
                 x = batch_data[0].to(device, non_blocking=True)
                 y = batch_data[1].to(device, non_blocking=True)
-            with _crash_trace(f"val batch {batch_idx} forward", device):
-                with autocast_ctx(device, enabled=use_amp):
-                    val_loss += loss_fn(model(x), y).item()
+            with (
+                _crash_trace(f"val batch {batch_idx} forward", device),
+                autocast_ctx(device, enabled=use_amp),
+            ):
+                val_loss += loss_fn(model(x), y).item()
             if verbose and hasattr(val_pbar, "set_postfix"):
                 val_pbar.set_postfix(
                     {"val_loss": f"{val_loss / max(batches_seen, 1):.4f}"}

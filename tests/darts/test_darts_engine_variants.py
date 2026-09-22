@@ -4,8 +4,8 @@ import unittest
 import torch
 import torch.nn as nn
 
-from darts.architecture.search.darts_cell import DARTSCell
-from darts.architecture.search.mixed_op import MixedOp
+from darts.architecture.darts.darts_cell import DARTSCell
+from darts.architecture.darts.mixed_op import MixedOp
 from darts.config import (
     DARTSEngineConfig,
     DARTSVariant,

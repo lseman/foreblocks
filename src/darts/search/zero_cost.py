@@ -12,9 +12,8 @@ from typing import Any
 
 import torch.nn as nn
 
-from .metrics import Config, ZeroCostNAS
 from .candidates.weight_schemes import build_weight_schemes
-
+from .metrics import Config, ZeroCostNAS
 
 # ---------------------------------------------------------------------------
 # Raw metrics (no weighting – single evaluation pass)
