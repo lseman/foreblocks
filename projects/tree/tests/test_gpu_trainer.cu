@@ -153,5 +153,56 @@ int main() {
         }
         b.update_margins(nb, values, 1.0);
     }
+
+    // Row subset + column sampling: the tree only sees the subset and allowed
+    // features, and the margin update routes every row (subset or not) by
+    // traversal.
+    {
+        GpuTreeTrainer t(dataset, d.y, {}, GpuObjective::SquaredError, 0.0);
+        std::vector<int> subset;
+        for (int i = 0; i < kN; i += 3)
+            subset.push_back(i);
+        GpuTreeParams sp = params;
+        sp.feature_bagging_k = 2;
+        sp.seed = 7;
+        const auto nodes = t.grow(sp, 0, subset);
+        assert(nodes[0].count == static_cast<int>(subset.size()));
+        int features_used[kP] = {};
+        for (const auto& n : nodes)
+            if (!n.is_leaf)
+                features_used[n.feature] = 1;
+        int distinct = 0;
+        for (int f = 0; f < kP; ++f)
+            distinct += features_used[f];
+        assert(distinct >= 1 && distinct <= 2);
+        std::vector<double> values(nodes.size());
+        for (size_t i = 0; i < nodes.size(); ++i)
+            values[i] = static_cast<double>(i + 1);
+        t.update_margins(nodes, values, 1.0);
+        const auto after = t.margins();
+        for (int i = 0; i < kN; ++i) {
+            const int leaf = leaf_of(nodes, &d.codes[static_cast<size_t>(i) * kP]);
+            assert(std::abs(after[i] - (leaf + 1)) < 1e-3);
+        }
+    }
+
+    // Multiclass: three classes (two explicit margins); a tree for class 1
+    // moves only class 1's margins.
+    {
+        std::vector<double> labels(kN);
+        for (int i = 0; i < kN; ++i)
+            labels[i] = d.y[i] < 1.0 ? 0.0 : d.y[i] < 2.2 ? 1.0 : 2.0;
+        GpuTreeTrainer t(dataset, labels, {}, GpuObjective::Multiclass, 0.0, 2);
+        const auto nodes = t.grow(params, 1);
+        assert(nodes.size() > 1 && !nodes[0].is_leaf);
+        std::vector<double> values(nodes.size(), 0.5);
+        t.update_margins(nodes, values, 1.0, 1);
+        const auto m = t.margins();
+        assert(m.size() == static_cast<size_t>(kN) * 2);
+        for (int i = 0; i < kN; ++i) {
+            assert(m[static_cast<size_t>(i) * 2] == 0.0);
+            assert(std::abs(m[static_cast<size_t>(i) * 2 + 1] - 0.5) < 1e-6);
+        }
+    }
     return 0;
 }

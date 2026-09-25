@@ -47,12 +47,11 @@ template <typename Array> static ArrayView<Array> request(const Array& array) {
 // the heap and the capsule owns it, so the array stays valid for its lifetime.
 // (Holding the owner in a local shared_ptr with a no-op capsule deleter frees
 // the storage on return and leaves numpy reading freed memory.)
-template <typename T>
-static nb::ndarray<nb::numpy, T, nb::c_contig> ndarray_from_storage(std::vector<T> data,
-                                                                     std::initializer_list<size_t> shape) {
+template <typename T, typename... Dims>
+static nb::ndarray<nb::numpy, T, nb::c_contig> ndarray_from_storage(std::vector<T> data, Dims... dims) {
     auto* owner = new std::vector<T>(std::move(data));
     nb::capsule cap(owner, [](void* p) noexcept { delete static_cast<std::vector<T>*>(p); });
-    return nb::ndarray<nb::numpy, T, nb::c_contig>(owner->data(), shape, std::move(cap));
+    return nb::ndarray<nb::numpy, T, nb::c_contig>(owner->data(), {static_cast<size_t>(dims)...}, std::move(cap));
 }
 
 // Zero-copy input: return std::span<const T> over numpy memory (no copy)
@@ -67,7 +66,7 @@ static std::span<const T> span_from_1d(const nb::ndarray<nb::numpy, T, nb::c_con
 
 template <typename T>
 static std::span<const T> span_from_any(const nb::ndarray<nb::numpy, T, nb::c_contig>& a,
-                                         const char* name = "array") {
+                                         const char* /*name*/ = "array") {
     auto buf = request(a);
     size_t n = 1;
     for (auto s : buf.shape)
@@ -125,7 +124,7 @@ NB_MODULE(foretree, m) {
 
                 auto result = db.prebin(static_cast<const double*>(buf.ptr), N, P, mode, node_id);
 
-                auto codes_array = ndarray_from_storage(*result.first, {static_cast<size_t>(N), static_cast<size_t>(P)});
+                auto codes_array = ndarray_from_storage(*result.first, static_cast<size_t>(N), static_cast<size_t>(P));
 
                 return nb::make_tuple(codes_array, result.second);
             },
@@ -231,7 +230,7 @@ NB_MODULE(foretree, m) {
                 int N = static_cast<int>(X_buf.shape[0]);
                 int P = static_cast<int>(X_buf.shape[1]);
 
-                if (g_buf.shape[0] != N || h_buf.shape[0] != N) {
+                if (g_buf.shape[0] != static_cast<size_t>(N) || h_buf.shape[0] != static_cast<size_t>(N)) {
                     throw std::runtime_error("g and h must have same length as X rows");
                 }
 
@@ -251,7 +250,7 @@ NB_MODULE(foretree, m) {
 
                 auto result = ghs.prebin_dataset(static_cast<const double*>(buf.ptr), N, P);
 
-                auto codes_array = ndarray_from_storage(*result.first, {static_cast<size_t>(N), static_cast<size_t>(P)});
+                auto codes_array = ndarray_from_storage(*result.first, static_cast<size_t>(N), static_cast<size_t>(P));
 
                 return nb::make_tuple(codes_array, result.second);
             },
@@ -268,7 +267,7 @@ NB_MODULE(foretree, m) {
 
                 auto result = ghs.prebin_matrix(static_cast<const double*>(buf.ptr), N, P);
 
-                auto codes_array = ndarray_from_storage(*result.first, {static_cast<size_t>(N), static_cast<size_t>(P)});
+                auto codes_array = ndarray_from_storage(*result.first, static_cast<size_t>(N), static_cast<size_t>(P));
 
                 return nb::make_tuple(codes_array, result.second);
             },
@@ -382,7 +381,7 @@ NB_MODULE(foretree, m) {
 
                 int N = ghs.N();
                 int P = ghs.P();
-                return ndarray_from_storage(*codes_ptr, {static_cast<size_t>(N), static_cast<size_t>(P)});
+                return ndarray_from_storage(*codes_ptr, static_cast<size_t>(N), static_cast<size_t>(P));
             },
             "Returns the cached binned codes as numpy array (N x P)");
 
@@ -566,9 +565,9 @@ NB_MODULE(foretree, m) {
                 }
 
                 if (K <= 1) {
-                    return ndarray_from_storage(std::move(pred), {N});
+                    return ndarray_from_storage(std::move(pred), N);
                 } else {
-                    return ndarray_from_storage(std::move(pred), {N, K});
+                    return ndarray_from_storage(std::move(pred), N, K);
                 }
             },
             nb::arg("Xb"), nb::arg("Xraw") = nb::none(),
@@ -600,9 +599,9 @@ NB_MODULE(foretree, m) {
 
                 int K = std::max(self.cfg_.num_classes - 1, 1);
                 if (K <= 1) {
-                    return ndarray_from_storage(std::move(contrib), {N, P + 1});
+                    return ndarray_from_storage(std::move(contrib), N, P + 1);
                 } else {
-                    return ndarray_from_storage(std::move(contrib), {N, K * (P + 1)});
+                    return ndarray_from_storage(std::move(contrib), N, K * (P + 1));
                 }
             },
             nb::arg("Xb"), nb::arg("Xraw") = nb::none(),
@@ -709,7 +708,7 @@ NB_MODULE(foretree, m) {
                                               buf.shape[0] * buf.shape[1]), N);
                 if (result.empty())
                     return nb::ndarray<nb::numpy, double, nb::c_contig>(nullptr, {0}, nb::none());
-                return ndarray_from_storage(std::move(result), {static_cast<size_t>(N)});
+                return ndarray_from_storage(std::move(result), static_cast<size_t>(N));
             },
             nb::arg("codes"), "Predict on binned data (uint16 codes). Returns (N,).")
         .def_prop_ro("outputs", [](const GpuPredictionEngine& self) { return self.outputs(); })

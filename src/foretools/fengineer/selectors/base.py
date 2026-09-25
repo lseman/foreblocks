@@ -7,8 +7,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-if TYPE_CHECKING:
-    pass
+
 
 
 class FeatureSelectorABC(ABC):

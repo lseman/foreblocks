@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,6 +14,8 @@ from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
 from sklearn.preprocessing import LabelEncoder
 
 from .base import FeatureSelectorABC
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -338,11 +343,12 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin, FeatureSelectorABC):
         scorer = self._get_scorer(self._task_type, self.config.scoring)
 
         if self.config.verbose > 0:
-            print("🔄 Starting Advanced RFECV...")
-            print(f"Task type: {self._task_type}")
-            print(f"Features: {X_array.shape[1]}, Samples: {X_array.shape[0]}")
-            print(f"Estimators: {list(estimators.keys())}")
-            print(f"CV folds: {self.config.cv}")
+            logger.info(
+                "Starting Advanced RFECV... Task=%s Features=%d Samples=%d "
+                "Estimators=%s CV=%d",
+                self._task_type, X_array.shape[1], X_array.shape[0],
+                list(estimators.keys()), self.config.cv,
+            )
 
         # Initialize tracking
         n_features = X_array.shape[1]
@@ -383,16 +389,18 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin, FeatureSelectorABC):
                 feature_mask[worst_indices] = False
 
                 if self.config.verbose > 0:
-                    print(
-                        f"Iteration {iteration + 1}: {current_n_features} -> {np.sum(feature_mask)} features (fast mode)"
+                    logger.info(
+                        "Iteration %d: %d -> %d features (fast mode)",
+                        iteration + 1, current_n_features, np.sum(feature_mask),
                     )
 
                 iteration += 1
                 continue
 
             if self.config.verbose > 0:
-                print(
-                    f"\nIteration {iteration + 1}: Evaluating {current_n_features} features..."
+                logger.info(
+                    "Iteration %d: Evaluating %d features...",
+                    iteration + 1, current_n_features,
                 )
 
             # Perform stability selection or regular CV
@@ -436,7 +444,7 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin, FeatureSelectorABC):
             )
 
             if self.config.verbose > 0:
-                print(f"CV Score: {cv_score:.4f}")
+                logger.info("CV Score: %.4f", cv_score)
 
             # Check for improvement
             if cv_score > best_score + self.config.improvement_threshold:
@@ -446,22 +454,25 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin, FeatureSelectorABC):
                 patience_counter = 0
 
                 if self.config.verbose > 0:
-                    print(
-                        f"✅ New best score: {best_score:.4f} with {best_n_features} features"
+                    logger.info(
+                        "New best score: %.4f with %d features",
+                        best_score, best_n_features,
                     )
             else:
                 patience_counter += 1
 
                 if self.config.verbose > 0:
-                    print(
-                        f"⏳ No improvement ({patience_counter}/{self.config.patience})"
+                    logger.info(
+                        "No improvement (%d/%d)",
+                        patience_counter, self.config.patience,
                     )
 
             # Early stopping
             if patience_counter >= self.config.patience:
                 if self.config.verbose > 0:
-                    print(
-                        f"🛑 Early stopping: No improvement for {self.config.patience} iterations"
+                    logger.info(
+                        "Early stopping: No improvement for %d iterations",
+                        self.config.patience,
                     )
                 break
 
@@ -491,7 +502,7 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin, FeatureSelectorABC):
             current_mask = result["feature_mask"]
             if not np.array_equal(current_mask, best_mask):
                 # Features eliminated in this step
-                eliminated = np.where((best_mask == False) & (current_mask == True))[0]
+                eliminated = np.where(~best_mask & current_mask)[0]
                 eliminated_order.extend(eliminated)
                 best_mask = current_mask
 
@@ -517,14 +528,13 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin, FeatureSelectorABC):
         self._is_fitted = True
 
         if self.config.verbose > 0:
-            print("\n🎯 RFECV completed!")
-            print(f"Best score: {best_score:.4f}")
-            print(f"Selected features: {self.n_features_} out of {n_features}")
+            logger.info(
+                "RFECV completed! Best score: %.4f, Selected: %d/%d",
+                best_score, self.n_features_, n_features,
+            )
             if self._feature_names:
                 selected_names = np.array(self._feature_names)[self.support_].tolist()
-                print(
-                    f"Feature names: {selected_names[:10]}{'...' if len(selected_names) > 10 else ''}"
-                )
+                logger.info("Feature names: %s", selected_names[:10])
 
         return self
 
@@ -596,7 +606,7 @@ class AdvancedRFECV(BaseEstimator, TransformerMixin, FeatureSelectorABC):
         try:
             import matplotlib.pyplot as plt
         except ImportError:
-            print("Matplotlib not available for plotting.")
+            logger.warning("Matplotlib not available for plotting.")
             return
 
         # Extract data for plotting

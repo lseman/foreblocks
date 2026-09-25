@@ -14,6 +14,7 @@ option(TREE_ENABLE_STDEXEC "Enable stdexec include path for foreforest" ON)
 
 option(FORETREE_EXEC_USE_CUDA "Use nvexec CUDA scheduler for foreforest" OFF)
 option(TREE_ENABLE_CUDA_BACKEND "Build native CUDA histogram backend" ON)
+option(TREE_WARNINGS_AS_ERRORS "Treat compiler warnings in this project's targets as errors (CI)" OFF)
 
 set(TREE_STDEXEC_INCLUDE_DIR "" CACHE PATH "Path to stdexec include directory")
 
@@ -99,6 +100,9 @@ function(tree_common_setup tgt)
         target_compile_options(${tgt} PRIVATE /W4)
     else()
         target_compile_options(${tgt} PRIVATE -Wall -Wextra -Wpedantic)
+        if(TREE_WARNINGS_AS_ERRORS)
+            target_compile_options(${tgt} PRIVATE -Werror)
+        endif()
     endif()
 
     if(TREE_ENABLE_TBB)
@@ -127,6 +131,8 @@ if(TREE_BUILD_FORETREE)
     )
 
     nanobind_add_module(foretree "${TREE_SRC_DIR}/pybind/foretree.cpp")
+    # Third-party headers: keep their warnings out of ours (and out of -Werror).
+    target_include_directories(foretree SYSTEM PRIVATE "${nanobind_SOURCE_DIR}/include")
 
     # nanobind-static is created lazily by nanobind_add_module.
     target_include_directories(nanobind-static PRIVATE ${Python3_INCLUDE_DIRS})
@@ -162,6 +168,7 @@ if(TREE_BUILD_FOREFOREST)
     )
 
     nanobind_add_module(foreforest NB_DOMAIN foreforest "${TREE_SRC_DIR}/pybind/foreforest.cpp")
+    target_include_directories(foreforest SYSTEM PRIVATE "${nanobind_SOURCE_DIR}/include")
 
     target_include_directories(nanobind-static PRIVATE ${Python3_INCLUDE_DIRS})
     target_link_libraries(nanobind-static PRIVATE Python3::Module)
@@ -202,7 +209,10 @@ if(TREE_BUILD_TESTS)
         add_executable(${test_name} "${test_src}")
         target_compile_features(${test_name} PRIVATE cxx_std_23)
         target_link_libraries(${test_name} PRIVATE foretree_core Threads::Threads)
-        target_compile_options(${test_name} PRIVATE -UNDEBUG)
+        target_compile_options(${test_name} PRIVATE -UNDEBUG -Wall -Wextra)
+        if(TREE_WARNINGS_AS_ERRORS)
+            target_compile_options(${test_name} PRIVATE -Werror)
+        endif()
         if(TREE_ENABLE_CUDA_BACKEND)
             target_link_libraries(${test_name} PRIVATE foretree_cuda)
         endif()

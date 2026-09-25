@@ -1156,18 +1156,18 @@ private:
         prob_c_out.assign(static_cast<size_t>(n), 0.0);
 
         for (int i = 0; i < n; ++i) {
-            // Compute softmax: exp(F_c) / (sum exp(F_j) + 1) for Kth class
-            double max_f = -std::numeric_limits<double>::infinity();
+            // Softmax over the K explicit margins plus the implicit last class
+            // (logit 0): p_c = exp(F_c) / (sum_j exp(F_j) + 1), computed stably.
+            double max_f = 0.0;  // includes the implicit class
             for (int c = 0; c < K_; ++c) {
                 max_f =
                     std::max(max_f, F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)]);
             }
-            double sum_exp = 0.0;
+            double sum_exp = std::exp(-max_f);  // implicit class
             for (int c = 0; c < K_; ++c) {
                 sum_exp +=
                     std::exp(F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] - max_f);
             }
-            sum_exp += 1.0; // implicit Kth class
             double log_sum_exp = std::log(sum_exp) + max_f;
             double p_c = std::exp(
                 F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(class_c)] - log_sum_exp);
@@ -1215,9 +1215,9 @@ private:
         }
         T.set_raw_for_neural(Xraw_neural_, Xmiss_neural_);
         T.set_neural_leaf_config(cfg_.neural_cfg);
-#ifdef FORETREE_HAS_CUDA
         const bool quantized = cfg_.quantized_gradients && cfg_.mode != ForeForestConfig::Mode::Bagging &&
                                tc.split_mode == TreeConfig::SplitMode::Histogram && !tc.neural_leaf.enabled;
+#ifdef FORETREE_HAS_CUDA
         if (cuda_histogram_engine_ && tc.split_mode == TreeConfig::SplitMode::Histogram &&
             !tc.neural_leaf.enabled) {
             std::vector<float> gradients(g.begin(), g.end());
@@ -1341,9 +1341,9 @@ private:
 
     // ===================== Boosting with DART ===========================
 #ifdef FORETREE_HAS_CUDA
-    // Whole-tree GPU training (device == CUDA) covers scalar GBDT with squared
-    // error or logloss, leaf-wise growth and plain axis histogram splits.
-    // Anything else trains on the CPU path.
+    // Whole-tree GPU training covers GBDT with squared error, logloss or
+    // multiclass softmax, leaf-wise growth, plain axis histogram splits, and
+    // row / column subsampling. Anything else trains on the CPU path.
     // Rows at which Device::Auto starts preferring the GPU trainer (below this
     // the CPU is as fast; measured 15k x 8: tie, 30k x 16: GPU 0.34s vs 0.44s).
     static constexpr int kAutoGpuMinRows = 20000;
@@ -1363,14 +1363,19 @@ private:
     void train_gbdt_gpu_(const double* y, const QuantizedDataset* Xb_valid, int N_valid, const double* y_valid,
                          const double* Xraw_valid) {
         const TreeConfig tc = make_tree_cfg_();
+        // Multiclass: K explicit class margins (the last class is implicit),
+        // one tree per class and round, as on the CPU.
+        const int K = std::max(cfg_.num_classes - 1, 1);
+        const bool multiclass = cfg_.num_classes > 2;
         std::vector<double> weights = compute_sample_weights_(y, N_);
         if (std::all_of(weights.begin(), weights.end(), [](double w) { return w == 1.0; }))
             weights.clear();
-        const auto objective = cfg_.objective == ForeForestConfig::Objective::BinaryLogloss
+        const auto objective = multiclass ? cuda::GpuObjective::Multiclass
+                               : cfg_.objective == ForeForestConfig::Objective::BinaryLogloss
                                    ? cuda::GpuObjective::BinaryLogloss
                                    : cuda::GpuObjective::SquaredError;
         cuda::GpuTreeTrainer trainer(*compact_codes_, std::span<const double>(y, static_cast<size_t>(N_)),
-                                     weights, objective, base_score_);
+                                     weights, objective, base_score_, K);
         cuda::GpuTreeParams params;
         params.max_leaves = tc.max_leaves;
         params.max_depth = tc.max_depth;
@@ -1382,42 +1387,57 @@ private:
         params.missing_policy = tc.missing_policy == TreeConfig::MissingPolicy::AlwaysLeft    ? 1
                                 : tc.missing_policy == TreeConfig::MissingPolicy::AlwaysRight ? 2
                                                                                                : 0;
+        params.tree_feature_percent = tc.colsample_bytree_percent;
+        params.node_feature_percent = tc.colsample_bynode_percent;
+        params.feature_bagging_k = tc.feature_bagging_k;
+        params.feature_bagging_with_replacement = tc.feature_bagging_with_replacement;
 
         const bool has_valid = (Xb_valid && y_valid && N_valid > 0);
         std::vector<double> F_valid, pred_valid_buffer;
         if (has_valid) {
-            F_valid.assign(static_cast<size_t>(N_valid), base_score_);
+            F_valid.assign(static_cast<size_t>(N_valid) * static_cast<size_t>(K), base_score_);
             pred_valid_buffer.resize(static_cast<size_t>(N_valid));
         }
         int rounds_without_improve = 0;
         std::vector<UnifiedTree::AxisNodeSpec> spec;
         std::vector<double> values;
-        for (int m = 0; m < cfg_.n_estimators; ++m) {
-            const std::vector<cuda::GpuTreeNode> nodes = trainer.grow(params);
-            spec.assign(nodes.size(), {});
-            for (size_t i = 0; i < nodes.size(); ++i) {
-                const auto& n = nodes[i];
-                spec[i] = {n.feature, n.threshold, n.missing_left, n.left, n.right, n.is_leaf,
-                           n.depth,   n.count,     n.G,            n.H,    n.gain};
+        const int rounds = multiclass ? cfg_.n_estimators / K : cfg_.n_estimators;
+        for (int m = 0; m < rounds; ++m) {
+            for (int c = 0; c < K; ++c) {
+                const std::vector<int> rows = sample_rows_for_gbdt_(m, rounds);
+                params.seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * static_cast<uint64_t>(m * K + c + 1);
+                const std::vector<cuda::GpuTreeNode> nodes =
+                    rows.size() == static_cast<size_t>(N_) ? trainer.grow(params, c)
+                                                           : trainer.grow(params, c, rows);
+                spec.assign(nodes.size(), {});
+                for (size_t i = 0; i < nodes.size(); ++i) {
+                    const auto& n = nodes[i];
+                    spec[i] = {n.feature, n.threshold, n.missing_left, n.left, n.right, n.is_leaf,
+                               n.depth,   n.count,     n.G,            n.H,    n.gain};
+                }
+                UnifiedTree T(tc, ghs_.get(), executor_);
+                T.adopt_axis_tree(P_, spec);
+                values.assign(nodes.size(), 0.0);
+                for (size_t i = 0; i < nodes.size(); ++i)
+                    values[i] = T.node_leaf_value(static_cast<int>(i));
+                const double wt_new = cfg_.learning_rate;
+                trainer.update_margins(nodes, values, wt_new, c);
+                trees_.push_back(std::move(T));
+                tree_weights_.push_back(wt_new);
+
+                if (has_valid) {
+                    predict_tree_on_binned_(trees_.back(), *Xb_valid, N_valid, P_, Xraw_valid, pred_valid_buffer);
+                    for (int i = 0; i < N_valid; ++i)
+                        F_valid[static_cast<size_t>(i) * static_cast<size_t>(K) + static_cast<size_t>(c)] +=
+                            wt_new * pred_valid_buffer[static_cast<size_t>(i)];
+                }
             }
-            UnifiedTree T(tc, ghs_.get(), executor_);
-            T.adopt_axis_tree(P_, spec);
-            values.assign(nodes.size(), 0.0);
-            for (size_t i = 0; i < nodes.size(); ++i)
-                values[i] = T.node_leaf_value(static_cast<int>(i));
-            const double wt_new = cfg_.learning_rate;
-            trainer.update_margins(nodes, values, wt_new);
-            trees_.push_back(std::move(T));
-            tree_weights_.push_back(wt_new);
 
             if (cfg_.track_train_metric) {
                 const std::vector<double> F = trainer.margins();
                 train_metric_history_.push_back(compute_metric_from_margin_(F, y, N_));
             }
             if (has_valid) {
-                predict_tree_on_binned_(trees_.back(), *Xb_valid, N_valid, P_, Xraw_valid, pred_valid_buffer);
-                for (int i = 0; i < N_valid; ++i)
-                    F_valid[static_cast<size_t>(i)] += wt_new * pred_valid_buffer[static_cast<size_t>(i)];
                 const double valid_metric = compute_metric_from_margin_(F_valid, y_valid, N_valid);
                 valid_metric_history_.push_back(valid_metric);
                 if (valid_metric + cfg_.early_stopping_min_delta < best_score_) {
@@ -1437,8 +1457,9 @@ private:
 #endif
 
     // First reason whole-tree GPU training cannot run for this configuration,
-    // or nullptr when it can (scalar GBDT, squared error / logloss, leaf-wise,
-    // plain axis histogram splits, no sampling / constraints).
+    // or nullptr when it can (GBDT with squared error / logloss / multiclass,
+    // leaf-wise, plain axis histogram splits, forest row subsampling and column
+    // subsampling, no constraints).
     const char* gpu_training_blocker_() const {
 #ifndef FORETREE_HAS_CUDA
         return "built without CUDA";
@@ -1451,18 +1472,14 @@ private:
         if (cfg_.objective != ForeForestConfig::Objective::SquaredError &&
             cfg_.objective != ForeForestConfig::Objective::BinaryLogloss)
             return "objective is not squared error or binary logloss";
-        if (cfg_.num_classes > 2)
-            return "multiclass";
         if (cfg_.dart_enabled)
             return "DART";
         if (t.goss.enabled)
             return "GOSS";
-        if (cfg_.gbdt_use_subsample || t.subsample_bytree < 1.0 || t.subsample_bylevel < 1.0 ||
-            t.subsample_bynode < 1.0)
-            return "row subsampling";
-        if (cfg_.colsample_bytree < 1.0 || cfg_.colsample_bynode < 1.0 || t.colsample_bytree_percent < 100 ||
-            t.colsample_bylevel_percent < 100 || t.colsample_bynode_percent < 100 || t.feature_bagging_k >= 0)
-            return "column subsampling";
+        // Forest-level row subsampling and tree/node column subsampling run on
+        // the GPU; the tree-level row samplers do not.
+        if (t.subsample_bytree < 1.0 || t.subsample_bylevel < 1.0 || t.subsample_bynode < 1.0)
+            return "tree-level row subsampling";
         if (t.split_mode != TreeConfig::SplitMode::Histogram)
             return "exact / hybrid split mode";
         if (t.growth != TreeConfig::Growth::LeafWise)
@@ -1520,7 +1537,7 @@ private:
         int K_ = std::max(cfg_.num_classes - 1, 1);
 
 #ifdef FORETREE_HAS_CUDA
-        if (K_ <= 1 && gpu_training_supported_()) {
+        if (gpu_training_supported_()) {
             training_backend_ = "gpu";
             train_gbdt_gpu_(y, Xb_valid, N_valid, y_valid, Xraw_valid);
             return;
@@ -1641,15 +1658,22 @@ private:
                     F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] +=
                         cfg_.learning_rate * pred_buffer[i];
                 }
+                if (has_valid) {
+                    predict_tree_on_binned_(trees_.back(), *Xb_valid, N_valid, P_, Xraw_valid, pred_valid_buffer);
+                    for (int i = 0; i < N_valid; ++i)
+                        F_valid[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] +=
+                            cfg_.learning_rate * pred_valid_buffer[static_cast<size_t>(i)];
+                }
             }
 
             if (cfg_.track_train_metric)
                 train_metric_history_.push_back(compute_metric_from_margin_(F_all, y, N_));
 
             if (has_valid) {
-                const bool improved = false; // Simplified: no early stopping for multiclass yet
-                if (improved) {
-                    best_score_ = valid_metric_history_.back();
+                const double valid_metric = compute_metric_from_margin_(F_valid, y_valid, N_valid);
+                valid_metric_history_.push_back(valid_metric);
+                if (valid_metric + cfg_.early_stopping_min_delta < best_score_) {
+                    best_score_ = valid_metric;
                     best_iteration_ = (int)trees_.size();
                     rounds_without_improve = 0;
                 } else if (cfg_.early_stopping_enabled) {
@@ -1675,8 +1699,9 @@ private:
         if (cfg_.dart_one_drop_min && trees_.size() == 1) {
             return dropped;
         }
-        // Don't drop all trees - keep at least trees_.size() - cfg_.dart_max_drop
-        int max_drop = cfg_.dart_max_drop > 0 ? std::min(cfg_.dart_max_drop, (int)trees_.size() - 1) : (int)trees_.size() - 1;
+        // Never drop every tree; dart_max_drop <= 0 means no cap beyond that.
+        const int max_drop = cfg_.dart_max_drop > 0 ? std::min(cfg_.dart_max_drop, (int)trees_.size() - 1)
+                                                    : (int)trees_.size() - 1;
 
         std::uniform_real_distribution<double> U(0.0, 1.0);
         for (size_t t = 0; t < trees_.size(); ++t) {
@@ -1685,12 +1710,12 @@ private:
             }
         }
 
-        if ((int)dropped.size() > cfg_.dart_max_drop) {
+        if ((int)dropped.size() > max_drop) {
             std::shuffle(dropped.begin(), dropped.end(), rng_);
-            dropped.resize(cfg_.dart_max_drop);
+            dropped.resize(static_cast<size_t>(std::max(0, max_drop)));
         }
 
-        if (dropped.empty() && cfg_.dart_one_drop_min && cfg_.dart_max_drop > 0) {
+        if (dropped.empty() && cfg_.dart_one_drop_min && max_drop > 0) {
             std::uniform_int_distribution<int> D(0, (int)trees_.size() - 1);
             dropped.push_back(D(rng_));
         }
@@ -1985,18 +2010,17 @@ private:
 
         double loss = 0.0;
         for (int i = 0; i < n; ++i) {
-            // Compute softmax probabilities
-            double max_f = -std::numeric_limits<double>::infinity();
+            // Softmax over the K explicit margins plus the implicit class (logit 0).
+            double max_f = 0.0;
             for (int c = 0; c < K_; ++c) {
                 max_f =
                     std::max(max_f, margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)]);
             }
-            double sum_exp = 0.0;
+            double sum_exp = std::exp(-max_f);  // implicit class
             for (int c = 0; c < K_; ++c) {
                 sum_exp +=
                     std::exp(margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] - max_f);
             }
-            sum_exp += 1.0; // implicit Kth class
 
             double target = y[i];
             // Cross-entropy loss for multiclass
@@ -2072,23 +2096,25 @@ private:
                 for (double& v : out)
                     v = sigmoid_(v);
             } else if (apply_link && K_ >= 2) {
-                // Multiclass softmax: add implicit Kth class as 0, then softmax
-                for (int i = 0; i < static_cast<int>(out.size()); i += K_) {
-                    // Find max for numerical stability
-                    double max_val = out[static_cast<size_t>(i)];
-                    for (int c = 1; c < K_; ++c) {
-                        max_val = std::max(max_val, out[static_cast<size_t>(i + c)]);
-                    }
+                // Multiclass: probabilities for all K + 1 classes (the K
+                // explicit margins plus the implicit last class at logit 0).
+                const size_t rows = out.size() / static_cast<size_t>(K_);
+                const size_t classes = static_cast<size_t>(K_) + 1;
+                std::vector<double> prob(rows * classes);
+                for (size_t i = 0; i < rows; ++i) {
+                    const double* m = out.data() + i * static_cast<size_t>(K_);
+                    double* p = prob.data() + i * classes;
+                    double max_val = 0.0;
+                    for (int c = 0; c < K_; ++c)
+                        max_val = std::max(max_val, m[c]);
                     double sum = 0.0;
-                    for (int c = 0; c < K_; ++c) {
-                        double exp_v = std::exp(out[static_cast<size_t>(i + c)] - max_val);
-                        out[static_cast<size_t>(i + c)] = exp_v;
-                        sum += exp_v;
-                    }
-                    for (int c = 0; c < K_; ++c) {
-                        out[static_cast<size_t>(i + c)] /= sum;
-                    }
+                    for (int c = 0; c < K_; ++c)
+                        sum += (p[c] = std::exp(m[c] - max_val));
+                    sum += (p[K_] = std::exp(-max_val));
+                    for (size_t c = 0; c < classes; ++c)
+                        p[c] /= sum;
                 }
+                out = std::move(prob);
             }
         }
         return out;

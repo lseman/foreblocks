@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <queue>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -66,7 +68,8 @@ __device__ inline double leaf_objective(double G, double H, double lambda, doubl
 // ---------------------------------------------------------------- gradients
 
 __global__ void gradients_kernel(const float* labels, const float* weights, const float* margins, float* g,
-                                 float* h, int n, int logloss, unsigned int* max_bits) {
+                                 float* h, int n, int objective, int num_classes, int class_index,
+                                 unsigned int* max_bits) {
     __shared__ float block_g, block_h;
     if (threadIdx.x == 0) {
         block_g = 0.0F;
@@ -76,7 +79,19 @@ __global__ void gradients_kernel(const float* labels, const float* weights, cons
     float local_g = 0.0F, local_h = 0.0F;
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
         float gi, hi;
-        if (logloss) {
+        if (objective == 2) {
+            // Softmax over explicit class margins plus the implicit class (logit 0).
+            float max_f = 0.0F;
+            for (int k = 0; k < num_classes; ++k)
+                max_f = fmaxf(max_f, margins[static_cast<size_t>(k) * n + i]);
+            float sum = expf(-max_f);
+            for (int k = 0; k < num_classes; ++k)
+                sum += expf(margins[static_cast<size_t>(k) * n + i] - max_f);
+            const float p = expf(margins[static_cast<size_t>(class_index) * n + i] - max_f) / sum;
+            const float target = static_cast<int>(labels[i]) == class_index ? 1.0F : 0.0F;
+            gi = p - target;
+            hi = fmaxf(1e-12F, p * (1.0F - p));
+        } else if (objective == 1) {
             const float p = 1.0F / (1.0F + expf(-margins[i]));
             gi = p - labels[i];
             hi = fmaxf(1e-12F, p * (1.0F - p));
@@ -199,7 +214,7 @@ struct BetterScored {
 template <int BLOCK>
 __global__ void split_kernel(const long long* hist_g, const long long* hist_h, const int* hist_c,
                              const int* node_slots, int total_bins, const int* offsets, const int* bins,
-                             int n_features, SplitParams p, Candidate* out) {
+                             int n_features, SplitParams p, const unsigned char* feature_mask, Candidate* out) {
     using ScanLL = cub::BlockScan<long long, BLOCK>;
     using ReduceS = cub::BlockReduce<Scored, BLOCK>;
     __shared__ union {
@@ -238,8 +253,10 @@ __global__ void split_kernel(const long long* hist_g, const long long* hist_h, c
     const double gm = hist_g[base + miss] * p.g_scale, hm = hist_h[base + miss] * p.h_scale;
     const bool has_miss = cm > 0;
 
+    // Masked features (column subsampling) still report the node totals.
+    const bool enabled = feature_mask == nullptr || feature_mask[static_cast<size_t>(node) * n_features + f] != 0;
     Scored mine{-INFINITY, 0x7fffffff};
-    if (t < miss && c > 0) {
+    if (enabled && t < miss && c > 0) {
         auto score = [&](bool miss_left) -> double {
             const long long cl_x = cl + (miss_left && has_miss ? cm : 0);
             const long long cr = Ct - cl_x;
@@ -324,6 +341,23 @@ __global__ void update_margins_kernel(float* margins, const int* rows, const int
     }
 }
 
+// margins[row] += delta[leaf reached by row], traversing the tree on the codes.
+template <class Code>
+__global__ void traverse_update_kernel(const Code* codes, int n, const int* missing_codes, const int* feature,
+                                       const int* threshold, const unsigned char* missing_left, const int* left,
+                                       const int* right, const float* delta, float* margins) {
+    for (int row = blockIdx.x * blockDim.x + threadIdx.x; row < n; row += gridDim.x * blockDim.x) {
+        int node = 0;
+        while (feature[node] >= 0) {
+            const int f = feature[node];
+            const int code = static_cast<int>(codes[static_cast<size_t>(f) * n + row]);
+            const bool go_left = code == missing_codes[f] ? missing_left[node] != 0 : code <= threshold[node];
+            node = go_left ? left[node] : right[node];
+        }
+        margins[row] += delta[node];
+    }
+}
+
 int grid_for(int n, int block = 256) {
     return std::max(1, std::min((n + block - 1) / block, 4096));
 }
@@ -367,12 +401,30 @@ struct GpuTreeTrainer::Impl {
     float* leaf_delta = nullptr;
     int leaf_capacity = 0;
     GpuObjective objective = GpuObjective::SquaredError;
+    int num_classes = 1;
     double g_scale = 1.0, h_scale = 1.0;
+    // Rows of the last grown tree: all rows (leaf ranges cover every row) or a
+    // subsample (margin updates traverse the tree).
+    bool last_all_rows = true;
+    int active_rows = 0;
+    // Column subsampling masks for one split launch (<= 2 nodes x p).
+    unsigned char* feature_mask = nullptr;
+    int* missing_codes = nullptr;
+    // Traversal buffers (one tree).
+    int* t_feature = nullptr;
+    int* t_threshold = nullptr;
+    unsigned char* t_missing_left = nullptr;
+    int* t_left = nullptr;
+    int* t_right = nullptr;
+    float* t_delta = nullptr;
+    int t_capacity = 0;
 
     ~Impl() {
         for (void* ptr : std::initializer_list<void*>{codes, labels, weights, margins, g, h, gq, hq, rows, rows_tmp,
                                                       offsets, bins, max_bits, hist_g, hist_h, hist_c, node_slots,
-                                                      candidates, cub_temp, num_selected, leaf_begin, leaf_delta})
+                                                      candidates, cub_temp, num_selected, leaf_begin, leaf_delta,
+                                                      feature_mask, missing_codes, t_feature, t_threshold,
+                                                      t_missing_left, t_left, t_right, t_delta})
             cudaFree(ptr);
     }
 
@@ -430,21 +482,28 @@ struct GpuTreeTrainer::Impl {
     }
 
     // Best split for up to two node slots; returns one candidate per node.
-    std::vector<Candidate> find_splits(const std::vector<int>& slots, const GpuTreeParams& params) {
+    // `masks`: empty (all features) or slots.size() * p flags.
+    std::vector<Candidate> find_splits(const std::vector<int>& slots, const GpuTreeParams& params,
+                                       const std::vector<unsigned char>& masks = {}) {
         check(cudaMemcpy(node_slots, slots.data(), slots.size() * sizeof(int), cudaMemcpyHostToDevice),
               "copy node slots");
+        const unsigned char* mask_ptr = nullptr;
+        if (!masks.empty()) {
+            check(cudaMemcpy(feature_mask, masks.data(), masks.size(), cudaMemcpyHostToDevice), "copy masks");
+            mask_ptr = feature_mask;
+        }
         SplitParams sp{params.lambda, params.alpha, params.gamma, params.min_child_weight,
                        static_cast<long long>(std::max(1, params.min_samples_leaf)), params.missing_policy,
                        g_scale, h_scale};
         const dim3 grid(static_cast<unsigned>(p), static_cast<unsigned>(slots.size()));
         if (max_feature_bins <= 256)
-            split_kernel<256><<<grid, 256>>>(hist_g, hist_h, hist_c, node_slots, total_bins, offsets, bins, p, sp,
+            split_kernel<256><<<grid, 256>>>(hist_g, hist_h, hist_c, node_slots, total_bins, offsets, bins, p, sp, mask_ptr,
                                              candidates);
         else if (max_feature_bins <= 512)
-            split_kernel<512><<<grid, 512>>>(hist_g, hist_h, hist_c, node_slots, total_bins, offsets, bins, p, sp,
+            split_kernel<512><<<grid, 512>>>(hist_g, hist_h, hist_c, node_slots, total_bins, offsets, bins, p, sp, mask_ptr,
                                              candidates);
         else
-            split_kernel<1024><<<grid, 1024>>>(hist_g, hist_h, hist_c, node_slots, total_bins, offsets, bins, p, sp,
+            split_kernel<1024><<<grid, 1024>>>(hist_g, hist_h, hist_c, node_slots, total_bins, offsets, bins, p, sp, mask_ptr,
                                                candidates);
         check(cudaGetLastError(), "split kernel");
         std::vector<Candidate> all(slots.size() * static_cast<size_t>(p));
@@ -491,12 +550,16 @@ struct GpuTreeTrainer::Impl {
 };
 
 GpuTreeTrainer::GpuTreeTrainer(const QuantizedDataset& dataset, std::span<const double> labels,
-                               std::span<const double> weights, GpuObjective objective, double base_score)
+                               std::span<const double> weights, GpuObjective objective, double base_score,
+                               int num_classes)
     : impl_(std::make_unique<Impl>()) {
     Impl& s = *impl_;
     s.n = dataset.rows();
     s.p = dataset.features();
     s.objective = objective;
+    s.num_classes = std::max(1, num_classes);
+    if (objective != GpuObjective::Multiclass && s.num_classes != 1)
+        throw std::invalid_argument("GpuTreeTrainer: num_classes > 1 needs the multiclass objective");
     if (static_cast<int>(labels.size()) != s.n)
         throw std::invalid_argument("GpuTreeTrainer: labels size mismatch");
     if (!weights.empty() && static_cast<int>(weights.size()) != s.n)
@@ -538,10 +601,17 @@ GpuTreeTrainer::GpuTreeTrainer(const QuantizedDataset& dataset, std::span<const 
         check(cudaMemcpy(s.weights, buffer.data(), buffer.size() * sizeof(float), cudaMemcpyHostToDevice),
               "copy weights");
     }
-    std::fill(buffer.begin(), buffer.end(), static_cast<float>(base_score));
-    s.margins = device_alloc<float>(buffer.size());
-    check(cudaMemcpy(s.margins, buffer.data(), buffer.size() * sizeof(float), cudaMemcpyHostToDevice),
+    // Margins are class-major: margins[class * n + row].
+    std::vector<float> init(static_cast<size_t>(s.n) * static_cast<size_t>(s.num_classes),
+                            static_cast<float>(base_score));
+    s.margins = device_alloc<float>(init.size());
+    check(cudaMemcpy(s.margins, init.data(), init.size() * sizeof(float), cudaMemcpyHostToDevice),
           "copy margins");
+    s.feature_mask = device_alloc<unsigned char>(2 * static_cast<size_t>(s.p));
+    s.missing_codes = device_alloc<int>(static_cast<size_t>(s.p));
+    check(cudaMemcpy(s.missing_codes, s.host_missing.data(), s.host_missing.size() * sizeof(int),
+                     cudaMemcpyHostToDevice),
+          "copy missing codes");
 
     s.g = device_alloc<float>(static_cast<size_t>(s.n));
     s.h = device_alloc<float>(static_cast<size_t>(s.n));
@@ -574,15 +644,21 @@ int GpuTreeTrainer::features() const noexcept {
     return impl_->p;
 }
 
-std::vector<GpuTreeNode> GpuTreeTrainer::grow(const GpuTreeParams& params) {
+std::vector<GpuTreeNode> GpuTreeTrainer::grow(const GpuTreeParams& params, int class_index,
+                                              std::span<const int> rows) {
     Impl& s = *impl_;
     const int max_leaves = std::max(1, params.max_leaves);
     s.ensure_slots(max_leaves + 1);
+    if (class_index < 0 || class_index >= s.num_classes)
+        throw std::invalid_argument("GpuTreeTrainer::grow: class_index out of range");
 
     // Gradients, their ranges, then fixed-point levels.
+    const int objective = s.objective == GpuObjective::Multiclass      ? 2
+                          : s.objective == GpuObjective::BinaryLogloss ? 1
+                                                                       : 0;
     check(cudaMemset(s.max_bits, 0, 2 * sizeof(unsigned int)), "clear max");
-    gradients_kernel<<<grid_for(s.n), 256>>>(s.labels, s.weights, s.margins, s.g, s.h, s.n,
-                                             s.objective == GpuObjective::BinaryLogloss ? 1 : 0, s.max_bits);
+    gradients_kernel<<<grid_for(s.n), 256>>>(s.labels, s.weights, s.margins, s.g, s.h, s.n, objective,
+                                             s.num_classes, class_index, s.max_bits);
     check(cudaGetLastError(), "gradients kernel");
     unsigned int bits[2];
     check(cudaMemcpy(bits, s.max_bits, sizeof(bits), cudaMemcpyDeviceToHost), "copy max");
@@ -593,8 +669,60 @@ std::vector<GpuTreeNode> GpuTreeTrainer::grow(const GpuTreeParams& params) {
     s.h_scale = h_max > 0.0F ? static_cast<double>(h_max) / kLevels : 1.0;
     quantize_kernel<<<grid_for(s.n), 256>>>(s.g, s.h, s.gq, s.hq, s.n, 1.0 / s.g_scale, 1.0 / s.h_scale);
     check(cudaGetLastError(), "quantize kernel");
-    iota_kernel<<<grid_for(s.n), 256>>>(s.rows, s.n);
-    check(cudaGetLastError(), "iota kernel");
+    // Root rows: all rows, or the given subsample.
+    if (rows.empty()) {
+        iota_kernel<<<grid_for(s.n), 256>>>(s.rows, s.n);
+        check(cudaGetLastError(), "iota kernel");
+        s.active_rows = s.n;
+    } else {
+        if (static_cast<int>(rows.size()) > s.n)
+            throw std::invalid_argument("GpuTreeTrainer::grow: more rows than the dataset");
+        check(cudaMemcpy(s.rows, rows.data(), rows.size_bytes(), cudaMemcpyHostToDevice), "copy rows");
+        s.active_rows = static_cast<int>(rows.size());
+    }
+    s.last_all_rows = s.active_rows == s.n;
+
+    // Column subsampling: a feature pool per tree, a subset of it per node.
+    std::mt19937_64 rng(params.seed ^ 0x5DEECE66DULL);
+    std::vector<int> pool(static_cast<size_t>(s.p));
+    std::iota(pool.begin(), pool.end(), 0);
+    if (params.feature_bagging_k > 0) {
+        const int k = std::min(params.feature_bagging_k, s.p);
+        std::vector<int> chosen;
+        if (params.feature_bagging_with_replacement) {
+            std::uniform_int_distribution<int> pick(0, s.p - 1);
+            for (int i = 0; i < k; ++i)
+                chosen.push_back(pick(rng));
+            std::sort(chosen.begin(), chosen.end());
+            chosen.erase(std::unique(chosen.begin(), chosen.end()), chosen.end());
+        } else {
+            std::shuffle(pool.begin(), pool.end(), rng);
+            chosen.assign(pool.begin(), pool.begin() + k);
+        }
+        pool = std::move(chosen);
+    } else if (params.tree_feature_percent < 100) {
+        const int k = std::max(1, s.p * std::max(1, params.tree_feature_percent) / 100);
+        std::shuffle(pool.begin(), pool.end(), rng);
+        pool.resize(static_cast<size_t>(k));
+    }
+    const bool sample_features = static_cast<int>(pool.size()) < s.p || params.node_feature_percent < 100;
+    auto node_masks = [&](size_t n_nodes) {
+        std::vector<unsigned char> masks;
+        if (!sample_features)
+            return masks;
+        masks.assign(n_nodes * static_cast<size_t>(s.p), 0);
+        for (size_t node = 0; node < n_nodes; ++node) {
+            std::vector<int> chosen = pool;
+            if (params.node_feature_percent < 100) {
+                const int k = std::max(1, static_cast<int>(pool.size()) * std::max(1, params.node_feature_percent) / 100);
+                std::shuffle(chosen.begin(), chosen.end(), rng);
+                chosen.resize(static_cast<size_t>(k));
+            }
+            for (int f : chosen)
+                masks[node * static_cast<size_t>(s.p) + static_cast<size_t>(f)] = 1;
+        }
+        return masks;
+    };
 
     struct Work {
         GpuTreeNode node;
@@ -633,14 +761,14 @@ std::vector<GpuTreeNode> GpuTreeTrainer::grow(const GpuTreeParams& params) {
 
     // Root.
     Work root;
-    root.node.count = s.n;
+    root.node.count = s.active_rows;
     root.node.row_begin = 0;
-    root.node.row_end = s.n;
+    root.node.row_end = s.active_rows;
     root.slot = take_slot();
-    s.build_histogram(root.slot, 0, s.n);
+    s.build_histogram(root.slot, 0, s.active_rows);
     nodes.push_back(root);
     {
-        const auto best = s.find_splits({root.slot}, params);
+        const auto best = s.find_splits({root.slot}, params, node_masks(1));
         nodes[0].split = best[0];
         nodes[0].node.G = best[0].Gp;
         nodes[0].node.H = best[0].Hp;
@@ -709,7 +837,7 @@ std::vector<GpuTreeNode> GpuTreeTrainer::grow(const GpuTreeParams& params) {
                 slots.push_back(rw.slot);
                 evaluated.push_back(&rw);
             }
-            const auto best = s.find_splits(slots, params);
+            const auto best = s.find_splits(slots, params, node_masks(slots.size()));
             for (size_t k = 0; k < evaluated.size(); ++k)
                 evaluated[k]->split = best[k];
             // Children that cannot split give their slot back.
@@ -744,8 +872,56 @@ std::vector<GpuTreeNode> GpuTreeTrainer::grow(const GpuTreeParams& params) {
 }
 
 void GpuTreeTrainer::update_margins(const std::vector<GpuTreeNode>& nodes, const std::vector<double>& values,
-                                    double scale) {
+                                    double scale, int class_index) {
     Impl& s = *impl_;
+    if (class_index < 0 || class_index >= s.num_classes)
+        throw std::invalid_argument("GpuTreeTrainer::update_margins: class_index out of range");
+    float* margins = s.margins + static_cast<size_t>(class_index) * static_cast<size_t>(s.n);
+
+    if (!s.last_all_rows) {
+        // The tree saw a subsample: route every row through it.
+        const size_t count = nodes.size();
+        if (static_cast<int>(count) > s.t_capacity) {
+            for (void* ptr : std::initializer_list<void*>{s.t_feature, s.t_threshold, s.t_missing_left, s.t_left,
+                                                          s.t_right, s.t_delta})
+                cudaFree(ptr);
+            s.t_feature = device_alloc<int>(count);
+            s.t_threshold = device_alloc<int>(count);
+            s.t_missing_left = device_alloc<unsigned char>(count);
+            s.t_left = device_alloc<int>(count);
+            s.t_right = device_alloc<int>(count);
+            s.t_delta = device_alloc<float>(count);
+            s.t_capacity = static_cast<int>(count);
+        }
+        std::vector<int> feature(count), threshold(count), left(count), right(count);
+        std::vector<unsigned char> missing_left(count);
+        std::vector<float> delta(count);
+        for (size_t i = 0; i < count; ++i) {
+            feature[i] = nodes[i].is_leaf ? -1 : nodes[i].feature;
+            threshold[i] = nodes[i].threshold;
+            missing_left[i] = nodes[i].missing_left ? 1 : 0;
+            left[i] = nodes[i].left;
+            right[i] = nodes[i].right;
+            delta[i] = nodes[i].is_leaf ? static_cast<float>(scale * values[i]) : 0.0F;
+        }
+        check(cudaMemcpy(s.t_feature, feature.data(), count * sizeof(int), cudaMemcpyHostToDevice), "copy tree");
+        check(cudaMemcpy(s.t_threshold, threshold.data(), count * sizeof(int), cudaMemcpyHostToDevice), "copy tree");
+        check(cudaMemcpy(s.t_missing_left, missing_left.data(), count, cudaMemcpyHostToDevice), "copy tree");
+        check(cudaMemcpy(s.t_left, left.data(), count * sizeof(int), cudaMemcpyHostToDevice), "copy tree");
+        check(cudaMemcpy(s.t_right, right.data(), count * sizeof(int), cudaMemcpyHostToDevice), "copy tree");
+        check(cudaMemcpy(s.t_delta, delta.data(), count * sizeof(float), cudaMemcpyHostToDevice), "copy tree");
+        if (s.wide)
+            traverse_update_kernel<uint16_t><<<grid_for(s.n), 256>>>(
+                static_cast<const uint16_t*>(s.codes), s.n, s.missing_codes, s.t_feature, s.t_threshold,
+                s.t_missing_left, s.t_left, s.t_right, s.t_delta, margins);
+        else
+            traverse_update_kernel<uint8_t><<<grid_for(s.n), 256>>>(
+                static_cast<const uint8_t*>(s.codes), s.n, s.missing_codes, s.t_feature, s.t_threshold,
+                s.t_missing_left, s.t_left, s.t_right, s.t_delta, margins);
+        check(cudaGetLastError(), "traversal kernel");
+        return;
+    }
+
     std::vector<std::pair<int, float>> leaves;
     for (size_t i = 0; i < nodes.size(); ++i)
         if (nodes[i].is_leaf && nodes[i].row_end > nodes[i].row_begin)
@@ -770,16 +946,22 @@ void GpuTreeTrainer::update_margins(const std::vector<GpuTreeNode>& nodes, const
           "copy leaf begins");
     check(cudaMemcpy(s.leaf_delta, deltas.data(), deltas.size() * sizeof(float), cudaMemcpyHostToDevice),
           "copy leaf deltas");
-    update_margins_kernel<<<grid_for(s.n), 256>>>(s.margins, s.rows, s.leaf_begin, s.leaf_delta,
+    update_margins_kernel<<<grid_for(s.n), 256>>>(margins, s.rows, s.leaf_begin, s.leaf_delta,
                                                   static_cast<int>(leaves.size()), s.n);
     check(cudaGetLastError(), "margin kernel");
 }
 
 std::vector<double> GpuTreeTrainer::margins() const {
     const Impl& s = *impl_;
-    std::vector<float> host(static_cast<size_t>(s.n));
+    const size_t K = static_cast<size_t>(s.num_classes);
+    std::vector<float> host(static_cast<size_t>(s.n) * K);
     check(cudaMemcpy(host.data(), s.margins, host.size() * sizeof(float), cudaMemcpyDeviceToHost), "copy margins");
-    return {host.begin(), host.end()};
+    // Class-major on the device -> row-major [row][class].
+    std::vector<double> out(host.size());
+    for (size_t k = 0; k < K; ++k)
+        for (size_t i = 0; i < static_cast<size_t>(s.n); ++i)
+            out[i * K + k] = host[k * static_cast<size_t>(s.n) + i];
+    return out;
 }
 
 }  // namespace foretree::cuda

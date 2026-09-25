@@ -15,8 +15,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-if TYPE_CHECKING:
-    pass
+
 
 
 def _clip_for_moments(x: np.ndarray, clip_std: int = 50) -> np.ndarray:
@@ -139,3 +138,41 @@ def safe_row_kurtosis(df: pd.DataFrame) -> pd.Series:
         for idx in result.index[result.isna()]:  # type: ignore[union-attr]
             result.loc[idx] = _row_kurtosis(df.loc[idx])  # type: ignore[index]
     return result
+
+
+# ── target helpers ──────────────────────────────────────────────────────
+
+
+def is_classification_target(y: pd.Series) -> bool:
+    """Heuristic: classification vs regression target."""
+    if y.dtype == "object" or str(y.dtype).startswith("category"):
+        return True
+    k = y.nunique(dropna=True)
+    n = max(1, len(y))
+    return (k <= 20) or (k / n < 0.05)
+
+
+def clean_target(y: pd.Series, task: str | None = None) -> pd.Series:
+    """Align and clean a target Series.
+
+    Fills or drops NaN values based on task type.  Returns a copy.
+
+    Parameters
+    ----------
+    y : pd.Series
+        Raw target values.
+    task : str | None
+        ``"classification"``, ``"regression"``, or ``None`` to auto-detect.
+    """
+    y = y.copy()
+    if task is None:
+        task = "classification" if is_classification_target(y) else "regression"
+
+    if y.isna().any():
+        if task == "classification":
+            mode_val = y.mode()
+            y = y.fillna(mode_val[0]) if len(mode_val) > 0 else y.dropna()
+        else:
+            med = y.median()
+            y = y.fillna(med) if not pd.isna(med) else y.dropna()
+    return y

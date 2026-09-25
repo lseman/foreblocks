@@ -40,12 +40,11 @@ using CByteArray = nb::ndarray<nb::numpy, uint8_t, nb::c_contig>;
 // the heap and the capsule owns it, so the array stays valid for its lifetime.
 // (Holding the owner in a local shared_ptr with a no-op capsule deleter frees
 // the storage on return and leaves numpy reading freed memory.)
-template <typename T>
-static nb::ndarray<nb::numpy, T, nb::c_contig> ndarray_from_storage(std::vector<T> data,
-                                                                     std::initializer_list<size_t> shape) {
+template <typename T, typename... Dims>
+static nb::ndarray<nb::numpy, T, nb::c_contig> ndarray_from_storage(std::vector<T> data, Dims... dims) {
     auto* owner = new std::vector<T>(std::move(data));
     nb::capsule cap(owner, [](void* p) noexcept { delete static_cast<std::vector<T>*>(p); });
-    return nb::ndarray<nb::numpy, T, nb::c_contig>(owner->data(), shape, std::move(cap));
+    return nb::ndarray<nb::numpy, T, nb::c_contig>(owner->data(), {static_cast<size_t>(dims)...}, std::move(cap));
 }
 
 // ---- Small helpers ----------------------------------------------------------
@@ -339,7 +338,7 @@ NB_MODULE(foreforest, m) {
                 ensure_1d(y, "y");
                 const ssize_t N = X.shape(0);
                 const ssize_t P = X.shape(1);
-                if (y.shape(0) != N)
+                if (static_cast<ssize_t>(y.shape(0)) != N)
                     throw std::invalid_argument("y length must equal X.shape[0]");
                 const bool has_X_valid = !X_valid.is_none();
                 const bool has_y_valid = !y_valid.is_none();
@@ -360,7 +359,7 @@ NB_MODULE(foreforest, m) {
                 const ssize_t Pv = Xv.shape(1);
                 if (Pv != P)
                     throw std::invalid_argument("X_valid.shape[1] must equal X.shape[1]");
-                if (yv.shape(0) != Nv)
+                if (static_cast<ssize_t>(yv.shape(0)) != Nv)
                     throw std::invalid_argument("y_valid length must equal X_valid.shape[0]");
 
                 self.fit_complete(X.data(), static_cast<int>(N), static_cast<int>(P), y.data(), Xv.data(),
@@ -379,16 +378,14 @@ NB_MODULE(foreforest, m) {
                 const ssize_t N = X.shape(0);
                 const ssize_t P = X.shape(1);
                 std::vector<double> out = self.predict(X.data(), static_cast<int>(N), static_cast<int>(P));
-                int K = std::max(self.num_classes() - 1, 1);
-                if (K <= 1) {
-                    return ndarray_from_storage(std::move(out), {N});
-                } else {
-                    return ndarray_from_storage(std::move(out), {N, static_cast<ssize_t>(K)});
-                }
+                const size_t columns = N > 0 ? out.size() / static_cast<size_t>(N) : 1;
+                if (columns <= 1)
+                    return ndarray_from_storage(std::move(out), N);
+                return ndarray_from_storage(std::move(out), N, columns);
             },
             nb::arg("X"),
-            "Predict. Returns (N,) for scalar, (N,) for binary, (N, K) for "
-            "multiclass.")
+            "Predict. Returns (N,) for regression and binary (probability of class 1), "
+            "(N, num_classes) class probabilities for multiclass.")
 
         .def(
             "predict_margin",
@@ -397,10 +394,14 @@ NB_MODULE(foreforest, m) {
                 const ssize_t N = X.shape(0);
                 const ssize_t P = X.shape(1);
                 std::vector<double> out = self.predict_margin(X.data(), static_cast<int>(N), static_cast<int>(P));
-                return ndarray_from_storage(std::move(out), {N});
+                const size_t columns = N > 0 ? out.size() / static_cast<size_t>(N) : 1;
+                if (columns <= 1)
+                    return ndarray_from_storage(std::move(out), N);
+                return ndarray_from_storage(std::move(out), N, columns);
             },
             nb::arg("X"),
-            "Predict raw scalar margins, one per row. "
+            "Predict raw margins: (N,), or (N, num_classes - 1) for multiclass (the "
+            "last class has margin 0). "
             "Forest prediction uses raw `X`, so neural-leaf inference is "
             "applied automatically when enabled.")
 
@@ -413,9 +414,9 @@ NB_MODULE(foreforest, m) {
                 std::vector<double> out = self.predict_contrib(X.data(), static_cast<int>(N), static_cast<int>(P));
                 int K = std::max(self.num_classes() - 1, 1);
                 if (K <= 1) {
-                    return ndarray_from_storage(std::move(out), {N, P + 1});
+                    return ndarray_from_storage(std::move(out), N, P + 1);
                 } else {
-                    return ndarray_from_storage(std::move(out), {N, static_cast<ssize_t>(K) * (P + 1)});
+                    return ndarray_from_storage(std::move(out), N, static_cast<ssize_t>(K) * (P + 1));
                 }
             },
             nb::arg("X"),
@@ -426,31 +427,31 @@ NB_MODULE(foreforest, m) {
              [](const ForeForest& self) {
                  std::vector<double> v = self.feature_importance_gain();
                  const auto n = static_cast<ssize_t>(v.size());
-                 return ndarray_from_storage(std::move(v), {n});
+                 return ndarray_from_storage(std::move(v), n);
              })
         .def("feature_importance_cover",
              [](const ForeForest& self) {
                  std::vector<double> v = self.feature_importance_cover();
                  const auto n = static_cast<ssize_t>(v.size());
-                 return ndarray_from_storage(std::move(v), {n});
+                 return ndarray_from_storage(std::move(v), n);
              })
         .def("feature_importance_frequency",
              [](const ForeForest& self) {
                  std::vector<int> v = self.feature_importance_frequency();
                  const auto n = static_cast<ssize_t>(v.size());
-                 return ndarray_from_storage(std::move(v), {n});
+                 return ndarray_from_storage(std::move(v), n);
              })
         .def("train_metric_history",
              [](const ForeForest& self) {
-                 const std::vector<double>& v = self.train_metric_history();
-                 const auto n = static_cast<ssize_t>(v.size());
-                 return ndarray_from_storage(std::move(v), {n});
+                 std::vector<double> v = self.train_metric_history();
+                 const auto n = v.size();
+                 return ndarray_from_storage(std::move(v), n);
              })
         .def("valid_metric_history",
              [](const ForeForest& self) {
-                 const std::vector<double>& v = self.valid_metric_history();
-                 const auto n = static_cast<ssize_t>(v.size());
-                 return ndarray_from_storage(std::move(v), {n});
+                 std::vector<double> v = self.valid_metric_history();
+                 const auto n = v.size();
+                 return ndarray_from_storage(std::move(v), n);
              })
         .def("training_backend", &ForeForest::training_backend,
              "Trainer used by the last fit: 'gpu', 'cpu+cuda-histograms' or 'cpu'.")
@@ -534,7 +535,7 @@ NB_MODULE(foreforest, m) {
                 nb::gil_scoped_release release;
                 out = (self.*method)(X.data(), N, P);
             }
-            return ndarray_from_storage(std::move(out), {static_cast<size_t>(N)});
+            return ndarray_from_storage(std::move(out), static_cast<size_t>(N));
         };
     };
 
@@ -594,7 +595,7 @@ NB_MODULE(foreforest, m) {
                     nb::gil_scoped_release release;
                     out = self.predict(X.data(), N, P);
                 }
-                return ndarray_from_storage(std::move(out), {static_cast<size_t>(N)});
+                return ndarray_from_storage(std::move(out), static_cast<size_t>(N));
             },
             nb::arg("X"), "+1 for inliers, -1 for outliers.")
         .def_prop_ro("offset", &IsolationForest::offset)

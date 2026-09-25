@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 import numpy as np
 import pandas as pd
 from scipy.stats import binomtest
@@ -120,9 +122,9 @@ class BorutaSelector(BaseEstimator, TransformerMixin, FeatureSelectorABC):
             # Early stop if all features decided
             if n_tentative == 0:
                 if self.verbose:
-                    print(
-                        f"  Boruta converged at iteration {iteration + 1}: "
-                        f"{n_accepted} accepted, {n_rejected} rejected"
+                    logger.info(
+                        "Boruta converged at iteration %d: %d accepted, %d rejected",
+                        iteration + 1, n_accepted, n_rejected,
                     )
                 break
 
@@ -176,9 +178,9 @@ class BorutaSelector(BaseEstimator, TransformerMixin, FeatureSelectorABC):
                     n_accepted += 1
                     n_tentative -= 1
                     if self.verbose:
-                        print(
-                            f"  Iter {iteration + 1}: ✅ {feat_name} ACCEPTED "
-                            f"(k={k}, p={p_value:.4f})"
+                        logger.info(
+                            "Iter %d: %s ACCEPTED (k=%d, p=%.4f)",
+                            iteration + 1, feat_name, k, p_value,
                         )
 
             # Reject features with zero hits after enough iterations
@@ -195,17 +197,17 @@ class BorutaSelector(BaseEstimator, TransformerMixin, FeatureSelectorABC):
                         n_rejected += 1
                         n_tentative -= 1
                         if self.verbose:
-                            print(
-                                f"  Iter {iteration + 1}: ❌ {feat_name} REJECTED "
-                                f"(k=0 after {n_trials} iters)"
+                            logger.info(
+                                "Iter %d: %s REJECTED (k=0 after %d iters)",
+                                iteration + 1, feat_name, n_trials,
                             )
 
             # Report
             if self.verbose:
-                print(
-                    f"  Iter {iteration + 1}/{self.max_iter}: "
-                    f"{n_accepted} accepted, {n_rejected} rejected, "
-                    f"{n_tentative} tentative"
+                logger.info(
+                    "Iter %d/%d: %d accepted, %d rejected, %d tentative",
+                    iteration + 1, self.max_iter,
+                    n_accepted, n_rejected, n_tentative,
                 )
 
         # Set final results

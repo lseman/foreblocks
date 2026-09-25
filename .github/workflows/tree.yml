@@ -1,0 +1,53 @@
+name: tree (C++ + bindings)
+
+on:
+  push:
+    paths:
+      - "projects/tree/**"
+      - ".github/workflows/tree.yml"
+  pull_request:
+    paths:
+      - "projects/tree/**"
+      - ".github/workflows/tree.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    # CPU-only: CI runners have no GPU (the CUDA tests skip themselves).
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-14
+      CXX: g++-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++-14 cmake ninja-build libfmt-dev libeigen3-dev libtbb-dev
+          python -m pip install numpy pytest
+
+      - name: Configure
+        run: >
+          cmake -S projects/tree -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DPython3_EXECUTABLE="$(which python)"
+          -DTREE_ENABLE_CUDA_BACKEND=OFF
+          -DTREE_ENABLE_STDEXEC=OFF
+          -DTREE_BUILD_TESTS=ON
+          -DTREE_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: C++ tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Python binding tests
+        run: PYTHONPATH=build python -m pytest projects/tree/tests/test_foreforest_python.py -q -rs

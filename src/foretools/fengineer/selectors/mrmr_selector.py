@@ -17,8 +17,7 @@ from .adaptive_mrmr import AdaptiveMRMR
 from .base import FeatureSelectorABC
 from .mi_selector import MISelector
 
-if TYPE_CHECKING:
-    pass
+
 
 
 class MRMRSelector(FeatureSelectorABC):

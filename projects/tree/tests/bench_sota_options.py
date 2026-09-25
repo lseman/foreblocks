@@ -15,7 +15,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import foreforest  # noqa: E402
 import numpy as np
 from sklearn.ensemble import (
     HistGradientBoostingClassifier,
@@ -37,6 +36,8 @@ def _configure_import_paths() -> None:
 
 
 _configure_import_paths()
+
+import foreforest  # noqa: E402
 
 
 def mse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -152,15 +153,18 @@ def _build_tree_cfg(tree_overrides: dict[str, Any]) -> Any:
     cfg.subsample_bynode = 1.0
     cfg.subsample_with_replacement = True
     cfg.subsample_importance_scale = False
-    cfg.goss.enabled = False
-    cfg.goss.top_rate = 0.2
-    cfg.goss.other_rate = 0.1
-    cfg.goss.min_node_size = 1024
+    # Nested configs are returned by value: modify a copy and assign it back.
+    goss = cfg.goss
+    goss.enabled = False
+    goss.top_rate = 0.2
+    goss.other_rate = 0.1
+    goss.min_node_size = 1024
     for k, v in tree_overrides.items():
         if k.startswith("goss_"):
-            setattr(cfg.goss, k[len("goss_") :], v)
+            setattr(goss, k[len("goss_") :], v)
         else:
             setattr(cfg, k, v)
+    cfg.goss = goss
     return cfg
 
 
@@ -186,8 +190,10 @@ def _build_forest_cfg(
     cfg.dart_normalize = True
     cfg.hist_cfg = _build_hist_cfg(forest_overrides.get("binning_method", "adaptive"))
     cfg.tree_cfg = tree_cfg
+    # binning_method is this script's option (consumed above), not a config field.
     for k, v in forest_overrides.items():
-        setattr(cfg, k, v)
+        if k != "binning_method":
+            setattr(cfg, k, v)
     return cfg
 
 

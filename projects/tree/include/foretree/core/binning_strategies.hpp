@@ -387,9 +387,9 @@ struct StreamingKMeansBinner final : IBinningStrategy {
             // the cumulative weight axis, then find the nearest data point.
             const double step = total_w / static_cast<double>(sample_n);
             size_t idx = 0;
-            for (int s = 0; s < sample_n; ++s) {
+            for (size_t s = 0; s < sample_n; ++s) {
                 const double target = (static_cast<double>(s) + 0.5) * step;
-                while (idx + 1 < N && cumw[static_cast<size_t>(idx)] < target)
+                while (idx + 1 < static_cast<size_t>(N) && cumw[static_cast<size_t>(idx)] < target)
                     ++idx;
                 sample.push_back(vw[static_cast<size_t>(idx)]);
                 if (idx < N - 1) ++idx; // advance to avoid duplicates

@@ -161,8 +161,6 @@ class HistogramAccumulator {
                                          int n_samples, int P) {
         if (!layout_ || n_samples == 0 || P == 0) return;
 
-        const size_t total = layout_->total_size();
-
         // Process features in blocks of kBlockWidth.
         for (int feat_start = 0; feat_start < P; feat_start += kBlockWidth) {
             const int feat_end = std::min(feat_start + kBlockWidth, P);

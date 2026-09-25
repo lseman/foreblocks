@@ -19,8 +19,7 @@ from foretools.stats.adaptive_mi import AdaptiveMI
 from .base import FeatureSelectorABC
 from .redundancy import RedundancyPruner
 
-if TYPE_CHECKING:
-    pass
+
 
 
 class MISelector(FeatureSelectorABC):

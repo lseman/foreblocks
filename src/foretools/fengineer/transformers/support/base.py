@@ -22,8 +22,7 @@ import pandas as pd
 
 from .config import FeatureConfig
 
-if TYPE_CHECKING:
-    pass
+
 
 T = TypeVar("T", bound="BaseFeatureTransformer")
 

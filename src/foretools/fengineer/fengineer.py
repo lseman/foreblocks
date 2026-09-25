@@ -112,13 +112,13 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         # Track feature creation statistics
         self.feature_stats_ = {}
 
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger(f"{self.__class__.__module__}.{self.__class__.__name__}")
         self.logger.setLevel(
-            getattr(logging, str(self.config.log_level).upper(), logging.INFO)
+            getattr(logging, str(self.config.log_level).upper(), logging.WARNING)
         )
+        # Avoid adding duplicate handlers on repeated instantiation
         if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            handler.setFormatter(logging.Formatter("%(message)s"))
+            handler = logging.NullHandler()
             self.logger.addHandler(handler)
 
     def _resolve_backend(self) -> str:
@@ -329,7 +329,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             y = pd.Series(y) if not isinstance(y, pd.Series) else y.copy()
 
         self._log(
-            f"🚀 Fitting FeatureEngineer on {X.shape[0]} rows, {X.shape[1]} columns"
+            f"Fitting FeatureEngineer on {X.shape[0]} rows, {X.shape[1]} columns"
         )
         self.feature_stats_ = {}
 
@@ -337,7 +337,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         current_X = X.copy()
 
         for name, transformer in self.transformers_.items():
-            self._log(f"🔧 Fitting {name} transformer...")
+            self._log(f"Fitting {name} transformer...")
             try:
                 transformer.fit(current_X, y)
                 transformed = self._transform_with_optional_y(transformer, current_X, y)
@@ -357,7 +357,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                 )
                 self.feature_stats_[name] = 0
 
-        self._log("🔍 Applying correlation filtering...")
+        self._log("Applying correlation filtering...")
         self.correlation_filter_ = CorrelationFilter(
             threshold=self.config.corr_threshold,
             method=getattr(self.config, "corr_filter_method", "variance"),
@@ -372,7 +372,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
         # Feature selection
         if y is not None and not current_X.empty:
-            self._log("🎯 Performing feature selection...")
+            self._log("Performing feature selection...")
             self.selector_ = FeatureSelector(self.config)
             self.selector_.fit(current_X, y)
             selected_features = self.selector_.get_selected_features()
@@ -382,7 +382,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
                 # Fit final scaler
                 if self._should_use_quantile_transform():
-                    print("📊 Fitting final quantile transformer...")
+                    self._log("Fitting final quantile transformer...")
                     self.final_scaler_ = QuantileTransformer(
                         n_quantiles=min(1000, max(10, len(current_X) // 2)),
                         output_distribution="normal",
@@ -392,11 +392,11 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                     self.final_scaler_.fit(X_filled)
 
                 self._log(
-                    f"✅ Selected {len(selected_features)} features after filtering"
+                    f"Selected {len(selected_features)} features after filtering"
                 )
             else:
                 self._log(
-                    "⚠️  No features selected - pipeline may need tuning",
+                    "No features selected - pipeline may need tuning",
                     level="warning",
                 )
 
@@ -535,7 +535,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
     def _print_feature_summary(self):
         """Log summary of feature creation."""
         total_features = sum(self.feature_stats_.values())
-        self._log("\n📈 Feature Creation Summary:")
+        self._log("Feature Creation Summary:")
         self._log("-" * 40)
         for name, count in self.feature_stats_.items():
             self._log(f"{name.title():<15}: {count:>4} features")
@@ -596,7 +596,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
         importance_scores = self.get_feature_importance()
         if importance_scores is None:
-            self.logger.warning("❌ No feature importance scores available.")
+            self.logger.warning("No feature importance scores available.")
             return
 
         top_scores = importance_scores.head(top_k)
@@ -606,7 +606,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         bars = plt.barh(range(len(top_scores)), top_scores.values, color=colors)
 
         plt.title(
-            f"🎯 Top {top_k} Features by Importance",
+            f"Top {top_k} Features by Importance",
             fontsize=16,
             fontweight="bold",
         )

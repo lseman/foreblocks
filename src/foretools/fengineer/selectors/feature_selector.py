@@ -18,18 +18,20 @@ import pandas as pd
 from foretools.stats.adaptive_mi import AdaptiveMI
 
 from .adaptive_mrmr import AdaptiveMRMR
+from .base import FeatureSelectorABC
 from .boruta import BorutaSelector
 from .mi_selector import MISelector
 from .mrmr_selector import MRMRSelector
 from .redundancy import RedundancyPruner
 from .rfecv import AdvancedRFECV, RFECVConfig
+from ..transformers.support.stats_safe import clean_target, is_classification_target
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pipeline orchestrator (replaces the old monolithic FeatureSelector)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class PipelineSelector:
+class PipelineSelector(FeatureSelectorABC):
     """
     Multi-stage feature selection pipeline.
 
@@ -49,6 +51,11 @@ class PipelineSelector:
     # ── public attrs (exposed for backward compat) ──────────────────────
     selected_features_: list[str]
     selection_method_: str
+
+    @property
+    def selection_method(self) -> str:
+        """Return the active selection method name."""
+        return self.selection_method_
     mi_scores_: pd.Series | None
     mrmr_scores_: pd.Series | None
     rfecv_selector_: AdvancedRFECV | None
@@ -384,24 +391,7 @@ class PipelineSelector:
 
     @staticmethod
     def _clean_target(y: pd.Series) -> pd.Series:
-        y = y.copy()
-        if y.isna().any():
-            task = str(getattr(y, "_task", "regression"))
-            if task == "classification":
-                mode_val = y.mode()
-                y = y.fillna(mode_val[0]) if len(mode_val) > 0 else y.dropna()
-            else:
-                med = y.median()
-                y = y.fillna(med) if not pd.isna(med) else y.dropna()
-        return y
-
-    @staticmethod
-    def _is_classification(y: pd.Series) -> bool:
-        if y.dtype == "object" or str(y.dtype).startswith("category"):
-            return True
-        k = y.nunique(dropna=True)
-        n = max(1, len(y))
-        return (k <= 20) or (k / n < 0.05)
+        return clean_target(y)
 
 
 # Backward-compatibility alias

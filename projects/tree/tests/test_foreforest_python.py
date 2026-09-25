@@ -28,6 +28,17 @@ def _gbdt(n_estimators=40, cuda=False):
     return cfg
 
 
+def _cuda_available():
+    try:
+        cfg = _gbdt(n_estimators=1)
+        cfg.device = ff.Device.CUDA
+        X, y = _binary_data(n=200)
+        ff.ForeForest(cfg).fit_complete(X, y)
+        return True
+    except (RuntimeError, ValueError):  # no device / built without CUDA
+        return False
+
+
 def test_returned_arrays_own_their_memory():
     # Arrays used to point at freed C++ vectors: repeated calls and garbage
     # collection changed their contents.
@@ -52,6 +63,8 @@ def test_gbdt_learns_and_cuda_matches_cpu():
     cpu.fit_complete(X, y)
     accuracy = ((cpu.predict(X) > 0.5) == y).mean()
     assert accuracy > 0.9
+    if not _cuda_available():
+        return
     gpu = ff.ForeForest(_gbdt(cuda=True))
     gpu.fit_complete(X, y)
     # Float32 GPU histograms may flip near-tied splits; predictions stay close.
@@ -94,23 +107,12 @@ def test_quantized_training_is_deterministic_and_accurate():
     acc_exact = ((exact.predict(X) > 0.5) == y).mean()
     acc_quant = ((runs[0] > 0.5) == y).mean()
     assert acc_quant > acc_exact - 0.01
-    cfg = _gbdt(cuda=True)
+    cfg = _gbdt(cuda=_cuda_available())
     cfg.quantized_gradients = True
     cfg.quantized_gradient_bits = 4
     model = ff.ForeForest(cfg)
     model.fit_complete(X, y)
     assert ((model.predict(X) > 0.5) == y).mean() > 0.85
-
-
-def _cuda_available():
-    try:
-        cfg = _gbdt(n_estimators=1)
-        cfg.device = ff.Device.CUDA
-        X, y = _binary_data(n=200)
-        ff.ForeForest(cfg).fit_complete(X, y)
-        return True
-    except RuntimeError:
-        return False
 
 
 @pytest.mark.skipif(not _cuda_available(), reason="no CUDA device")
@@ -177,3 +179,67 @@ def test_device_auto_and_gpu_fallback_reporting():
     cpu = ff.ForeForest(cfg)
     cpu.fit_complete(X, y)
     assert cpu.training_backend().startswith("cpu")
+
+
+def _multiclass_data(n=6000, p=10, seed=0):
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(n, p))
+    score = X[:, 0] + 0.5 * X[:, 1] + rng.normal(0, 0.3, n)
+    y = np.digitize(score, [-0.5, 0.5]).astype(np.float64)  # classes 0, 1, 2
+    return X, y
+
+
+def _multiclass(n_estimators=120, device=None):
+    cfg = ff.ForeForestConfig()
+    cfg.mode = ff.Mode.GBDT
+    cfg.num_classes = 3
+    cfg.n_estimators = n_estimators
+    if device is not None:
+        cfg.device = device
+    return cfg
+
+
+def test_multiclass_probabilities_and_accuracy():
+    # Softmax used to ignore the implicit last class: probabilities for it were
+    # missing and accuracy collapsed.
+    X, y = _multiclass_data()
+    X_valid, y_valid = _multiclass_data(n=2000, seed=1)
+    model = ff.ForeForest(_multiclass(device=ff.Device.CPU))
+    model.fit_complete(X, y)
+    proba = model.predict(X_valid)
+    assert proba.shape == (len(X_valid), 3)
+    np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-9)
+    assert (proba.argmax(axis=1) == y_valid).mean() > 0.8
+    assert model.predict_margin(X_valid).shape == (len(X_valid), 2)
+
+    cfg = _multiclass(n_estimators=2000, device=ff.Device.CPU)
+    cfg.learning_rate = 0.3
+    cfg.early_stopping_enabled = True
+    cfg.early_stopping_rounds = 5
+    stopper = ff.ForeForest(cfg)
+    stopper.fit_complete(X, y, X_valid, y_valid)
+    assert 0 < stopper.best_iteration() < 2000 and stopper.best_iteration() % 2 == 0
+
+
+@pytest.mark.skipif(not _cuda_available(), reason="no CUDA device")
+def test_gpu_multiclass_and_subsampling_match_cpu():
+    X, y = _multiclass_data(n=20000)
+    X_valid, y_valid = _multiclass_data(n=4000, seed=1)
+    cpu = ff.ForeForest(_multiclass(device=ff.Device.CPU))
+    cpu.fit_complete(X, y)
+    gpu = ff.ForeForest(_multiclass(device=ff.Device.CUDA))
+    gpu.fit_complete(X, y)
+    assert gpu.training_backend() == "gpu"
+    assert np.abs(gpu.predict(X_valid) - cpu.predict(X_valid)).mean() < 0.01
+
+    cfg = _gbdt(n_estimators=60)
+    cfg.device = ff.Device.CUDA
+    cfg.gbdt_use_subsample = True
+    cfg.gbdt_row_subsample = 0.7
+    cfg.colsample_bytree = 0.7
+    cfg.colsample_bynode = 0.8
+    Xb, yb = _binary_data(n=20000)
+    sampled = ff.ForeForest(cfg)
+    sampled.fit_complete(Xb, yb)
+    assert sampled.training_backend() == "gpu" and sampled.gpu_fallback_reason() == ""
+    assert ((sampled.predict(Xb) > 0.5) == yb).mean() > 0.85

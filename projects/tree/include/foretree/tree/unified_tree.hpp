@@ -1419,7 +1419,7 @@ class UnifiedTree {
 
     // Compute multiclass TreeSHAP: return [N, K_*(P+1)].
     std::vector<double> compute_multiclass_tree_shap_(
-        std::span<const uint16_t> Xb, int N, int P, const double* Xraw_opt) const {
+        std::span<const uint16_t> Xb, int N, int /*P*/, const double* Xraw_opt) const {
         const size_t row_size = static_cast<size_t>(K_) * static_cast<size_t>(P_ + 1);
         std::vector<double> out(static_cast<size_t>(N) * row_size, 0.0);
         std::vector<int> feature_to_pos(static_cast<size_t>(P_), -1);

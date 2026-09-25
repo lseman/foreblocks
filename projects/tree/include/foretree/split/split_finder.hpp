@@ -313,9 +313,10 @@ public:
             // Scan bins for this feature, computing C-way split gain
             for (int bin = 0; bin + 1 < finite_bins; ++bin) {
                 double split_gain_total = 0.0;
+                bool children_valid = true;
 
                 // Compute gain for each class independently
-                for (int c = 0; c < num_classes; ++c) {
+                for (int c = 0; c < num_classes && children_valid; ++c) {
                     // Left child: sum gradients/hessians for bins 0..bin
                     double GL = 0.0, HL = 0.0;
                     int nL = 0;
@@ -331,8 +332,11 @@ public:
                     // Right child: complement
                     double GR = parent_G[c] - GL;
                     double HR = parent_H[c] - HL;
-                    int nR = ctx.Cp - nL;
-
+                    // Counts are shared across classes: enforce min_samples_leaf.
+                    if (nL < ctx.hyp.min_samples_leaf_ || ctx.Cp - nL < ctx.hyp.min_samples_leaf_) {
+                        children_valid = false;
+                        break;
+                    }
                     // Per-class gain (single split, binary partition)
                     if (HL + ctx.hyp.lambda_ > 0.0 && HR + ctx.hyp.lambda_ > 0.0) {
                         double gain_L = 0.5 * GL * GL / (HL + ctx.hyp.lambda_);
@@ -341,6 +345,8 @@ public:
                     }
                 }
 
+                if (!children_valid)
+                    continue;
                 // Apply regularization
                 split_gain_total -= ctx.hyp.gamma_;
 
