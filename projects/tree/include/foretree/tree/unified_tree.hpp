@@ -2470,6 +2470,22 @@ class UnifiedTree {
                 });
                 return;
             }
+            // Large datasets: a feature's column no longer fits in cache, so
+            // gather row-wise (one or two cache lines per row, all features).
+            constexpr int kRowWiseMinDatasetRows = 400000;
+            if (T.N_ >= kRowWiseMinDatasetRows && row_count >= 2048) {
+                T.Xb_->visit_codes([&](auto codes) {
+                    dispatch_row_wise_histogram(
+                        T.unit_hessian_, codes, T.P_, row_count,
+                        std::forward<RowAt>(row_at), std::span<const int>(feats),
+                        std::span<const size_t>(T.feature_offsets_),
+                        std::span<const int>(T.missing_ids_per_feat_),
+                        std::span<const double>(*T.g_),
+                        std::span<const double>(*T.h_),
+                        HistogramOutputView{hist.G, hist.H, hist.C}, *T.executor_);
+                });
+                return;
+            }
             T.Xb_->visit_feature_major_codes([&](auto codes) {
                 dispatch_feature_major_histogram(
                     T.unit_hessian_, codes, T.N_, row_count,

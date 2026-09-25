@@ -95,7 +95,11 @@ template <class F> inline void bulk_iota(Context& ctx, int n, F&& fn) {
 // ============================================================================
 struct ForeForestConfig {
     enum class Mode { Bagging, GBDT, FWBoost } mode = Mode::Bagging;
-    enum class Device { CPU, CUDA, Auto } device = Device::CPU;
+    // Auto: whole-tree GPU training when a CUDA device is present, the
+    // configuration supports it and the data is large enough to benefit;
+    // otherwise CPU. CUDA: GPU training when supported (else CPU, reported by
+    // gpu_fallback_reason()). CPU: never train trees on the GPU.
+    enum class Device { CPU, CUDA, Auto } device = Device::Auto;
 #ifdef FORETREE_HAS_CUDA
     bool enable_cuda_backend = true; // Enabled by default when compiled with CUDA
 #else
@@ -343,6 +347,16 @@ public:
                                         "disabled");
         }
 #endif
+        gpu_fallback_reason_.clear();
+#ifdef FORETREE_HAS_CUDA
+        training_backend_ = cuda_histogram_engine_ ? "cpu+cuda-histograms" : "cpu";
+        if (cfg_.device == ForeForestConfig::Device::CUDA) {
+            if (const char* blocker = gpu_training_blocker_())
+                gpu_fallback_reason_ = blocker;
+        }
+#else
+        training_backend_ = "cpu";
+#endif
         QuantizedDatasetPtr valid_codes;
         if (has_valid) {
             valid_codes = ghs_->prebin_matrix_compact(X_valid_fit, N_valid, P_valid_eff);
@@ -582,6 +596,17 @@ public:
     const std::vector<double>& valid_metric_history() const {
         return valid_metric_history_;
     }
+    // Which trainer ran in the last fit: "gpu" (whole-tree GPU training),
+    // "cpu+cuda-histograms" (CPU trees, large histograms on the GPU) or "cpu".
+    const std::string& training_backend() const {
+        return training_backend_;
+    }
+    // Why device == CUDA fell back to the CPU trainer in the last fit (empty
+    // when it did not).
+    const std::string& gpu_fallback_reason() const {
+        return gpu_fallback_reason_;
+    }
+
     int best_iteration() const {
         return best_iteration_;
     }
@@ -1319,25 +1344,20 @@ private:
     // Whole-tree GPU training (device == CUDA) covers scalar GBDT with squared
     // error or logloss, leaf-wise growth and plain axis histogram splits.
     // Anything else trains on the CPU path.
+    // Rows at which Device::Auto starts preferring the GPU trainer (below this
+    // the CPU is as fast; measured 15k x 8: tie, 30k x 16: GPU 0.34s vs 0.44s).
+    static constexpr int kAutoGpuMinRows = 20000;
+    static constexpr double kAutoGpuMinCells = 250000.0;
+
     bool gpu_training_supported_() const {
-        if (cfg_.device != ForeForestConfig::Device::CUDA || !cuda::is_available())
+        if (gpu_training_blocker_() != nullptr || !compact_codes_)
             return false;
-        const TreeConfig& t = cfg_.tree_cfg;
-        const bool objective_ok = cfg_.objective == ForeForestConfig::Objective::SquaredError ||
-                                  cfg_.objective == ForeForestConfig::Objective::BinaryLogloss;
-        const bool sampling_off = !cfg_.dart_enabled && !cfg_.gbdt_use_subsample && cfg_.colsample_bytree >= 1.0 &&
-                                  cfg_.colsample_bynode >= 1.0 && !t.goss.enabled && t.subsample_bytree >= 1.0 &&
-                                  t.subsample_bylevel >= 1.0 && t.subsample_bynode >= 1.0 &&
-                                  t.colsample_bytree_percent >= 100 && t.colsample_bylevel_percent >= 100 &&
-                                  t.colsample_bynode_percent >= 100 && t.feature_bagging_k < 0;
-        const bool plain_splits = t.split_mode == TreeConfig::SplitMode::Histogram &&
-                                  t.growth == TreeConfig::Growth::LeafWise && !t.enable_categorical_splits &&
-                                  !t.enable_oblique_splits && !t.enable_pair_interaction_splits &&
-                                  t.monotone_constraints.empty() && t.interaction_constraints.empty() &&
-                                  !t.neural_leaf.enabled && !t.sgld_enabled && !t.on_tree.enabled &&
-                                  t.leaf_depth_penalty == 0.0;
-        return cfg_.mode == ForeForestConfig::Mode::GBDT && objective_ok && sampling_off && plain_splits &&
-               !cfg_.ordered_boosting_enabled && cfg_.hist_cfg.max_bins <= 1023 && compact_codes_ != nullptr;
+        if (cfg_.device == ForeForestConfig::Device::CUDA)
+            return true;
+        if (cfg_.device == ForeForestConfig::Device::Auto)
+            return compact_codes_->rows() >= kAutoGpuMinRows &&
+                   static_cast<double>(compact_codes_->rows()) * compact_codes_->features() >= kAutoGpuMinCells;
+        return false;
     }
 
     void train_gbdt_gpu_(const double* y, const QuantizedDataset* Xb_valid, int N_valid, const double* y_valid,
@@ -1416,6 +1436,63 @@ private:
     }
 #endif
 
+    // First reason whole-tree GPU training cannot run for this configuration,
+    // or nullptr when it can (scalar GBDT, squared error / logloss, leaf-wise,
+    // plain axis histogram splits, no sampling / constraints).
+    const char* gpu_training_blocker_() const {
+#ifndef FORETREE_HAS_CUDA
+        return "built without CUDA";
+#else
+        if (!cuda::is_available())
+            return "no CUDA device";
+        const TreeConfig& t = cfg_.tree_cfg;
+        if (cfg_.mode != ForeForestConfig::Mode::GBDT)
+            return "mode is not GBDT";
+        if (cfg_.objective != ForeForestConfig::Objective::SquaredError &&
+            cfg_.objective != ForeForestConfig::Objective::BinaryLogloss)
+            return "objective is not squared error or binary logloss";
+        if (cfg_.num_classes > 2)
+            return "multiclass";
+        if (cfg_.dart_enabled)
+            return "DART";
+        if (t.goss.enabled)
+            return "GOSS";
+        if (cfg_.gbdt_use_subsample || t.subsample_bytree < 1.0 || t.subsample_bylevel < 1.0 ||
+            t.subsample_bynode < 1.0)
+            return "row subsampling";
+        if (cfg_.colsample_bytree < 1.0 || cfg_.colsample_bynode < 1.0 || t.colsample_bytree_percent < 100 ||
+            t.colsample_bylevel_percent < 100 || t.colsample_bynode_percent < 100 || t.feature_bagging_k >= 0)
+            return "column subsampling";
+        if (t.split_mode != TreeConfig::SplitMode::Histogram)
+            return "exact / hybrid split mode";
+        if (t.growth != TreeConfig::Growth::LeafWise)
+            return "level-wise / oblivious growth";
+        if (t.enable_categorical_splits)
+            return "categorical splits";
+        if (t.enable_oblique_splits)
+            return "oblique splits";
+        if (t.enable_pair_interaction_splits)
+            return "pair-interaction splits";
+        if (!t.monotone_constraints.empty())
+            return "monotone constraints";
+        if (!t.interaction_constraints.empty())
+            return "interaction constraints";
+        if (t.neural_leaf.enabled)
+            return "neural leaves";
+        if (t.sgld_enabled)
+            return "SGLD";
+        if (t.on_tree.enabled)
+            return "on-tree pruning";
+        if (t.leaf_depth_penalty != 0.0)
+            return "leaf depth penalty";
+        if (cfg_.ordered_boosting_enabled)
+            return "ordered boosting";
+        if (cfg_.hist_cfg.max_bins > 1023)
+            return "max_bins > 1023";
+        return nullptr;
+#endif
+    }
+
     void finalize_best_iteration_(bool has_valid) {
         if (has_valid && best_iteration_ == 0 && !valid_metric_history_.empty()) {
             best_iteration_ = static_cast<int>(trees_.size());
@@ -1444,6 +1521,7 @@ private:
 
 #ifdef FORETREE_HAS_CUDA
         if (K_ <= 1 && gpu_training_supported_()) {
+            training_backend_ = "gpu";
             train_gbdt_gpu_(y, Xb_valid, N_valid, y_valid, Xraw_valid);
             return;
         }
@@ -2068,6 +2146,8 @@ private:
     const uint8_t* Xmiss_neural_ = nullptr;
 
     std::vector<UnifiedTree> trees_;
+    std::string training_backend_ = "cpu";
+    std::string gpu_fallback_reason_;
     std::vector<int32_t> gradients_quantized_;  // per-tree packed levels (quantized training)
     std::vector<double> tree_weights_;
     std::vector<double> train_metric_history_;

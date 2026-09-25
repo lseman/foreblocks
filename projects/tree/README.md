@@ -165,7 +165,13 @@ prob = model.predict(X_test)            # (N,) for binary classification
 contrib = model.predict_contrib(X_test) # (N, P+1)
 ```
 
-**GPU training** (`cfg.device = foreforest.Device.CUDA`): the whole tree build
+**GPU training** (default `cfg.device = foreforest.Device.Auto`: used when a
+CUDA device is present, the configuration is supported and the data has at
+least 20k rows; `Device.CUDA` forces it, `Device.CPU` disables it). After a fit,
+`model.training_backend()` says which trainer ran (`"gpu"`,
+`"cpu+cuda-histograms"`, `"cpu"`); with `Device.CUDA` on an unsupported
+configuration the CPU trainer runs, `model.gpu_fallback_reason()` names the
+blocker and a `RuntimeWarning` is emitted. The whole tree build
 runs on the GPU: gradients, histograms (smaller child built, larger by
 subtraction), split search and row partitioning. The host only keeps the
 best-first leaf queue. Gradients use 64-bit fixed point, so histograms are
@@ -177,7 +183,7 @@ exact and training is deterministic. Trees are ordinary ForeForest trees
 | ForeForest GPU | 0.36 s | 0.89 s |
 | XGBoost GPU (`hist`, `device="cuda"`) | 0.74 s | 1.18 s |
 | LightGBM (CPU) | 0.49 s | 3.04 s |
-| ForeForest CPU | 1.21 s | 13.6 s |
+| ForeForest CPU | 1.21 s | 9.6 s (8.2 s with `max_bins=255`) |
 
 (RTX 5090 + Ryzen 9 9950X; same AUC for all.) Supported: GBDT, squared error
 or binary logloss, leaf-wise growth, axis histogram splits with missing
@@ -186,6 +192,12 @@ max_depth / max_leaves / max_delta_step, sample weights, validation and early
 stopping, `max_bins <= 1023`. Other options (categorical / oblique / pair
 splits, GOSS, DART, subsampling, constraints, multiclass, ...) train on the CPU
 path automatically.
+
+**Large data on CPU**: from 400k rows the CPU trainer builds histograms
+row-wise (each row's codes are one cache line for all features) instead of per
+feature column. `hist_cfg.max_bins = 255` makes codes uint8 (255 bins + the
+missing bin), ~15% faster fits at 1M rows with the same AUC; 256 stays the
+default because it was slightly more accurate on small datasets.
 
 **Threads**: `cfg.threads = 0` (default) sizes the training pool to the data:
 8 threads below ~10M cells (rows x features), 16 below ~50M, else all hardware

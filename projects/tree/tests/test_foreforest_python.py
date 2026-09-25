@@ -147,5 +147,33 @@ def test_gpu_training_matches_cpu_and_is_deterministic():
     assert 0 < stopper.best_iteration() <= stopper.size() <= 400
 
     dart = gpu_model(dart_enabled=True)  # unsupported on GPU: trains on the CPU path
-    dart.fit_complete(X, y)
+    with pytest.warns(RuntimeWarning, match="DART"):
+        dart.fit_complete(X, y)
     assert ((dart.predict(X) > 0.5) == y).mean() > 0.85
+
+
+@pytest.mark.skipif(not _cuda_available(), reason="no CUDA device")
+def test_device_auto_and_gpu_fallback_reporting():
+    assert ff.ForeForestConfig().device == ff.Device.Auto
+    X, y = _binary_data(n=30000)
+    auto = ff.ForeForest(_gbdt(n_estimators=5))
+    auto.fit_complete(X, y)
+    assert auto.training_backend() == "gpu" and auto.gpu_fallback_reason() == ""
+
+    small = ff.ForeForest(_gbdt(n_estimators=5))
+    small.fit_complete(X[:2000], y[:2000])  # too small to benefit: CPU
+    assert small.training_backend().startswith("cpu")
+
+    cfg = _gbdt(n_estimators=5)
+    cfg.device = ff.Device.CUDA
+    cfg.dart_enabled = True
+    dart = ff.ForeForest(cfg)
+    with pytest.warns(RuntimeWarning, match="DART"):
+        dart.fit_complete(X, y)
+    assert dart.gpu_fallback_reason() == "DART"
+
+    cfg = _gbdt(n_estimators=5)
+    cfg.device = ff.Device.CPU
+    cpu = ff.ForeForest(cfg)
+    cpu.fit_complete(X, y)
+    assert cpu.training_backend().startswith("cpu")

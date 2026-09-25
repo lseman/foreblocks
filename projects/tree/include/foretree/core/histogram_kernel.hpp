@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -295,6 +296,133 @@ template <class Code, bool WithCounts = true> struct QuantizedFeatureMajorHistog
         });
     }
 };
+
+// Row-wise histogram kernel for large datasets. When a feature's column no
+// longer fits in cache (hundreds of thousands of rows), gathering a node's
+// scattered rows column by column misses the cache on nearly every access, once
+// per feature. Row-wise, each row's codes are one or two contiguous cache
+// lines, loaded once for all features. Rows are split into blocks (one per
+// thread); each block accumulates into its own packed {g, h, count} histogram
+// over the active features, and blocks are summed in order (deterministic).
+template <class Code, bool UnitHessian, bool WithCounts = true> struct RowWiseHistogramKernel {
+    struct alignas(32) PackedBin {
+        double g;
+        double h;
+        int64_t c;
+        int64_t pad;
+    };
+
+    template <class RowAt>
+    static void build(std::span<const Code> row_major_codes, int features, int row_count, RowAt&& row_at,
+                      std::span<const int> active_features, std::span<const size_t> feature_offsets,
+                      std::span<const int> missing_codes, std::span<const double> gradients,
+                      std::span<const double> hessians, HistogramOutputView output, ParallelExecutor& executor) {
+        const int feature_count = static_cast<int>(active_features.size());
+        if (row_count <= 0 || feature_count == 0)
+            return;
+        // Compact layout over the active features.
+        std::vector<int> local_offset(static_cast<size_t>(feature_count) + 1, 0);
+        std::vector<int> active(static_cast<size_t>(feature_count)), missing(static_cast<size_t>(feature_count));
+        for (int p = 0; p < feature_count; ++p) {
+            const int f = active_features[static_cast<size_t>(p)];
+            active[static_cast<size_t>(p)] = f;
+            missing[static_cast<size_t>(p)] = missing_codes[static_cast<size_t>(f)];
+            local_offset[static_cast<size_t>(p) + 1] = local_offset[static_cast<size_t>(p)] + missing[static_cast<size_t>(p)] + 1;
+        }
+        const size_t local_bins = static_cast<size_t>(local_offset.back());
+        // Tasks = row blocks x feature groups. Large nodes use row blocks (each
+        // row's cache lines are loaded once); smaller nodes add feature groups
+        // so every thread has work (groups own disjoint slices: no reduction
+        // across groups).
+        const int threads = std::max(1, static_cast<int>(executor.thread_count()));
+        const int blocks = std::clamp(row_count / 2048, 1, threads);
+        const int groups = std::clamp(threads / blocks, 1, feature_count);
+        PackedBin* partials = histogram_scratch<PackedBin>(local_bins * static_cast<size_t>(blocks), 0);
+
+        auto run_task = [&](int task) {
+            const int block = task / groups;
+            const int group = task % groups;
+            const int p0 = static_cast<int>(static_cast<int64_t>(feature_count) * group / groups);
+            const int p1 = static_cast<int>(static_cast<int64_t>(feature_count) * (group + 1) / groups);
+            PackedBin* local = partials + static_cast<size_t>(block) * local_bins;
+            std::memset(static_cast<void*>(local + local_offset[static_cast<size_t>(p0)]), 0,
+                        static_cast<size_t>(local_offset[static_cast<size_t>(p1)] - local_offset[static_cast<size_t>(p0)]) *
+                            sizeof(PackedBin));
+            const int begin = static_cast<int>(static_cast<int64_t>(row_count) * block / blocks);
+            const int end = static_cast<int>(static_cast<int64_t>(row_count) * (block + 1) / blocks);
+            const int* act = active.data();
+            const int* mis = missing.data();
+            const int* off = local_offset.data();
+            for (int sample = begin; sample < end; ++sample) {
+                const int row = row_at(sample);
+                const double g = gradients[static_cast<size_t>(row)];
+                const double h = UnitHessian ? 0.0 : hessians[static_cast<size_t>(row)];
+                const Code* codes = row_major_codes.data() + static_cast<size_t>(row) * static_cast<size_t>(features);
+                for (int p = p0; p < p1; ++p) {
+                    const int code = static_cast<int>(codes[act[p]]);
+                    PackedBin& bin = local[off[p] + (code >= mis[p] ? mis[p] : code)];
+                    bin.g += g;
+                    if constexpr (!UnitHessian)
+                        bin.h += h;
+                    ++bin.c;
+                }
+            }
+        };
+        const int tasks = blocks * groups;
+        if (tasks == 1)
+            run_task(0);
+        else
+            executor.parallel_for(0, tasks, 1, [&](int t0, int t1) {
+                for (int t = t0; t < t1; ++t)
+                    run_task(t);
+            });
+
+        auto reduce = [&](int p0, int p1) {
+            for (int p = p0; p < p1; ++p) {
+                const size_t out = feature_offsets[static_cast<size_t>(active[static_cast<size_t>(p)])];
+                const size_t lo = static_cast<size_t>(local_offset[static_cast<size_t>(p)]);
+                const size_t nb = static_cast<size_t>(local_offset[static_cast<size_t>(p) + 1]) - lo;
+                for (size_t k = 0; k < nb; ++k) {
+                    double g = 0.0, h = 0.0;
+                    int64_t c = 0;
+                    for (int b = 0; b < blocks; ++b) {
+                        const PackedBin& bin = partials[static_cast<size_t>(b) * local_bins + lo + k];
+                        g += bin.g;
+                        h += bin.h;
+                        c += bin.c;
+                    }
+                    output.gradients[out + k] += g;
+                    if constexpr (WithCounts)
+                        output.counts[out + k] += static_cast<int>(c);
+                    if constexpr (UnitHessian)
+                        output.hessians[out + k] = static_cast<double>(output.counts[out + k]);
+                    else
+                        output.hessians[out + k] += h;
+                }
+            }
+        };
+        if (tasks == 1)
+            reduce(0, feature_count);
+        else
+            executor.parallel_for(0, feature_count, 2, reduce);
+    }
+};
+
+template <class Code, class RowAt>
+void dispatch_row_wise_histogram(bool unit_hessian, std::span<const Code> row_major_codes, int features,
+                                 int row_count, RowAt&& row_at, std::span<const int> active_features,
+                                 std::span<const size_t> feature_offsets, std::span<const int> missing_codes,
+                                 std::span<const double> gradients, std::span<const double> hessians,
+                                 HistogramOutputView output, ParallelExecutor& executor) {
+    if (unit_hessian)
+        RowWiseHistogramKernel<Code, true>::build(row_major_codes, features, row_count, std::forward<RowAt>(row_at),
+                                                  active_features, feature_offsets, missing_codes, gradients,
+                                                  hessians, output, executor);
+    else
+        RowWiseHistogramKernel<Code, false>::build(row_major_codes, features, row_count, std::forward<RowAt>(row_at),
+                                                   active_features, feature_offsets, missing_codes, gradients,
+                                                   hessians, output, executor);
+}
 
 template <class Code, class RowAt>
 void dispatch_feature_major_histogram(bool unit_hessian, std::span<const Code> feature_major_codes, int dataset_rows,

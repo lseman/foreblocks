@@ -20,6 +20,9 @@ struct HistogramConfig {
     // "adaptive". Quantile (hessian-weighted) matches or beats kmeans on
     // accuracy and is several times cheaper to fit.
     std::string method = "quantile";
+    // Note: max_bins = 255 makes codes uint8 (255 finite bins + the missing
+    // bin), ~17% faster on large data (800k x 50) but slightly less accurate
+    // on small data in our benchmarks, so 256 stays the default.
     int max_bins = 256;
     bool use_missing_bin = true;
 

@@ -80,6 +80,19 @@ static inline RawMatrixView parse_raw_matrix_view(const CDoubleArray& Xraw, cons
     return view;
 }
 
+// device=CUDA was requested but the configuration cannot train on the GPU:
+// say so instead of silently running the (much slower) CPU trainer.
+static void warn_on_gpu_fallback(const ForeForest& forest) {
+    const std::string& reason = forest.gpu_fallback_reason();
+    if (reason.empty())
+        return;
+    const std::string message =
+        "ForeForest: device=CUDA requested, but whole-tree GPU training does not support this configuration (" +
+        reason + "); trained on the CPU path instead.";
+    if (PyErr_WarnEx(PyExc_RuntimeWarning, message.c_str(), 1) != 0)
+        throw nb::python_error();
+}
+
 NB_MODULE(foreforest, m) {
     m.doc() = "ForeForest — scalar-output bagging/GBDT with DART, nanobind bindings";
 
@@ -335,6 +348,7 @@ NB_MODULE(foreforest, m) {
                                                 "None");
                 if (!has_X_valid) {
                     self.fit_complete(X.data(), static_cast<int>(N), static_cast<int>(P), y.data());
+                    warn_on_gpu_fallback(self);
                     return;
                 }
 
@@ -351,6 +365,7 @@ NB_MODULE(foreforest, m) {
 
                 self.fit_complete(X.data(), static_cast<int>(N), static_cast<int>(P), y.data(), Xv.data(),
                                   static_cast<int>(Nv), static_cast<int>(Pv), yv.data());
+                warn_on_gpu_fallback(self);
             },
             nb::arg("X"), nb::arg("y"), nb::arg("X_valid") = nb::none(), nb::arg("y_valid") = nb::none(),
             "Fit a scalar-output forest. `y` and optional `y_valid` must be "
@@ -437,6 +452,10 @@ NB_MODULE(foreforest, m) {
                  const auto n = static_cast<ssize_t>(v.size());
                  return ndarray_from_storage(std::move(v), {n});
              })
+        .def("training_backend", &ForeForest::training_backend,
+             "Trainer used by the last fit: 'gpu', 'cpu+cuda-histograms' or 'cpu'.")
+        .def("gpu_fallback_reason", &ForeForest::gpu_fallback_reason,
+             "Why device=CUDA trained on the CPU in the last fit ('' if it did not).")
         .def("best_iteration", &ForeForest::best_iteration)
         .def("best_score", &ForeForest::best_score)
         .def("early_stopped", &ForeForest::early_stopped)
