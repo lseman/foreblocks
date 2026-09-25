@@ -25,6 +25,9 @@
 #include "foretree/core/ordered_categorical.hpp"
 #include "foretree/split/split_engine.hpp"
 #include "foretree/tree/unified_tree.hpp"
+#ifdef FORETREE_HAS_CUDA
+#    include "foretree/gpu/gpu_trainer.hpp"
+#endif
 
 namespace foretree {
 
@@ -330,7 +333,9 @@ public:
         cuda_histogram_engine_.reset();
         if (request_cuda && !cuda::is_available())
             throw std::runtime_error("ForeForest: no CUDA device is available");
-        if (request_cuda)
+        // Whole-tree GPU training keeps its own device copy of the data; the
+        // hybrid histogram engine would be an unused second copy.
+        if (request_cuda && !gpu_training_supported_())
             cuda_histogram_engine_ = std::make_unique<cuda::CudaHistogramEngine>(*compact_codes_);
 #else
         if (cfg_.enable_cuda_backend || cfg_.device == ForeForestConfig::Device::CUDA) {
@@ -1310,6 +1315,107 @@ private:
     }
 
     // ===================== Boosting with DART ===========================
+#ifdef FORETREE_HAS_CUDA
+    // Whole-tree GPU training (device == CUDA) covers scalar GBDT with squared
+    // error or logloss, leaf-wise growth and plain axis histogram splits.
+    // Anything else trains on the CPU path.
+    bool gpu_training_supported_() const {
+        if (cfg_.device != ForeForestConfig::Device::CUDA || !cuda::is_available())
+            return false;
+        const TreeConfig& t = cfg_.tree_cfg;
+        const bool objective_ok = cfg_.objective == ForeForestConfig::Objective::SquaredError ||
+                                  cfg_.objective == ForeForestConfig::Objective::BinaryLogloss;
+        const bool sampling_off = !cfg_.dart_enabled && !cfg_.gbdt_use_subsample && cfg_.colsample_bytree >= 1.0 &&
+                                  cfg_.colsample_bynode >= 1.0 && !t.goss.enabled && t.subsample_bytree >= 1.0 &&
+                                  t.subsample_bylevel >= 1.0 && t.subsample_bynode >= 1.0 &&
+                                  t.colsample_bytree_percent >= 100 && t.colsample_bylevel_percent >= 100 &&
+                                  t.colsample_bynode_percent >= 100 && t.feature_bagging_k < 0;
+        const bool plain_splits = t.split_mode == TreeConfig::SplitMode::Histogram &&
+                                  t.growth == TreeConfig::Growth::LeafWise && !t.enable_categorical_splits &&
+                                  !t.enable_oblique_splits && !t.enable_pair_interaction_splits &&
+                                  t.monotone_constraints.empty() && t.interaction_constraints.empty() &&
+                                  !t.neural_leaf.enabled && !t.sgld_enabled && !t.on_tree.enabled &&
+                                  t.leaf_depth_penalty == 0.0;
+        return cfg_.mode == ForeForestConfig::Mode::GBDT && objective_ok && sampling_off && plain_splits &&
+               !cfg_.ordered_boosting_enabled && cfg_.hist_cfg.max_bins <= 1023 && compact_codes_ != nullptr;
+    }
+
+    void train_gbdt_gpu_(const double* y, const QuantizedDataset* Xb_valid, int N_valid, const double* y_valid,
+                         const double* Xraw_valid) {
+        const TreeConfig tc = make_tree_cfg_();
+        std::vector<double> weights = compute_sample_weights_(y, N_);
+        if (std::all_of(weights.begin(), weights.end(), [](double w) { return w == 1.0; }))
+            weights.clear();
+        const auto objective = cfg_.objective == ForeForestConfig::Objective::BinaryLogloss
+                                   ? cuda::GpuObjective::BinaryLogloss
+                                   : cuda::GpuObjective::SquaredError;
+        cuda::GpuTreeTrainer trainer(*compact_codes_, std::span<const double>(y, static_cast<size_t>(N_)),
+                                     weights, objective, base_score_);
+        cuda::GpuTreeParams params;
+        params.max_leaves = tc.max_leaves;
+        params.max_depth = tc.max_depth;
+        params.min_samples_leaf = tc.min_samples_leaf;
+        params.min_child_weight = tc.min_child_weight;
+        params.lambda = tc.lambda_;
+        params.alpha = tc.alpha_;
+        params.gamma = tc.gamma_;
+        params.missing_policy = tc.missing_policy == TreeConfig::MissingPolicy::AlwaysLeft    ? 1
+                                : tc.missing_policy == TreeConfig::MissingPolicy::AlwaysRight ? 2
+                                                                                               : 0;
+
+        const bool has_valid = (Xb_valid && y_valid && N_valid > 0);
+        std::vector<double> F_valid, pred_valid_buffer;
+        if (has_valid) {
+            F_valid.assign(static_cast<size_t>(N_valid), base_score_);
+            pred_valid_buffer.resize(static_cast<size_t>(N_valid));
+        }
+        int rounds_without_improve = 0;
+        std::vector<UnifiedTree::AxisNodeSpec> spec;
+        std::vector<double> values;
+        for (int m = 0; m < cfg_.n_estimators; ++m) {
+            const std::vector<cuda::GpuTreeNode> nodes = trainer.grow(params);
+            spec.assign(nodes.size(), {});
+            for (size_t i = 0; i < nodes.size(); ++i) {
+                const auto& n = nodes[i];
+                spec[i] = {n.feature, n.threshold, n.missing_left, n.left, n.right, n.is_leaf,
+                           n.depth,   n.count,     n.G,            n.H,    n.gain};
+            }
+            UnifiedTree T(tc, ghs_.get(), executor_);
+            T.adopt_axis_tree(P_, spec);
+            values.assign(nodes.size(), 0.0);
+            for (size_t i = 0; i < nodes.size(); ++i)
+                values[i] = T.node_leaf_value(static_cast<int>(i));
+            const double wt_new = cfg_.learning_rate;
+            trainer.update_margins(nodes, values, wt_new);
+            trees_.push_back(std::move(T));
+            tree_weights_.push_back(wt_new);
+
+            if (cfg_.track_train_metric) {
+                const std::vector<double> F = trainer.margins();
+                train_metric_history_.push_back(compute_metric_from_margin_(F, y, N_));
+            }
+            if (has_valid) {
+                predict_tree_on_binned_(trees_.back(), *Xb_valid, N_valid, P_, Xraw_valid, pred_valid_buffer);
+                for (int i = 0; i < N_valid; ++i)
+                    F_valid[static_cast<size_t>(i)] += wt_new * pred_valid_buffer[static_cast<size_t>(i)];
+                const double valid_metric = compute_metric_from_margin_(F_valid, y_valid, N_valid);
+                valid_metric_history_.push_back(valid_metric);
+                if (valid_metric + cfg_.early_stopping_min_delta < best_score_) {
+                    best_score_ = valid_metric;
+                    best_iteration_ = static_cast<int>(trees_.size());
+                    rounds_without_improve = 0;
+                } else if (cfg_.early_stopping_enabled && ++rounds_without_improve >= cfg_.early_stopping_rounds) {
+                    early_stopped_ = true;
+                    break;
+                }
+            } else {
+                best_iteration_ = static_cast<int>(trees_.size());
+            }
+        }
+        finalize_best_iteration_(has_valid);
+    }
+#endif
+
     void finalize_best_iteration_(bool has_valid) {
         if (has_valid && best_iteration_ == 0 && !valid_metric_history_.empty()) {
             best_iteration_ = static_cast<int>(trees_.size());
@@ -1336,6 +1442,12 @@ private:
         const int M = cfg_.n_estimators;
         int K_ = std::max(cfg_.num_classes - 1, 1);
 
+#ifdef FORETREE_HAS_CUDA
+        if (K_ <= 1 && gpu_training_supported_()) {
+            train_gbdt_gpu_(y, Xb_valid, N_valid, y_valid, Xraw_valid);
+            return;
+        }
+#endif
         if (K_ <= 1) {
             // Scalar path
             std::vector<double> F(N_, base_score_);

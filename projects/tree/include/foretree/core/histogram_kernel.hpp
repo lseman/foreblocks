@@ -36,7 +36,7 @@ template <class Code, bool UnitHessian, bool WithCounts = true> struct FeatureMa
                       std::span<const double> hessians, HistogramOutputView output, ParallelExecutor& executor) {
         const int feature_count = static_cast<int>(active_features.size());
         const int work = row_count * feature_count;
-        const int grain = work >= 32768 ? 1 : std::max(1, feature_count);
+        const int grain = work >= 2048 ? 1 : std::max(1, feature_count);
         // Gather the node's rows and gradients into contiguous order once
         // ("ordered gradients"), so each feature pass reads them sequentially
         // instead of re-gathering g[row] / h[row] through the row index.
@@ -188,7 +188,7 @@ template <class Code, bool WithCounts = true> struct QuantizedFeatureMajorHistog
         if (row_count <= 0 || feature_count == 0)
             return;
         const int64_t work = static_cast<int64_t>(row_count) * feature_count;
-        const int grain = work >= 32768 ? 1 : std::max(1, feature_count);
+        const int grain = work >= 2048 ? 1 : std::max(1, feature_count);
 
         int* rows = histogram_scratch<int>(static_cast<size_t>(row_count), 2);
         int32_t* ordered = histogram_scratch<int32_t>(static_cast<size_t>(row_count), 0);

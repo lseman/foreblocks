@@ -288,6 +288,76 @@ class UnifiedTree {
         return true;
     }
 
+    // A tree grown outside this class (e.g. by the GPU trainer): axis splits on
+    // bin codes (code <= threshold goes left, the missing code follows
+    // missing_left), node 0 the root, children by index.
+    struct AxisNodeSpec {
+        int feature = -1;
+        int threshold = -1;
+        bool missing_left = true;
+        int left = -1;
+        int right = -1;
+        bool is_leaf = true;
+        int depth = 0;
+        int count = 0;
+        double G = 0.0;
+        double H = 0.0;
+        double gain = 0.0;
+    };
+
+    // Install such a tree for `P` features. Leaf values use this tree's leaf
+    // formula (L1 soft threshold, lambda, max_delta_step) and the feature
+    // importances are accumulated as in fit(); the result predicts, packs and
+    // explains like any fitted tree. Scalar outputs only.
+    void adopt_axis_tree(int P, const std::vector<AxisNodeSpec>& spec) {
+        if (P <= 0 || spec.empty())
+            throw std::invalid_argument("UnifiedTree::adopt_axis_tree: empty tree");
+        P_ = P;
+        K_ = std::max(cfg_.num_classes - 1, 1);
+        if (K_ != 1)
+            throw std::invalid_argument("UnifiedTree::adopt_axis_tree: scalar trees only");
+        initialize_bin_info_();
+        reset_();
+        nodes_.reserve(spec.size());
+        for (size_t i = 0; i < spec.size(); ++i) {
+            const AxisNodeSpec& s = spec[i];
+            Node n;
+            n.id = static_cast<int>(i);
+            n.K = 1;
+            n.depth = s.depth;
+            n.C = s.count;
+            n.G.assign(1, s.G);
+            n.H.assign(1, s.H);
+            n.is_leaf = s.is_leaf;
+            if (s.is_leaf) {
+                n.leaf_values = leaf_values_(s.G, s.H, n.min_constraint, n.max_constraint);
+            } else {
+                n.feature = s.feature;
+                n.thr = s.threshold;
+                n.miss_left = s.missing_left;
+                n.split_kind = splitx::SplitKind::Axis;
+                n.left = s.left;
+                n.right = s.right;
+                n.best_gain = s.gain;
+                if (s.feature >= 0 && s.feature < P_) {
+                    feat_gain_[static_cast<size_t>(s.feature)] += s.gain;
+                    feat_frequency_[static_cast<size_t>(s.feature)]++;
+                    feat_cover_[static_cast<size_t>(s.feature)] += s.H;
+                }
+            }
+            nodes_.push_back(std::move(n));
+            register_pos_(nodes_.back());
+        }
+        next_id_ = static_cast<int>(spec.size());
+        pack_();
+    }
+
+    // Scalar leaf value of node `id` (0 for internal nodes).
+    [[nodiscard]] double node_leaf_value(int id) const {
+        const Node& n = nodes_.at(static_cast<size_t>(id));
+        return (n.is_leaf && !n.leaf_values.empty()) ? n.leaf_values[0] : 0.0;
+    }
+
     // Free the per-row training state (row routing, partition scratch). Only
     // training uses it; prediction does not.
     void release_training_rows() {

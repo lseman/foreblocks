@@ -73,6 +73,7 @@ if(TREE_ENABLE_CUDA_BACKEND)
     add_library(foretree_cuda STATIC
         "${TREE_SRC_DIR}/gpu/cuda_histogram.cu"
         "${TREE_SRC_DIR}/gpu/gpu_prediction.cu"
+        "${TREE_SRC_DIR}/gpu/gpu_trainer.cu"
     )
     target_include_directories(foretree_cuda PUBLIC "${TREE_INCLUDE_DIR}")
     target_link_libraries(foretree_cuda PUBLIC CUDA::cudart)

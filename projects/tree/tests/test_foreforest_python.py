@@ -100,3 +100,52 @@ def test_quantized_training_is_deterministic_and_accurate():
     model = ff.ForeForest(cfg)
     model.fit_complete(X, y)
     assert ((model.predict(X) > 0.5) == y).mean() > 0.85
+
+
+def _cuda_available():
+    try:
+        cfg = _gbdt(n_estimators=1)
+        cfg.device = ff.Device.CUDA
+        X, y = _binary_data(n=200)
+        ff.ForeForest(cfg).fit_complete(X, y)
+        return True
+    except RuntimeError:
+        return False
+
+
+@pytest.mark.skipif(not _cuda_available(), reason="no CUDA device")
+def test_gpu_training_matches_cpu_and_is_deterministic():
+    X, y = _binary_data(n=20000)
+    X[np.random.default_rng(1).random(X.shape) < 0.05] = np.nan
+    X_valid, y_valid = _binary_data(n=4000, seed=2)
+
+    cpu = ff.ForeForest(_gbdt(n_estimators=60))
+    cpu.fit_complete(X, y)
+
+    def gpu_model(**overrides):
+        cfg = _gbdt(n_estimators=60)
+        cfg.device = ff.Device.CUDA
+        for key, value in overrides.items():
+            setattr(cfg, key, value)
+        return ff.ForeForest(cfg)
+
+    runs = []
+    for _ in range(2):
+        model = gpu_model()
+        model.fit_complete(X, y)
+        runs.append(model.predict(X))
+    np.testing.assert_array_equal(runs[0], runs[1])
+    # Same algorithm, float margins / fixed-point gradients on the device.
+    assert np.abs(runs[0] - cpu.predict(X)).mean() < 0.01
+
+    contrib = model.predict_contrib(X[:50])
+    np.testing.assert_allclose(contrib.sum(axis=1), model.predict_margin(X[:50]), atol=1e-6)
+
+    stopper = gpu_model(early_stopping_enabled=True, early_stopping_rounds=5, n_estimators=400,
+                        learning_rate=0.3)
+    stopper.fit_complete(X, y, X_valid, y_valid)
+    assert 0 < stopper.best_iteration() <= stopper.size() <= 400
+
+    dart = gpu_model(dart_enabled=True)  # unsupported on GPU: trains on the CPU path
+    dart.fit_complete(X, y)
+    assert ((dart.predict(X) > 0.5) == y).mean() > 0.85

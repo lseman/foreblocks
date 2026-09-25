@@ -165,6 +165,28 @@ prob = model.predict(X_test)            # (N,) for binary classification
 contrib = model.predict_contrib(X_test) # (N, P+1)
 ```
 
+**GPU training** (`cfg.device = foreforest.Device.CUDA`): the whole tree build
+runs on the GPU: gradients, histograms (smaller child built, larger by
+subtraction), split search and row partitioning. The host only keeps the
+best-first leaf queue. Gradients use 64-bit fixed point, so histograms are
+exact and training is deterministic. Trees are ordinary ForeForest trees
+(prediction, SHAP, export unchanged).
+
+| 300 trees, 31 leaves, binary | 150k x 40 | 1M x 50 |
+|---|---|---|
+| ForeForest GPU | 0.36 s | 0.89 s |
+| XGBoost GPU (`hist`, `device="cuda"`) | 0.74 s | 1.18 s |
+| LightGBM (CPU) | 0.49 s | 3.04 s |
+| ForeForest CPU | 1.21 s | 13.6 s |
+
+(RTX 5090 + Ryzen 9 9950X; same AUC for all.) Supported: GBDT, squared error
+or binary logloss, leaf-wise growth, axis histogram splits with missing
+values, lambda / alpha / gamma / min_samples_leaf / min_child_weight /
+max_depth / max_leaves / max_delta_step, sample weights, validation and early
+stopping, `max_bins <= 1023`. Other options (categorical / oblique / pair
+splits, GOSS, DART, subsampling, constraints, multiclass, ...) train on the CPU
+path automatically.
+
 **Threads**: `cfg.threads = 0` (default) sizes the training pool to the data:
 8 threads below ~10M cells (rows x features), 16 below ~50M, else all hardware
 threads. Training is a chain of short parallel phases, so on small data more

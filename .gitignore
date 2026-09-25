@@ -111,3 +111,6 @@ aula_amanha/
 .aider*
 repos/
 datasets/
+
+# Agent session logs
+.logician/
