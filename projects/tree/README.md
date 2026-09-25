@@ -185,13 +185,15 @@ exact and training is deterministic. Trees are ordinary ForeForest trees
 | LightGBM (CPU) | 0.49 s | 3.04 s |
 | ForeForest CPU | 1.21 s | 9.6 s (8.2 s with `max_bins=255`) |
 
-(RTX 5090 + Ryzen 9 9950X; same AUC for all.) Supported: GBDT, squared error
-or binary logloss, leaf-wise growth, axis histogram splits with missing
-values, lambda / alpha / gamma / min_samples_leaf / min_child_weight /
-max_depth / max_leaves / max_delta_step, sample weights, validation and early
-stopping, `max_bins <= 1023`. Other options (categorical / oblique / pair
-splits, GOSS, DART, subsampling, constraints, multiclass, ...) train on the CPU
-path automatically.
+(RTX 5090 + Ryzen 9 9950X; same AUC for all.) Supported: GBDT, squared error,
+binary logloss or multiclass softmax, leaf-wise growth, axis histogram splits
+with missing values, lambda / alpha / gamma / min_samples_leaf /
+min_child_weight / max_depth / max_leaves / max_delta_step, sample weights,
+row subsampling (`gbdt_use_subsample` / `gbdt_row_subsample`), column
+subsampling (`colsample_bytree`, `colsample_bynode`, `feature_bagging_k`),
+validation and early stopping, `max_bins <= 1023`. Other options (categorical /
+oblique / pair splits, GOSS, DART, ordered boosting, tree-level row samplers,
+constraints, ...) train on the CPU path automatically.
 
 **Large data on CPU**: from 400k rows the CPU trainer builds histograms
 row-wise (each row's codes are one cache line for all features) instead of per
@@ -360,7 +362,7 @@ Python benchmarks in `tests/` compare ForeForest against sklearn HistGradientBoo
 | Interpretability | TreeSHAP contributions, feature importance (gain/cover/frequency) |
 | Pruning | Cost-complexity pruning (ccp_alpha) |
 | GPU support | CUDA histogram computation, GPU neural leaf prediction |
-| Multiclass | K-1 output trees |
+| Multiclass | Softmax with K-1 trees per round (last class implicit); `predict` returns (N, K) probabilities, `predict_margin` (N, K-1) |
 
 ## Performance Optimizations
 
