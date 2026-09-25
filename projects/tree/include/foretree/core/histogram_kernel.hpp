@@ -26,6 +26,22 @@ template <class Code, bool UnitHessian, bool WithCounts = true> struct FeatureMa
         const int feature_count = static_cast<int>(active_features.size());
         const int work = row_count * feature_count;
         const int grain = work >= 32768 ? 1 : std::max(1, feature_count);
+        // Gather the node's rows and gradients into contiguous order once
+        // ("ordered gradients"), so each feature pass reads them sequentially
+        // instead of re-gathering g[row] / h[row] through the row index.
+        std::vector<int> rows(static_cast<size_t>(row_count));
+        std::vector<double> ordered_g(static_cast<size_t>(row_count));
+        std::vector<double> ordered_h(UnitHessian ? 0 : static_cast<size_t>(row_count));
+        const int gather_grain = std::max(4096, row_count / std::max(1, static_cast<int>(executor.thread_count())));
+        executor.parallel_for(0, row_count, gather_grain, [&](int begin, int end) {
+            for (int sample = begin; sample < end; ++sample) {
+                const int row = row_at(sample);
+                rows[static_cast<size_t>(sample)] = row;
+                ordered_g[static_cast<size_t>(sample)] = gradients[static_cast<size_t>(row)];
+                if constexpr (!UnitHessian)
+                    ordered_h[static_cast<size_t>(sample)] = hessians[static_cast<size_t>(row)];
+            }
+        });
         executor.parallel_for(0, feature_count, grain, [&](int feature_begin, int feature_end) {
             for (int position = feature_begin; position < feature_end; ++position) {
                 const int feature = active_features[static_cast<size_t>(position)];
@@ -33,17 +49,18 @@ template <class Code, bool UnitHessian, bool WithCounts = true> struct FeatureMa
                 const size_t histogram_offset = feature_offsets[static_cast<size_t>(feature)];
                 const size_t column_offset = static_cast<size_t>(feature) * static_cast<size_t>(dataset_rows);
 
+                const Code* column = feature_major_codes.data() + column_offset;
+                double* out_g = output.gradients.data() + histogram_offset;
+                double* out_h = output.hessians.data() + histogram_offset;
+                int* out_c = output.counts.data() + histogram_offset;
                 for (int sample = 0; sample < row_count; ++sample) {
-                    const int row = row_at(sample);
-                    uint16_t bin = static_cast<uint16_t>(feature_major_codes[column_offset + static_cast<size_t>(row)]);
-                    if (bin >= missing)
-                        bin = missing;
-                    const size_t bin_offset = histogram_offset + static_cast<size_t>(bin);
-                    output.gradients[bin_offset] += gradients[static_cast<size_t>(row)];
+                    const uint16_t code = static_cast<uint16_t>(column[rows[static_cast<size_t>(sample)]]);
+                    const size_t bin = code >= missing ? missing : code;
+                    out_g[bin] += ordered_g[static_cast<size_t>(sample)];
                     if constexpr (WithCounts)
-                        ++output.counts[bin_offset];
+                        ++out_c[bin];
                     if constexpr (!UnitHessian)
-                        output.hessians[bin_offset] += hessians[static_cast<size_t>(row)];
+                        out_h[bin] += ordered_h[static_cast<size_t>(sample)];
                 }
 
                 if constexpr (UnitHessian) {

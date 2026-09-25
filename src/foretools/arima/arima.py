@@ -124,6 +124,35 @@ def _as_2d(X, n: int) -> np.ndarray | None:
 
 
 def difference(y: np.ndarray, d: int, D: int, s: int) -> np.ndarray:
+    """Apply non-seasonal and seasonal differencing to a time series.
+
+    Parameters
+    ----------
+    y : array-like[float]
+        Input time series.
+    d : int
+        Number of non-seasonal difference operations (first differences).
+    D : int
+        Number of seasonal difference operations.
+    s : int
+        Seasonal period. Must be >= 2 when D > 0.
+
+    Returns
+    -------
+    np.ndarray
+        Differenced series, shortened by ``d + D * (s - 1)`` observations.
+
+    Raises
+    ------
+    ValueError
+        If ``D > 0`` and ``s < 2``.
+
+    Examples
+    --------
+    >>> y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    >>> difference(y, d=1, D=0, s=1)
+    array([1., 1., 1., 1.])
+    """
     out = np.asarray(y, dtype=float)
     for _ in range(d):
         out = out[1:] - out[:-1]
@@ -135,6 +164,25 @@ def difference(y: np.ndarray, d: int, D: int, s: int) -> np.ndarray:
 
 
 def difference_exog(X: np.ndarray | None, d: int, D: int, s: int) -> np.ndarray | None:
+    """Apply differencing to exogenous regressor matrix.
+
+    Parameters
+    ----------
+    X : array-like[float] | None
+        Exogenous matrix (n_samples, n_regressors).
+    d : int
+        Non-seasonal difference order.
+    D : int
+        Seasonal difference order.
+    s : int
+        Seasonal period.
+
+    Returns
+    -------
+    np.ndarray | None
+        Differenced exog matrix, shortened by ``d + D * (s - 1)`` rows,
+        or None if input was None.
+    """
     if X is None:
         return None
     out = np.asarray(X, dtype=float)
@@ -153,6 +201,35 @@ def future_difference_exog(
     D: int,
     s: int,
 ) -> np.ndarray | None:
+    """Difference future exog values using history for proper seasonal differencing.
+
+    When D > 0, future exogenous values must be differenced relative to the last
+    ``s * D`` observed exog values. This function concatenates history + future,
+    applies differencing, and returns only the future portion.
+
+    Parameters
+    ----------
+    X_history : array-like[float] | None
+        Historical exogenous matrix (n_train, n_regressors).
+    X_future : array-like[float] | None
+        Future exogenous matrix (n_steps, n_regressors).
+    d : int
+        Non-seasonal difference order.
+    D : int
+        Seasonal difference order.
+    s : int
+        Seasonal period.
+
+    Returns
+    -------
+    np.ndarray | None
+        Differenced future exog matrix (n_steps, n_regressors), or None if input was None.
+
+    Raises
+    ------
+    ValueError
+        If not enough history exists to difference the future values.
+    """
     if X_future is None:
         return None
     Xf = np.asarray(X_future, dtype=float)
@@ -178,7 +255,35 @@ def _invert_difference_forecast(
     D: int,
     s: int,
 ) -> np.ndarray:
-    """Recursively map forecasts from differenced space back to the input scale."""
+    """Invert differencing to map forecasts back to original time series scale.
+
+    Reverses the effect of ``difference()`` by recursively solving for the
+    original-scale values that would produce the given differenced forecasts.
+
+    Parameters
+    ----------
+    y_history : array-like[float]
+        Original (pre-differencing) observations used as anchor points.
+    diff_forecast : array-like[float]
+        Forecasts in differenced space (length = number of forecast steps).
+    d : int
+        Non-seasonal difference order applied during fitting.
+    D : int
+        Seasonal difference order applied during fitting.
+    s : int
+        Seasonal period.
+
+    Returns
+    -------
+    np.ndarray
+        Forecasts in original (undifferenced) scale.
+
+    Raises
+    ------
+    ValueError
+        If the inversion is numerically unstable (coefficient too small).
+    """
+    diff_forecast = np.asarray(diff_forecast, dtype=float).reshape(-1)
     diff_forecast = np.asarray(diff_forecast, dtype=float).reshape(-1)
     if diff_forecast.size == 0 or (d == 0 and D == 0):
         return diff_forecast.copy()
@@ -199,6 +304,30 @@ def _invert_difference_forecast(
 
 
 def aicc(n: int, k: int, nll: float) -> float:
+    """Compute the Akaike Information Criterion corrected for small samples.
+
+    AICc = AIC + 2k(k+1)/(n-k-1), where AIC = 2k + 2NLL.
+    The correction term penalizes additional parameters more heavily when
+    the sample size is small relative to the number of parameters.
+
+    Parameters
+    ----------
+    n : int
+        Effective sample size (number of observations used in likelihood).
+    k : int
+        Number of estimated parameters.
+    nll : float
+        Negative log-likelihood at the optimum.
+
+    Returns
+    -------
+    float
+        AICc value. Lower values indicate better model fit per parameter.
+
+    See Also
+    --------
+    SarimaxFit.aicc : Model-level AICc computed from fitted parameters.
+    """
     aic = 2.0 * k + 2.0 * nll
     return aic + (2.0 * k * (k + 1)) / max(n - k - 1, 1)
 
@@ -249,6 +378,24 @@ if _HAS_NUMBA:
 
 
 def _constrain_stationary(raw: np.ndarray, *, use_numba: bool = True) -> np.ndarray:
+    """Map unconstrained coefficients to the stationary region via Bartlett decomposition.
+
+    Uses a recursive transformation (Brockwell & Davis, Thm 3.4.1) that maps
+    arbitrary real values to AR coefficients whose characteristic polynomial
+    roots lie outside the unit circle.
+
+    Parameters
+    ----------
+    raw : array-like[float]
+        Unconstrained coefficients (length = AR order).
+    use_numba : bool
+        Use Numba JIT acceleration. Default True.
+
+    Returns
+    -------
+    np.ndarray
+        Stationary AR coefficients.
+    """
     raw = np.asarray(raw, dtype=float).reshape(-1)
     if raw.size == 0:
         return np.zeros(0, dtype=float)
@@ -261,6 +408,24 @@ def _constrain_stationary(raw: np.ndarray, *, use_numba: bool = True) -> np.ndar
 
 
 def _constrain_invertible(raw: np.ndarray, *, use_numba: bool = True) -> np.ndarray:
+    """Map unconstrained coefficients to the invertible region.
+
+    For MA processes, invertibility requires characteristic polynomial roots
+    outside the unit circle. This is achieved by negating the stationary
+    transformation.
+
+    Parameters
+    ----------
+    raw : array-like[float]
+        Unconstrained coefficients (length = MA order).
+    use_numba : bool
+        Use Numba JIT acceleration. Default True.
+
+    Returns
+    -------
+    np.ndarray
+        Invertible MA coefficients.
+    """
     return -_constrain_stationary(raw, use_numba=use_numba)
 
 
@@ -337,6 +502,27 @@ if _HAS_NUMBA:
 
 
 def _combine_ar_lags(ar, sar, s, *, use_numba=True):
+    """Combine non-seasonal and seasonal AR polynomials into a single lag polynomial.
+
+    Computes the convolution of (1 - ar_1*B - ...)(1 - sar_1*B^s - ...) to obtain
+    the full combined AR polynomial with coefficients at lags 0, s, 2s, etc.
+
+    Parameters
+    ----------
+    ar : array-like[float]
+        Non-seasonal AR coefficients (length p).
+    sar : array-like[float]
+        Seasonal AR coefficients (length P).
+    s : int
+        Seasonal period.
+    use_numba : bool
+        Use Numba JIT acceleration. Default True.
+
+    Returns
+    -------
+    np.ndarray
+        Combined AR polynomial coefficients, with trailing small values trimmed.
+    """
     ar = np.asarray(ar, dtype=float).reshape(-1)
     sar = np.asarray(sar, dtype=float).reshape(-1)
     if use_numba and _HAS_NUMBA:
@@ -352,6 +538,27 @@ def _combine_ar_lags(ar, sar, s, *, use_numba=True):
 
 
 def _combine_ma_lags(ma, sma, s, *, use_numba=True):
+    """Combine non-seasonal and seasonal MA polynomials into a single lag polynomial.
+
+    Computes the convolution of (1 + ma_1*B + ...)(1 + sma_1*B^s + ...) to obtain
+    the full combined MA polynomial with coefficients at lags 0, s, 2s, etc.
+
+    Parameters
+    ----------
+    ma : array-like[float]
+        Non-seasonal MA coefficients (length q).
+    sma : array-like[float]
+        Seasonal MA coefficients (length Q).
+    s : int
+        Seasonal period.
+    use_numba : bool
+        Use Numba JIT acceleration. Default True.
+
+    Returns
+    -------
+    np.ndarray
+        Combined MA polynomial coefficients, with trailing small values trimmed.
+    """
     ma = np.asarray(ma, dtype=float).reshape(-1)
     sma = np.asarray(sma, dtype=float).reshape(-1)
     if use_numba and _HAS_NUMBA:
@@ -736,6 +943,31 @@ if _HAS_JAX:
 
 @dataclass(frozen=True)
 class SarimaxSpec:
+    """Specification for a SARIMAX model.
+
+    Parameters
+    ----------
+    order : tuple[int, int, int]
+        Non-seasonal ARIMA order (p, d, q): autoregressive, differencing,
+        and moving-average terms respectively.
+    seasonal_order : tuple[int, int, int, int]
+        Seasonal order (P, D, Q, s): seasonal autoregressive, seasonal
+        differencing, seasonal MA, and seasonal period (e.g., 7 for daily
+        weekly seasonality, 12 for monthly annual seasonality).
+    include_intercept : bool
+        Whether to include a constant/intercept term. Default True.
+    include_exog : bool
+        Whether the model uses exogenous regressors. Default True.
+
+    Examples
+    --------
+    >>> spec = SarimaxSpec(order=(1, 1, 1), seasonal_order=(1, 0, 0, 7))
+    >>> spec.order
+    (1, 1, 1)
+    >>> spec.seasonal_order
+    (1, 0, 0, 7)
+    """
+
     order: tuple[int, int, int]
     seasonal_order: tuple[int, int, int, int]
     include_intercept: bool = True
@@ -744,6 +976,36 @@ class SarimaxSpec:
 
 @dataclass
 class SarimaxFit:
+    """Result of fitting a SARIMAX model.
+
+    Contains the fitted parameters, information criteria, convergence status,
+    and detailed diagnostic information from the optimization process.
+
+    Attributes
+    ----------
+    spec : SarimaxSpec
+        The model specification that was fitted.
+    params : dict[str, np.ndarray]
+        Fitted parameters keyed by name: ``"c"``, ``"beta"``, ``"ar"``,
+        ``"sar"``, ``"ma"``, ``"sma"``, ``"phi"``, ``"theta"``, ``"sigma2"``.
+    nll : float
+        Negative log-likelihood at the optimum (lower is better).
+    aicc : float
+        Akaike Information Criterion corrected for small sample sizes.
+        Used for model comparison — lower AICc indicates better fit.
+    converged : bool
+        Whether the optimization converged successfully.
+    info : dict[str, Any]
+        Detailed diagnostics including optimizer used, iteration count,
+        state-space dimensions, and (if computed) smoothed states.
+
+    Examples
+    --------
+    >>> fit = model.fit(y_data)
+    >>> print(f"AICc: {fit.aicc:.3f}, converged: {fit.converged}")
+    >>> fit.params["sigma2"]  # residual variance
+    """
+
     spec: SarimaxSpec
     params: dict[str, np.ndarray]
     nll: float
@@ -758,9 +1020,47 @@ class SarimaxFit:
 
 
 class SarimaxScratch:
+    """State-space SARIMAX estimator with Kalman filter/smoothing.
+
+    Implements full seasonal ARIMA (SARIMAX) via state-space representation
+    and the Kalman filter. Supports both JAX autodiff gradients and NumPy
+    JIT-accelerated computation paths.
+
+    The model is specified by ``SarimaxSpec`` with orders (p,d,q)(P,D,Q,s).
+    Estimation uses maximum likelihood via the Kalman filter, with optional
+    state smoothing for inference.
+
+    Parameters
+    ----------
+    spec : SarimaxSpec
+        Model specification defining ARIMA orders and options.
+
+    Attributes
+    ----------
+    spec : SarimaxSpec
+        The model specification.
+    fit_ : SarimaxFit | None
+        Cached fitted result (set after calling ``fit()``).
+
+    Examples
+    --------
+    >>> from foretools.arima import SarimaxSpec, SarimaxScratch
+    >>> spec = SarimaxSpec(order=(1, 1, 1), seasonal_order=(0, 0, 0, 1))
+    >>> model = SarimaxScratch(spec)
+    >>> fit = model.fit(y_data)
+    >>> forecast = model.forecast(y_data, steps=5)
+    """
+
     _SS_TEMPLATE_CACHE: dict[tuple[int, int], dict[str, Any]] = {}
 
-    def __init__(self, spec: SarimaxSpec):
+    def __init__(self, spec: SarimaxSpec) -> None:
+        """Initialize a SARIMAX model with the given specification.
+
+        Parameters
+        ----------
+        spec : SarimaxSpec
+            The model specification (orders, seasonal period, intercept, exog).
+        """
         self.spec = spec
         self.fit_: SarimaxFit | None = None
 
@@ -1011,6 +1311,87 @@ class SarimaxScratch:
         optax_tol: float = 1e-6,
         optax_patience: int = 30,
     ) -> SarimaxFit:
+        """Fit the SARIMAX model to observed data via maximum likelihood.
+
+        Estimates all AR, MA, seasonal, and exogenous coefficients using
+        Kalman filter-based likelihood evaluation. Supports three optimization
+        backends: (1) JAX autodiff + Optax/L-BFGS-B, (2) SciPy with JAX gradients,
+        (3) SciPy with finite-difference gradients.
+
+        Parameters
+        ----------
+        y : array-like[float]
+            Univariate time series observations. Must contain at least 30 finite values.
+        exog : array-like[float] | None
+            Exogenous regressor matrix (n_samples, n_regressors). NaN values are
+            forward-filled then back-filled; all-NaN columns become zeros.
+        maxiter : int
+            Maximum optimizer iterations during search phase. Default 300.
+        method : str
+            SciPy optimization method (only used when JAX path is unavailable).
+            Default "L-BFGS-B".
+        verbose : bool | int
+            Verbosity level: False = silent, True/1 = summary prints,
+            2+ = detailed per-model prints. Default False.
+        seed : int
+            Random seed (reserved for future stochastic features). Default 0.
+        diffuse_scale : float
+            Initial covariance scale for diffuse (uninformative) priors on states.
+            Default 1e6.
+        diffuse_burn : int | None
+            Number of initial observations to discard from the likelihood due to
+            diffuse initialization. Auto-computed if None: max(10, 1.5 * state_dim).
+        pre_differenced : bool
+            If True, assume ``y`` is already differenced (skip differencing).
+            Default False.
+        compute_smoother : bool
+            Run Kalman smoother to obtain smoothed state estimates. Slower but
+            provides full diagnostic output. Default True.
+        use_numba : bool
+            Use Numba JIT for Kalman filter computation. Requires ``numba``.
+            Default True.
+        init_params : array[float] | None
+            Initial parameter vector for optimization. Auto-computed via Yule-Walker
+            + least-squares heuristic if None. Size must match model dimension.
+        use_jax_autodiff : bool
+            Use JAX autodiff for gradient computation. Requires ``jax``.
+            Falls back to finite differences if unavailable. Default True.
+        jax_enable_x64 : bool
+            Enable 64-bit floating point in JAX for numerical stability. Default True.
+        jax_jit : bool
+            JIT-compile the JAX objective function. Default True.
+        optax_optimizer : optax.optimizer | False | None
+            Optional Optax optimizer (e.g., ``optax.lbfgs()``). Auto-selected from
+            Optax if available and not explicitly set to False. Pass False to disable.
+        optax_maxiter : int
+            Maximum Optax optimization steps. Default 500.
+        optax_tol : float
+            Convergence tolerance for Optax. Default 1e-6.
+        optax_patience : int
+            Early stopping patience for Optax. Default 30.
+
+        Returns
+        -------
+        SarimaxFit
+            Fitted model with parameters, AICc, convergence status, and diagnostics.
+
+        Raises
+        ------
+        ValueError
+            If ``y`` has fewer than 30 finite observations, seasonal period < 1,
+            or exog row count mismatches y length.
+        RuntimeError
+            If optimization fails after all retry attempts (Numba + NumPy + JAX).
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> y = np.sin(2 * np.pi * np.arange(100) / 7) + np.random.randn(100) * 0.1
+        >>> spec = SarimaxSpec(order=(1, 0, 0), seasonal_order=(1, 0, 0, 7))
+        >>> model = SarimaxScratch(spec)
+        >>> fit = model.fit(y)
+        >>> print(f"AICc: {fit.aicc:.2f}, converged: {fit.converged}")
+        """
         y0 = _as_1d(y)
         X0 = _as_2d(exog, n=y0.size)
         p, d, q = self.spec.order
@@ -1373,6 +1754,27 @@ class SarimaxScratch:
     def filter_smoother(
         self, y: np.ndarray | list[float], exog: np.ndarray | None = None
     ) -> dict[str, np.ndarray]:
+        """Run Kalman filter and smoother on new data using fitted parameters.
+
+        Parameters
+        ----------
+        y : array-like[float]
+            Time series observations (same length as training data or different).
+        exog : array-like[float] | None
+            Exogenous regressors matching ``y`` in length.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            Filtered/smoothed state estimates with keys:
+                ``"innovations"``, ``"innovation_var"``, ``"filtered_state"``,
+                ``"smoothed_state"``.
+
+        Raises
+        ------
+        RuntimeError
+            If ``fit()`` has not been called yet.
+        """
         if self.fit_ is None:
             raise RuntimeError("Call fit() first.")
         fit = self.fit_
@@ -1425,6 +1827,56 @@ class SarimaxScratch:
         num_sim: int = 2000,
         seed: int = 0,
     ) -> dict[str, np.ndarray]:
+        """Generate point forecasts and prediction intervals.
+
+        Projects the fitted state forward ``steps`` time units using the
+        state-transition matrix. Prediction intervals are computed analytically
+        via Kalman filter covariance propagation (not Monte Carlo).
+
+        Parameters
+        ----------
+        y : array-like[float]
+            Historical observations (used for inversion of differencing).
+        steps : int
+            Number of time units to forecast ahead.
+        exog : array-like[float] | None
+            Exogenous regressors matching historical ``y`` in length.
+        exog_future : array-like[float] | None
+            Future exogenous values with shape ``(steps, n_regressors)``.
+            Required if model was fitted with exogenous data.
+        return_intervals : bool
+            Include prediction intervals (lo, hi) at the specified confidence level.
+            Default True.
+        alpha : float
+            Significance level for prediction intervals. ``1-alpha`` is the
+            coverage (e.g., alpha=0.05 gives 95% intervals). Default 0.05.
+        num_sim : int
+            Reserved for future Monte Carlo simulation mode. Unused in analytical mode.
+        seed : int
+            Random seed for future stochastic forecasting. Unused currently.
+
+        Returns
+        -------
+        dict[str, np.ndarray]
+            Forecast results with keys:
+                ``"mean"``: point forecasts (always),
+                ``"lo"``: lower prediction interval bound (if return_intervals=True),
+                ``"hi"``: upper prediction interval bound (if return_intervals=True).
+
+        Raises
+        ------
+        RuntimeError
+            If ``fit()`` has not been called yet.
+        ValueError
+            If ``exog_future`` shape mismatches steps or regressor count.
+
+        Examples
+        --------
+        >>> forecast = model.forecast(y_train, steps=7, exog_future=X_future)
+        >>> print(forecast["mean"])       # point forecasts
+        >>> print(forecast["lo"])         # 95% lower bounds
+        >>> print(forecast["hi"])         # 95% upper bounds
+        """
         if self.fit_ is None:
             raise RuntimeError("Call fit() first.")
         fit = self.fit_
@@ -1580,6 +2032,64 @@ def _project_theta_init(
 
 @dataclass(frozen=True)
 class AutoConfig:
+    """Configuration for automated SARIMAX model selection.
+
+    Controls the Hyndman–Khandakar stepwise search over ARIMA orders,
+    including convergence tolerances, optimization budgets, and backend options.
+
+    Parameters
+    ----------
+    p_max : int
+        Maximum non-seasonal AR order. Default 5.
+    q_max : int
+        Maximum non-seasonal MA order. Default 5.
+    P_max : int
+        Maximum seasonal AR order. Default 2.
+    Q_max : int
+        Maximum seasonal MA order. Default 2.
+    d_max : int
+        Maximum non-seasonal differencing order. Default 2.
+    D_max : int
+        Maximum seasonal differencing order. Default 1.
+    seasonal_period : int
+        Seasonal period (s). Set to >1 for seasonal data (e.g., 7, 12, 52).
+            Default 1 (no seasonality).
+    max_steps : int
+        Maximum number of stepwise search iterations. Default 40.
+    maxiter_search : int
+        Maximum optimizer iterations during model scoring in the search phase.
+            Default 60.
+    maxiter_refit : int
+        Maximum optimizer iterations during final refit. Default 250.
+    include_intercept : bool
+        Include a constant term in all candidate models. Default True.
+    refit_final : bool
+        Refit the best model with full data and more iterations after search.
+            Default True.
+    use_numba : bool
+        Use Numba JIT for Kalman filter computation (requires numba). Default True.
+    compute_smoother_during_search : bool
+        Run Kalman smoother during search to improve convergence. Slower but
+            more robust. Default False.
+    fallback_no_numba : bool
+        If Numba-accelerated fit fails, retry with pure Python/NumPy. Default True.
+    max_total_fits : int
+        Cap on total model fits during search (0 = unlimited). Useful for tight
+            budgets. Default 0.
+    use_jax_autodiff : bool
+        Use JAX autodiff for gradient computation instead of finite differences.
+            Requires ``jax`` package. Default True.
+    jax_enable_x64 : bool
+        Enable 64-bit precision in JAX for numerical stability. Default True.
+    jax_jit : bool
+        JIT-compile the JAX objective function. Default True.
+
+    Examples
+    --------
+    >>> cfg = AutoConfig(p_max=3, q_max=2, seasonal_period=7)
+    >>> fit = auto_sarimax_stepwise(y_data, seasonal_period=7, cfg=cfg)
+    """
+
     p_max: int = 5
     q_max: int = 5
     P_max: int = 2
@@ -1610,7 +2120,46 @@ def auto_sarimax_stepwise(
     cfg: AutoConfig | None = None,
     verbose: bool | int = False,
 ) -> SarimaxFit:
-    """Hyndman–Khandakar stepwise SARIMAX search with AICc."""
+    """Automated SARIMAX model selection via Hyndman–Khandakar stepwise search.
+
+    Determines optimal (p,d,q)(P,D,Q,s) orders through a structured search:
+    1. Tests differencing orders (d, D) using KPSS stationarity test
+    2. Fits initial candidate models and selects by AICc
+    3. Stepwise neighborhood exploration with parallel evaluation
+    4. Final refit of the best model with full iterations
+
+    Parameters
+    ----------
+    y : array-like[float]
+        Univariate time series observations.
+    exog : array-like[float] | None
+        Exogenous regressors matching ``y`` in length.
+    seasonal_period : int
+        Seasonal period (s). Set to >1 for seasonal data (e.g., 7, 12, 52).
+            Default 1 (no seasonality).
+    cfg : AutoConfig | None
+        Search configuration. Auto-computed if None.
+    verbose : bool | int
+        Verbosity level. Default False.
+
+    Returns
+    -------
+    SarimaxFit
+        Best-fitted SARIMAX model according to AICc.
+
+    Raises
+    ------
+    RuntimeError
+        If no candidate model can be fitted (all fail).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> y = np.sin(2 * np.pi * np.arange(100) / 7) + np.random.randn(100)
+    >>> fit = auto_sarimax_stepwise(y, seasonal_period=7)
+    >>> print(f"Best order: {fit.spec.order}×{fit.spec.seasonal_order}")
+    >>> print(f"AICc: {fit.aicc:.2f}")
+    """
     import time
 
     vlevel = int(verbose) if not isinstance(verbose, bool) else (1 if verbose else 0)

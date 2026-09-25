@@ -1764,30 +1764,11 @@ class UnifiedTree {
         tree_histogram_->resize(total_hist_size_, K_);
         tree_histogram_->clear();
 
-        const int row_count = static_cast<int>(index_pool_.size());
-        const int feature_count = static_cast<int>(tree_features_.size());
-        const int grain =
-            row_count * feature_count >= 32768 ? 1 : feature_count;
-        executor_->parallel_for(
-            0, feature_count, grain, [&](int feature_begin, int feature_end) {
-                for (int feature_pos = feature_begin; feature_pos < feature_end;
-                     ++feature_pos) {
-                    const int feature =
-                        tree_features_[static_cast<size_t>(feature_pos)];
-                    for (int row : index_pool_)
-                        accumulate_hist_bin_(*tree_histogram_, row, feature);
-                    if (unit_hessian_) {
-                        const size_t begin = feature_offsets_[feature];
-                        const size_t end = begin +
-                                           static_cast<size_t>(
-                                               missing_ids_per_feat_[feature]) +
-                                           1;
-                        for (size_t offset = begin; offset < end; ++offset)
-                            tree_histogram_->H[offset] =
-                                static_cast<double>(tree_histogram_->C[offset]);
-                    }
-                }
-            });
+        // Same path as node histograms: the vectorized feature-major kernel
+        // (or the CUDA engine for large enough work).
+        HistogramBuilder(*this, index_pool_)
+            .build_for_range(0, static_cast<int>(index_pool_.size()),
+                             tree_features_, *tree_histogram_);
     }
 
     void reset_() {

@@ -41,9 +41,10 @@ struct HistogramConfig {
     double subsample_ratio = 0.3;
     int min_sketch_size = 10000;
 
-    // threading
-    bool use_parallel = false;
-    int max_workers = 8;
+    // threading: bin fitting runs one feature per worker; max_workers <= 0
+    // means one worker per hardware thread.
+    bool use_parallel = true;
+    int max_workers = 0;
 
     // rng (for any sampling we might add)
     uint64_t rng_seed = 42;
@@ -605,26 +606,11 @@ inline std::vector<double> exact_quantile_edges(const std::vector<double>& vals,
     return e;
 }
 
-inline std::vector<double> weighted_quantile_edges(
-    const std::vector<double>& vals, const std::vector<double>& wts, int nb) {
-    if (vals.empty()) return {0.0, 1.0};
-    nb = std::max(1, nb);
-
-    std::vector<std::pair<double, double>> pairs;
-    pairs.reserve(vals.size());
-
-    for (size_t i = 0; i < vals.size(); ++i) {
-        const double v = vals[i];
-        const double w = (i < wts.size() ? wts[i] : 1.0);
-        if (std::isfinite(v) && std::isfinite(w) && w > 0.0) {
-            pairs.emplace_back(v, w);
-        }
-    }
-
+// Weighted quantile edges of (value, weight) pairs already sorted by value.
+inline std::vector<double> weighted_quantile_edges_sorted(
+    const std::vector<std::pair<double, double>>& pairs, int nb) {
     if (pairs.empty()) return {0.0, 1.0};
-
-    std::sort(pairs.begin(), pairs.end());
-
+    nb = std::max(1, nb);
     std::vector<double> cum_weights(pairs.size());
     cum_weights[0] = pairs[0].second;
     for (size_t i = 1; i < pairs.size(); ++i) {
@@ -652,6 +638,22 @@ inline std::vector<double> weighted_quantile_edges(
     }
 
     return edges;
+}
+
+inline std::vector<double> weighted_quantile_edges(
+    const std::vector<double>& vals, const std::vector<double>& wts, int nb) {
+    std::vector<std::pair<double, double>> pairs;
+    pairs.reserve(vals.size());
+    for (size_t i = 0; i < vals.size(); ++i) {
+        const double v = vals[i];
+        const double w = (i < wts.size() ? wts[i] : 1.0);
+        if (std::isfinite(v) && std::isfinite(w) && w > 0.0) {
+            pairs.emplace_back(v, w);
+        }
+    }
+    std::sort(pairs.begin(), pairs.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    return weighted_quantile_edges_sorted(pairs, nb);
 }
 
 inline double gradient_complexity(const std::vector<double>& /*v_sorted*/,

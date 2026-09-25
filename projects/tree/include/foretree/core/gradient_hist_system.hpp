@@ -1,6 +1,10 @@
 // tree/include/foretree/core/gradient_hist_system.hpp
 #pragma once
 #include <algorithm>
+#include <atomic>
+#include <exception>
+#include <mutex>
+#include <thread>
 #include <cassert>
 #include <cstdint>
 #include <future>
@@ -86,15 +90,33 @@ public:
             for (int j = 0; j < P_; ++j)
                 feature_bins_[j] = process_feature(j);
         } else {
-            const int workers = std::max(1, std::min(cfg_.max_workers, P_));
-            (void)workers;
-            std::vector<std::future<FeatureBins>> futs;
-            futs.reserve(P_);
-            for (int j = 0; j < P_; ++j) {
-                futs.emplace_back(std::async(std::launch::async, [&, j] { return process_feature(j); }));
-            }
-            for (int j = 0; j < P_; ++j)
-                feature_bins_[j] = futs[j].get();
+            // Bounded pool: workers pull feature indices from a shared counter.
+            const int hardware = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+            const int requested = cfg_.max_workers > 0 ? cfg_.max_workers : hardware;
+            const int workers = std::clamp(requested, 1, P_);
+            std::atomic<int> next{0};
+            std::exception_ptr failure;
+            std::mutex failure_mutex;
+            auto work = [&] {
+                for (int j = next.fetch_add(1); j < P_; j = next.fetch_add(1)) {
+                    try {
+                        feature_bins_[j] = process_feature(j);
+                    } catch (...) {
+                        std::lock_guard<std::mutex> lock(failure_mutex);
+                        if (!failure)
+                            failure = std::current_exception();
+                    }
+                }
+            };
+            std::vector<std::thread> pool;
+            pool.reserve(static_cast<size_t>(workers - 1));
+            for (int w = 1; w < workers; ++w)
+                pool.emplace_back(work);
+            work();
+            for (auto& thread : pool)
+                thread.join();
+            if (failure)
+                std::rethrow_exception(failure);
         }
 
         // Setup variable bin layout and DataBinner

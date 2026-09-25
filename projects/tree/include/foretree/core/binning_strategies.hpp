@@ -91,15 +91,11 @@ inline void finalize_feature_bins(FeatureBins& fb, const HistogramConfig& cfg,
     _check_uniform(fb);
 }
 
-inline bool apply_common_categorical_precheck(
-    FeatureBins& fb, const std::vector<double>& finite_values,
+// Categorical pre-check on already sorted, de-duplicated finite values.
+inline bool apply_categorical_precheck_sorted_unique(
+    FeatureBins& fb, const std::vector<double>& unique_vals,
     const HistogramConfig& cfg, int max_bins_for_feature) {
-    if (finite_values.empty()) return false;
-    std::vector<double> unique_vals = finite_values;
-    std::sort(unique_vals.begin(), unique_vals.end());
-    unique_vals.erase(std::unique(unique_vals.begin(), unique_vals.end()),
-                      unique_vals.end());
-
+    if (unique_vals.empty()) return false;
     const int unique_count = static_cast<int>(unique_vals.size());
     if (!categorical_from_unique_count(unique_count, cfg)) return false;
 
@@ -112,6 +108,18 @@ inline bool apply_common_categorical_precheck(
     fb.edges = _midpoint_edges_of_unique(unique_vals);
     finalize_feature_bins(fb, cfg, max_bins_for_feature, false);
     return true;
+}
+
+inline bool apply_common_categorical_precheck(
+    FeatureBins& fb, const std::vector<double>& finite_values,
+    const HistogramConfig& cfg, int max_bins_for_feature) {
+    if (finite_values.empty()) return false;
+    std::vector<double> unique_vals = finite_values;
+    std::sort(unique_vals.begin(), unique_vals.end());
+    unique_vals.erase(std::unique(unique_vals.begin(), unique_vals.end()),
+                      unique_vals.end());
+    return apply_categorical_precheck_sorted_unique(fb, unique_vals, cfg,
+                                                    max_bins_for_feature);
 }
 
 struct UniformBinner final : IBinningStrategy {
@@ -168,26 +176,24 @@ struct UniformBinner final : IBinningStrategy {
 };
 
 struct QuantileBinner final : IBinningStrategy {
+    // One sort of the finite (value, weight) pairs serves the unique count,
+    // the categorical pre-check and the weighted quantiles.
     FeatureBins create_bins(const std::vector<double>& values,
                             const std::vector<double>& /*gradients*/,
                             const std::vector<double>& hessians,
                             const HistogramConfig& cfg) override {
         const int max_bins_for_feature = std::max(1, cfg.max_bins);
-        std::vector<double> v, w;
-        v.reserve(values.size());
-        w.reserve(values.size());
-
+        std::vector<std::pair<double, double>> pairs;
+        pairs.reserve(values.size());
         for (size_t i = 0; i < values.size(); ++i) {
             const double vi = values[i];
             const double wi = (i < hessians.size() ? hessians[i] : 1.0);
-            if (std::isfinite(vi) && std::isfinite(wi)) {
-                v.push_back(vi);
-                w.push_back(std::max(cfg.eps, wi));
-            }
+            if (std::isfinite(vi) && std::isfinite(wi))
+                pairs.emplace_back(vi, std::max(cfg.eps, wi));
         }
         FeatureBins fb;
         fb.strategy = "quantile";
-        if (v.empty()) {
+        if (pairs.empty()) {
             fb.edges = {0.0, 1.0};
             fb.stats.suggested_bins = 1;
             fb.stats.allocation_reason = "empty_feature";
@@ -195,14 +201,17 @@ struct QuantileBinner final : IBinningStrategy {
             return fb;
         }
 
-        if (apply_common_categorical_precheck(fb, v, cfg,
-                                              max_bins_for_feature)) {
+        std::sort(pairs.begin(), pairs.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
+        std::vector<double> u;
+        u.reserve(std::min<size_t>(pairs.size(), 4096));
+        for (const auto& [v, w] : pairs)
+            if (u.empty() || v != u.back()) u.push_back(v);
+
+        if (apply_categorical_precheck_sorted_unique(fb, u, cfg,
+                                                     max_bins_for_feature)) {
             return fb;
         }
-
-        std::vector<double> u = v;
-        std::sort(u.begin(), u.end());
-        u.erase(std::unique(u.begin(), u.end()), u.end());
         if (static_cast<int>(u.size()) <= max_bins_for_feature) {
             fb.edges = _midpoint_edges_of_unique(u);
             fb.stats.unique_count = static_cast<int>(u.size());
@@ -212,7 +221,7 @@ struct QuantileBinner final : IBinningStrategy {
             return fb;
         }
 
-        fb.edges = weighted_quantile_edges(v, w, max_bins_for_feature);
+        fb.edges = weighted_quantile_edges_sorted(pairs, max_bins_for_feature);
         fb.stats.suggested_bins = max_bins_for_feature;
         fb.stats.unique_count = static_cast<int>(u.size());
         fb.stats.allocation_reason = "weighted_quantile";
