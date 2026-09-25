@@ -157,6 +157,14 @@ struct ForeForestConfig {
     double early_stopping_min_delta = 0.0;
     bool track_train_metric = false;
 
+    // Quantized training (as in LightGBM's use_quantized_grad): per tree,
+    // gradients/hessians are stochastically rounded to `quantized_gradient_bits`
+    // levels for CPU histogram construction, which is ~1.1-1.8x faster.
+    // Split gains use the quantized sums; node totals and leaf values stay
+    // exact. Bits in [2, 8].
+    bool quantized_gradients = false;
+    int quantized_gradient_bits = 8;
+
     // Custom metric callback for early stopping
     CustomMetricConfig custom_metric_config;
 
@@ -1177,7 +1185,12 @@ private:
         T.set_raw_for_neural(Xraw_neural_, Xmiss_neural_);
         T.set_neural_leaf_config(cfg_.neural_cfg);
 #ifdef FORETREE_HAS_CUDA
-        if (cuda_histogram_engine_ && tc.split_mode == TreeConfig::SplitMode::Histogram && !tc.neural_leaf.enabled) {
+        const bool quantized = cfg_.quantized_gradients && cfg_.mode != ForeForestConfig::Mode::Bagging &&
+                               tc.split_mode == TreeConfig::SplitMode::Histogram && !tc.neural_leaf.enabled;
+        // Quantized CPU histograms replace the CUDA path, so skip the per-tree
+        // gradient upload.
+        if (cuda_histogram_engine_ && !quantized && tc.split_mode == TreeConfig::SplitMode::Histogram &&
+            !tc.neural_leaf.enabled) {
             std::vector<float> gradients(g.begin(), g.end());
             std::vector<float> hessians(h.begin(), h.end());
             cuda_histogram_engine_->set_gradients(gradients, hessians);
@@ -1185,8 +1198,53 @@ private:
         }
 #endif
 
+        // Boosting modes only: bagging may build trees concurrently (they would
+        // share the packed buffer) and its gradients are constant anyway.
+        if (quantized) {
+            T.set_quantized_gradients(quantize_gradients_(g, h, tree_seed));
+        }
+
         T.fit_with_row_ids(*compact_codes_, g, h, rows);
         return T;
+    }
+
+    // Stochastic rounding of g (signed) and h (non-negative) to integer
+    // levels, packed for QuantizedFeatureMajorHistogramKernel. Unbiased:
+    // E[level * scale] equals the exact value. Deterministic for a seed.
+    QuantizedGradients quantize_gradients_(const std::vector<double>& g, const std::vector<double>& h,
+                                           uint64_t seed) {
+        const int bits = std::clamp(cfg_.quantized_gradient_bits, 2, 8);
+        const int g_levels = (1 << (bits - 1)) - 1;
+        const int h_levels = (1 << bits) - 1;
+        double g_max = 0.0, h_max = 0.0;
+        for (size_t i = 0; i < g.size(); ++i) {
+            g_max = std::max(g_max, std::abs(g[i]));
+            h_max = std::max(h_max, h[i]);
+        }
+        QuantizedGradients q;
+        q.g_scale = g_max > 0.0 ? g_max / g_levels : 1.0;
+        q.h_scale = h_max > 0.0 ? h_max / h_levels : 1.0;
+        gradients_quantized_.resize(g.size());
+        const double g_inv = 1.0 / q.g_scale, h_inv = 1.0 / q.h_scale;
+        auto uniform = [seed](uint64_t i, uint64_t stream) {
+            uint64_t x = seed ^ (i * 0x9E3779B97F4A7C15ULL) ^ (stream << 62);
+            x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+            x ^= x >> 31;
+            return static_cast<double>(x >> 11) * 0x1.0p-53;
+        };
+        executor_->parallel_for(0, static_cast<int>(g.size()), 16384, [&](int begin, int end) {
+            for (int i = begin; i < end; ++i) {
+                const auto idx = static_cast<uint64_t>(i);
+                const int gl = std::clamp(static_cast<int>(std::floor(g[static_cast<size_t>(i)] * g_inv + uniform(idx, 0))),
+                                          -g_levels, g_levels);
+                const int hl = std::clamp(static_cast<int>(std::floor(h[static_cast<size_t>(i)] * h_inv + uniform(idx, 1))),
+                                          0, h_levels);
+                gradients_quantized_[static_cast<size_t>(i)] = pack_quantized(gl, hl);
+            }
+        });
+        q.packed = gradients_quantized_.data();
+        return q;
     }
 
     // ===================== Bagging ===========================
@@ -1313,7 +1371,7 @@ private:
                 trees_.push_back(std::move(T));
                 tree_weights_.push_back(wt_new);
 
-                predict_tree_on_binned_(trees_.back(), *compact_codes_, N_, P_, Xraw_neural_, pred_buffer);
+                train_tree_predictions_(trees_.back(), pred_buffer);
                 for (int i = 0; i < N_; ++i) {
                     F[i] += wt_new * pred_buffer[i];
                 }
@@ -1578,7 +1636,7 @@ private:
             uint64_t seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (m + 1);
             UnifiedTree T = build_tree_(g, h, rows, seed);
 
-            predict_tree_on_binned_(T, *compact_codes_, N_, P_, Xraw_neural_, pred_buffer);
+            train_tree_predictions_(T, pred_buffer);
 
             const double alpha = fw_line_search_alpha_(F, pred_buffer, y, N_);
             if (alpha <= cfg_.fw_alpha_tol) {
@@ -1843,6 +1901,15 @@ private:
         return out;
     }
 
+    // New tree's predictions on the training rows: read from the leaves the
+    // rows were routed to during growth when possible (no traversal), else
+    // traverse. Then drop the tree's per-row training state.
+    void train_tree_predictions_(UnifiedTree& T, std::vector<double>& dst) {
+        if (!T.training_predictions(dst, N_))
+            predict_tree_on_binned_(T, *compact_codes_, N_, P_, Xraw_neural_, dst);
+        T.release_training_rows();
+    }
+
     static void predict_tree_on_binned_(const UnifiedTree& T, const QuantizedDataset& Xb, int N, int P,
                                         const double* Xraw_for_neural, std::vector<double>& dst) {
         (void)N;
@@ -1871,6 +1938,7 @@ private:
     const uint8_t* Xmiss_neural_ = nullptr;
 
     std::vector<UnifiedTree> trees_;
+    std::vector<int32_t> gradients_quantized_;  // per-tree packed levels (quantized training)
     std::vector<double> tree_weights_;
     std::vector<double> train_metric_history_;
     std::vector<double> valid_metric_history_;

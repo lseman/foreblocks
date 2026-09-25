@@ -11,6 +11,7 @@ ForeTree provides:
 - **Multiple Growth Policies**: Leaf-wise (XGBoost), level-wise (sklearn), and oblivious (CatBoost) strategies
 - **Advanced Split Types**: Axis-aligned, categorical partition, oblique (k-feature hyperplane), and pair interaction splits
 - **Ensemble Modes**: Bagging (Random Forest), GBDT, and Frank-Wolfe boosting (FWBoost)
+- **Anomaly Detection**: Isolation Forest and Extended Isolation Forest (hyperplane splits), multithreaded
 - **Advanced Features**: GOSS, DART, cost-complexity pruning, TreeSHAP, monotone constraints, EFB
 - **GPU Acceleration**: CUDA-based histogram computation, split search, and neural leaf prediction
 - **Unified Tree Representation**: Packed tree for memory-efficient inference
@@ -164,6 +165,41 @@ prob = model.predict(X_test)            # (N,) for binary classification
 contrib = model.predict_contrib(X_test) # (N, P+1)
 ```
 
+**Quantized training** (opt-in, like LightGBM's `use_quantized_grad`): per
+tree, gradients and hessians are stochastically rounded to integer levels and
+CPU histograms are built with packed integer sums. On a 150k x 40 binary task
+this fits ~14% faster than exact CPU histograms (and matches the CUDA path)
+with the same accuracy at 8 bits. Split gains use the quantized sums; node
+totals and leaf values stay exact. Boosting modes only.
+
+```python
+cfg.quantized_gradients = True
+cfg.quantized_gradient_bits = 8   # 2..8; 4 bits lost accuracy in our tests
+```
+
+### Isolation Forest (Python)
+
+```python
+import foreforest
+
+iso = foreforest.IsolationForest(
+    n_estimators=200,
+    max_samples=256,       # rows per tree (psi)
+    extension_level=0,     # 0: classic IF; k > 0: hyperplanes over k+1 features (Extended IF); -1: all features
+    contamination=-1.0,    # < 0: "auto" (anomaly score 0.5 is the boundary); in (0, 0.5]: training quantile
+    random_state=0,
+).fit(X_train)             # float64 (N, P); NaN = missing
+
+s = iso.anomaly_score(X)       # 2^(-E[h(x)] / c(psi)) in (0, 1], higher = more anomalous
+iso.score_samples(X)           # -s (scikit-learn convention: higher = more normal)
+iso.decision_function(X)       # score_samples - offset, negative for outliers
+iso.predict(X)                 # +1 inlier / -1 outlier
+```
+
+C++: `foretree::IsolationForest` in `foretree/ensemble/isolation_forest.hpp`
+(header-only; `fit`, `anomaly_score`, `score_samples`, `decision_function`,
+`predict`, `mean_path_length`).
+
 See `tests/bench_sota_options.py` for full working examples including categorical features, oblique splits, DART, GOSS, and comparison benchmarks against XGBoost, LightGBM, and CatBoost.
 
 ## Key Features
@@ -176,6 +212,7 @@ See `tests/bench_sota_options.py` for full working examples including categorica
 
 ### 2. Advanced Binning Strategies
 - **7 Strategies**: uniform, quantile, kmeans, gradient-aware, two-stage, adaptive, categorical gradient
+- **Default**: hessian-weighted quantile bins (`HistogramConfig::method = "quantile"`), fitted one feature per thread
 - **Data Binner**: Flexible data binning utilities with node-level overrides
 - **Ordered Categorical**: Specialized handling for ordered categorical features
 - **Feature Importance Weighting**: Adaptive bin counts based on feature importance
@@ -197,6 +234,7 @@ See `tests/bench_sota_options.py` for full working examples including categorica
 - **GBDT**: Gradient boosting with GOSS and DART support
 - **FWBoost**: Frank-Wolfe boosting (LPBoost-inspired) with line search
 - **Objectives**: squared error, binary logloss, focal loss, Huber, quantile
+- **Isolation Forest**: unsupervised anomaly scores; classic axis splits or Extended IF hyperplanes, NaN-aware
 
 ### 6. Memory-Efficient Representation
 - **QuantizedDataset**: uint8/uint16 feature codes with lazy column-major cache
@@ -231,41 +269,8 @@ See `tests/bench_sota_options.py` for full working examples including categorica
 ### Build Steps
 
 ```bash
-# Create build directory
-mkdir -p build
-cd build
-
-# Configure with CMake
-cmake .. -DCMAKE_BUILD_TYPE=Release
-
-# Build
-make -j$(nproc)
-```
-
-### Python Build (in-tree)
-
-```bash
-# Build and install Python bindings as editable package
-pip install -e .
-
-# Or build standalone with CMake
-mkdir -p build
-cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DFORETREE_BUILD_TESTS=ON
-make -j$(nproc)
-```
-
-### Build Steps
-
-```bash
-# Create build directory
-mkdir -p build
-cd build
-
-# Configure with CMake
-cmake .. -DCMAKE_BUILD_TYPE=Release
-
-# Build
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release          # builds foretree + foreforest Python modules
 make -j$(nproc)
 ```
 
@@ -273,45 +278,28 @@ make -j$(nproc)
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `FORETREE_BUILD_TESTS` | OFF | Build C++ test suite |
-| `FORETREE_ENABLE_CUDA` | OFF | Enable CUDA histogram backend |
-| `FORETREE_ENABLE_TBB` | ON | Use TBB for parallel execution (falls back to std::thread) |
-| `FORETREE_ENABLE_STDEXEC` | OFF | Use stdexec NVIDIA execution framework |
-
-### Python Build
-
-```bash
-# Build and install Python bindings (in-tree build)
-pip install -e .
-
-# Or build standalone
-mkdir -p build
-cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DFORETREE_BUILD_TESTS=ON
-make -j$(nproc)
-```
+| `TREE_BUILD_FORETREE` | ON | Build the `foretree` Python module |
+| `TREE_BUILD_FOREFOREST` | ON | Build the `foreforest` Python module |
+| `TREE_BUILD_TESTS` | OFF | Build the C++ tests and register them with CTest |
+| `TREE_ENABLE_CUDA_BACKEND` | ON | Build the CUDA histogram backend |
+| `TREE_ENABLE_TBB` | ON | Use TBB if available |
+| `TREE_ENABLE_STDEXEC` | ON | Fetch stdexec for `foreforest` |
+| `FORETREE_EXEC_USE_CUDA` | OFF | Use the nvexec CUDA scheduler (needs stdexec) |
 
 ## Testing
 
-The test suite is currently disabled in the default build configuration. Enable it with:
-
 ```bash
-cmake .. -DFORETREE_BUILD_TESTS=ON
+cmake .. -DCMAKE_BUILD_TYPE=Release -DTREE_BUILD_TESTS=ON
 make -j$(nproc)
-ctest --output-on-failure
+ctest --output-on-failure                         # C++ tests (asserts stay on in Release)
+PYTHONPATH=. pytest ../tests/test_foreforest_python.py   # binding regressions
 ```
 
-Individual C++ tests cover:
-- `test_histogram_primitives.cpp`: Histogram accumulation, collision handling
-- `test_dataset_representation.cpp`: QuantizedDataset serialization
-- `test_parallel_tree_paths.cpp`: Parallel tree growth correctness
-- `test_split_active_features.cpp`: Split finding on active feature subsets
-- `test_row_partitioner.cpp`: Row partitioning for parallel growth
-- `test_growth_policy.cpp`: Leaf-wise, level-wise, oblivious growth
-- `test_feature_major_histogram.cpp`: Feature-major histogram layout
-- `test_packed_tree.cpp`: Inference representation correctness
-- `test_ordered_categorical.cpp`: Ordered target statistics
-- `test_pair_interaction_split.cpp`: 2D quadrant-based splits
+C++ tests cover histogram primitives and the feature-major kernel, dataset
+representation, parallel tree paths, split finding, row partitioning, growth
+policies, packed trees, ordered categoricals, pair-interaction splits, the
+Isolation Forest (`test_isolation_forest.cpp`), and the CUDA histograms against
+a CPU reference (`test_cuda_histogram*.cu`, skipped without a GPU).
 
 Python benchmarks in `tests/` compare ForeForest against sklearn HistGradientBoosting, XGBoost, LightGBM, and CatBoost.
 
@@ -323,7 +311,8 @@ Python benchmarks in `tests/` compare ForeForest against sklearn HistGradientBoo
 | Tree growth | leaf-wise (priority queue), level-wise (BFS), oblivious (same split per depth) |
 | Split types | axis-aligned, categorical partition, oblique (k-feature hyperplane), pair interaction |
 | Ensemble modes | Bagging (Random Forest), GBDT, Frank-Wolfe boosting (FWBoost) |
-| Boosting features | GOSS, DART, early stopping, column/row subsampling |
+| Anomaly detection | Isolation Forest, Extended Isolation Forest |
+| Boosting features | GOSS, DART, early stopping, column/row subsampling, quantized-gradient training |
 | Objectives | squared error, binary logloss, binary focal loss, Huber, quantile regression |
 | Regularization | L2 (lambda), L1 (alpha), gamma (min gain), max delta step, depth penalty |
 | Constraints | monotone constraints, interaction constraints, max categories |

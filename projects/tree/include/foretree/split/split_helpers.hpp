@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "foretree/core/dataset.hpp"
+#include "foretree/core/parallel_executor.hpp"
 
 namespace foretree {
 
@@ -311,6 +312,9 @@ struct FeatureImportance {
 // SplitContext: supports variable bin sizes per feature
 // ============================================================================
 struct SplitContext {
+    // Optional executor for scanning features in parallel (nullptr: serial).
+    ParallelExecutor* executor = nullptr;
+
     // Histogram views (required for axis/categorical partition)
     const std::vector<double>* G = nullptr; // size depends on variable_bins
     const std::vector<double>* H = nullptr;
@@ -678,11 +682,69 @@ inline Candidate scan_axis_core(const SplitContext& ctx, int f, const Provider& 
     return cand;
 }
 
+// Scalar-histogram fast path of scan_axis_core: the feature's bins are
+// contiguous, so the scan walks raw pointers. Empty bins are skipped (they
+// leave the left/right sums unchanged, so they cannot improve the gain), and
+// the scan stops once the right child has fewer than min_samples_leaf rows
+// (the left count only grows).
+inline Candidate scan_axis_hist_scalar(const SplitContext& ctx, int f, const double* Gf, const double* Hf,
+                                       const int* Cf, int steps, int8_t mono, bool miss_left, double parent_gain,
+                                       int totalC, double Gm, double Hm, int Cm, bool has_miss) {
+    Candidate cand;
+    cand.kind = SplitKind::Axis;
+    cand.feat = f;
+    cand.thr = -1;
+    cand.miss_left = miss_left;
+    cand.gain = NEG_INF;
+
+    const SplitHyper& hyp = ctx.hyp;
+    const bool add_missing = miss_left && has_miss;
+    double GL = 0.0, HL = 0.0;
+    int CL = add_missing ? Cm : 0;
+    const double Gextra = add_missing ? Gm : 0.0;
+    const double Hextra = add_missing ? Hm : 0.0;
+    for (int t = 0; t < steps; ++t) {
+        GL += Gf[t];
+        HL += Hf[t];
+        const int count = Cf[t];
+        CL += count;
+        if (count == 0)
+            continue;
+        const int CR = totalC - CL;
+        if (CR < hyp.min_samples_leaf_)
+            break;
+        if (CL < hyp.min_samples_leaf_)
+            continue;
+        const double GLx = GL + Gextra;
+        const double HLx = HL + Hextra;
+        const double GRx = ctx.Gp - GLx;
+        const double HRx = ctx.Hp - HLx;
+        if (HLx < hyp.min_child_weight_ || HRx < hyp.min_child_weight_)
+            continue;
+        if (mono != 0 &&
+            !pass_monotone_guard(mono, weight_from_GRH(GLx, HLx, hyp), weight_from_GRH(GRx, HRx, hyp)))
+            continue;
+        const double gain = leaf_obj(GLx, HLx, hyp.lambda_, hyp.alpha_) +
+                            leaf_obj(GRx, HRx, hyp.lambda_, hyp.alpha_) - parent_gain - hyp.gamma_;
+        if (gain > cand.gain) {
+            cand.gain = gain;
+            cand.thr = t;
+        }
+    }
+    return cand;
+}
+
 // Try missing→left/right per policy and return best
 template <class Provider>
 inline Candidate scan_axis_with_policy(const SplitContext& ctx, int f, const Provider& prov, int steps, int8_t mono,
                                        int missing_policy, double parent_gain, int totalC, double Gm, double Hm, int Cm,
                                        bool has_miss) {
+    if (!has_miss) {
+        // No missing rows: both directions give identical gains; keep the
+        // direction the two-pass scan would report on a tie.
+        return scan_axis_core(ctx, f, prov, steps, mono, /*miss_left=*/missing_policy != 2, parent_gain, totalC, Gm,
+                              Hm, Cm, has_miss);
+    }
     if (missing_policy == 1) {
         return scan_axis_core(ctx, f, prov, steps, mono,
                               /*miss_left=*/true, parent_gain, totalC, Gm, Hm, Cm, has_miss);

@@ -52,6 +52,13 @@ class UnifiedTree {
         cuda_histogram_engine_ = engine;
     }
 #endif
+    // Quantized per-row gradients for CPU histograms (split finding only;
+    // node totals and leaf values keep using the exact g/h). The packed array
+    // must outlive fit().
+    void set_quantized_gradients(const QuantizedGradients& quantized) {
+        quantized_ = quantized;
+        use_quantized_ = quantized.packed != nullptr;
+    }
 
     explicit UnifiedTree(TreeConfig cfg = {},
                          const GradientHistogramSystem* ghs = nullptr,
@@ -245,6 +252,49 @@ class UnifiedTree {
     }
 
    public:
+    // Training-row predictions from the leaf each row was routed to while the
+    // tree grew, without traversing the tree. Returns false (callers then use
+    // predict()) unless every one of the N dataset rows was routed, leaves are
+    // plain scalars, and every split routes by binned codes, so the result
+    // equals predict() on the training codes exactly.
+    bool training_predictions(std::vector<double>& out, int N) const {
+        if (!packed_ || K_ != 1 || cfg_.neural_leaf.enabled || N != N_ ||
+            static_cast<int>(index_pool_.size()) != N)
+            return false;
+        std::vector<const Node*> leaves;
+        for (const Node& n : nodes_) {
+            if (n.is_leaf) {
+                if (n.leaf_values.empty()) return false;
+                leaves.push_back(&n);
+            } else if (n.split_kind == splitx::SplitKind::Oblique ||
+                       std::isfinite(n.split_value)) {
+                return false;  // routed by raw values during training
+            }
+        }
+        out.resize(static_cast<size_t>(N));
+        auto fill = [&](int begin, int end) {
+            for (int l = begin; l < end; ++l) {
+                const Node& n = *leaves[static_cast<size_t>(l)];
+                const double value = n.leaf_values[0];
+                for (int i = n.lo; i < n.hi; ++i)
+                    out[static_cast<size_t>(index_pool_[static_cast<size_t>(i)])] =
+                        value;
+            }
+        };
+        if (executor_)
+            executor_->parallel_for(0, static_cast<int>(leaves.size()), 1, fill);
+        else
+            fill(0, static_cast<int>(leaves.size()));
+        return true;
+    }
+
+    // Free the per-row training state (row routing, partition scratch). Only
+    // training uses it; prediction does not.
+    void release_training_rows() {
+        std::vector<int>().swap(index_pool_);
+        std::vector<int>().swap(partition_scratch_);
+    }
+
     std::vector<double> predict(const QuantizedDataset& Xb,
                                 const double* Xraw_opt = nullptr) const {
         if (Xb.features() != P_)
@@ -1485,6 +1535,9 @@ class UnifiedTree {
     TreeConfig cfg_;
     const GradientHistogramSystem* ghs_ = nullptr;
     std::shared_ptr<ParallelExecutor> executor_;
+    std::vector<int> partition_scratch_;  // reused by stable row partitions
+    QuantizedGradients quantized_{};
+    bool use_quantized_ = false;
 #ifdef FORETREE_HAS_CUDA
     cuda::CudaHistogramEngine* cuda_histogram_engine_ = nullptr;
 #endif
@@ -1834,6 +1887,43 @@ class UnifiedTree {
         const int K_ = std::max(n.K, 1);
         n.G.assign(static_cast<size_t>(K_), 0.0);
         n.H.assign(static_cast<size_t>(K_), 0.0);
+        constexpr int kParallelRows = 65536;
+        if (!cfg_.sgld_enabled && executor_ && n.hi - n.lo >= kParallelRows &&
+            executor_->thread_count() > 1) {
+            // Fixed blocks summed in order: deterministic for a given size.
+            const int rows = n.hi - n.lo;
+            const int blocks = std::min<int>(
+                64, std::max<int>(1, rows / 16384));
+            std::vector<double> block_g(static_cast<size_t>(blocks), 0.0);
+            std::vector<double> block_h(static_cast<size_t>(blocks), 0.0);
+            executor_->parallel_for(0, blocks, 1, [&](int b0, int b1) {
+                for (int b = b0; b < b1; ++b) {
+                    const int lo = n.lo + static_cast<int>(
+                                              static_cast<int64_t>(rows) * b / blocks);
+                    const int hi = n.lo + static_cast<int>(
+                                              static_cast<int64_t>(rows) * (b + 1) / blocks);
+                    double g = 0.0, h = 0.0;
+                    for (int i = lo; i < hi; ++i) {
+                        const int r = index_pool_[static_cast<size_t>(i)];
+                        g += (*g_)[static_cast<size_t>(r)];
+                        h += (*h_)[static_cast<size_t>(r)];
+                    }
+                    block_g[static_cast<size_t>(b)] = g;
+                    block_h[static_cast<size_t>(b)] = h;
+                }
+            });
+            double g = 0.0, h = 0.0;
+            for (int b = 0; b < blocks; ++b) {
+                g += block_g[static_cast<size_t>(b)];
+                h += block_h[static_cast<size_t>(b)];
+            }
+            for (int c = 0; c < K_; ++c) {
+                n.G[static_cast<size_t>(c)] = g;
+                n.H[static_cast<size_t>(c)] = h;
+            }
+            n.C = rows;
+            return;
+        }
         std::normal_distribution<double> noise(0.0, cfg_.sgld_noise_scale);
         for (int i = n.lo; i < n.hi; ++i) {
             const int r = index_pool_[i];
@@ -1846,6 +1936,28 @@ class UnifiedTree {
             }
         }
         n.C = n.hi - n.lo;
+    }
+
+    // Children totals: sum the smaller child's rows, derive the larger one as
+    // parent - smaller (the parent's totals cover exactly both children).
+    void accum_children_(const Node& parent, Node& ln, Node& rn) {
+        const size_t K = static_cast<size_t>(std::max(K_, 1));
+        if (cfg_.sgld_enabled || parent.G.size() != K || parent.H.size() != K) {
+            accum_(ln);
+            accum_(rn);
+            return;
+        }
+        const bool left_smaller = (ln.hi - ln.lo) <= (rn.hi - rn.lo);
+        Node& smaller = left_smaller ? ln : rn;
+        Node& larger = left_smaller ? rn : ln;
+        accum_(smaller);
+        larger.G.resize(K);
+        larger.H.resize(K);
+        for (size_t c = 0; c < K; ++c) {
+            larger.G[c] = parent.G[c] - smaller.G[c];
+            larger.H[c] = std::max(0.0, parent.H[c] - smaller.H[c]);
+        }
+        larger.C = larger.hi - larger.lo;
     }
 
     inline void set_unweighted_node_totals_(Node& n) const {
@@ -2224,6 +2336,19 @@ class UnifiedTree {
         void dispatch_cpu_(int row_count, RowAt&& row_at,
                            const std::vector<int>& feats,
                            HistPair& hist) const {
+            if (T.use_quantized_ && row_count < kQuantizedMaxRows) {
+                T.Xb_->visit_feature_major_codes([&](auto codes) {
+                    using Code = typename decltype(codes)::value_type;
+                    QuantizedFeatureMajorHistogramKernel<Code>::build(
+                        codes, T.N_, row_count, std::forward<RowAt>(row_at),
+                        std::span<const int>(feats),
+                        std::span<const size_t>(T.feature_offsets_),
+                        std::span<const int>(T.missing_ids_per_feat_),
+                        T.quantized_,
+                        HistogramOutputView{hist.G, hist.H, hist.C}, *T.executor_);
+                });
+                return;
+            }
             T.Xb_->visit_feature_major_codes([&](auto codes) {
                 dispatch_feature_major_histogram(
                     T.unit_hessian_, codes, T.N_, row_count,
@@ -2247,7 +2372,9 @@ class UnifiedTree {
 #ifdef FORETREE_HAS_CUDA
         bool build_cuda(const std::vector<int>& rows,
                         const std::vector<int>& feats, HistPair& hist) const {
-            if (!T.cuda_histogram_engine_ || T.K_ != 1 || rows.empty() ||
+            // Quantized CPU histograms beat the CUDA round trip (measured:
+            // root histogram 107 ms vs 155 ms per 200 trees), so they win.
+            if (!T.cuda_histogram_engine_ || T.use_quantized_ || T.K_ != 1 || rows.empty() ||
                 static_cast<int64_t>(rows.size()) *
                         static_cast<int64_t>(feats.size()) <
                     T.cfg_.cuda_min_histogram_work)
@@ -2481,6 +2608,7 @@ class UnifiedTree {
             }
 
             foretree::splitx::SplitContext ctx;
+            ctx.executor = T.executor_.get();
             ctx.G = &hist->G;
             ctx.H = &hist->H;
             ctx.C = &hist->C;
@@ -2967,12 +3095,20 @@ class UnifiedTree {
     int partition_hist_(Node& nd, int feat, int thr, bool miss_left) {
         const uint16_t miss =
             static_cast<uint16_t>(missing_ids_per_feat_[feat]);
-        return RowPartitioner::partition(
-            index_pool_, nd.lo, nd.hi, [&](int row) {
-                const uint16_t bin = code_at_(row, feat);
-                return bin == miss ? miss_left
-                                   : bin <= static_cast<uint16_t>(thr);
-            });
+        // Read the feature-major column: one contiguous array per feature
+        // instead of a cache line per row in the row-major matrix.
+        return Xb_->visit_feature_major_codes([&](auto codes) {
+            const auto* column = codes.data() + static_cast<size_t>(feat) *
+                                                    static_cast<size_t>(N_);
+            return RowPartitioner::stable_partition(
+                index_pool_, partition_scratch_, nd.lo, nd.hi,
+                [&](int row) {
+                    const uint16_t bin = static_cast<uint16_t>(column[row]);
+                    return bin == miss ? miss_left
+                                       : bin <= static_cast<uint16_t>(thr);
+                },
+                executor_.get());
+        });
     }
 
     int partition_hist_categorical_(
@@ -3133,8 +3269,7 @@ class UnifiedTree {
             }
         }
 
-        accum_(ln);
-        accum_(rn);
+        accum_children_(nd, ln, rn);
         accum_goss_weighted_(ln);
         accum_goss_weighted_(rn);
 
@@ -3190,8 +3325,16 @@ class UnifiedTree {
             auto small_hist = prov.build_histogram(smaller, features);
 
             if (cfg_.cache_histograms) {
-                larger.histogram = acquire_histogram_();
-                *larger.histogram = *parent_hist;
+                // The parent's histogram is dead after this split: reuse its
+                // buffer for the larger child when nothing else holds it.
+                nd.histogram.reset();
+                if (nd.depth == 0) tree_histogram_.reset();
+                if (parent_hist.use_count() == 1) {
+                    larger.histogram = std::move(parent_hist);
+                } else {
+                    larger.histogram = acquire_histogram_();
+                    *larger.histogram = *parent_hist;
+                }
                 larger.histogram->subtract(*small_hist);
                 larger.hist_features = features;
                 larger.hist_valid = true;

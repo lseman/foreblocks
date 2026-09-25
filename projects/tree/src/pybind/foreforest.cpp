@@ -222,6 +222,8 @@ NB_MODULE(foreforest, m) {
         .def_rw("n_estimators", &ForeForestConfig::n_estimators)
         .def_rw("learning_rate", &ForeForestConfig::learning_rate)
         .def_rw("track_train_metric", &ForeForestConfig::track_train_metric)
+        .def_rw("quantized_gradients", &ForeForestConfig::quantized_gradients)
+        .def_rw("quantized_gradient_bits", &ForeForestConfig::quantized_gradient_bits)
         .def_rw("rng_seed", &ForeForestConfig::rng_seed)
         .def_rw("focal_gamma", &ForeForestConfig::focal_gamma)
         .def_rw("huber_delta", &ForeForestConfig::huber_delta)

@@ -68,10 +68,12 @@ public:
         const auto* mono_vec = ctx.mono_ptr();
         const double parent_gain = leaf_obj(ctx.Gp, ctx.Hp, ctx.hyp.lambda_, ctx.hyp.alpha_);
 
-        ctx.for_each_active_feature([&](int f) {
+        auto scan_feature = [&](int f) -> Candidate {
+            Candidate none;
+            none.gain = NEG_INF;
             const int finite_bins = ctx.get_feature_bins(f);
             if (finite_bins <= 0)
-                return;
+                return none;
 
             const int8_t mono = (mono_vec && f < (int)mono_vec->size()) ? (*mono_vec)[f] : 0;
 
@@ -84,12 +86,53 @@ public:
             const int totalC = prov.total_count();
             const int steps = prov.steps();
 
-            Candidate cand = scan_axis_with_policy(ctx, f, prov, steps, mono, ctx.hyp.missing_policy, parent_gain,
-                                                   totalC, Gm, Hm, Cm, has_miss);
+            Candidate cand;
+            const size_t base = ctx.get_histogram_offset(f, 0);
+            if (prov.K <= 1 && base + static_cast<size_t>(steps) <= G.size() &&
+                base + static_cast<size_t>(steps) <= C.size()) {
+                auto scan = [&](bool miss_left) {
+                    return scan_axis_hist_scalar(ctx, f, G.data() + base, H.data() + base, C.data() + base, steps,
+                                                 mono, miss_left, parent_gain, totalC, Gm, Hm, Cm, has_miss);
+                };
+                const int policy = ctx.hyp.missing_policy;
+                if (!has_miss || policy != 0) {
+                    cand = scan(policy != 2);
+                } else {
+                    Candidate left = scan(true);
+                    Candidate right = scan(false);
+                    cand = (left.gain >= right.gain) ? left : right;
+                }
+            } else {
+                cand = scan_axis_with_policy(ctx, f, prov, steps, mono, ctx.hyp.missing_policy, parent_gain, totalC,
+                                             Gm, Hm, Cm, has_miss);
+            }
+            return cand;
+        };
 
+        std::vector<int> features;
+        features.reserve(static_cast<size_t>(ctx.P));
+        ctx.for_each_active_feature([&](int f) { features.push_back(f); });
+        const int n_features = static_cast<int>(features.size());
+        // Scanning is ~O(bins) per feature; spread features over threads when
+        // there is enough of it to amortize the dispatch.
+        constexpr int kFeaturesPerTask = 4;
+        if (ctx.executor && ctx.executor->thread_count() > 1 && n_features >= 2 * kFeaturesPerTask) {
+            std::vector<Candidate> candidates(static_cast<size_t>(n_features));
+            ctx.executor->parallel_for(0, n_features, kFeaturesPerTask, [&](int begin, int end) {
+                for (int i = begin; i < end; ++i)
+                    candidates[static_cast<size_t>(i)] = scan_feature(features[static_cast<size_t>(i)]);
+            });
+            // Reduce in feature order: same winner (and tie-break) as the serial loop.
+            for (const Candidate& cand : candidates)
+                if (cand.thr >= 0 && cand.gain > best.gain)
+                    best = cand;
+            return best;
+        }
+        for (int f : features) {
+            Candidate cand = scan_feature(f);
             if (cand.thr >= 0 && cand.gain > best.gain)
                 best = cand;
-        });
+        }
         return best;
     }
 

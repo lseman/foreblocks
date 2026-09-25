@@ -189,6 +189,38 @@ if(TREE_BUILD_FOREFOREST)
 endif()
 
 # ------------------------------------------------------------------------------
+# C++ tests (assert-based; built with NDEBUG undefined so asserts stay active)
+# ------------------------------------------------------------------------------
+option(TREE_BUILD_TESTS "Build the C++ test executables and register them with CTest" OFF)
+if(TREE_BUILD_TESTS)
+    enable_testing()
+    find_package(Threads REQUIRED)
+    file(GLOB TREE_CPP_TESTS CONFIGURE_DEPENDS "${TREE_ROOT_DIR}/tests/test_*.cpp")
+    foreach(test_src ${TREE_CPP_TESTS})
+        get_filename_component(test_name "${test_src}" NAME_WE)
+        add_executable(${test_name} "${test_src}")
+        target_compile_features(${test_name} PRIVATE cxx_std_23)
+        target_link_libraries(${test_name} PRIVATE foretree_core Threads::Threads)
+        target_compile_options(${test_name} PRIVATE -UNDEBUG)
+        if(TREE_ENABLE_CUDA_BACKEND)
+            target_link_libraries(${test_name} PRIVATE foretree_cuda)
+        endif()
+        add_test(NAME ${test_name} COMMAND ${test_name})
+    endforeach()
+    if(TREE_ENABLE_CUDA_BACKEND)
+        file(GLOB TREE_CUDA_TESTS CONFIGURE_DEPENDS "${TREE_ROOT_DIR}/tests/test_*.cu")
+        foreach(test_src ${TREE_CUDA_TESTS})
+            get_filename_component(test_name "${test_src}" NAME_WE)
+            add_executable(${test_name} "${test_src}")
+            target_link_libraries(${test_name} PRIVATE foretree_cuda)
+            target_compile_options(${test_name} PRIVATE -UNDEBUG)
+            set_target_properties(${test_name} PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
+            add_test(NAME ${test_name} COMMAND ${test_name})
+        endforeach()
+    endif()
+endif()
+
+# ------------------------------------------------------------------------------
 # Install rules
 # ------------------------------------------------------------------------------
 install(DIRECTORY "${TREE_INCLUDE_DIR}/foretree" DESTINATION include)
