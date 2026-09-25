@@ -114,3 +114,6 @@ datasets/
 
 # Agent session logs
 .logician/
+
+# Local graph database (large, generated)
+graphician.db
