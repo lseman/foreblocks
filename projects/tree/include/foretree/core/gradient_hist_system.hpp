@@ -61,15 +61,16 @@ public:
 
         feature_bins_.assign(P_, FeatureBins{});
 
+        // Quantile and uniform binning never read the gradients.
+        const bool needs_gradients = cfg_.method != "quantile" && cfg_.method != "hist";
+        const std::vector<double> hessians(h, h + N_);
+        const std::vector<double> gradients = needs_gradients ? std::vector<double>(g, g + N_) : std::vector<double>{};
         auto process_feature = [&](int j) {
-            std::vector<double> col(N_), gj(N_), hj(N_);
-            for (int i = 0; i < N_; ++i) {
-                const size_t off = static_cast<size_t>(i) * static_cast<size_t>(P_) + static_cast<size_t>(j);
-                col[i] = X[off];
-                gj[i] = g[i];
-                hj[i] = h[i];
-            }
-            FeatureBins fb = strat->create_bins(col, gj, hj, cfg_);
+            std::vector<double> col;
+            col.resize(static_cast<size_t>(N_));
+            for (int i = 0; i < N_; ++i)
+                col[static_cast<size_t>(i)] = X[static_cast<size_t>(i) * static_cast<size_t>(P_) + static_cast<size_t>(j)];
+            FeatureBins fb = strat->create_bins(col, gradients, hessians, cfg_);
 
             int max_bins_for_feature;
             if (cfg_.method == "adaptive" && cfg_.adaptive_binning) {

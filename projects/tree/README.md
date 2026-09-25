@@ -165,6 +165,12 @@ prob = model.predict(X_test)            # (N,) for binary classification
 contrib = model.predict_contrib(X_test) # (N, P+1)
 ```
 
+**Threads**: `cfg.threads = 0` (default) sizes the training pool to the data:
+8 threads below ~10M cells (rows x features), 16 below ~50M, else all hardware
+threads. Training is a chain of short parallel phases, so on small data more
+threads only add coordination cost (30k x 16: 0.46 s at 8 threads vs 0.67 s at
+32 on a 16-core/32-thread CPU). Batch prediction always uses every core.
+
 **Quantized training** (opt-in, like LightGBM's `use_quantized_grad`): per
 tree, gradients and hessians are stochastically rounded to integer levels and
 CPU histograms are built with packed integer sums. On a 150k x 40 binary task

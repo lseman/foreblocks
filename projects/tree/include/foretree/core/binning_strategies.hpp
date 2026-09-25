@@ -183,6 +183,58 @@ struct QuantileBinner final : IBinningStrategy {
                             const std::vector<double>& hessians,
                             const HistogramConfig& cfg) override {
         const int max_bins_for_feature = std::max(1, cfg.max_bins);
+        FeatureBins fb;
+        fb.strategy = "quantile";
+
+        // Equal weights (e.g. hessians at initialization for squared error or
+        // logloss): quantiles by count, sorting plain values (half the bytes
+        // of (value, weight) pairs, no weight bookkeeping).
+        const bool uniform_weights =
+            hessians.empty() ||
+            std::all_of(hessians.begin(), hessians.end(), [&](double w) { return w == hessians.front(); });
+        if (uniform_weights) {
+            std::vector<double> v;
+            v.reserve(values.size());
+            for (double x : values)
+                if (std::isfinite(x)) v.push_back(x);
+            if (!v.empty()) {
+                std::sort(v.begin(), v.end());
+                std::vector<double> u;
+                u.reserve(std::min<size_t>(v.size(), 4096));
+                for (double x : v)
+                    if (u.empty() || x != u.back()) u.push_back(x);
+                if (apply_categorical_precheck_sorted_unique(fb, u, cfg, max_bins_for_feature))
+                    return fb;
+                if (static_cast<int>(u.size()) <= max_bins_for_feature) {
+                    fb.edges = _midpoint_edges_of_unique(u);
+                    fb.stats.unique_count = static_cast<int>(u.size());
+                    fb.stats.suggested_bins = fb.n_bins();
+                    fb.stats.allocation_reason = "all_unique_midpoints";
+                    finalize_feature_bins(fb, cfg, max_bins_for_feature, true);
+                    return fb;
+                }
+                const int nb = max_bins_for_feature;
+                const double n = static_cast<double>(v.size());
+                fb.edges.assign(static_cast<size_t>(nb) + 1, 0.0);
+                fb.edges[0] = v.front() - 1e-12;
+                fb.edges[static_cast<size_t>(nb)] = v.back() + 1e-12;
+                for (int i = 1; i < nb; ++i) {
+                    // First sorted position whose cumulative count reaches i/nb of n.
+                    const double target = (static_cast<double>(i) / nb) * n;
+                    const size_t idx = static_cast<size_t>(std::clamp(std::ceil(target) - 1.0, 0.0, n - 1.0));
+                    fb.edges[static_cast<size_t>(i)] = v[idx];
+                }
+                for (int i = 1; i <= nb; ++i)
+                    if (fb.edges[static_cast<size_t>(i)] <= fb.edges[static_cast<size_t>(i) - 1])
+                        fb.edges[static_cast<size_t>(i)] = fb.edges[static_cast<size_t>(i) - 1] + 1e-12;
+                fb.stats.suggested_bins = nb;
+                fb.stats.unique_count = static_cast<int>(u.size());
+                fb.stats.allocation_reason = "quantile";
+                finalize_feature_bins(fb, cfg, max_bins_for_feature, true);
+                return fb;
+            }
+        }
+
         std::vector<std::pair<double, double>> pairs;
         pairs.reserve(values.size());
         for (size_t i = 0; i < values.size(); ++i) {
@@ -191,8 +243,6 @@ struct QuantileBinner final : IBinningStrategy {
             if (std::isfinite(vi) && std::isfinite(wi))
                 pairs.emplace_back(vi, std::max(cfg.eps, wi));
         }
-        FeatureBins fb;
-        fb.strategy = "quantile";
         if (pairs.empty()) {
             fb.edges = {0.0, 1.0};
             fb.stats.suggested_bins = 1;

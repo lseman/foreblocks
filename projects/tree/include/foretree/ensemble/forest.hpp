@@ -251,6 +251,7 @@ public:
 
         N_ = N;
         original_P_ = P;
+        size_executor_for_(N, P);
 
         ordered_categorical_encoder_.reset();
         ordered_categorical_active_ = false;
@@ -1187,9 +1188,7 @@ private:
 #ifdef FORETREE_HAS_CUDA
         const bool quantized = cfg_.quantized_gradients && cfg_.mode != ForeForestConfig::Mode::Bagging &&
                                tc.split_mode == TreeConfig::SplitMode::Histogram && !tc.neural_leaf.enabled;
-        // Quantized CPU histograms replace the CUDA path, so skip the per-tree
-        // gradient upload.
-        if (cuda_histogram_engine_ && !quantized && tc.split_mode == TreeConfig::SplitMode::Histogram &&
+        if (cuda_histogram_engine_ && tc.split_mode == TreeConfig::SplitMode::Histogram &&
             !tc.neural_leaf.enabled) {
             std::vector<float> gradients(g.begin(), g.end());
             std::vector<float> hessians(h.begin(), h.end());
@@ -1837,9 +1836,13 @@ private:
         const double bagging_scale =
             cfg_.mode == ForeForestConfig::Mode::Bagging ? 1.0 / static_cast<double>(trees_.size()) : 1.0;
         constexpr int rows_per_batch = 256;
+        // Batch prediction is embarrassingly parallel and scales with every
+        // core; with automatic threads use the full hardware pool rather than
+        // the training executor (sized for training's short phases).
+        ParallelExecutor& pool = cfg_.threads > 0 ? *executor_ : *default_parallel_executor();
         Xb.visit_codes([&](auto codes) {
             using Code = typename decltype(codes)::value_type;
-            executor_->parallel_for(0, N, rows_per_batch, [&](int row_begin, int row_end) {
+            pool.parallel_for(0, N, rows_per_batch, [&](int row_begin, int row_end) {
                 for (int row = row_begin; row < row_end; ++row) {
                     const Code* row_binned = codes.data() + static_cast<size_t>(row) * static_cast<size_t>(P_);
                     double* row_output = out.data() + static_cast<size_t>(row) * static_cast<size_t>(K_);
@@ -1899,6 +1902,21 @@ private:
             }
         }
         return out;
+    }
+
+    // Automatic thread count (cfg_.threads == 0). Training is a chain of short
+    // parallel phases, so on small data extra threads only add coordination
+    // cost. Measured on a 16-core / 32-thread CPU: 8 threads were fastest
+    // below ~10M cells (rows x features), 16 up to ~50M, all threads beyond
+    // (30k x 16: 0.46s at 8 threads vs 0.67s at 32).
+    void size_executor_for_(int N, int P) {
+        if (cfg_.threads > 0)
+            return;
+        const unsigned hardware = std::max(1U, std::thread::hardware_concurrency());
+        const double cells = static_cast<double>(N) * static_cast<double>(P);
+        const unsigned wanted = std::min(hardware, cells < 10e6 ? 8U : cells < 50e6 ? 16U : hardware);
+        if (!executor_ || executor_->thread_count() != wanted)
+            executor_ = std::make_shared<ParallelExecutor>(wanted);
     }
 
     // New tree's predictions on the training rows: read from the leaves the

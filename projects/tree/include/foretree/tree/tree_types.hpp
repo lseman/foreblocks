@@ -242,7 +242,9 @@ public:
     explicit HistogramPool(size_t size, int K, size_t max_size = 100)
         : hist_size_(size), K_(K), max_pool_size_(max_size) {}
 
-    std::unique_ptr<HistPair> get() {
+    // `clear = false` hands out a recycled histogram with stale contents (the
+    // caller zeroes it, e.g. in parallel).
+    std::unique_ptr<HistPair> get(bool clear = true) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (pool_.empty()) {
             auto hp = std::make_unique<HistPair>();
@@ -251,7 +253,8 @@ public:
         }
         auto hp = std::move(pool_.back());
         pool_.pop_back();
-        hp->clear();
+        if (clear)
+            hp->clear();
         return hp;
     }
 

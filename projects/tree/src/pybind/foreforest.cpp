@@ -222,6 +222,7 @@ NB_MODULE(foreforest, m) {
         .def_rw("n_estimators", &ForeForestConfig::n_estimators)
         .def_rw("learning_rate", &ForeForestConfig::learning_rate)
         .def_rw("track_train_metric", &ForeForestConfig::track_train_metric)
+        .def_rw("threads", &ForeForestConfig::threads, "Worker threads. 0 = automatic: 8 below ~10M cells (rows x features), 16 below ~50M, else all hardware threads.")
         .def_rw("quantized_gradients", &ForeForestConfig::quantized_gradients)
         .def_rw("quantized_gradient_bits", &ForeForestConfig::quantized_gradient_bits)
         .def_rw("rng_seed", &ForeForestConfig::rng_seed)

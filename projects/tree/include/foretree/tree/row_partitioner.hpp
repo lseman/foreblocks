@@ -46,8 +46,8 @@ public:
         int* data = rows.data() + begin;
         int* tmp = scratch.data();
 
-        constexpr int kParallelMinRows = 32768;
-        constexpr int kMinBlockRows = 8192;
+        constexpr int kParallelMinRows = 16384;
+        constexpr int kMinBlockRows = 4096;
         const int threads = executor ? static_cast<int>(executor->thread_count()) : 1;
         const int blocks = std::clamp(n / kMinBlockRows, 1, std::max(1, 2 * threads));
         if (n < kParallelMinRows || blocks == 1 || threads <= 1) {

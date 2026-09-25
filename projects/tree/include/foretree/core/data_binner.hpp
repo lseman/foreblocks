@@ -1,5 +1,7 @@
 // tree/include/foretree/core/data_binner.hpp
 #pragma once
+
+#include "foretree/core/parallel_executor.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cmath> // nextafter, isfinite, abs
@@ -397,7 +399,9 @@ private:
         if (has_overrides)
             overridden = effective_bins_(mode, node_id, defaults);
 
-        for (int row = 0; row < N; ++row) {
+        // Rows are independent: encode blocks of rows in parallel.
+        auto encode_rows = [&](int row_begin, int row_end) {
+        for (int row = row_begin; row < row_end; ++row) {
             const size_t base = static_cast<size_t>(row) * static_cast<size_t>(P_);
             for (int feature = 0; feature < P_; ++feature) {
                 const size_t f = static_cast<size_t>(feature);
@@ -426,6 +430,12 @@ private:
                 output[base + f] = static_cast<Code>(code);
             }
         }
+        };
+        const int64_t cells = static_cast<int64_t>(N) * P_;
+        if (cells >= (1 << 18))
+            default_parallel_executor()->parallel_for(0, N, std::max(256, (1 << 16) / std::max(1, P_)), encode_rows);
+        else
+            encode_rows(0, N);
     }
 
     struct Key {

@@ -1792,11 +1792,62 @@ class UnifiedTree {
             histogram->clear();
             return histogram;
         }
-        HistPair* histogram = hist_pool_->get().release();
+        HistPair* histogram = hist_pool_->get(/*clear=*/false).release();
+        clear_histogram_(*histogram);
         return std::shared_ptr<HistPair>(
             histogram, [pool = hist_pool_.get()](HistPair* value) {
                 pool->return_histogram(std::unique_ptr<HistPair>(value));
             });
+    }
+
+    // Zero a histogram on the calling thread: zeroing on other cores leaves
+    // its cache lines there and made the following build slower.
+    void clear_histogram_(HistPair& hist) const {
+        const int n = static_cast<int>(hist.G.size());
+        auto zero = [&](int begin, int end) {
+            std::fill(hist.G.begin() + begin, hist.G.begin() + end, 0.0);
+            std::fill(hist.H.begin() + begin, hist.H.begin() + end, 0.0);
+            if (static_cast<int>(hist.C.size()) >= end)
+                std::fill(hist.C.begin() + begin, hist.C.begin() + end, 0);
+        };
+        zero(0, n);
+        if (hist.C.size() != hist.G.size())
+            std::ranges::fill(hist.C, 0);
+        hist.goss_weighted = false;
+    }
+
+    // hist -= other over the bins of `features` only (scalar histograms),
+    // in parallel. Cached histograms are only used for the same feature list,
+    // so the other features' bins are never read.
+    void subtract_histogram_(HistPair& hist, const HistPair& other,
+                             const std::vector<int>& features) const {
+        if (K_ != 1 || features.empty() || hist.C.size() != hist.G.size()) {
+            hist.subtract(other);
+            return;
+        }
+        auto subtract_features = [&](int p0, int p1) {
+            for (int p = p0; p < p1; ++p) {
+                const int f = features[static_cast<size_t>(p)];
+                const size_t begin = feature_offsets_[static_cast<size_t>(f)];
+                const size_t end =
+                    begin + static_cast<size_t>(missing_ids_per_feat_[static_cast<size_t>(f)]) + 1;
+                for (size_t k = begin; k < end; ++k) {
+                    hist.G[k] -= other.G[k];
+                    hist.H[k] -= other.H[k];
+                    hist.C[k] -= other.C[k];
+                }
+            }
+        };
+        const int n = static_cast<int>(features.size());
+        size_t bins = 0;
+        for (int f : features)
+            bins += static_cast<size_t>(missing_ids_per_feat_[static_cast<size_t>(f)]) + 1;
+        // Measured crossover: serial wins at ~4K bins, parallel at ~10K.
+        constexpr size_t kParallelMinBins = 8192;
+        if (executor_ && n >= 8 && bins >= kParallelMinBins)
+            executor_->parallel_for(0, n, 4, subtract_features);
+        else
+            subtract_features(0, n);
     }
 
     void accumulate_hist_bin_(HistPair& hist, int r, int f) const {
@@ -2372,9 +2423,10 @@ class UnifiedTree {
 #ifdef FORETREE_HAS_CUDA
         bool build_cuda(const std::vector<int>& rows,
                         const std::vector<int>& feats, HistPair& hist) const {
-            // Quantized CPU histograms beat the CUDA round trip (measured:
-            // root histogram 107 ms vs 155 ms per 200 trees), so they win.
-            if (!T.cuda_histogram_engine_ || T.use_quantized_ || T.K_ != 1 || rows.empty() ||
+            // CUDA takes the large histograms even with quantized training
+            // (quantized CPU kernels still handle the nodes below the GPU
+            // threshold): with the automatic thread count the GPU is faster.
+            if (!T.cuda_histogram_engine_ || T.K_ != 1 || rows.empty() ||
                 static_cast<int64_t>(rows.size()) *
                         static_cast<int64_t>(feats.size()) <
                     T.cfg_.cuda_min_histogram_work)
@@ -3335,7 +3387,7 @@ class UnifiedTree {
                     larger.histogram = acquire_histogram_();
                     *larger.histogram = *parent_hist;
                 }
-                larger.histogram->subtract(*small_hist);
+                subtract_histogram_(*larger.histogram, *small_hist, features);
                 larger.hist_features = features;
                 larger.hist_valid = true;
                 larger.hist_goss_weighted = false;
