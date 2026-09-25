@@ -14,6 +14,7 @@
 
 #include "foretree/core/histogram_primitives.hpp"
 #include "foretree/ensemble/forest.hpp"
+#include "foretree/ensemble/isolation_forest.hpp"
 #include "foretree/split/split_engine.hpp"
 #include "foretree/split/split_finder.hpp"
 #include "foretree/tree/tree_types.hpp"
@@ -25,6 +26,8 @@ using namespace nanobind::literals;
 using foretree::ForeForest;
 using foretree::ForeForestConfig;
 using foretree::HistogramConfig;
+using foretree::IsolationForest;
+using foretree::IsolationForestConfig;
 using foretree::InteractionSeededConfig;
 using foretree::ObliqueMode;
 using foretree::PairInteractionConfig;
@@ -485,4 +488,97 @@ NB_MODULE(foreforest, m) {
                 );
             }, nb::arg("index"),
             "Return packed tree data as a tuple of numpy arrays (zero-copy views).");
+
+    // --------------------- IsolationForest ---------------------
+    nb::class_<IsolationForestConfig>(m, "IsolationForestConfig")
+        .def(nb::init<>())
+        .def_rw("n_estimators", &IsolationForestConfig::n_estimators)
+        .def_rw("max_samples", &IsolationForestConfig::max_samples)
+        .def_rw("max_features", &IsolationForestConfig::max_features)
+        .def_rw("max_depth", &IsolationForestConfig::max_depth)
+        .def_rw("extension_level", &IsolationForestConfig::extension_level)
+        .def_rw("bootstrap", &IsolationForestConfig::bootstrap)
+        .def_rw("contamination", &IsolationForestConfig::contamination)
+        .def_rw("rng_seed", &IsolationForestConfig::rng_seed);
+
+    // X: float64 (N x P) -> float64 (N); runs without the GIL.
+    auto iso_scores = [](std::vector<double> (IsolationForest::*method)(const double*, int, int) const) {
+        return [method](const IsolationForest& self, const CDoubleArray& X) {
+            ensure_2d(X, "X");
+            const auto N = static_cast<int>(X.shape(0));
+            const auto P = static_cast<int>(X.shape(1));
+            std::vector<double> out;
+            {
+                nb::gil_scoped_release release;
+                out = (self.*method)(X.data(), N, P);
+            }
+            return ndarray_from_storage(std::move(out), {static_cast<size_t>(N)});
+        };
+    };
+
+    nb::class_<IsolationForest>(m, "IsolationForest",
+                                "Isolation Forest (Liu et al., 2008); extension_level > 0 gives the "
+                                "Extended Isolation Forest (Hariri et al., 2019).")
+        .def(nb::init<IsolationForestConfig>(), nb::arg("config"))
+        .def(
+            "__init__",
+            [](IsolationForest* self, int n_estimators, int max_samples, double max_features, int max_depth,
+               int extension_level, bool bootstrap, double contamination, uint64_t random_state) {
+                IsolationForestConfig cfg;
+                cfg.n_estimators = n_estimators;
+                cfg.max_samples = max_samples;
+                cfg.max_features = max_features;
+                cfg.max_depth = max_depth;
+                cfg.extension_level = extension_level;
+                cfg.bootstrap = bootstrap;
+                cfg.contamination = contamination;
+                cfg.rng_seed = random_state;
+                new (self) IsolationForest(cfg);
+            },
+            nb::kw_only(), nb::arg("n_estimators") = 200, nb::arg("max_samples") = 256,
+            nb::arg("max_features") = 1.0, nb::arg("max_depth") = -1, nb::arg("extension_level") = 0,
+            nb::arg("bootstrap") = false, nb::arg("contamination") = -1.0, nb::arg("random_state") = 42,
+            "contamination < 0 means 'auto' (threshold at anomaly score 0.5); extension_level = -1 "
+            "uses hyperplanes over all features.")
+        .def(
+            "fit",
+            [](IsolationForest& self, const CDoubleArray& X) -> IsolationForest& {
+                ensure_2d(X, "X");
+                const auto N = static_cast<int>(X.shape(0));
+                const auto P = static_cast<int>(X.shape(1));
+                {
+                    nb::gil_scoped_release release;
+                    self.fit(X.data(), N, P);
+                }
+                return self;
+            },
+            nb::arg("X"), nb::rv_policy::reference, "Fit on float64 X (N x P); NaN marks missing values.")
+        .def("score_samples", iso_scores(&IsolationForest::score_samples), nb::arg("X"),
+             "Negated anomaly score: higher is more normal (scikit-learn convention).")
+        .def("anomaly_score", iso_scores(&IsolationForest::anomaly_score), nb::arg("X"),
+             "Anomaly score s(x) = 2^(-E[h(x)] / c(psi)) in (0, 1]; higher is more anomalous.")
+        .def("decision_function", iso_scores(&IsolationForest::decision_function), nb::arg("X"),
+             "score_samples(X) - offset: negative for outliers.")
+        .def("mean_path_length", iso_scores(&IsolationForest::mean_path_length), nb::arg("X"),
+             "Average isolation depth E[h(x)] over the trees.")
+        .def(
+            "predict",
+            [](const IsolationForest& self, const CDoubleArray& X) {
+                ensure_2d(X, "X");
+                const auto N = static_cast<int>(X.shape(0));
+                const auto P = static_cast<int>(X.shape(1));
+                std::vector<int> out;
+                {
+                    nb::gil_scoped_release release;
+                    out = self.predict(X.data(), N, P);
+                }
+                return ndarray_from_storage(std::move(out), {static_cast<size_t>(N)});
+            },
+            nb::arg("X"), "+1 for inliers, -1 for outliers.")
+        .def_prop_ro("offset", &IsolationForest::offset)
+        .def_prop_ro("n_trees", &IsolationForest::n_trees)
+        .def_prop_ro("max_samples", &IsolationForest::max_samples)
+        .def_prop_ro("max_depth", &IsolationForest::max_depth)
+        .def_prop_ro("fitted", &IsolationForest::fitted)
+        .def_static("average_path_length", &IsolationForest::average_path_length, nb::arg("n"));
 }

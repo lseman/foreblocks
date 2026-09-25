@@ -253,13 +253,21 @@ class UnifiedTree {
         if (!packed_) return out;
         Xb.visit_codes([&](auto codes) {
             using Code = typename decltype(codes)::value_type;
-            for (int row = 0; row < Xb.rows(); ++row) {
-                const Code* row_binned =
-                    codes.data() +
-                    static_cast<size_t>(row) * static_cast<size_t>(P_);
-                out[static_cast<size_t>(row)] =
-                    predict_one_compact_(row_binned, row, Xraw_opt);
-            }
+            auto predict_rows = [&](int begin, int end) {
+                for (int row = begin; row < end; ++row) {
+                    const Code* row_binned =
+                        codes.data() +
+                        static_cast<size_t>(row) * static_cast<size_t>(P_);
+                    out[static_cast<size_t>(row)] =
+                        predict_one_compact_(row_binned, row, Xraw_opt);
+                }
+            };
+            // Read-only traversal: rows are independent. The forest calls this
+            // on the whole training set after every tree.
+            if (executor_)
+                executor_->parallel_for(0, Xb.rows(), 4096, predict_rows);
+            else
+                predict_rows(0, Xb.rows());
         });
         return out;
     }

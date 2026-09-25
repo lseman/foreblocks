@@ -16,8 +16,10 @@
 namespace foretree {
 
 struct HistogramConfig {
-    std::string method = "kmeans";  // "hist"(uniform) | "quantile" | "kmeans" |
-                                    // "grad_aware" | "two_stage" | "adaptive"
+    // "hist"(uniform) | "quantile" | "kmeans" | "grad_aware" | "two_stage" |
+    // "adaptive". Quantile (hessian-weighted) matches or beats kmeans on
+    // accuracy and is several times cheaper to fit.
+    std::string method = "quantile";
     int max_bins = 256;
     bool use_missing_bin = true;
 
