@@ -1,12 +1,32 @@
-"""
-Time series feature extraction for AutoDA-Timeseries.
+"""Time series feature extraction for AutoDA-Timeseries.
 
 Extracts 24 descriptive statistics from each time series, forming a
 feature vector F_i = fe(D_i) that captures autocorrelation, distribution,
 and higher-order properties. These features remain static across augmentation
 layers to preserve global context (Section 3.3).
 
-Inspired by catch22 (Lubba et al., 2019) and tsfresh feature sets.
+Feature Categories
+------------------
+The 24 features are organized into 6 categories:
+
+| Category | Count | Features                                    |
+|----------|-------|---------------------------------------------|
+| Basic    | 4     | mean, std, skewness, kurtosis               |
+| Dist     | 4     | median, range, IQR, histogram mode          |
+| Autocorr | 4     | lag-1 AC, lag-2 AC, 1/e crossing, PAC       |
+| Diff     | 4     | mean diff, std diff, longest above/below    |
+| Entropy  | 4     | sample entropy, spectral entropy, mean ZC, diff ZC |
+| Trend    | 4     | slope, fraction within 1σ, peak ratio, energy ratio |
+
+Inspired by Catch22 (Lubba et al., 2019) and tsfresh feature sets.
+
+Usage
+-----
+>>> import torch
+>>> from foretools.tsaug.features import extract_features, FEATURE_DIM
+>>> x = torch.randn(8, 100, 3)  # (batch, length, channels)
+>>> features = extract_features(x)
+>>> assert features.shape == (8, FEATURE_DIM)
 """
 
 import numpy as np
@@ -16,12 +36,40 @@ import torch
 def extract_features(x: torch.Tensor) -> torch.Tensor:
     """Extract 24 descriptive statistics from a batch of time series.
 
-    Args:
-        x: (batch, length, channels) time series tensor.
+    Computes features per channel, then averages across channels to produce
+    a single feature vector per sample. Features are normalized and NaN/Inf
+    values are replaced with 0.
 
-    Returns:
-        features: (batch, 24) feature vector.
+    Parameters
+    ----------
+    x : torch.Tensor
+        Time series tensor of shape (batch_size, length, channels).
+
+    Returns
+    -------
+    torch.Tensor
+        Feature vectors of shape (batch_size, 24).
+
+    Examples
+    --------
+    >>> import torch
+    >>> from foretools.tsaug.features import extract_features, FEATURE_DIM
+    >>> x = torch.randn(10, 100, 3)  # (batch, length, channels)
+    >>> features = extract_features(x)
+    >>> assert features.shape == (10, FEATURE_DIM)
     """
+    B, L, C = x.shape
+    # Flatten channels by computing features per channel then averaging
+    features_list = []
+
+    for c in range(C):
+        xc = x[:, :, c]  # (B, L)
+        feats = _compute_features(xc)  # (B, 24)
+        features_list.append(feats)
+
+    # Average features across channels
+    features = torch.stack(features_list, dim=0).mean(dim=0)  # (B, 24)
+    return features
     B, L, C = x.shape
     # Flatten channels by computing features per channel then averaging
     features_list = []

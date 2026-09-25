@@ -43,23 +43,16 @@ template <typename Array> static ArrayView<Array> request(const Array& array) {
     return {array.ndim(), std::move(shape), array.data()};
 }
 
-// Wrapper struct to hold shared_ptr for capsule ownership.
+// Hand a std::vector to numpy without copying it again: the vector is moved to
+// the heap and the capsule owns it, so the array stays valid for its lifetime.
+// (Holding the owner in a local shared_ptr with a no-op capsule deleter frees
+// the storage on return and leaves numpy reading freed memory.)
 template <typename T>
-struct ndarray_owner {
-    std::shared_ptr<std::vector<T>> data;
-};
-
-// Zero-copy: build ndarray view backed by a capsule that wraps internal C++ storage.
-// The caller owns the data; the capsule keeps it alive.
-template <typename T>
-static nb::ndarray<nb::numpy, T, nb::c_contig> ndarray_from_storage(const std::vector<T>& data,
+static nb::ndarray<nb::numpy, T, nb::c_contig> ndarray_from_storage(std::vector<T> data,
                                                                      std::initializer_list<size_t> shape) {
-    auto owner = std::make_shared<ndarray_owner<T>>(std::make_shared<std::vector<T>>(data));
-    // Use the owner's address as the capsule pointer; custom deleter does nothing
-    // (the shared_ptr keeps the owner alive)
-    void* ptr = owner.get();
-    nb::capsule cap(ptr, [](void*) noexcept {});
-    return nb::ndarray<nb::numpy, T, nb::c_contig>(owner->data->data(), shape, std::move(cap));
+    auto* owner = new std::vector<T>(std::move(data));
+    nb::capsule cap(owner, [](void* p) noexcept { delete static_cast<std::vector<T>*>(p); });
+    return nb::ndarray<nb::numpy, T, nb::c_contig>(owner->data(), shape, std::move(cap));
 }
 
 // Zero-copy input: return std::span<const T> over numpy memory (no copy)
@@ -573,9 +566,9 @@ NB_MODULE(foretree, m) {
                 }
 
                 if (K <= 1) {
-                    return ndarray_from_storage(pred, {N});
+                    return ndarray_from_storage(std::move(pred), {N});
                 } else {
-                    return ndarray_from_storage(pred, {N, K});
+                    return ndarray_from_storage(std::move(pred), {N, K});
                 }
             },
             nb::arg("Xb"), nb::arg("Xraw") = nb::none(),
@@ -607,9 +600,9 @@ NB_MODULE(foretree, m) {
 
                 int K = std::max(self.cfg_.num_classes - 1, 1);
                 if (K <= 1) {
-                    return ndarray_from_storage(contrib, {N, P + 1});
+                    return ndarray_from_storage(std::move(contrib), {N, P + 1});
                 } else {
-                    return ndarray_from_storage(contrib, {N, K * (P + 1)});
+                    return ndarray_from_storage(std::move(contrib), {N, K * (P + 1)});
                 }
             },
             nb::arg("Xb"), nb::arg("Xraw") = nb::none(),

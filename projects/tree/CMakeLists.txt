@@ -188,6 +188,38 @@ if(TREE_BUILD_FOREFOREST)
     endif()
 endif()
 
+# ------------------------------------------------------------------------------
+# Install rules
+# ------------------------------------------------------------------------------
+install(DIRECTORY "${TREE_INCLUDE_DIR}/foretree" DESTINATION include)
+
+if(TREE_BUILD_FORETREE)
+    install(TARGETS foretree
+        LIBRARY DESTINATION lib
+        RUNTIME DESTINATION bin
+    )
+endif()
+
+if(TREE_BUILD_FOREFOREST)
+    install(TARGETS foreforest
+        LIBRARY DESTINATION lib
+        RUNTIME DESTINATION bin
+    )
+endif()
+
+if(TREE_ENABLE_CUDA_BACKEND)
+    install(TARGETS foretree_cuda
+        ARCHIVE DESTINATION lib
+    )
+endif()
+
+# Install Python package files
+install(FILES
+    "foretree_export.py"
+    "neural_odst.py"
+    DESTINATION lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages/foretree
+)
+
 message(STATUS "==== Tree isolated build ====")
 message(STATUS "TREE_BUILD_FORETREE     : ${TREE_BUILD_FORETREE}")
 message(STATUS "TREE_BUILD_FOREFOREST   : ${TREE_BUILD_FOREFOREST}")

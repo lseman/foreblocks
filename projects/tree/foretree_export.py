@@ -314,15 +314,9 @@ def export_to_onnx(
         weights_tensor, name="tree_weights"
     )
 
-    nodes_missing_arr = numpy_helper.from_array(
-        np.array(all_tree_nodes_missing, dtype=np.int64), name="nodes_missing"
-    )
-
-    # Determine output shape
+    # Determine output shape and build TreeEnsemble node
     output_name = "output"
     if is_classification:
-        # Classification: output probabilities
-        # Need class labels
         class_labels = numpy_helper.from_array(
             np.array([0, 1], dtype=np.int64), name="class_labels"
         )
@@ -333,9 +327,7 @@ def export_to_onnx(
         ]
         node = helper.make_node(
             "TreeEnsemble",
-            inputs=[input_names[0], "tree_roots", "tree_features",
-                    "tree_thresholds", "tree_modes", "tree_weights",
-                    "nodes_missing_valueTreatment"],
+            inputs=input_names,
             outputs=[output_name],
             tree_roots=tree_roots_arr,
             tree_features=tree_features_arr,
@@ -355,9 +347,7 @@ def export_to_onnx(
         ]
         node = helper.make_node(
             "TreeEnsemble",
-            inputs=[input_names[0], "tree_roots", "tree_features",
-                    "tree_thresholds", "tree_modes", "tree_weights",
-                    "nodes_missing_valueTreatment"],
+            inputs=input_names,
             outputs=[output_name],
             tree_roots=tree_roots_arr,
             tree_features=tree_features_arr,
@@ -369,22 +359,16 @@ def export_to_onnx(
             n_targets=n_outputs,
         )
 
-    # We need the nodes_missing tensor as an input since we reference it
-    nodes_missing_input = helper.make_tensor_value_info(
-        "nodes_missing_valueTreatment", TensorProto.INT64, [None]
-    )
-
     graph = helper.make_graph(
         [node],
         model_name,
         [
             helper.make_tensor_value_info(input_names[0], TensorProto.DOUBLE, [None, None]),
-            nodes_missing_input,
         ],
         outputs,
         [
             tree_roots_arr, tree_features_arr, tree_thresholds_arr,
-            tree_modes_arr, tree_weights_arr, nodes_missing_arr,
+            tree_modes_arr, tree_weights_arr,
         ],
     )
 

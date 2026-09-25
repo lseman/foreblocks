@@ -13,10 +13,10 @@ from foreblocks.models.anomaly import (
     build_sliding_windows,
     map_window_scores,
 )
-from foreblocks.models.anomaly.models.forecasting import TransformerForecaster
-from foreblocks.models.anomaly.models.reconstruction import MLPVAE
-from foreblocks.models.anomaly.models.representation import ContrastiveTransformerEncoder
-from foreblocks.models.anomaly.models.tranad import TranAD as ModelTranAD
+from foreblocks.models.anomaly.backbones.forecasting import TransformerForecaster
+from foreblocks.models.anomaly.backbones.reconstruction import MLPVAE
+from foreblocks.models.anomaly.backbones.representation import ContrastiveTransformerEncoder
+from foreblocks.models.anomaly.backbones.tranad import TranAD as ModelTranAD
 from foreblocks.processing import outlier
 
 

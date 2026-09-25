@@ -1,33 +1,17 @@
-"""foreblocks.models.anomaly.windows.
+"""Anomaly preprocessing, window-score alignment, and robust thresholds.
 
-Sliding window construction and score aggregation for anomaly detection.
-
-Provides utilities to build sliding windows from time-series data, forward-fill
-NaN values, map window-level anomaly scores to series-level scores, and compute
-robust thresholds. Used by ForeblocksAnomalyDetector to convert raw model
-outputs into series-level anomaly labels and thresholds.
-
-Core API:
-- build_sliding_windows: create sliding windows from time-series data
-- map_window_scores: map window-level scores to series-level scores
-- robust_threshold: compute robust threshold from scores using MAD or percentile
-- as_2d_array: ensure series is 2D [T] or [T,D]
-- fill_nan_forward: forward-fill NaN values in series
-
+Generic window construction is provided by ``foreblocks.data.windowing`` and
+re-exported here for compatibility with existing anomaly callers.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-
-def as_2d_array(series: np.ndarray) -> np.ndarray:
-    values = np.asarray(series, dtype=np.float32)
-    if values.ndim == 1:
-        values = values[:, None]
-    if values.ndim != 2:
-        raise ValueError(f"Expected [T] or [T,D] series, got shape {values.shape}")
-    return values
+from foreblocks.data.windowing import (
+    as_2d_array as as_2d_array,
+    build_sliding_windows as build_sliding_windows,
+)
 
 
 def fill_nan_forward(values: np.ndarray) -> np.ndarray:
@@ -44,23 +28,6 @@ def fill_nan_forward(values: np.ndarray) -> np.ndarray:
             if not np.isfinite(col[i]):
                 col[i] = col[i - 1]
     return x
-
-
-def build_sliding_windows(series: np.ndarray, window_size: int) -> np.ndarray:
-    x = as_2d_array(series)
-    window_size = int(window_size)
-    if window_size <= 0:
-        raise ValueError("window_size must be positive")
-    n = x.shape[0] - window_size + 1
-    if n <= 0:
-        raise ValueError(
-            f"Series length {x.shape[0]} is shorter than window_size={window_size}"
-        )
-    return (
-        np.lib.stride_tricks.sliding_window_view(x, window_shape=window_size, axis=0)
-        .transpose(0, 2, 1)
-        .copy()
-    )
 
 
 def map_window_scores(

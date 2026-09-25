@@ -217,10 +217,43 @@ See `tests/bench_sota_options.py` for full working examples including categorica
 
 ### Prerequisites
 
-- CMake 3.15+
-- C++23 compiler (GCC 13+, Clang 16+, MSVC 2022+)
-- CUDA Toolkit 11.0+ (optional, for GPU support)
-- Python 3.9+ with numpy (for Python bindings)
+| Requirement | Minimum Version | Notes |
+|-------------|-----------------|-------|
+| CMake | 3.20 | Required for nanobind and CPM support |
+| C++ compiler | GCC 13+, Clang 16+, MSVC 2022+ | C++23 required |
+| Python | 3.12+ | For Python bindings (nanobind) |
+| numpy | any | Required for Python usage |
+| CUDA Toolkit | 11.0+ (optional) | Only if `TREE_ENABLE_CUDA_BACKEND=ON` |
+| TBB | any (optional) | Falls back to `std::thread` if unavailable |
+| Eigen3 | 3.x | Via CPM auto-download |
+| fmt | any | Via CPM auto-download |
+
+### Build Steps
+
+```bash
+# Create build directory
+mkdir -p build
+cd build
+
+# Configure with CMake
+cmake .. -DCMAKE_BUILD_TYPE=Release
+
+# Build
+make -j$(nproc)
+```
+
+### Python Build (in-tree)
+
+```bash
+# Build and install Python bindings as editable package
+pip install -e .
+
+# Or build standalone with CMake
+mkdir -p build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DFORETREE_BUILD_TESTS=ON
+make -j$(nproc)
+```
 
 ### Build Steps
 
@@ -312,14 +345,66 @@ Python benchmarks in `tests/` compare ForeForest against sklearn HistGradientBoo
 
 ## Dependencies
 
-- **CMake 3.15+**
-- **C++23 compiler** (GCC 13+, Clang 16+, MSVC 2022+)
-- **nanobind v2.9.2** (via CPM, for Python bindings)
-- **fmt** (via CPM, for formatting)
-- **Eigen 3.x** (via CPM, for matrix operations)
-- **CUDA Toolkit 11.0+** (optional, `FORETREE_ENABLE_CUDA`)
-- **TBB** (optional, for parallel execution; falls back to `std::thread`)
-- **stdexec** (optional, NVIDIA execution framework)
+| Dependency | Type | Source |
+|------------|------|--------|
+| nanobind v2.9.2 | Build | CPM auto-download from wjakob/nanobind |
+| fmt | Build | CPM auto-download |
+| Eigen 3.x | Build | CPM auto-download |
+| CUDA Toolkit 11.0+ | Optional | System install, `TREE_ENABLE_CUDA_BACKEND` |
+| TBB | Optional | System install (`find_package(TBB)`), falls back to std::thread |
+| stdexec | Optional | CPM auto-download from NVIDIA/stdexec |
+
+## Troubleshooting
+
+### Common Build Issues
+
+**"Python 3.12+ not found"**
+The bindings require Python 3.12+. Set the interpreter explicitly:
+```bash
+cmake .. -DPython3_EXECUTABLE=$(which python3.12)
+```
+
+**"TBB not found"**
+TBB is optional — the build falls back to `std::thread`. To use TBB:
+```bash
+# Ubuntu/Debian
+sudo apt install libtbb-dev
+# CentOS/RHEL
+sudo dnf install tbb-devel
+```
+
+**"CUDA not found"**
+Ensure CUDA Toolkit 11.0+ is installed and `nvcc` is in PATH:
+```bash
+export CUDA_HOME=/usr/local/cuda
+cmake .. -DTREE_ENABLE_CUDA_BACKEND=ON
+```
+
+**"stdexec download fails"**
+The stdexec repo is large (~2GB). Ensure sufficient disk space and network connectivity. Disable if not needed:
+```bash
+cmake .. -DTREE_ENABLE_STDEXEC=OFF
+```
+
+**"CPM.cmake fetch fails"**
+CPM auto-downloads dependencies. If the network is unreliable, set `CPM_USE_LOCAL_PACKAGES`:
+```bash
+cmake .. -DCPM_USE_LOCAL_PACKAGES=ON
+```
+
+### Runtime Issues
+
+**ImportError: dynamic module does not define module export function**
+This usually means the `.so` was built for a different Python version. Rebuild with the correct Python:
+```bash
+rm -rf build/
+mkdir build && cd build
+cmake .. -DPython3_EXECUTABLE=$(which python)
+make -j$(nproc)
+```
+
+**CUDA out of memory**
+Reduce batch size in benchmark scripts or disable CUDA backend. The GPU histogram engine uses approximately `N × P × max_bins × 16 bytes` for gradient+histogram buffers.
 
 ## License
 

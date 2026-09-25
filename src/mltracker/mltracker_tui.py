@@ -27,6 +27,20 @@ DEFAULT_TRACKING_URI = str(Path(__file__).resolve().parent / "mltracker_data")
 
 
 def _sparkline(values: list[float], width: int = 80) -> str:
+    """Render a text-based sparkline from a list of float values.
+
+    Parameters
+    ----------
+    values : list[float]
+        Numeric values to visualize.
+    width : int
+        Maximum character width. Default 80.
+
+    Returns
+    -------
+    str
+        Sparkline string using Unicode block characters.
+    """
     if not values:
         return ""
     ticks = "▁▂▃▄▅▆▇█"
@@ -57,11 +71,17 @@ def _sparkline(values: list[float], width: int = 80) -> str:
     return "".join(out)
 
 
-def _fetch_runs(tracker: MLTracker, experiment_name: str | None = None) -> list[dict]:
+def _fetch_runs(
+    tracker: MLTracker, experiment_name: str | None = None
+) -> list[dict[str, Any]]:
+    """Fetch runs from the tracker, optionally filtered by experiment."""
     return tracker.search_runs(experiment_name=experiment_name)
 
 
-def _fetch_artifacts(tracker: MLTracker, run_id: str) -> list[tuple[str, str]]:
+def _fetch_artifacts(
+    tracker: MLTracker, run_id: str
+) -> list[tuple[str, str]]:
+    """Fetch artifact paths and types for a run."""
     rows: list[tuple[str, str]] = []
     conn = sqlite3.connect(tracker.db_path)
     conn.row_factory = sqlite3.Row
@@ -77,6 +97,7 @@ def _fetch_artifacts(tracker: MLTracker, run_id: str) -> list[tuple[str, str]]:
 def _fetch_metric_history(
     tracker: MLTracker, run_id: str
 ) -> list[tuple[str, int, float, str]]:
+    """Fetch metric history (key, step, value, timestamp) for a run."""
     rows: list[tuple[str, int, float, str]] = []
     conn = sqlite3.connect(tracker.db_path)
     conn.row_factory = sqlite3.Row
@@ -101,7 +122,25 @@ def _fetch_metric_history(
     return rows
 
 
-def create_app(tracking_uri: str = DEFAULT_TRACKING_URI):
+def create_app(tracking_uri: str = DEFAULT_TRACKING_URI) -> Any:
+    """Create the MLTracker TUI application.
+
+    Parameters
+    ----------
+    tracking_uri : str
+        Path to the MLTracker data directory. Default is ``mltracker_data/``
+        next to this module file.
+
+    Returns
+    -------
+    MLTrackerTUI
+        The Textual application class (not an instance).
+
+    Raises
+    ------
+    RuntimeError
+        If the Textual package is not installed.
+    """
     try:
         from textual.app import App, ComposeResult
         from textual.containers import Horizontal, Vertical
@@ -465,6 +504,7 @@ def create_app(tracking_uri: str = DEFAULT_TRACKING_URI):
 
 
 def main() -> None:
+    """Entry point for running the MLTracker TUI from the command line."""
     import argparse
 
     parser = argparse.ArgumentParser(description="MLTracker Textual TUI")

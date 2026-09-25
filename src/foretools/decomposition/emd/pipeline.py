@@ -1,3 +1,26 @@
+"""High-level decomposition pipelines for VMD and hierarchical VMD.
+
+This module provides three entry points:
+
+* ``VMDOptimizer`` — Full pipeline with Optuna hyperparameter search,
+  entropy-based K estimation, cache-aware candidate evaluation, and
+  neural refinement support.
+* ``HierarchicalVMD`` — Multi-scale decomposition that downsamples the
+  signal iteratively and decomposes at each level (useful for wideband
+  signals spanning multiple frequency decades).
+* ``FastVMD`` — Single-class convenience wrapper combining both pipelines
+  with a simple ``decompose(method=...)`` interface.
+
+Quick start
+-----------
+>>> from foretools.decomposition.emd import FastVMD
+>>> vmd = FastVMD()
+>>> modes, freqs, info = vmd.decompose(signal, fs=1000.0)
+>>> # modes: (K, N) array of decomposed IMFs
+>>> # freqs: list of dominant frequencies per mode (Hz)
+>>> # info: dict with optimisation results {best_K, best_alpha, cost}
+"""
+
 from __future__ import annotations
 
 import gc
@@ -15,13 +38,13 @@ from scipy.signal import decimate
 from scipy.stats import kurtosis
 
 from .common import (
-    BoundaryHandler,
-    FFTWManager,
-    ModeProcessor,
-    SignalAnalyzer,
     _energy,
-    box_counting_dimension,
 )
+from .support.boundary import BoundaryHandler
+from .support.fft import FFTWManager
+from .analysis.mode_processor import ModeProcessor
+from .analysis.signal_analysis import SignalAnalyzer
+from .analysis.fractal import box_counting_dimension
 from .config import HierarchicalParameters, VMDParameters
 from .core import VMDCore, refine_modes_cross_nn, refine_modes_nn
 from .emd import EMDVariants
@@ -168,16 +191,46 @@ def _dispersion_entropy_numba(
 
 
 class VMDOptimizer:
+    """Full VMD pipeline with hyperparameter optimisation.
+
+    This is the main entry point for automated VMD decomposition. It handles:
+
+    * **K selection** — penalised scoring, fractal-based (FBD), or entropy-based
+    * **Alpha search** — Optuna Bayesian optimisation over [alpha_min, alpha_max]
+    * **Post-processing** — energy filtering, frequency merging, sorting
+    * **Neural refinement** — optional Informer/CrossMode Transformer denoising
+    * **Caching** — hash-based candidate caching to avoid redundant decompositions
+
+    Parameters common to ``optimize()``
+    -----------------------------------
+    signal : array-like
+        1-D input signal (or 2-D for MVMD).
+    fs : float
+        Sampling frequency in Hz.
+    auto_params : bool
+        If True, use ``SignalAnalyzer.assess_complexity()`` to select
+        VMDParameters from signal properties. Default True.
+    refine_modes : bool
+        Apply neural refinement post-decomposition. Default False.
+    return_raw_modes : bool
+        Return raw (pre-postprocess) modes alongside results. Default True.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from foretools.decomposition.emd import VMDOptimizer, FFTWManager
+    >>> fftw = FFTWManager()
+    >>> opt = VMDOptimizer(fftw)
+    >>> sig = 1*np.sin(2*np.pi*50*np.linspace(0, 1, 5000)) + \
+    ...       0.5*np.sin(2*np.pi*150*np.linspace(0, 1, 5000))
+    >>> modes, freqs, info = opt.optimize(sig, fs=1000.0)
     """
-    Single pipeline refactor:
-      _evaluate_candidate() is the only place that runs:
-        decompose -> postprocess -> cost
-      It is reused for:
-        - Optuna full objective (K, alpha)
-        - Optuna alpha-only objective
-        - Penalized K selection
-        - Final solve
-    """
+
+    def __init__(self, fftw: FFTWManager):
+        self.fftw = fftw
+        self.core = VMDCore(fftw)
+        self.proc = ModeProcessor()
+        self.analyzer = SignalAnalyzer()
 
     def __init__(self, fftw: FFTWManager):
         self.fftw = fftw
@@ -1342,6 +1395,41 @@ class VMDOptimizer:
 # Hierarchical VMD (minor de-dup: upsample helper)
 # -----------------------------------------------------------------------------
 class HierarchicalVMD:
+    """Multi-scale hierarchical VMD decomposition.
+
+    Decomposes a signal iteratively at multiple downsampling levels. Each level
+    processes the residual from the previous level, which allows the method to
+    capture both low-frequency trend modes and high-frequency oscillatory modes
+    with appropriate resolution.
+
+    Algorithm
+    ---------
+    1. Level 0: decompose original signal
+    2. Compute residual = original - level_0_modes
+    3. Downsample residual (with optional anti-aliasing FIR decimation)
+    4. Decompose downsampled residual at next level
+    5. Upsample modes to original length
+    6. Repeat until max_levels or residual energy threshold
+
+    Parameters common to ``decompose()``
+    ------------------------------------
+    signal : array-like
+        1-D input signal.
+    fs : float
+        Sampling frequency in Hz.
+    params : HierarchicalParameters
+        Configuration for the hierarchical decomposition.
+    refine_modes : bool
+        Apply neural refinement on final sorted modes. Default True.
+
+    Examples
+    --------
+    >>> from foretools.decomposition.emd import FastVMD, HierarchicalParameters
+    >>> vmd = FastVMD()
+    >>> hp = HierarchicalParameters(max_levels=3)
+    >>> modes, freqs, level_info = vmd.hvmd.decompose(sig, fs=1000.0, params=hp)
+    """
+
     def __init__(self, optimizer: VMDOptimizer):
         self.opt = optimizer
 
@@ -1525,14 +1613,99 @@ class HierarchicalVMD:
 # User-facing API
 # -----------------------------------------------------------------------------
 class FastVMD:
+    """Single-class convenience wrapper for VMD decomposition.
+
+    Combines the Optuna-based ``VMDOptimizer`` and ``HierarchicalVMD`` pipelines
+    behind a simple ``decompose(method=...)`` interface.
+
+    Parameters
+    ----------
+    wisdom_file : str
+        Path to save/load FFTW wisdom cache. Default "vmd_fftw_wisdom.dat".
+
+    Available methods
+    -----------------
+    - ``method="standard"`` — Single-scale VMD with Optuna K/alpha search
+    - ``method="hierarchical"`` — Multi-scale hierarchical VMD
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from foretools.decomposition.emd import FastVMD
+    >>> sig = np.sin(2*np.pi*50*np.linspace(0, 1, 5000)) + \
+    ...       0.5*np.sin(2*np.pi*150*np.linspace(0, 1, 5000))
+    >>> vmd = FastVMD()
+    >>> modes, freqs, info = vmd.decompose(sig, fs=1000.0)
+    >>> print(f"K={info['best'][0]}, alpha={info['best'][1]:.0f}")  # doctest: +SKIP
+    K=3, alpha=2500
+    """
+
     def __init__(self, wisdom_file: str = "vmd_fftw_wisdom.dat"):
         self.fftw = FFTWManager(wisdom_file)
         self.opt = VMDOptimizer(self.fftw)
         self.hvmd = HierarchicalVMD(self.opt)
 
     def decompose(
-        self, signal: np.ndarray, fs: float, method: str = "standard", **kwargs
+        self,
+        signal: np.ndarray,
+        fs: float,
+        method: str = "standard",
+        refine_modes: bool = True,
+        refine_epochs: int = 50,
+        refine_method: str = "informer",
+        return_raw_modes: bool = True,
+        **kwargs,
     ):
+        """Decompose a signal using the selected method.
+
+        Parameters
+        ----------
+        signal : array-like
+            1-D input signal.
+        fs : float
+            Sampling frequency in Hz.
+        method : {"standard", "hierarchical"}
+            Decomposition strategy:
+
+            * ``"standard"`` — Single-scale VMD with Optuna K/alpha search.
+              Fast and effective for signals with a limited bandwidth.
+            * ``"hierarchical"`` — Multi-scale decomposition that processes
+              the signal at multiple downsampling levels. Better for wideband
+              signals spanning several frequency decades.
+
+        refine_modes : bool
+            Apply neural refinement (Informer/CrossMode) post-decomposition.
+            Default True.
+        refine_epochs : int
+            Number of training epochs for neural refinement.
+        refine_method : {"informer", "cross_mode"}
+            Neural refinement architecture.
+        return_raw_modes : bool
+            If True, return raw (pre-postprocess) modes and frequencies
+            alongside postprocessed results.
+        **kwargs
+            Additional keyword arguments forwarded to the underlying pipeline:
+
+            * For ``method="standard"``: VMDParameters fields like ``max_K``,
+              ``alpha_min``, ``alpha_max``, ``k_selection``, ``search_method``,
+              ``use_mvmd``, etc.
+            * For ``method="hierarchical"``: HierarchicalParameters fields
+              like ``max_levels``, ``energy_threshold``, ``min_samples_per_level``,
+              ``use_emd_hybrid``.
+
+        Returns
+        -------
+        tuple
+            Standard method → ``(raw_modes, raw_freqs, optinfo)`` or
+            ``(modes_arr, freqs_list, best_K_alpha_cost)`` depending on
+            ``return_raw_modes``.
+
+            Hierarchical method → ``(out, sorted_freqs, level_info)`` where
+            ``level_info`` is a list of per-level dicts.
+        """
+        refine_modes = bool(refine_modes)
+        refine_epochs = int(refine_epochs)
+        refine_method = str(refine_method)
         refine_modes = bool(kwargs.pop("refine_modes", True))
         refine_epochs = int(kwargs.pop("refine_epochs", 50))
         refine_method = str(kwargs.pop("refine_method", "informer"))
@@ -1573,7 +1746,12 @@ class FastVMD:
             **kwargs,
         )
 
-    def clear_cache(self):
+    def clear_cache(self) -> None:
+        """Clear the Optuna candidate cache and run garbage collection.
+
+        Useful between runs on different signals to avoid stale cache entries
+        from contaminating results.
+        """
         self.opt._cache.clear()
         self.opt._cache_mv.clear()
         gc.collect()

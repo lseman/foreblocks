@@ -220,160 +220,17 @@ class AutoencoderConfig:
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Main config (backward-compatible, aggregates sub-configs)
+# Backward-compat property mixin (extracted for readability)
 # ────────────────────────────────────────────────────────────────────────────
 
 
-class FeatureConfig:
+class _FeatureConfigCompatMixin:
+    """Backward-compatible flat-property accessors for FeatureConfig.
+
+    These properties delegate to the nested sub-configs so that legacy code
+    can continue using ``cfg.n_bins`` instead of ``cfg.binning.n_bins``.
+    They are read-only (setters would need to modify the sub-config).
     """
-    Main configuration class for feature engineering.
-
-    Provides both flat attributes (for backward compatibility) and
-    nested sub-configs (for cleaner access).
-
-    Usage
-    -----
-    >>> cfg = FeatureConfig(task="classification")
-    >>> cfg.task                          # flat: "classification"
-    >>> cfg.binning.n_bins                # nested: 5
-    >>> cfg.binning.n_bins = 15           # modify sub-config
-    """
-
-    # ── core ────────────────────────────────────────────────────────────
-
-    task: str = "regression"
-    backend: str = "auto"
-    random_state: int = 42
-    verbose: bool = True
-    log_level: str = "INFO"
-
-    # ── feature creation flags ─────────────────────────────────────────
-
-    create_datetime: bool = True
-    create_math_features: bool = True
-    create_interactions: bool = True
-    create_polynomials: bool = True
-    create_categorical: bool = True
-    create_binning: bool = True
-    create_statistical: bool = True
-    create_clustering: bool = True
-    create_fourier: bool = False
-    create_rff: bool = True
-
-    # ── correlation ────────────────────────────────────────────────────
-
-    corr_threshold: float = 0.95
-    corr_filter_method: str = "variance"
-    corr_dependence_metric: str = "pearson"
-
-    # ── thresholds ─────────────────────────────────────────────────────
-
-    rare_threshold: float = 0.01
-    min_variance_threshold: float = 1e-6
-    max_rows_score: int = 50000
-    epsilon: float = 1e-8
-    dtype_out: str = "float32"
-    max_features: int = 500
-    min_features: int = 1
-    min_samples: int = 10
-
-    # ── sub-configs ────────────────────────────────────────────────────
-
-    binning: BinningConfig = BinningConfig()
-    categorical: CategoricalConfig = CategoricalConfig()
-    interaction: InteractionConfig = InteractionConfig()
-    math: MathConfig = MathConfig()
-    rff: RFFConfig = RFFConfig()
-    clustering: ClusteringConfig = ClusteringConfig()
-    fourier: FourierConfig = FourierConfig()
-    datetime: DateTimeConfig = DateTimeConfig()
-    selector: SelectorConfig = SelectorConfig()
-    autoencoder: AutoencoderConfig = AutoencoderConfig()
-
-    # ── init ───────────────────────────────────────────────────────────
-
-    def __init__(self, **kwargs: Any) -> None:
-        """
-        Initialize with optional keyword arguments.
-
-        Accepts both flat attributes (task, backend, etc.) and sub-config
-        overrides (binning=dict(n_bins=15), categorical=dict(top_k=10), etc.).
-
-        Also accepts legacy flat parameters like ``n_bins``, ``n_clusters``,
-        ``n_fourier_terms``, ``max_interactions``, ``max_polynomials``, etc.
-        which are routed to the appropriate sub-config.
-        """
-        # Copy sub-configs to avoid sharing mutable state across instances
-        self.binning = BinningConfig(**self.binning.__dict__)
-        self.categorical = CategoricalConfig(**self.categorical.__dict__)
-        self.interaction = InteractionConfig(**self.interaction.__dict__)
-        self.math = MathConfig(**self.math.__dict__)
-        self.rff = RFFConfig(**self.rff.__dict__)
-        self.clustering = ClusteringConfig(**self.clustering.__dict__)
-        self.fourier = FourierConfig(**self.fourier.__dict__)
-        self.datetime = DateTimeConfig(**self.datetime.__dict__)
-        self.selector = SelectorConfig(**self.selector.__dict__)
-        self.autoencoder = AutoencoderConfig(**self.autoencoder.__dict__)
-
-        # Route legacy flat params to sub-configs
-        legacy_routing = {
-            "n_bins": ("binning", "n_bins"),
-            "n_clusters": ("clustering", "n_clusters"),
-            "n_fourier_terms": ("fourier", "n_fourier_terms"),
-            "max_interactions": ("interaction", "max_interactions"),
-            "max_polynomials": ("interaction", "max_polynomials"),
-            "ae_latent_dim": ("autoencoder", "latent_dim"),
-            "use_boruta": ("selector", "use_boruta"),
-            "use_loo": ("categorical", "use_loo"),
-            "use_woe": ("categorical", "use_woe"),
-            "use_james_stein": ("categorical", "use_james_stein"),
-            "use_rfecv": ("selector", "use_rfecv"),
-            "use_quantile_transform": ("selector", "use_quantile_transform"),
-        }
-
-        compat_routing = {
-            "target_encode_threshold": ("categorical", "target_encode_threshold"),
-            "shap_threshold": ("selector", "shap_threshold"),
-        }
-        prefixes = {
-            "cat_": "categorical",
-            "binning_": "binning",
-            "fourier_": "fourier",
-            "datetime_": "datetime",
-            "interaction_": "interaction",
-            "selector_": "selector",
-            "mrmr_": "selector",
-            "rfecv_": "selector",
-            "mi_": "selector",
-            "ae_": "autoencoder",
-        }
-        for key in kwargs:
-            for prefix, group in prefixes.items():
-                if key.startswith(prefix):
-                    attr = key[len(prefix):] if prefix not in {"mrmr_", "rfecv_", "mi_"} else key
-                    compat_routing.setdefault(key, (group, attr))
-                    break
-
-        for key, value in kwargs.items():
-            if isinstance(value, dict) and hasattr(self, key):
-                # Sub-config override: merge dict into existing sub-config
-                for k, v in value.items():
-                    if hasattr(getattr(self, key), k):
-                        setattr(getattr(self, key), k, v)
-            elif key in legacy_routing:
-                attr_group, attr_name = legacy_routing[key]
-                target = getattr(self, attr_group)
-                if hasattr(target, attr_name):
-                    setattr(target, attr_name, value)
-            elif key in compat_routing:
-                attr_group, attr_name = compat_routing[key]
-                target = getattr(self, attr_group)
-                if hasattr(target, attr_name):
-                    setattr(target, attr_name, value)
-            elif hasattr(self, key):
-                setattr(self, key, value)
-
-    # ── backward-compat properties ─────────────────────────────────────
 
     @property
     def n_bins(self) -> int:
@@ -791,3 +648,163 @@ class FeatureConfig:
     @property
     def autoencoder_latent_ratio(self) -> float:
         return 0.25  # legacy
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Main config (backward-compatible, aggregates sub-configs)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class FeatureConfig(_FeatureConfigCompatMixin):
+    """
+    Main configuration class for feature engineering.
+
+    Provides both flat attributes (for backward compatibility) and
+    nested sub-configs (for cleaner access).
+
+    Usage
+    -----
+    >>> cfg = FeatureConfig(task="classification")
+    >>> cfg.task                          # flat: "classification"
+    >>> cfg.binning.n_bins                # nested: 5
+    >>> cfg.binning.n_bins = 15           # modify sub-config
+    """
+
+    # ── core ────────────────────────────────────────────────────────────
+
+    task: str = "regression"
+    backend: str = "auto"
+    random_state: int = 42
+    verbose: bool = True
+    log_level: str = "INFO"
+
+    # ── feature creation flags ─────────────────────────────────────────
+
+    create_datetime: bool = True
+    create_math_features: bool = True
+    create_interactions: bool = True
+    create_polynomials: bool = True
+    create_categorical: bool = True
+    create_binning: bool = True
+    create_statistical: bool = True
+    create_clustering: bool = True
+    create_fourier: bool = False
+    create_rff: bool = True
+
+    # ── correlation ────────────────────────────────────────────────────
+
+    corr_threshold: float = 0.95
+    corr_filter_method: str = "variance"
+    corr_dependence_metric: str = "pearson"
+
+    # ── thresholds ─────────────────────────────────────────────────────
+
+    rare_threshold: float = 0.01
+    min_variance_threshold: float = 1e-6
+    max_rows_score: int = 50000
+    epsilon: float = 1e-8
+    dtype_out: str = "float32"
+    max_features: int = 500
+    min_features: int = 1
+    min_samples: int = 10
+
+    # ── sub-configs ────────────────────────────────────────────────────
+
+    binning: BinningConfig = BinningConfig()
+    categorical: CategoricalConfig = CategoricalConfig()
+    interaction: InteractionConfig = InteractionConfig()
+    math: MathConfig = MathConfig()
+    rff: RFFConfig = RFFConfig()
+    clustering: ClusteringConfig = ClusteringConfig()
+    fourier: FourierConfig = FourierConfig()
+    datetime: DateTimeConfig = DateTimeConfig()
+    selector: SelectorConfig = SelectorConfig()
+    autoencoder: AutoencoderConfig = AutoencoderConfig()
+
+    # ── init ───────────────────────────────────────────────────────────
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Initialize with optional keyword arguments.
+
+        Accepts both flat attributes (task, backend, etc.) and sub-config
+        overrides (binning=dict(n_bins=15), categorical=dict(top_k=10), etc.).
+
+        Also accepts legacy flat parameters like ``n_bins``, ``n_clusters``,
+        ``n_fourier_terms``, ``max_interactions``, ``max_polynomials``, etc.
+        which are routed to the appropriate sub-config.
+
+        Parameters
+        ----------
+        **kwargs : Any
+            Configuration overrides.  See :class:`FeatureConfig` class-level
+            attributes for accepted names.
+        """
+        # Copy sub-configs to avoid sharing mutable state across instances
+        self.binning = BinningConfig(**self.binning.__dict__)
+        self.categorical = CategoricalConfig(**self.categorical.__dict__)
+        self.interaction = InteractionConfig(**self.interaction.__dict__)
+        self.math = MathConfig(**self.math.__dict__)
+        self.rff = RFFConfig(**self.rff.__dict__)
+        self.clustering = ClusteringConfig(**self.clustering.__dict__)
+        self.fourier = FourierConfig(**self.fourier.__dict__)
+        self.datetime = DateTimeConfig(**self.datetime.__dict__)
+        self.selector = SelectorConfig(**self.selector.__dict__)
+        self.autoencoder = AutoencoderConfig(**self.autoencoder.__dict__)
+
+        # Route legacy flat params to sub-configs
+        legacy_routing = {
+            "n_bins": ("binning", "n_bins"),
+            "n_clusters": ("clustering", "n_clusters"),
+            "n_fourier_terms": ("fourier", "n_fourier_terms"),
+            "max_interactions": ("interaction", "max_interactions"),
+            "max_polynomials": ("interaction", "max_polynomials"),
+            "ae_latent_dim": ("autoencoder", "latent_dim"),
+            "use_boruta": ("selector", "use_boruta"),
+            "use_loo": ("categorical", "use_loo"),
+            "use_woe": ("categorical", "use_woe"),
+            "use_james_stein": ("categorical", "use_james_stein"),
+            "use_rfecv": ("selector", "use_rfecv"),
+            "use_quantile_transform": ("selector", "use_quantile_transform"),
+        }
+
+        compat_routing = {
+            "target_encode_threshold": ("categorical", "target_encode_threshold"),
+            "shap_threshold": ("selector", "shap_threshold"),
+        }
+        prefixes = {
+            "cat_": "categorical",
+            "binning_": "binning",
+            "fourier_": "fourier",
+            "datetime_": "datetime",
+            "interaction_": "interaction",
+            "selector_": "selector",
+            "mrmr_": "selector",
+            "rfecv_": "selector",
+            "mi_": "selector",
+            "ae_": "autoencoder",
+        }
+        for key in kwargs:
+            for prefix, group in prefixes.items():
+                if key.startswith(prefix):
+                    attr = key[len(prefix):] if prefix not in {"mrmr_", "rfecv_", "mi_"} else key
+                    compat_routing.setdefault(key, (group, attr))
+                    break
+
+        for key, value in kwargs.items():
+            if isinstance(value, dict) and hasattr(self, key):
+                # Sub-config override: merge dict into existing sub-config
+                for k, v in value.items():
+                    if hasattr(getattr(self, key), k):
+                        setattr(getattr(self, key), k, v)
+            elif key in legacy_routing:
+                attr_group, attr_name = legacy_routing[key]
+                target = getattr(self, attr_group)
+                if hasattr(target, attr_name):
+                    setattr(target, attr_name, value)
+            elif key in compat_routing:
+                attr_group, attr_name = compat_routing[key]
+                target = getattr(self, attr_group)
+                if hasattr(target, attr_name):
+                    setattr(target, attr_name, value)
+            elif hasattr(self, key):
+                setattr(self, key, value)

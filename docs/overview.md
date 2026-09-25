@@ -68,20 +68,8 @@ The docs are organized to make that split explicit while still showing how the p
 
 ## What is stable today
 
-The most reliable public surface is still the top-level `foreblocks` import path:
-
-```python
-from foreblocks import (
-    ForecastingModel,
-    Trainer,
-    ModelEvaluator,
-    TimeSeriesHandler,
-    TimeSeriesDataset,
-    create_dataloaders,
-    ModelConfig,
-    TrainingConfig,
-)
-```
+The most reliable public surface is the top-level `foreblocks` import path.
+See the [Imports Reference](shared/imports) for full code examples.
 
 Treat deeper imports as subsystem-level APIs unless a topic guide explicitly tells you to use them directly.
 

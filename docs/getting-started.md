@@ -71,7 +71,30 @@ pip install "foreblocks[all]"
 - Evaluation works on held-out data.
 :::
 
-## 3. Validate the import surface first
+## 2. Imports
+
+The stable public surface starts at the top level of `foreblocks`:
+
+::: code-group
+
+```python [Full surface]
+from foreblocks import (
+    ForecastingModel,
+    Trainer,
+    ModelEvaluator,
+    TimeSeriesHandler,
+    TimeSeriesDataset,
+    create_dataloaders,
+    ModelConfig,
+    TrainingConfig,
+)
+```
+
+```python [Minimal check]
+from foreblocks import ForecastingModel, Trainer
+```
+
+:::
 
 Run a quick import check before the full example:
 
@@ -79,18 +102,11 @@ Run a quick import check before the full example:
 python -c "from foreblocks import ForecastingModel, Trainer; print('foreblocks import OK')"
 ```
 
-### What this validates
-
-- The import path works correctly
-- Dataloader shapes match the trainer expectations
-- The model trains without optional subsystems
-- Evaluation works on held-out data
-
-## 4. Trainer and MLTracker notes
+## 3. Trainer and MLTracker notes
 
 `Trainer` initializes MLTracker automatically if installed. Pass `auto_track=False` during local smoke tests.
 
-## 5. Shape expectations
+## 4. Shape expectations
 
 ### Direct forecasting
 
@@ -108,7 +124,7 @@ python -c "from foreblocks import ForecastingModel, Trainer; print('foreblocks i
 
 Decoder-based models have stricter dimension contracts. Read the [Custom Blocks](custom_blocks) guide before wiring custom modules.
 
-## 7. Starting from raw time series
+## 5. Starting from raw time series
 
 When your starting point is a single `[T, D]` array, use `TimeSeriesHandler` instead of building windows manually:
 
@@ -139,7 +155,7 @@ X_val = pre.transform(val_raw, time_stamps=val_timestamps)
 
 Continue with [Preprocessor Guide](preprocessor) for advanced options like filtering, outlier handling, and feature engineering.
 
-## 8. When to add DARTS
+## 6. When to add DARTS
 
 If the basic training loop works and you want architecture search instead of hand-selecting blocks:
 
@@ -173,5 +189,6 @@ Baseline works and metrics are acceptable?
 
 - [Overview](overview) - Mental model of the stack
 - [Public API](reference/public-api) - Complete API reference
+- [Imports Reference](shared/imports) - Consolidated import patterns
 - [Configuration](reference/configuration) - All configuration options
 - [Troubleshooting](troubleshooting) - Common issues and fixes

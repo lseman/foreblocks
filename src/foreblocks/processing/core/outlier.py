@@ -25,7 +25,7 @@ from numba import njit, prange
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 
-from foreblocks.models.anomaly.tranad import (
+from foreblocks.models.anomaly.tranad_detector import (
     TranAD as TranAD,
     TranADDetector,
 )

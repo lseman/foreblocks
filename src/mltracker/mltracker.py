@@ -198,7 +198,41 @@ def _model_summary(model: Any) -> dict[str, int]:
 
 
 class MLTracker:
-    """Main tracking class for ML experiments"""
+    """File-based ML experiment tracker with SQLite backend.
+
+    Tracks experiments, runs, parameters, metrics, tags, and artifacts
+    in a local SQLite database. Supports artifact storage (files, pickles,
+    figures), git integration, and an ``@autolog`` decorator for automatic
+    function-level tracking.
+
+    The tracker creates the following directory structure under ``tracking_uri``:
+
+    .. code-block::
+
+        ./mltracker/
+        ├── mltracker.db          # SQLite database (WAL mode)
+        └── artifacts/
+            └── <run_id>/
+                ├── models/       # Serialized models and architecture
+                ├── figures/      # Saved matplotlib/plotly figures
+                ├── inputs/       # Input parameter snapshots
+                └── return/       # Return value artifacts
+
+    Parameters
+    ----------
+    tracking_uri : str or Path
+        Directory path for the tracker database and artifacts.
+            Default ``"./mltracker"``.
+
+    Examples
+    --------
+    >>> from mltracker import MLTracker
+    >>> tracker = MLTracker("./my_experiments")
+    >>> with tracker.run("classification", "rf_baseline"):
+    ...     tracker.log_params({"n_estimators": 100, "max_depth": 10})
+    ...     for epoch in range(5):
+    ...         tracker.log_metrics({"train_loss": 0.5 - epoch * 0.1}, step=epoch)
+    """
 
     def __init__(self, tracking_uri: str = "./mltracker"):
         self.tracking_uri = Path(tracking_uri)
@@ -301,6 +335,21 @@ class MLTracker:
 
     # ---------- Experiments ----------
     def create_experiment(self, name: str) -> int:
+        """Create a new experiment (idempotent by name).
+
+        If an experiment with this name already exists, returns its ID
+        without creating a duplicate.
+
+        Parameters
+        ----------
+        name : str
+            Unique experiment name.
+
+        Returns
+        -------
+        int
+            The experiment ID (auto-increment integer).
+        """
         with self._get_db() as conn:
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO experiments (name, created_at) VALUES (?, ?)",
@@ -314,6 +363,18 @@ class MLTracker:
             return int(row[0])
 
     def get_experiment(self, name: str) -> int | None:
+        """Get experiment ID by name.
+
+        Parameters
+        ----------
+        name : str
+            Experiment name.
+
+        Returns
+        -------
+        int | None
+            Experiment ID, or None if not found.
+        """
         with self._get_db() as conn:
             row = conn.execute(
                 "SELECT experiment_id FROM experiments WHERE name = ?", (name,)
@@ -322,8 +383,30 @@ class MLTracker:
 
     # ---------- Runs ----------
     def start_run(
-        self, experiment_name: str = "default", run_name: str | None = None
+        self,
+        experiment_name: str = "default",
+        run_name: str | None = None,
     ) -> str:
+        """Start a new tracking run.
+
+        Creates the experiment if it does not exist, then creates a new
+        run with status ``"RUNNING"`` and returns its ID.
+
+        Parameters
+        ----------
+        experiment_name : str
+            Target experiment name. Default ``"default"``.
+        run_name : str | None
+            Optional human-readable run name.
+
+        Returns
+        -------
+        str
+            The run ID (16-char hex string).
+        """
+        exp_id = self.get_experiment(experiment_name) or self.create_experiment(
+            experiment_name
+        )
         exp_id = self.get_experiment(experiment_name) or self.create_experiment(
             experiment_name
         )
@@ -340,7 +423,15 @@ class MLTracker:
         self._active_run = run_id
         return run_id
 
-    def end_run(self, status: str = "FINISHED"):
+    def end_run(self, status: str = "FINISHED") -> None:
+        """End the active run.
+
+        Parameters
+        ----------
+        status : str
+            Final status: ``"FINISHED"``, ``"FAILED"``, or ``"SKIPPED"``.
+                Default ``"FINISHED"``.
+        """
         if self._active_run:
             with self._get_db() as conn:
                 conn.execute(
@@ -350,7 +441,21 @@ class MLTracker:
             self._active_run = None
 
     # ---------- Logging ----------
-    def log_param(self, key: str, value: Any):
+    def log_param(self, key: str, value: Any) -> None:
+        """Log a single parameter.
+
+        Parameters
+        ----------
+        key : str
+            Parameter name.
+        value : Any
+            Parameter value (stringified via ``json.dumps`` or ``repr``).
+
+        Raises
+        ------
+        RuntimeError
+            If there is no active run.
+        """
         if not self._active_run:
             raise RuntimeError("No active run. Call start_run() first.")
         with self._get_db() as conn:
@@ -359,11 +464,34 @@ class MLTracker:
                 (self._active_run, key, _safe_repr(value)),
             )
 
-    def log_params(self, params: Mapping[str, Any]):
+    def log_params(self, params: Mapping[str, Any]) -> None:
+        """Log multiple parameters at once.
+
+        Parameters
+        ----------
+        params : dict[str, Any]
+            Mapping of parameter names to values.
+        """
         for k, v in params.items():
             self.log_param(k, v)
 
-    def log_metric(self, key: str, value: float, step: int = 0):
+    def log_metric(self, key: str, value: float, step: int = 0) -> None:
+        """Log a single metric.
+
+        Parameters
+        ----------
+        key : str
+            Metric name.
+        value : float
+            Metric value.
+        step : int
+            Training step or epoch. Default 0.
+
+        Raises
+        ------
+        RuntimeError
+            If there is no active run.
+        """
         if not self._active_run:
             raise RuntimeError("No active run. Call start_run() first.")
         with self._get_db() as conn:
@@ -372,11 +500,34 @@ class MLTracker:
                 (self._active_run, key, float(value), _now_iso(), int(step)),
             )
 
-    def log_metrics(self, metrics: Mapping[str, float], step: int = 0):
+    def log_metrics(self, metrics: Mapping[str, float], step: int = 0) -> None:
+        """Log multiple metrics at once.
+
+        Parameters
+        ----------
+        metrics : dict[str, float]
+            Mapping of metric names to values.
+        step : int
+            Training step or epoch. Default 0.
+        """
         for k, v in metrics.items():
             self.log_metric(k, v, step)
 
-    def set_tag(self, key: str, value: str):
+    def set_tag(self, key: str, value: str) -> None:
+        """Set a tag on the current run.
+
+        Parameters
+        ----------
+        key : str
+            Tag name.
+        value : str
+            Tag value.
+
+        Raises
+        ------
+        RuntimeError
+            If there is no active run.
+        """
         if not self._active_run:
             raise RuntimeError("No active run. Call start_run() first.")
         with self._get_db() as conn:
@@ -385,11 +536,34 @@ class MLTracker:
                 (self._active_run, key, str(value)),
             )
 
-    def set_tags(self, tags: Mapping[str, str]):
+    def set_tags(self, tags: Mapping[str, str]) -> None:
+        """Set multiple tags at once.
+
+        Parameters
+        ----------
+        tags : dict[str, str]
+            Mapping of tag names to values.
+        """
         for k, v in tags.items():
             self.set_tag(k, v)
 
-    def log_artifact(self, local_path: str | Path, artifact_path: str = ""):
+    def log_artifact(self, local_path: str | Path, artifact_path: str = "") -> None:
+        """Copy a file as an artifact for the current run.
+
+        Parameters
+        ----------
+        local_path : str or Path
+            Path to the local file to copy.
+        artifact_path : str
+            Server-side path prefix (e.g., ``"models"``, ``"figures"``).
+
+        Raises
+        ------
+        RuntimeError
+            If there is no active run.
+        FileNotFoundError
+            If the local file does not exist.
+        """
         if not self._active_run:
             raise RuntimeError("No active run. Call start_run() first.")
         local_file = Path(local_path)
@@ -409,7 +583,25 @@ class MLTracker:
                 (self._active_run, rel_path, (local_file.suffix or "file").lstrip(".")),
             )
 
-    def log_bytes(self, data: bytes, filename: str, artifact_path: str = ""):
+    def log_bytes(self, data: bytes, filename: str, artifact_path: str = "") -> None:
+        """Store raw bytes as an artifact.
+
+        Parameters
+        ----------
+        data : bytes
+            Raw byte data to store.
+        filename : str
+            Name for the stored file.
+        artifact_path : str
+            Server-side path prefix. Default empty (root of run artifacts).
+
+        Raises
+        ------
+        ValueError
+            If data exceeds ``_BIN_LIMIT`` (10 MB).
+        RuntimeError
+            If there is no active run.
+        """
         if not self._active_run:
             raise RuntimeError("No active run. Call start_run() first.")
         if len(data) > _BIN_LIMIT:
@@ -432,11 +624,29 @@ class MLTracker:
 
     def log_figure(
         self,
-        fig,
+        fig: Any,
         filename: str = "figure.png",
         artifact_path: str = "figures",
         dpi: int = 120,
-    ):
+    ) -> None:
+        """Save a matplotlib/plotly figure as an artifact.
+
+        Parameters
+        ----------
+        fig : matplotlib.figure.Figure or plotly.graph_objects.Figure
+            Figure object with a ``savefig`` method.
+        filename : str
+            Output filename. Default ``"figure.png"``.
+        artifact_path : str
+            Server-side path prefix. Default ``"figures"``.
+        dpi : int
+            Output DPI. Default 120.
+
+        Raises
+        ------
+        RuntimeError
+            If there is no active run.
+        """
         buf = io.BytesIO()
         fig.savefig(
             buf,
@@ -446,7 +656,25 @@ class MLTracker:
         )
         self.log_bytes(buf.getvalue(), filename=filename, artifact_path=artifact_path)
 
-    def log_model(self, model: Any, model_name: str = "model"):
+    def log_model(self, model: Any, model_name: str = "model") -> None:
+        """Save a model object with architecture metadata.
+
+        Attempts to pickle the model. Also saves architecture summary
+        as text and JSON files (including parameter counts and tree structure).
+
+        Parameters
+        ----------
+        model : Any
+            Model object (must be picklable for full save).
+        model_name : str
+            Base name for saved files. Creates ``{name}.pkl``,
+            ``{name}_architecture.txt``, and ``{name}_architecture.json``.
+
+        Raises
+        ------
+        RuntimeError
+            If there is no active run.
+        """
         if not self._active_run:
             raise RuntimeError("No active run. Call start_run() first.")
         model_dir = self.artifacts_path / self._active_run / "models"
@@ -519,13 +747,51 @@ class MLTracker:
                 ),
             )
 
-    def load_model(self, run_id: str, model_name: str = "model"):
+    def load_model(self, run_id: str, model_name: str = "model") -> Any:
+        """Load a previously saved model.
+
+        Parameters
+        ----------
+        run_id : str
+            Run ID containing the model.
+        model_name : str
+            Base name of the saved model file.
+
+        Returns
+        -------
+        Any
+            The unpickled model object.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the model file does not exist.
+        """
         model_path = self.artifacts_path / run_id / "models" / f"{model_name}.pkl"
         with open(model_path, "rb") as f:
             return pickle.load(f)
 
     # ---------- Queries ----------
     def get_run(self, run_id: str) -> dict[str, Any]:
+        """Get full details of a run.
+
+        Parameters
+        ----------
+        run_id : str
+            Run ID.
+
+        Returns
+        -------
+        dict
+            Dictionary with keys: ``run_id``, ``experiment_id``, ``name``,
+                ``status``, ``start_time``, ``end_time``, ``params``,
+                ``metrics`` (latest value per key), ``tags``.
+
+        Raises
+        ------
+        ValueError
+            If the run does not exist.
+        """
         with self._get_db() as conn:
             run = conn.execute(
                 "SELECT * FROM runs WHERE run_id = ?", (run_id,)
@@ -568,7 +834,21 @@ class MLTracker:
             }
 
     def delete_run(self, run_id: str) -> None:
-        """Permanently remove a run and all its associated data from the DB."""
+        """Permanently remove a run and all its associated data.
+
+        Deletes the run record, parameters, metrics, tags, and artifacts
+        from the database. Does NOT delete artifact files from disk.
+
+        Parameters
+        ----------
+        run_id : str
+            Run ID to delete.
+
+        Raises
+        ------
+        ValueError
+            If the run does not exist.
+        """
         with self._get_db() as conn:
             row = conn.execute(
                 "SELECT run_id FROM runs WHERE run_id = ?", (run_id,)
@@ -579,7 +859,22 @@ class MLTracker:
                 conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
 
-    def search_runs(self, experiment_name: str | None = None) -> list[dict]:
+    def search_runs(
+        self,
+        experiment_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search for runs, optionally filtered by experiment.
+
+        Parameters
+        ----------
+        experiment_name : str | None
+            Filter by experiment name. None returns all runs.
+
+        Returns
+        -------
+        list[dict]
+            List of run detail dicts (same format as ``get_run``).
+        """
         with self._get_db() as conn:
             if experiment_name:
                 exp_id = self.get_experiment(experiment_name)
@@ -597,7 +892,35 @@ class MLTracker:
 
     # ---------- Context manager ----------
     @contextmanager
-    def run(self, experiment_name: str = "default", run_name: str | None = None):
+    def run(
+        self,
+        experiment_name: str = "default",
+        run_name: str | None = None,
+    ):
+        """Context manager for safe run lifecycle management.
+
+        Automatically starts a run on entry and ends it with ``"FINISHED"``
+        status on normal exit, or ``"FAILED"`` on exception.
+
+        Parameters
+        ----------
+        experiment_name : str
+            Target experiment name. Default ``"default"``.
+        run_name : str | None
+            Optional human-readable run name.
+
+        Yields
+        ------
+        str
+            The run ID.
+
+        Examples
+        --------
+        >>> with tracker.run("classification", "rf_baseline"):
+        ...     tracker.log_params({"n_estimators": 100})
+        ...     for epoch in range(5):
+        ...         tracker.log_metric("accuracy", 0.9, step=epoch)
+        """
         run_id = self.start_run(experiment_name, run_name)
         try:
             yield run_id

@@ -2452,8 +2452,7 @@ class TPE:
         if vals.size == 1:
             return IntModel(
                 kind="single_int",
-                mu=float(vals[0]),
-                **self._int_model_kwargs(param, lo, hi, prior_w),
+                **self._int_model_kwargs(param, lo, hi, prior_w, mu=float(vals[0])),
             )
 
         # Adaptive bandwidth via LOO CV (if enabled)
@@ -2465,10 +2464,7 @@ class TPE:
         bw = max(float(bw), 1.0)
         return IntModel(
             kind="kde_int",
-            vals=vals,
-            bw=bw,
-            w=w,
-            **self._int_model_kwargs(param, lo, hi, prior_w),
+            **self._int_model_kwargs(param, lo, hi, prior_w, vals=vals, bw=bw, w=w),
         )
 
     def _smoothed_categorical_probs(

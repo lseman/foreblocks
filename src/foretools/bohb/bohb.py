@@ -1,26 +1,12 @@
-# bohb_tpe_improved.py
 # =============================================================================
-# BOHB + Improved TPE (SOTA-leaning baseline, split into bohb.py + tpe.py,
-# no external deps beyond numpy + scipy)
+# BOHB: Hyperband / successive halving + a model-based proposal distribution.
 #
-# Key upgrades vs your version:
-# - Correct TPE candidate generation: sample FROM l(x) (good density), rank by l/g
-# - Candidate pool size always >= requested n (fixes Hyperband bracket sizing)
-# - Robust bandwidth (Silverman/Scott hybrid with IQR fallback + range-based floor)
-# - Bounded-domain handling (reflect + clamp)
-# - Better discrete handling:
-#     * int: discrete kernel on integer support (mixture over observed ints + prior)
-#     * choice: smoothed categorical (as before)
-# - Multi-fidelity weighting: optional (budget/max_budget)^p with p>1 + normalization
-# - Per-parameter prior mixture for KDE (uniform/log-uniform mixed with empirical KDE)
-# - Loss split uses budget correction so low-fidelity results don't dominate
-# - Optional joint modeling for conditional params (tree-structured spaces)
-# - Stable config hashing (sha1 over canonical JSON)
-# - More defensive behavior for tiny samples
-#
-# Notes:
-# - This is still "independence across params" TPE (standard in practice).
-# - You can plug your real objective (config,budget)->loss (lower better).
+# - Default sampler: MultiFidelityTPE (mftpe.py) — vectorized multivariate TPE
+#   fit on the largest budget with enough results, constant-liar batches,
+#   Sobol startup. sampler="legacy" keeps the original per-parameter TPE.
+# - Serial runs use synchronous successive halving; parallel_jobs > 1 uses ASHA.
+# - Every finished evaluation is recorded; final-loss pruning only blocks
+#   promotion, and step-pruned trials feed their partial result to the sampler.
 # =============================================================================
 
 from __future__ import annotations
@@ -38,6 +24,7 @@ from typing import Any
 import numpy as np
 
 from .hyperband import HyperbandScheduler
+from .mftpe import MultiFidelityTPE
 from .pruning import PruningConfig
 from .tpe import TPE, TPEConf
 from .trial import Trial, TrialPruned
@@ -89,6 +76,10 @@ class BOHB:
         convergence_threshold: float = 1e-6,
         min_improvement_frac: float = 0.001,
         convergence_lookback: int = 10,
+        # Sampler: "mftpe" (vectorized multi-fidelity multivariate TPE, default)
+        # or "legacy" (the original per-parameter TPE driven by tpe_conf).
+        sampler: str = "mftpe",
+        sampler_options: dict[str, Any] | None = None,
     ):
         self.config_space = config_space
         self.evaluate_fn = evaluate_fn
@@ -124,7 +115,28 @@ class BOHB:
         ):
             overrides["n_startup_trials"] = len(config_space) + 1
         overrides.update(user_overrides)
-        self.tpe = TPE.from_config(config_space=config_space, cfg=conf, **overrides)
+        self.sampler = str(sampler or "mftpe").lower()
+        if self.sampler == "legacy":
+            self.tpe = TPE.from_config(config_space=config_space, cfg=conf, **overrides)
+        elif self.sampler == "mftpe":
+            # Carry over the TPEConf knobs the new sampler understands.
+            merged = {**conf_kwargs, **user_overrides}
+            opts: dict[str, Any] = {
+                "gamma": self.top_n_percent / 100.0,
+                "seed": seed,
+                "hard_constraints": merged.get("hard_constraints"),
+                "soft_constraints": merged.get("soft_constraints"),
+                "soft_penalty_weight": merged.get("soft_penalty_weight", 1.0),
+            }
+            for key in ("n_ei_candidates", "min_bandwidth", "constant_liar"):
+                if key in user_overrides:
+                    opts[key] = user_overrides[key]
+            if "n_startup_trials" in user_overrides:
+                opts["min_points_in_model"] = user_overrides["n_startup_trials"]
+            opts.update(sampler_options or {})
+            self.tpe = MultiFidelityTPE(config_space, **opts)
+        else:
+            raise ValueError(f"Unknown sampler {sampler!r}; use 'mftpe' or 'legacy'")
 
         self.history: list[dict[str, Any]] = []
         self.best_loss = float("inf")
@@ -132,6 +144,9 @@ class BOHB:
         self.best_configs: list[tuple[dict[str, Any], float]] = []
         self._step_history: list[dict[str, float]] = []
         self._step_history_lock = threading.Lock()
+        # Step-pruned trials finish in worker threads; their partial results are
+        # queued here and handed to the (non-thread-safe) sampler on the main thread.
+        self._pruned_queue: list[tuple[dict[str, Any], float, float]] = []
 
         # Hyperband rung grid for snapping cache-key budgets so that float
         # noise (27.0 vs 27.0000001) doesn't cause cache misses.
@@ -406,62 +421,93 @@ class BOHB:
         rungs: list[tuple[int, int, float]],
     ) -> None:
         """
-        Async Successive Halving (ASHA): promote a config from rung i to i+1
-        as soon as its in-rung rank is in the top 1/eta. Replaces the
-        synchronous wait-all-then-halve loop.
+        Successive halving over ``rungs``.
+
+        - ``parallel_jobs == 1``: synchronous SH — a rung's top ``n_{i+1}`` are
+          promoted once every config in it has finished.
+        - ``parallel_jobs > 1``: ASHA — a config is promoted as soon as it ranks
+          in the top ``floor(k / eta)`` of the ``k`` finished at its rung, and the
+          rung is topped up to ``n_{i+1}`` once it completes. Promotions are
+          dispatched before new base-rung work.
         """
         if not rungs or not initial_configs:
             return
 
-        # rung_results[i] -> list of (config, predicted_loss) at budget rungs[i].r
-        rung_results: list[list[tuple[dict[str, Any], float]]] = [[] for _ in rungs]
-        # Track which configs have already been promoted out of rung i.
+        # rung_results[i] -> (config, loss, promotable) at budget rungs[i].r
+        rung_results: list[list[tuple[dict[str, Any], float, bool]]] = [
+            [] for _ in rungs
+        ]
         rung_promoted_keys: list[set[str]] = [set() for _ in rungs]
         rung_budgets = [r_i for _, _, r_i in rungs]
         rung_targets = [n_i for _, n_i, _ in rungs]
         max_rung = len(rungs) - 1
+        outstanding = [0] * len(rungs)
+        closed = [False] * len(rungs)
 
-        # Pending evaluations to submit: (rung_idx, config).
-        pending: list[tuple[int, dict[str, Any]]] = [
-            (0, cfg) for cfg in initial_configs[: rung_targets[0]]
-        ]
-
-        in_flight: dict[concurrent.futures.Future, tuple[int, dict[str, Any]]] = {}
-        executor: concurrent.futures.ThreadPoolExecutor | None = None
         max_workers = max(1, self.parallel_jobs)
-        if max_workers > 1:
+        asynchronous = max_workers > 1
+        executor: concurrent.futures.ThreadPoolExecutor | None = None
+        if asynchronous:
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
+        pending: list[tuple[int, dict[str, Any]]] = []
+
+        def _enqueue(rung_idx: int, config: dict[str, Any]) -> None:
+            pending.append((rung_idx, config))
+            outstanding[rung_idx] += 1
+
+        for cfg in initial_configs[: rung_targets[0]]:
+            _enqueue(0, cfg)
+
+        def _promote(rung_idx: int, n_keep: int) -> None:
+            ranked = sorted(
+                (x for x in rung_results[rung_idx] if x[2]), key=lambda x: x[1]
+            )
+            for cand_cfg, _, _ in ranked[:n_keep]:
+                cand_key = _canonical_config_key(cand_cfg)
+                if cand_key in rung_promoted_keys[rung_idx]:
+                    continue
+                rung_promoted_keys[rung_idx].add(cand_key)
+                _enqueue(rung_idx + 1, cand_cfg)
+
+        def _close_finished_rungs() -> None:
+            for i in range(max_rung):
+                if closed[i]:
+                    continue
+                if outstanding[i] > 0 or (i > 0 and not closed[i - 1]):
+                    return
+                closed[i] = True
+                _promote(i, rung_targets[i + 1])
+
         def _record_completion(
-            rung_idx: int, config: dict[str, Any], loss: float
+            rung_idx: int, config: dict[str, Any], loss: float, promotable: bool
         ) -> None:
             self.tpe.observe(config, loss, budget=rung_budgets[rung_idx])
             self._update_best(config, loss)
-            predicted = self._predict_final_loss(loss, rung_budgets[rung_idx])
-            rung_results[rung_idx].append((config, predicted))
+            rung_results[rung_idx].append((config, loss, promotable))
             self._update_top_configs([(config, loss)])
-            if rung_idx < max_rung:
-                finished = rung_results[rung_idx]
-                n_keep = max(1, len(finished) // self.eta)
-                ranked = sorted(finished, key=lambda x: x[1])
-                for cand_cfg, _ in ranked[:n_keep]:
-                    cand_key = _canonical_config_key(cand_cfg)
-                    if cand_key in rung_promoted_keys[rung_idx]:
-                        continue
-                    rung_promoted_keys[rung_idx].add(cand_key)
-                    pending.append((rung_idx + 1, cand_cfg))
+            if asynchronous and rung_idx < max_rung:
+                _promote(rung_idx, len(rung_results[rung_idx]) // self.eta)
 
+        def _finish(rung_idx: int) -> None:
+            outstanding[rung_idx] -= 1
+            _close_finished_rungs()
+
+        def _next_pending() -> tuple[int, dict[str, Any]]:
+            best = max(range(len(pending)), key=lambda i: pending[i][0])
+            return pending.pop(best)
+
+        in_flight: dict[Any, tuple[int, dict[str, Any]]] = {}
         try:
             while pending or in_flight:
-                # Fill the in-flight pool up to max_workers, skipping configs
-                # that fail hard constraints or hit the cache.
                 while pending and len(in_flight) < max_workers:
-                    rung_idx, config = pending.pop(0)
+                    rung_idx, config = _next_pending()
                     budget = rung_budgets[rung_idx]
 
                     if not self.tpe._hard_constraints_satisfied(config):
                         if self.verbose:
                             print("    Hard constraint violated; skipping.")
+                        _finish(rung_idx)
                         continue
 
                     cache_key = self._cache_key(config, budget)
@@ -469,8 +515,9 @@ class BOHB:
                         if self.verbose:
                             print("    (cache hit)")
                         _record_completion(
-                            rung_idx, config, self.config_cache[cache_key]
+                            rung_idx, config, self.config_cache[cache_key], True
                         )
+                        _finish(rung_idx)
                         continue
 
                     if executor is not None:
@@ -480,11 +527,10 @@ class BOHB:
                     in_flight[fut] = (rung_idx, config)
 
                 if not in_flight:
-                    break
+                    continue
 
                 if executor is not None:
-                    done_iter = concurrent.futures.as_completed(list(in_flight))
-                    done_fut = next(done_iter)
+                    done_fut = next(concurrent.futures.as_completed(list(in_flight)))
                 else:
                     done_fut = next(iter(in_flight))
 
@@ -502,7 +548,7 @@ class BOHB:
                     else:
                         raise
 
-                loss = self._finalize_evaluation(
+                result = self._finalize_evaluation(
                     config=config,
                     budget=budget,
                     outcome=outcome,
@@ -511,10 +557,10 @@ class BOHB:
                     bracket=bracket,
                     round_idx=rung_idx,
                 )
-                if loss is None:
-                    continue
-
-                _record_completion(rung_idx, config, loss)
+                if result is not None:
+                    loss, promotable = result
+                    _record_completion(rung_idx, config, loss, promotable)
+                _finish(rung_idx)
         finally:
             if executor is not None:
                 executor.shutdown(wait=True)
@@ -522,6 +568,15 @@ class BOHB:
     def _build_candidate_pool(
         self, bracket: int, n: int, budget: float
     ) -> tuple[list[dict[str, Any]], list[float]]:
+        if self.sampler == "mftpe":
+            # The sampler already ranks l/g per proposal and spreads the batch
+            # with a constant liar; over-sampling and truncating would only
+            # discard its random (exploration) proposals.
+            configs, scores = self.tpe.suggest(
+                n_candidates=n, budget=budget, return_scores=True
+            )
+            return configs, scores
+
         recent_bracket_success = self._recent_bracket_improvement(bracket)
         pool_multiplier = 4 + 8 * (1.0 - recent_bracket_success)
         pool_n = max(n * int(pool_multiplier), 32, n * 3)
@@ -557,10 +612,24 @@ class BOHB:
 
     @staticmethod
     def _accepts_trial_argument(evaluate_fn: Callable[..., float]) -> bool:
+        """True for ``fn(config, budget, trial)``; parameters with defaults
+        (other than one named ``trial``) don't count."""
         try:
-            return len(inspect.signature(evaluate_fn).parameters) >= 3
+            params = list(inspect.signature(evaluate_fn).parameters.values())
         except (TypeError, ValueError):
             return False
+        positional = (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+        if any(p.name == "trial" and p.kind in positional for p in params[2:3]):
+            return True
+        if any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params):
+            return True
+        required = [
+            p for p in params if p.kind in positional and p.default is p.empty
+        ]
+        return len(required) >= 3
 
     def _update_best(self, config: dict[str, Any], loss: float) -> None:
         if loss >= self.best_loss:
@@ -630,6 +699,7 @@ class BOHB:
         except TrialPruned:
             if self.verbose:
                 print("    Trial Pruned (Intermediate step gracefully terminated).")
+            self._observe_pruned_trial(trial)
             return None
         except Exception as e:
             if self.handle_errors:
@@ -657,6 +727,25 @@ class BOHB:
                 loss = loss + float(self.tpe.soft_penalty_weight) * penalty
         return loss, float(raw_loss), float(penalty)
 
+    def _observe_pruned_trial(self, trial: Trial) -> None:
+        """Feed a step-pruned trial's last report to the sampler at the budget it
+        actually consumed, so the model learns from (bad) partial runs too."""
+        if not trial.reports:
+            return
+        step = max(trial.reports)
+        loss = trial.reports[step]
+        if not math.isfinite(loss):
+            return
+        used = trial.budget * self._step_progress(step, trial.budget)
+        with self._step_history_lock:
+            self._pruned_queue.append((dict(trial.config), loss, max(used, 1e-12)))
+
+    def _drain_pruned_queue(self) -> None:
+        with self._step_history_lock:
+            queued, self._pruned_queue = self._pruned_queue, []
+        for config, loss, budget in queued:
+            self.tpe.observe(config, loss, budget=budget)
+
     def _finalize_evaluation(
         self,
         config: dict[str, Any],
@@ -666,15 +755,22 @@ class BOHB:
         iteration: int,
         bracket: int,
         round_idx: int,
-    ) -> float | None:
+    ) -> tuple[float, bool] | None:
+        """Record a finished evaluation. Returns ``(loss, promotable)``.
+
+        Final-loss pruning happens *after* the budget was spent, so the result
+        is still recorded; pruning only blocks promotion to the next rung.
+        """
+        self._drain_pruned_queue()
         if outcome is None:
             return None
 
         loss, raw_loss, penalty = outcome
+        promotable = True
         if self.early_prune and self._should_prune(loss, budget):
             if self.verbose:
                 print("    Early prune (loss above historical quantile).")
-            return None
+            promotable = False
 
         self.config_cache[cache_key] = loss
         self.history.append(
@@ -689,7 +785,7 @@ class BOHB:
                 round_idx=round_idx,
             )
         )
-        return loss
+        return loss, promotable
 
     def _update_top_configs(self, results: list[tuple[dict[str, Any], float]]) -> None:
         for cfg, loss in results:

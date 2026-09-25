@@ -1,18 +1,30 @@
 # BOHB
 
-A BOHB-style hyperparameter optimizer that combines **Hyperband** resource
-allocation with a **TPE** (Tree-structured Parzen Estimator) sampler and
-**ASHA** asynchronous promotion. Built for problems where evaluations are
-expensive and you want early stopping of bad configurations.
+A BOHB hyperparameter optimizer: **Hyperband** resource allocation with a
+vectorized **multi-fidelity multivariate TPE** sampler, synchronous successive
+halving for serial runs, and **ASHA** asynchronous promotion when
+`parallel_jobs > 1`. It suits problems where evaluations are expensive and
+you want to stop bad configurations early.
 
 ## Features
 
-- **Hyperband + ASHA**: budgets ramp up as configurations prove themselves;
-  weak configs are dropped early.
-- **TPE sampler**: per-budget kernel density models bias sampling toward
-  promising regions of the search space.
-- **Two-level pruning**: final-loss pruning (whole-trial) and intermediate
-  step-level pruning (e.g. epoch-by-epoch via `Trial.report`).
+- **Hyperband + successive halving**: budgets ramp up as configurations prove
+  themselves. Serial runs promote the exact top `n_{i+1}` per rung (classic
+  SH). Parallel runs use ASHA: a config is promoted once it ranks in the top
+  `k // eta` of its rung, and higher-rung work is dispatched first.
+- **Multi-fidelity TPE sampler** (`mftpe.py`, the default):
+  - The density model is fit on the largest budget that has enough results
+    (BOHB rule).
+  - Multivariate product kernels capture parameter interactions.
+  - Ints are modelled as integer bins; categoricals use an Aitchison-Aitken
+    kernel.
+  - Conditional parameters are supported.
+  - Batches use a constant liar, and startup points are scrambled Sobol.
+  - Fully numpy-vectorized.
+- **Two-level pruning**: final-loss pruning (the result is kept, only
+  promotion is blocked) and intermediate step-level pruning via
+  `Trial.report`. Step-pruned trials still feed their last report to the
+  sampler.
 - **Transfer learning**: warm-start from prior runs and export history
   via JSONL.
 - **Parallel evaluation**: `parallel_jobs > 1` runs candidates concurrently.
@@ -20,16 +32,42 @@ expensive and you want early stopping of bad configurations.
   importance, parallel coordinates.
 - **Convergence detection**: automatic early stopping when optimization
   plateaus, based on no-improvement count, plateau detection, and variance.
-- **Per-parameter trust region** (TuRBO 2.0): individual exploration lengths
-  per parameter, shrinking only unproductive dimensions.
-- **qNEI batch acquisition**: Noisy Expected Improvement with GP noise model
-  for parallel batch selection.
-- **Thompson sampling**: proper Thompson sampling with uncertainty-aware
-  candidate selection.
-- **Adaptive bandwidth** (LOO CV): leave-one-out cross-validation for
-  per-parameter bandwidth optimization.
-- **GP-conditional Constant Liar**: temporal GP regression for realistic
-  pending evaluation estimation.
+- **Legacy sampler** (`sampler="legacy"`): the original per-parameter TPE.
+  It adds a per-parameter trust region, qNEI, Thompson and
+  local-penalization batch selection, a GP surrogate, and LOO-CV bandwidths.
+  All of it is configured through `TPEConf`.
+
+## Samplers
+
+| `sampler`          | Notes                                                        |
+| ------------------ | ------------------------------------------------------------ |
+| `"mftpe"` (default) | Fast, vectorized multi-fidelity TPE. Tune with `sampler_options`. |
+| `"legacy"`         | Original TPE. Tune with `tpe_conf` / `tpe_overrides`.          |
+
+`sampler_options` for `"mftpe"` (see `MultiFidelityTPE` for all):
+
+| Option                | Default   | Purpose                                                   |
+| --------------------- | --------- | --------------------------------------------------------- |
+| `gamma`               | `top_n_percent / 100` | Fraction of results forming the "good" density l(x). |
+| `n_ei_candidates`     | `64`      | Samples drawn from l(x) per proposal.                     |
+| `min_points_in_model` | `d + 2`   | Results needed at a budget before it is modelled.         |
+| `random_fraction`     | `0.1`     | Share of proposals drawn uniformly at random.             |
+| `bandwidth_factor`    | `1.5`     | Multiplier on the Scott-rule kernel bandwidth.            |
+| `constant_liar`       | `True`    | Spread batch proposals by treating picks as pending bad points. |
+
+Hard and soft constraints set via `TPEConf.constraints` / `tpe_overrides`
+(`hard_constraints`, `soft_constraints`, `soft_penalty_weight`) apply to both
+samplers. So do `n_ei_candidates`, `min_bandwidth` and `n_startup_trials`
+(which maps to `min_points_in_model`) in `tpe_overrides`.
+
+Conditional parameters take a third, options element:
+
+```python
+config_space = {
+    "opt":      ("choice", ["sgd", "adam"]),
+    "momentum": ("float", (0.0, 0.99), {"condition": {"parent": "opt", "values": ["sgd"]}}),
+}
+```
 
 ## Import surface
 
@@ -125,6 +163,8 @@ internally — you don't need to wrap it.
 | `early_prune`           | `True`         | Enable final-loss pruning.                             |
 | `parallel_jobs`         | `1`            | Concurrent evaluations per rung.                       |
 | `seed`                  | `None`         | RNG seed.                                              |
+| `sampler`               | `"mftpe"`      | `"mftpe"` (default) or `"legacy"`.                      |
+| `sampler_options`       | `None`         | Keyword overrides for `MultiFidelityTPE`.              |
 | `tpe_conf` / `tpe_overrides`         | `None`     | `TPEConf` instance and/or dict of overrides.   |
 | `pruning_conf` / `pruning_overrides` | `None`     | `PruningConfig` instance and/or dict of overrides. |
 | `prior_trials_jsonl`    | `None`         | Warm-start from a JSONL history file.                  |
@@ -140,8 +180,9 @@ internally — you don't need to wrap it.
 
 Two independent pruning paths share `pruning_mode`:
 
-- **Final-loss pruning** (between trials): cuts trials whose final loss is
-  worse than a moving quantile of historical losses, gated by `early_prune`.
+- **Final-loss pruning** (between trials): blocks promotion of trials whose
+  final loss is worse than a moving quantile of historical losses. The result
+  is still recorded and modelled. Gated by `early_prune`.
 - **Step-level pruning** (within a trial): triggered by `trial.report` and
   uses cohort statistics at the same step/progress.
 
@@ -165,7 +206,7 @@ and `round` per trial.
 
 ## Batch selection strategies
 
-Use `TPEConf.batch` to configure the batch selector:
+These apply to `sampler="legacy"` only. Use `TPEConf.batch` to configure the batch selector:
 
 ```python
 from foretools.bohb.tpe import TPEConf
@@ -238,5 +279,5 @@ plotter.plot_param_effect("lr")
 ## See also
 
 - Tutorial: [docs/tutorials/optimize-with-bohb.md](../../docs/tutorials/optimize-with-bohb.md)
-- Source: [bohb.py](bohb.py), [tpe.py](tpe.py), [hyperband.py](hyperband.py),
+- Source: [bohb.py](bohb.py), [mftpe.py](mftpe.py), [tpe.py](tpe.py), [hyperband.py](hyperband.py),
   [pruning.py](pruning.py), [trial.py](trial.py)

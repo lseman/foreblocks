@@ -40,9 +40,14 @@ except Exception:
         VMDParameters = None
 
 try:
-    from .common import BoundaryHandler, FFTWManager
+    from .support.boundary import BoundaryHandler
+    from .support.fft import FFTWManager
 except Exception:
-    from vmd_common import BoundaryHandler, FFTWManager
+    try:
+        from vmd_common import BoundaryHandler, FFTWManager  # type: ignore[assignment]
+    except Exception:
+        BoundaryHandler = None  # type: ignore[misc]
+        FFTWManager = None  # type: ignore[misc]
 
 try:
     import torch

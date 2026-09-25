@@ -104,7 +104,7 @@ block = HybridMamba2Block(
     n_kv_heads=4,   # 4 query heads share each KV head
     window_size=256,
 )
-```text
+```
 
 For use as a time-series backbone, replace the embedding + LM-head with your own projection layers and feed patch embeddings or raw-feature vectors in place of `input_ids`.
 
@@ -117,3 +117,4 @@ run_default_diagnostics()   # quick correctness checks for ops on current device
 
 stats = benchmark_block(d_model=256, seq_len=512, batch=8)
 print(stats)  # wall-clock and memory stats
+```

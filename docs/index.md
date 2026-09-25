@@ -147,40 +147,4 @@ Internals and system notes:
 
 ## Stable public entry points
 
-Start here before using deep imports:
-
-### Core
-
-```python
-from foreblocks import (
-    ForecastingModel,
-    Trainer,
-    ModelEvaluator,
-    TimeSeriesHandler,
-    TimeSeriesDataset,
-    create_dataloaders,
-    ModelConfig,
-    TrainingConfig,
-)
-```
-
-### Uncertainty
-
-```python
-from foreblocks.training.conformal import ConformalPredictionEngine
-```
-
-### Wavelet & frequency attention
-
-Spectral attention is available today through the transformer stack rather than a
-standalone import — select it with the `att_type` argument:
-
-```python
-from foreblocks import TransformerEncoder
-
-# Wavelet-domain (Haar DWT) attention
-enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, att_type="dwt")
-
-# Frequency-domain (FEDformer-style) attention
-enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, att_type="frequency")
-```
+See the [Imports Reference](shared/imports) for full code examples organized by subsystem.

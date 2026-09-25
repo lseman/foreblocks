@@ -133,15 +133,4 @@ This is an advanced decoder-side path and should be treated as research function
 
 ## Integration with `ForecastingModel`
 
-```python
-from foreblocks import ForecastingModel
-
-model = ForecastingModel(
-    encoder=encoder,
-    decoder=decoder,
-    forecasting_strategy="transformer_seq2seq",
-    model_type="transformer",
-    target_len=24,
-    output_size=1,
-)
-```
+See the [Custom Blocks Guide](custom_blocks) for wiring models into `ForecastingModel`.

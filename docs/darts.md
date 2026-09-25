@@ -18,11 +18,13 @@ ForeBlocks includes a staged neural architecture search subsystem for time-serie
 
 ## Install
 
-For the DARTS workflow itself, including the analyzer and richer search-result visuals:
+DARTS requires the `darts` extra plus the base foreblocks package:
 
 ```bash
 pip install "foreblocks[darts]"
 ```
+
+For foreblocks imports (`ForecastingModel`, `Trainer`, `create_dataloaders`, etc.) see the [Imports Reference](shared/imports).
 
 ## When to use DARTS here
 
@@ -200,4 +202,5 @@ Useful early knobs:
 - [DARTS Search Pipeline](architecture/darts-pipeline)
 - [Transformer Guide](transformer)
 - [Custom Blocks Guide](custom_blocks)
+- [Imports Reference](shared/imports)
 - [Troubleshooting](troubleshooting)

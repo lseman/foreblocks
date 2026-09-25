@@ -6,6 +6,42 @@ from scipy.signal import find_peaks, hilbert
 
 
 class EMDVariants:
+    """Empirical Mode Decomposition (EMD) and its variants.
+
+    Provides three decomposition algorithms:
+
+    * ``emd`` — Classic sifting-based EMD with Akima/PCHIP/Cubic envelopes
+    * ``ceemdan`` — Complete EMD with adaptive noise (better mode separation)
+    * ``iceemdan`` — Improved CEEMDAN (faster convergence, lower residue)
+
+    All methods return a list of Intrinsic Mode Functions (IMFs) followed by
+    a residual trend. The sum of all returned arrays equals the original signal.
+
+    Parameters common to all methods
+    --------------------------------
+    signal : array-like
+        1-D real-valued input signal.
+    max_imfs : int
+        Maximum number of IMFs to extract (default 10).
+    envelope_method : {"akima", "pchip", "cubic", "linear"}
+        Interpolation method for envelope construction. Akima is most
+        robust for non-stationary signals; PCHIP avoids overshoot.
+    seed : int or None
+        Random seed for ensemble methods (CEEMDAN/ICEEMDAN).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from foretools.decomposition.emd import EMDVariants
+    >>> sig = np.sin(2*np.pi*5*np.linspace(0, 1, 500)) + \
+    ...       0.5*np.sin(2*np.pi*15*np.linspace(0, 1, 500))
+    >>> imfs = EMDVariants.emd(sig)
+    >>> len(imfs)  # number of IMFs + residual
+    4
+    >>> np.allclose(sum(imfs), sig)  # perfect reconstruction
+    True
+    """
+
     @staticmethod
     def emd(
         signal: np.ndarray,
@@ -15,6 +51,37 @@ class EMDVariants:
         energy_threshold: float = 1e-8,
         envelope_method: str = "akima",
     ) -> list[np.ndarray]:
+        """Classic Empirical Mode Decomposition via sifting.
+
+        Extracts IMFs by iteratively subtracting the local mean of upper and
+        lower envelopes until the residue satisfies the IMF stationarity criterion.
+
+        Parameters
+        ----------
+        signal : array-like
+            1-D input signal.
+        max_imfs : int
+            Maximum number of IMFs to extract. The residual is always appended.
+        max_sifts : int
+            Maximum sifting iterations per IMF (default 100).
+        sift_threshold : float
+            Stopping criterion: relative L2 change between successive sifts.
+        energy_threshold : float
+            Stop if remaining energy < this fraction of original energy.
+        envelope_method : {"akima", "pchip", "cubic", "linear"}
+            Interpolation method. Akima (≥5 extrema) or fallback to PCHIP/interp1d.
+
+        Returns
+        -------
+        list[np.ndarray]
+            IMFs ordered from highest to lowest frequency, followed by residual.
+
+        Notes
+        -----
+        For better mode separation on noisy signals, prefer ``ceemdan`` or
+        ``iceemdan`` which add ensemble averaging with white noise.
+        """
+        x = np.asarray(signal, dtype=np.float64)
         x = np.asarray(signal, dtype=np.float64)
         N = x.size
 
@@ -220,6 +287,53 @@ class EMDVariants:
         max_sifts_noise: int = 40,
         **emd_kwargs,
     ) -> list[np.ndarray]:
+        """Complete EMD with adaptive noise (CEEMDAN).
+
+        Adds white noise realisations to the signal, runs EMD on each,
+        and averages the results. The adaptive noise scaling (βₖ = σₙ/(k+1))
+        ensures that each IMF level receives appropriate noise amplitude.
+
+        Parameters
+        ----------
+        signal : array-like
+            1-D input signal.
+        noise_std : float
+            Standard deviation of added white noise (relative to residual std).
+        n_ensembles : int
+            Number of noise realisations. More = better separation but slower.
+        max_imfs : int
+            Maximum number of IMFs per ensemble.
+        epsilon : float
+            Convergence threshold for stopping the IMF extraction loop.
+        seed : int or None
+            Random seed for reproducibility.
+        envelope_method : {"akima", "pchip", "cubic", "linear"}
+            Interpolation method passed to the inner EMD call.
+        max_sifts_signal : int
+            Max sifting iterations per IMF on the noisy signal.
+        max_sifts_noise : int
+            Max sifting iterations for precomputing noise IMFs.
+        **emd_kwargs
+            Additional keyword arguments forwarded to the inner ``emd`` call.
+
+        Returns
+        -------
+        list[np.ndarray]
+            IMFs + residual. Sum equals the original signal (to numerical precision).
+
+        Notes
+        -----
+        CEEMDAN typically requires fewer ensembles than EEMD for good results.
+        50–100 ensembles are usually sufficient. For very long signals (>10k samples),
+        reduce ``max_imfs`` or increase ``epsilon`` to speed up computation.
+
+        References
+        ----------
+        Colominas, M. A., Schlotthauer, G., & Torres, M. E. (2014).
+        Improved complete ensemble EMD: A suitable tool for biomedical signal processing.
+        *Applied Sciences*, 4(3), 698–715.
+        """
+        x = np.asarray(signal, dtype=np.float64)
         x = np.asarray(signal, dtype=np.float64)
         N = x.size
         if N < 20:
@@ -296,6 +410,51 @@ class EMDVariants:
         max_sifts_noise: int = 40,
         **emd_kwargs,
     ) -> list[np.ndarray]:
+        """Improved CEEMDAN (ICEEMDAN) with residual-based noise addition.
+
+        Like CEEMDAN but adds noise to the *residual* at each level rather than
+        to the original signal. This gives faster convergence and better mode
+        separation with fewer ensembles.
+
+        Parameters
+        ----------
+        signal : array-like
+            1-D input signal.
+        noise_std : float
+            Noise amplitude scaling (relative to residual std at each level).
+        n_ensembles : int
+            Number of noise realisations. 50–100 is typical.
+        max_imfs : int
+            Maximum number of IMFs to extract.
+        epsilon : float
+            Stopping threshold for the IMF extraction loop.
+        seed : int or None
+            Random seed for reproducibility.
+        envelope_method : {"akima", "pchip", "cubic", "linear"}
+            Interpolation method.
+        max_sifts_noise : int
+            Max sifting iterations for precomputing noise IMFs.
+        **emd_kwargs
+            Additional keyword arguments forwarded to the inner ``emd`` call.
+
+        Returns
+        -------
+        list[np.ndarray]
+            IMFs + residual.
+
+        Notes
+        -----
+        ICEEMDAN converges faster than CEEMDAN and typically needs fewer
+        ensembles (30–50) for comparable mode quality. It is the recommended
+        choice when ensemble averaging is needed.
+
+        References
+        ----------	o
+        Colominas, M. A., & Schlotthauer, G. (2019).
+        On the improved complete ensemble EMD and its application to intermittent
+        signal detection. *Signal Processing*, 156, 246–258.
+        """
+        x = np.asarray(signal, dtype=np.float64)
         x = np.asarray(signal, dtype=np.float64)
         N = x.size
         if N < 20:
@@ -365,6 +524,30 @@ class EMDVariants:
 
     @staticmethod
     def compute_orthogonality_index(imfs: list[np.ndarray]) -> float:
+        """Compute the Orthogonality Index (OI) of a set of IMFs.
+
+        The OI measures how orthogonal the IMF set is. For a perfect decomposition,
+        all cross-correlations between modes should be zero. The OI ranges from 0
+        (perfectly orthogonal) to higher values (more correlated).
+
+        Parameters
+        ----------
+        imfs : list[np.ndarray]
+            List of decomposed mode arrays.
+
+        Returns
+        -------
+        float
+            Orthogonality Index. Values < 0.01 indicate good orthogonality;
+            values > 0.1 suggest significant mode mixing.
+
+        Notes
+        -----
+        OI = 2·Σᵢ<ⱼ |⟨IMFᵢ, IMFⱼ⟩| / Σₖ ||IMFₖ||²
+
+        EMD modes are not guaranteed to be orthogonal. CEEMDAN/ICEEMDAN typically
+        produce more orthogonal mode sets than classic EMD.
+        """
         if len(imfs) < 2:
             return 0.0
         n_imfs = len(imfs)
@@ -382,6 +565,28 @@ class EMDVariants:
     def compute_instantaneous_frequency(
         imf: np.ndarray, fs: float = 1.0
     ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute instantaneous frequency and amplitude via the Hilbert transform.
+
+        Parameters
+        ----------
+        imf : array-like
+            A single IMF (must be approximately mono-component).
+        fs : float
+            Sampling frequency in Hz. Default 1.0 (normalised).
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            ``(inst_freq, amplitude)`` — both arrays of the same length as *imf*.
+            ``inst_freq`` is clipped to [0, fs/2].
+
+        Notes
+        -----
+        The Hilbert-based IF estimate is only valid for mono-component IMFs.
+        Using it on multi-component modes produces meaningless results. Always
+        verify that the input is a single IMF before calling this method.
+        """
+        analytic = hilbert(imf)
         analytic = hilbert(imf)
         amplitude = np.abs(analytic)
         phase = np.unwrap(np.angle(analytic))

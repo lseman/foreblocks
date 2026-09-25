@@ -22,13 +22,49 @@ class AugmentationLayer(nn.Module):
 
     Generates augmentation policy (probability + intensity) conditioned on
     time series features and previous layer's probability, then applies
-    a differentiably-selected transformation.
+    a differentiably-selected transformation via Gumbel-Softmax sampling.
 
-    Args:
-        feature_dim: Dimension of the time series feature vector.
-        num_transforms: Number of available transformations.
-        hidden_dim: Hidden dimension for policy MLPs.
-        init_temperature: Initial Gumbel-Softmax temperature.
+    Architecture
+    ------------
+    Given input *x*, previous probabilities p^(k-1), and feature vector F_i:
+
+    1. Concatenate [p^(k-1), F_i] → MLP for probability logits → softmax → p^(k)
+    2. Same concatenation → MLP for intensity → Softplus → t^(k) ≥ 0
+    3. Gumbel-Softmax sampling from p^(k) logits → one-hot selection (training)
+       or argmax selection (inference)
+    4. Apply the selected transformation with intensity t^(k)
+
+    The layer supports both training mode (Gumbel-Softmax with straight-through
+    gradients) and inference mode (deterministic argmax selection).
+
+    Parameters
+    ----------
+    feature_dim : int
+        Dimension of the time series feature vector F_i. Default 24.
+    num_transforms : int
+        Number of available transformations in T. Default is NUM_TRANSFORMS (12).
+    hidden_dim : int
+        Hidden dimension for both probability and intensity MLPs. Default 64.
+    init_temperature : float
+        Initial Gumbel-Softmax temperature τ. Higher = softer sampling.
+            Clamped to [0.01, 10.0] during training. Default 1.0.
+
+    Attributes
+    ----------
+    log_temperature : nn.Parameter
+        Learnable parameter; ``temperature = exp(log_temperature)``.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from foretools.tsaug.layers import AugmentationLayer
+    >>> layer = AugmentationLayer(feature_dim=24, num_transforms=12)
+    >>> x = torch.randn(8, 100, 1)       # (B, L, C)
+    >>> features = torch.randn(8, 24)     # (B, feature_dim)
+    >>> prev_prob = torch.zeros(8, 12)    # (B, num_transforms)
+    >>> x_aug, prob, intensity, selected = layer(x, prev_prob, features)
+    >>> print(x_aug.shape)  # doctest: +SKIP
+    torch.Size([8, 100, 1])
     """
 
     def __init__(
@@ -171,17 +207,53 @@ class AugmentationLayer(nn.Module):
 
 
 class StackedAugmentationLayers(nn.Module):
-    """Stack of K augmentation layers forming the augmented data generator A_theta.
+    """Stack of K augmentation layers forming the augmented data generator A_θ.
 
-    A_theta = A^(1) o A^(2) o ... o A^(K)
+    Composes K individual :class:`AugmentationLayer` instances:
 
-    Args:
-        num_layers: K, number of stacked augmentation layers.
-        feature_dim: Dimension of the time series feature vector.
-        num_transforms: Number of available transformations.
-        hidden_dim: Hidden dimension for policy MLPs.
-        init_temperature: Initial Gumbel-Softmax temperature.
-        raw_bias: Probability of selecting Raw transform (Section 3.5.3).
+        A_θ = A^(1) ∘ A^(2) ∘ ... ∘ A^(K)
+
+    Each layer receives the output of the previous layer, enabling sequential
+    refinement of augmentation policies. The first layer receives zero
+    probabilities (p^(0) = 0).
+
+    Raw Bias
+    --------
+    During training, each layer has a ``raw_bias`` probability of skipping
+    augmentation entirely (returning the input unchanged). This allows the
+    framework to learn when NOT to augment.
+
+    Parameters
+    ----------
+    num_layers : int
+        K, number of stacked augmentation layers. Default 3.
+    feature_dim : int
+        Dimension of the time series feature vector F_i. Default 24.
+    num_transforms : int
+        Number of available transformations in T. Default is NUM_TRANSFORMS (12).
+    hidden_dim : int
+        Hidden dimension for policy MLPs in each layer. Default 64.
+    init_temperature : float
+        Initial Gumbel-Softmax temperature for all layers. Default 1.0.
+    raw_bias : float
+        Per-layer probability of selecting Raw transform during training.
+            Clamped to [0, 1]. Default 0.1 (10% chance of no augmentation per layer).
+
+    Attributes
+    ----------
+    layers : nn.ModuleList[AugmentationLayer]
+        The K individual augmentation layers.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from foretools.tsaug.layers import StackedAugmentationLayers
+    >>> stack = StackedAugmentationLayers(num_layers=3, feature_dim=24)
+    >>> x = torch.randn(8, 100, 1)   # (B, L, C)
+    >>> features = torch.randn(8, 24)  # (B, feature_dim)
+    >>> x_aug, probs, intensities, selected = stack(x, features)
+    >>> print(f"Augmented shape: {x_aug.shape}")  # doctest: +SKIP
+    Augmented shape: torch.Size([8, 100, 1])
     """
 
     def __init__(

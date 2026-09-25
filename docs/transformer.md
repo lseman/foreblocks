@@ -36,9 +36,17 @@ Related docs:
 
 ## Import
 
-```python
-from foreblocks import TransformerEncoder, TransformerDecoder
-```text
+::: code-group
+
+```python [Encoder]
+from foreblocks import TransformerEncoder
+```
+
+```python [Decoder]
+from foreblocks import TransformerDecoder
+```
+
+:::
 
 ## Baseline decoder
 
@@ -52,7 +60,7 @@ decoder = TransformerDecoder(
     patch_decoder=False,
     informer_like=False,
 )
-```text
+```
 
 #### `attention.architecture` — routing schedule
 
@@ -139,7 +147,7 @@ encoder = TransformerEncoder(
     ct_patch_fuse="linear",  # or "mean"
     d_model=256,
 )
-```text
+```
 
 ### Informer-like decoding
 
@@ -161,7 +169,7 @@ decoder = TransformerDecoder(
     nhead=8,
     num_layers=4,
 )
-```text
+```
 
 Recommended usage:
 
@@ -225,7 +233,7 @@ If you want GateSkip, MoD, or mHC, disable Attention Residuals explicitly:
 
 ```python
 use_attention_residual=False
-```text
+```
 
 See the dedicated guide for routing and auxiliary-loss details:
 
@@ -233,38 +241,7 @@ See the dedicated guide for routing and auxiliary-loss details:
 
 ## Integration with `ForecastingModel`
 
-```python
-from foreblocks import ForecastingModel, TransformerEncoder, TransformerDecoder
-
-encoder = TransformerEncoder(
-    input_size=8,
-    d_model=128,
-    nhead=4,
-    num_layers=3,
-    patch_encoder=True,
-    patch_len=16,
-    patch_stride=8,
-)
-
-decoder = TransformerDecoder(
-    input_size=1,
-    output_size=1,
-    d_model=128,
-    nhead=4,
-    num_layers=3,
-    patch_decoder=False,
-    informer_like=False,
-)
-
-model = ForecastingModel(
-    encoder=encoder,
-    decoder=decoder,
-    forecasting_strategy="transformer_seq2seq",
-    model_type="transformer",
-    target_len=24,
-    output_size=1,
-)
-```
+See the [Custom Blocks Guide](custom_blocks) for wiring transformers into `ForecastingModel`.
 
 ## Transformer Configuration Structure
 

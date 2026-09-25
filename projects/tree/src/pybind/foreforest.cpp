@@ -33,21 +33,16 @@ using foretree::TreeConfig;
 using CDoubleArray = nb::ndarray<nb::numpy, double, nb::c_contig>;
 using CByteArray = nb::ndarray<nb::numpy, uint8_t, nb::c_contig>;
 
-// Wrapper struct to hold shared_ptr for capsule ownership.
+// Hand a std::vector to numpy without copying it again: the vector is moved to
+// the heap and the capsule owns it, so the array stays valid for its lifetime.
+// (Holding the owner in a local shared_ptr with a no-op capsule deleter frees
+// the storage on return and leaves numpy reading freed memory.)
 template <typename T>
-struct ndarray_owner {
-    std::shared_ptr<std::vector<T>> data;
-};
-
-// Zero-copy: build ndarray view backed by a capsule that wraps internal C++ storage.
-// The caller owns the data; the capsule keeps it alive.
-template <typename T>
-static nb::ndarray<nb::numpy, T, nb::c_contig> ndarray_from_storage(const std::vector<T>& data,
+static nb::ndarray<nb::numpy, T, nb::c_contig> ndarray_from_storage(std::vector<T> data,
                                                                      std::initializer_list<size_t> shape) {
-    auto owner = std::make_shared<ndarray_owner<T>>(std::make_shared<std::vector<T>>(data));
-    void* ptr = owner.get();
-    nb::capsule cap(ptr, [](void*) noexcept {});
-    return nb::ndarray<nb::numpy, T, nb::c_contig>(owner->data->data(), shape, std::move(cap));
+    auto* owner = new std::vector<T>(std::move(data));
+    nb::capsule cap(owner, [](void* p) noexcept { delete static_cast<std::vector<T>*>(p); });
+    return nb::ndarray<nb::numpy, T, nb::c_contig>(owner->data(), shape, std::move(cap));
 }
 
 // ---- Small helpers ----------------------------------------------------------
@@ -365,9 +360,9 @@ NB_MODULE(foreforest, m) {
                 std::vector<double> out = self.predict(X.data(), static_cast<int>(N), static_cast<int>(P));
                 int K = std::max(self.num_classes() - 1, 1);
                 if (K <= 1) {
-                    return ndarray_from_storage(out, {N});
+                    return ndarray_from_storage(std::move(out), {N});
                 } else {
-                    return ndarray_from_storage(out, {N, static_cast<ssize_t>(K)});
+                    return ndarray_from_storage(std::move(out), {N, static_cast<ssize_t>(K)});
                 }
             },
             nb::arg("X"),
@@ -381,7 +376,7 @@ NB_MODULE(foreforest, m) {
                 const ssize_t N = X.shape(0);
                 const ssize_t P = X.shape(1);
                 std::vector<double> out = self.predict_margin(X.data(), static_cast<int>(N), static_cast<int>(P));
-                return ndarray_from_storage(out, {N});
+                return ndarray_from_storage(std::move(out), {N});
             },
             nb::arg("X"),
             "Predict raw scalar margins, one per row. "
@@ -397,9 +392,9 @@ NB_MODULE(foreforest, m) {
                 std::vector<double> out = self.predict_contrib(X.data(), static_cast<int>(N), static_cast<int>(P));
                 int K = std::max(self.num_classes() - 1, 1);
                 if (K <= 1) {
-                    return ndarray_from_storage(out, {N, P + 1});
+                    return ndarray_from_storage(std::move(out), {N, P + 1});
                 } else {
-                    return ndarray_from_storage(out, {N, static_cast<ssize_t>(K) * (P + 1)});
+                    return ndarray_from_storage(std::move(out), {N, static_cast<ssize_t>(K) * (P + 1)});
                 }
             },
             nb::arg("X"),
@@ -409,27 +404,32 @@ NB_MODULE(foreforest, m) {
         .def("feature_importance_gain",
              [](const ForeForest& self) {
                  std::vector<double> v = self.feature_importance_gain();
-                 return ndarray_from_storage(v, {static_cast<ssize_t>(v.size())});
+                 const auto n = static_cast<ssize_t>(v.size());
+                 return ndarray_from_storage(std::move(v), {n});
              })
         .def("feature_importance_cover",
              [](const ForeForest& self) {
                  std::vector<double> v = self.feature_importance_cover();
-                 return ndarray_from_storage(v, {static_cast<ssize_t>(v.size())});
+                 const auto n = static_cast<ssize_t>(v.size());
+                 return ndarray_from_storage(std::move(v), {n});
              })
         .def("feature_importance_frequency",
              [](const ForeForest& self) {
                  std::vector<int> v = self.feature_importance_frequency();
-                 return ndarray_from_storage(v, {static_cast<ssize_t>(v.size())});
+                 const auto n = static_cast<ssize_t>(v.size());
+                 return ndarray_from_storage(std::move(v), {n});
              })
         .def("train_metric_history",
              [](const ForeForest& self) {
                  const std::vector<double>& v = self.train_metric_history();
-                 return ndarray_from_storage(v, {static_cast<ssize_t>(v.size())});
+                 const auto n = static_cast<ssize_t>(v.size());
+                 return ndarray_from_storage(std::move(v), {n});
              })
         .def("valid_metric_history",
              [](const ForeForest& self) {
                  const std::vector<double>& v = self.valid_metric_history();
-                 return ndarray_from_storage(v, {static_cast<ssize_t>(v.size())});
+                 const auto n = static_cast<ssize_t>(v.size());
+                 return ndarray_from_storage(std::move(v), {n});
              })
         .def("best_iteration", &ForeForest::best_iteration)
         .def("best_score", &ForeForest::best_score)

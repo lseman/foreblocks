@@ -1,37 +1,27 @@
-"""foreblocks.models.anomaly.detector.
+"""Fit/predict orchestration for the unified anomaly detection pipeline.
 
-Detector orchestration and scoring logic for anomaly detection.
-
-Defines the ForeblocksAnomalyDetector class that orchestrates fitting and
-scoring for neural anomaly detection models across multiple detection modes
-(forecasting, reconstruction, representation, hybrid). Provides configuration
-and result types for modular anomaly detection pipelines.
-
-Core API:
-- ForeblocksAnomalyDetector: fit/predict neural anomaly detector for multivariate time-series windows
-- AnomalyDetectorConfig: configuration for anomaly detection
-- AnomalyResult, AnomalyDecisionResult: detection result types
-
+Configuration lives in ``config``, strategies in ``modes``, and composition in
+``blocks``. This module owns training, fitted thresholds, and series alignment.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
 import numpy as np
 import torch
 from sklearn.preprocessing import MinMaxScaler, RobustScaler, StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
-from foreblocks.models.anomaly.modes import (
-    AnomalyBlockSpec,
+from foreblocks.models.anomaly.blocks import (
     AnomalyBlockStack,
     AnomalyDecisionResult,
     DecisionConfig,
-    fit_mode_state,
-    resolve_mode,
 )
+from foreblocks.models.anomaly.config import (
+    AnomalyDetectorConfig as AnomalyDetectorConfig,
+)
+from foreblocks.models.anomaly.modes import fit_mode_state, resolve_mode
 from foreblocks.models.anomaly.windows import (
     build_sliding_windows,
     fill_nan_forward,
@@ -46,61 +36,6 @@ class AnomalyResult:
     labels: np.ndarray
     threshold: float
     window_scores: np.ndarray
-
-
-@dataclass
-class AnomalyDetectorConfig:
-    detection_mode: Literal[
-        "auto", "forecasting", "reconstruction", "representation", "hybrid"
-    ] = "auto"
-    model_type: Literal[
-        "transformer_vae",
-        "mlp_vae",
-        "omni_anomaly",
-        "anomaly_transformer",
-        "dagmm",
-        "tranad",
-        "patch_mamba",
-        "i_transformer",
-    ] = "transformer_vae"
-    block_stack: list[str | AnomalyBlockSpec] | None = None
-    decision_strategy: Literal["majority", "weighted", "all", "any"] = "majority"
-    window_size: int = 32
-    contamination: float = 0.01
-    decision_contamination: float = 0.01
-    score_align: Literal["end", "center", "all"] = "end"
-    d_model: int = 128
-    latent_size: int = 32
-    hidden_size: int = 128
-    n_heads: int | None = None
-    n_layers: int = 2
-    dim_feedforward: int | None = None
-    layer_attention_type: str = "standard"
-    projection_size: int = 64
-    dropout: float = 0.1
-    epochs: int = 20
-    batch_size: int = 128
-    learning_rate: float = 1e-3
-    weight_decay: float = 1e-5
-    beta: float = 0.05
-    beta_warmup_epochs: int = 5
-    patience: int = 5
-    scaler_type: Literal["robust", "standard", "minmax"] = "robust"
-    device: str | None = None
-    num_workers: int = 0
-    use_mixed_precision: bool = True
-    gradient_clip: float = 1.0
-    seed: int | None = 42
-    contrastive_temperature: float = 0.2
-    augmentation_noise_std: float = 0.05
-    reconstruction_weight: float = 1.0
-    forecasting_weight: float = 1.0
-    representation_weight: float = 0.25
-    association_weight: float = 0.1
-    energy_weight: float = 0.1
-    covariance_weight: float = 0.005
-    gmm_components: int = 4
-    decision_weights: dict[str, float] | None = None
 
 
 class ForeblocksAnomalyDetector:
@@ -179,6 +114,22 @@ class ForeblocksAnomalyDetector:
         self.model = self.mode.build_model(self.config, self.n_features_).to(
             self.device
         )
+
+        # Fitted scorers own training; statistical modes need no gradient loop.
+        if self.mode.name in ("classical", "statistical", "native"):
+            fit_mode_state(self.mode, self.model, windows, self)
+            window_scores = self.score_windows(windows)
+            scores = map_window_scores(
+                window_scores,
+                series_length=fill_nan_forward(series).shape[0],
+                window_size=self.config.window_size,
+                align=self.config.score_align,
+            )
+            self.threshold_ = robust_threshold(
+                scores,
+                contamination=self.config.contamination,
+            )
+            return self
 
         n_val = int(len(windows) * float(np.clip(validation_split, 0.0, 0.8)))
         train_windows = windows[:-n_val] if n_val > 0 else windows

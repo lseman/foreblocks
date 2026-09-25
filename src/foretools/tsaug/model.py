@@ -27,17 +27,55 @@ from .transformations import NUM_TRANSFORMS, TRANSFORM_NAMES
 class AutoDATimeseries(nn.Module):
     """AutoDA-Timeseries framework: feature-aware augmented data generator.
 
-    Implements the complete augmentation pipeline from Figure 2:
-      Raw Time Series -> Feature Extractor -> Adaptive Policy Generator
-      -> Stacked Augmentation Layers -> Augmented Time Series
+    Implements the complete augmentation pipeline:
 
-    Args:
-        num_layers: K, number of stacked augmentation layers (default: 3).
-        num_transforms: Number of available transformations (default: 7).
-        feature_dim: Dimension of extracted feature vector (default: 24).
-        hidden_dim: Hidden dimension for policy MLPs.
-        init_temperature: Initial Gumbel-Softmax temperature.
-        raw_bias: Probability of raw transform selection per layer (p_rb).
+        Raw Time Series → Feature Extractor → Adaptive Policy Generator
+            → Stacked Augmentation Layers → Augmented Time Series
+
+    The framework learns to adaptively select which transformations to apply,
+    at what intensity, and in what sequence, conditioned on global time series
+    features.
+
+    Architecture
+    ------------
+    1. Feature extraction: 24 descriptive statistics (see :mod:`features`)
+    2. Feature projection: MLP to align feature dimension
+    3. Stacked augmentation layers: K layers of adaptive policy generation
+       (see :class:`~foretools.tsaug.layers.StackedAugmentationLayers`)
+
+    Parameters
+    ----------
+    num_layers : int
+        K, number of stacked augmentation layers. Default 3.
+    num_transforms : int
+        Number of available transformations in T. Default is NUM_TRANSFORMS (12).
+    feature_dim : int
+        Dimension of extracted feature vector F_i. Default is FEATURE_DIM (24).
+    hidden_dim : int
+        Hidden dimension for policy MLPs in each layer and feature projection.
+            Default 64.
+    init_temperature : float
+        Initial Gumbel-Softmax temperature τ for all layers. Default 1.0.
+    raw_bias : float
+        Per-layer probability of selecting Raw transform during training.
+            Default 0.1 (10% chance of no augmentation per layer).
+
+    Attributes
+    ----------
+    feature_proj : nn.Sequential
+        MLP projecting features from ``feature_dim → hidden_dim → feature_dim``.
+    aug_layers : StackedAugmentationLayers
+        The K stacked augmentation layers.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from foretools.tsaug import AutoDATimeseries
+    >>> autoda = AutoDATimeseries(num_layers=3, hidden_dim=64)
+    >>> x = torch.randn(8, 100, 1)  # (batch, length, channels)
+    >>> x_aug, probs, intensities, selected = autoda(x)
+    >>> print(f"Augmented shape: {x_aug.shape}")  # doctest: +SKIP
+    Augmented shape: torch.Size([8, 100, 1])
     """
 
     def __init__(
@@ -80,16 +118,34 @@ class AutoDATimeseries(nn.Module):
     ]:
         """Generate augmented time series with adaptive policy.
 
-        Args:
-            x: (B, L, C) raw time series.
-            precomputed_features: Optional (B, feature_dim) pre-extracted features.
-                If None, features are computed on-the-fly.
+        Parameters
+        ----------
+        x : torch.Tensor
+            Raw time series tensor of shape (batch_size, length, channels).
+        precomputed_features : torch.Tensor | None
+            Optional pre-extracted features of shape (batch_size, feature_dim).
+                If None, features are computed on-the-fly via :func:`extract_features`.
 
-        Returns:
-            x_aug: (B, L, C) augmented time series.
-            all_probs: List of K probability vectors.
-            all_intensities: List of K intensity vectors.
-            all_selected: List of K selected transform indices.
+        Returns
+        -------
+        tuple[torch.Tensor, list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]
+            ``(x_aug, all_probs, all_intensities, all_selected)`` where:
+
+            - ``x_aug``: Augmented time series of shape (batch_size, length, channels)
+            - ``all_probs``: List of K tensors, each (batch_size, num_transforms)
+            - ``all_intensities``: List of K tensors, each (batch_size, num_transforms)
+            - ``all_selected``: List of K tensors, each (batch_size,) transform indices
+
+        Examples
+        --------
+        >>> import torch
+        >>> from foretools.tsaug import AutoDATimeseries
+        >>> autoda = AutoDATimeseries(num_layers=3)
+        >>> x = torch.randn(4, 100, 1)
+        >>> # Forward pass (training mode: Gumbel-Softmax sampling)
+        >>> x_aug, probs, intensities, selected = autoda(x)
+        >>> print(f"Augmented shape: {x_aug.shape}")  # doctest: +SKIP
+        Augmented shape: torch.Size([4, 100, 1])
         """
         # Feature extraction (Section 3.3)
         if precomputed_features is not None:
@@ -113,13 +169,44 @@ class AutoDATimeseries(nn.Module):
     ) -> dict[str, Any]:
         """Get a human-readable summary of the augmentation policy.
 
-        Args:
-            all_probs: List of K probability vectors.
-            all_intensities: List of K intensity vectors.
-            all_selected: List of K selected indices.
+        Computes average probabilities and intensities per layer and transform,
+        along with the current Gumbel-Softmax temperature.
 
-        Returns:
-            Dictionary with policy summary per layer.
+        Parameters
+        ----------
+        all_probs : list[torch.Tensor]
+            List of K probability tensors, each (batch_size, num_transforms).
+        all_intensities : list[torch.Tensor]
+            List of K intensity tensors, each (batch_size, num_transforms).
+        all_selected : list[torch.Tensor]
+            List of K selected index tensors, each (batch_size,).
+
+        Returns
+        -------
+        dict[str, Any]
+            Policy summary dictionary with keys ``"layer_0"``, ``"layer_1"``, ...:
+
+            .. code-block:: python
+
+                {
+                    "layer_0": {
+                        "temperature": 0.85,
+                        "avg_probabilities": {"Raw": 0.12, "Jittering": 0.23, ...},
+                        "avg_intensities": {"Raw": 0.0, "Jittering": 0.45, ...},
+                    },
+                    ...
+                }
+
+        Examples
+        --------
+        >>> import torch
+        >>> from foretools.tsaug import AutoDATimeseries
+        >>> autoda = AutoDATimeseries(num_layers=3)
+        >>> x = torch.randn(8, 100, 1)
+        >>> x_aug, probs, intensities, selected = autoda(x)
+        >>> summary = autoda.get_policy_summary(probs, intensities, selected)
+        >>> print(f"Layer 0 temperature: {summary['layer_0']['temperature']:.3f}")  # doctest: +SKIP
+        Layer 0 temperature: 0.850
         """
         summary = {}
         for k in range(self.num_layers):
@@ -144,19 +231,77 @@ class AutoDATimeseries(nn.Module):
 class AutoDATrainer:
     """End-to-end trainer for AutoDA-Timeseries with downstream model.
 
-    Jointly optimizes the augmentation framework parameters theta and
-    downstream model parameters theta_M (Section 3.1, Eqs. 2-3).
+    Jointly optimizes the augmentation framework parameters θ and
+    downstream model parameters θ_M (Section 3.1, Eqs. 2-3).
 
-    Args:
-        autoda: AutoDATimeseries instance (augmented data generator).
-        downstream_model: Any nn.Module for the downstream task.
-        task: Task type ('classification', 'forecasting', 'regression', 'anomaly').
-        task_loss_fn: Loss function for the downstream task.
-            Default: CrossEntropyLoss for classification, MSELoss otherwise.
-        lr: Learning rate.
-        aug_lr: Learning rate for augmentation parameters (if different).
-        weight_decay: Weight decay for optimizer.
-        device: Device to train on.
+    Training Procedure
+    ------------------
+    The trainer uses a single Adam optimizer with three parameter groups:
+
+    1. Downstream model parameters — learning rate ``lr``
+    2. Augmentation framework parameters — learning rate ``aug_lr``
+    3. Composite loss weights — learning rate ``aug_lr``
+
+    A cosine annealing scheduler is used with T_max=100.
+
+    Loss Function
+    -------------
+    The composite loss combines three terms (Section 3.5.2):
+
+        L_composite = w_1^2 * L_task + w_2^2 * L_intra_diversity + w_3^2 * L_inter_diversity
+
+    where the weights w_z are learnable and optimized jointly.
+
+    Parameters
+    ----------
+    autoda : AutoDATimeseries
+        Augmented data generator instance.
+    downstream_model : torch.nn.Module
+        Any PyTorch module for the downstream task (e.g., classifier, regressor).
+    task : str
+        Task type determining loss function. One of ``'classification'``,
+            ``'forecasting'``, ``'regression'``, or ``'anomaly'``.
+            Default 'forecasting'.
+    task_loss_fn : torch.nn.Module | None
+        Custom loss function for the downstream task. If None, uses
+            CrossEntropyLoss for classification and MSELoss otherwise.
+    lr : float
+        Learning rate for downstream model parameters. Default 1e-3.
+    aug_lr : float | None
+        Learning rate for augmentation parameters. Defaults to ``lr`` if None.
+    weight_decay : float
+        Weight decay (L2 regularization) for downstream model optimizer. Default 1e-4.
+    device : str
+        PyTorch device string ('cpu', 'cuda', etc.). Default 'cpu'.
+
+    Attributes
+    ----------
+    autoda : AutoDATimeseries
+        The augmentation framework (moved to ``device``).
+    downstream_model : torch.nn.Module
+        The downstream task model (moved to ``device``).
+    task_loss_fn : torch.nn.Module
+        Loss function for the downstream task.
+    composite_loss : CompositeLoss
+        Learnable loss balancing module.
+    optimizer : torch.optim.Adam
+        Optimizer with three parameter groups.
+    scheduler : torch.optim.lr_scheduler.CosineAnnealingLR
+        Cosine annealing learning rate scheduler.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from foretools.tsaug import AutoDATimeseries, AutoDATrainer
+    >>> class SimpleClassifier(torch.nn.Module):
+    ...     def __init__(self, input_dim: int = 10):
+    ...         super().__init__()
+    ...         self.fc = torch.nn.Linear(input_dim, 2)
+    ...     def forward(self, x):
+    ...         return self.fc(x.mean(dim=1))
+    >>> autoda = AutoDATimeseries(num_layers=3)
+    >>> downstream = SimpleClassifier()
+    >>> trainer = AutoDATrainer(autoda, downstream, task="classification")
     """
 
     def __init__(
@@ -210,15 +355,40 @@ class AutoDATrainer:
         y: torch.Tensor,
         precomputed_features: torch.Tensor | None = None,
     ) -> dict[str, float]:
-        """Single training step.
+        """Execute a single training step.
 
-        Args:
-            x: (B, L, C) input time series.
-            y: Target labels/values.
-            precomputed_features: Optional pre-extracted features.
+        Generates augmented data via the AutoDA framework, computes task loss
+        through the downstream model, applies composite loss weighting, and
+        performs a gradient update with gradient clipping.
 
-        Returns:
-            Dictionary with loss values.
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input time series tensor of shape (batch_size, length, channels).
+        y : torch.Tensor
+            Target labels or values (shape depends on task).
+        precomputed_features : torch.Tensor | None
+            Optional pre-extracted features of shape (batch_size, feature_dim).
+                If None, features are computed on-the-fly.
+
+        Returns
+        -------
+        dict[str, float]
+            Loss dictionary with keys ``'total'``, ``'L1'`` (task loss),
+                ``'w1'``, ``'w2'``, ``'w3'``, ``'intra_entropy'``, and ``'inter_kl'``.
+
+        Examples
+        --------
+        >>> import torch
+        >>> from foretools.tsaug import AutoDATimeseries, AutoDATrainer
+        >>> autoda = AutoDATimeseries(num_layers=2)
+        >>> downstream = torch.nn.Linear(10, 2)
+        >>> trainer = AutoDATrainer(autoda, downstream, task="classification")
+        >>> x = torch.randn(4, 50, 1)
+        >>> y = torch.tensor([0, 1, 0, 1])
+        >>> loss_details = trainer.train_step(x, y)  # doctest: +SKIP
+        >>> print(f"Total loss: {loss_details['total']:.4f}")  # doctest: +SKIP
+        Total loss: 0.6931
         """
         self.autoda.train()
         self.downstream_model.train()
@@ -263,7 +433,34 @@ class AutoDATrainer:
     ) -> dict[str, float]:
         """Evaluation step on original (non-augmented) data.
 
-        At test time, only the downstream model is used (Section 3.1, Eq. 3).
+        At test time, only the downstream model is used without augmentation
+        (Section 3.1, Eq. 3). For classification tasks, accuracy is also computed.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input time series tensor of shape (batch_size, length, channels).
+        y : torch.Tensor
+            Target labels or values.
+
+        Returns
+        -------
+        dict[str, float]
+            Evaluation results with ``'eval_loss'`` and optionally ``'accuracy'``
+                for classification tasks.
+
+        Examples
+        --------
+        >>> import torch
+        >>> from foretools.tsaug import AutoDATimeseries, AutoDATrainer
+        >>> autoda = AutoDATimeseries(num_layers=2)
+        >>> downstream = torch.nn.Linear(10, 2)
+        >>> trainer = AutoDATrainer(autoda, downstream, task="classification")
+        >>> x = torch.randn(4, 50, 1)
+        >>> y = torch.tensor([0, 1, 0, 1])
+        >>> results = trainer.eval_step(x, y)  # doctest: +SKIP
+        >>> print(f"Loss: {results['eval_loss']:.4f}")  # doctest: +SKIP
+        Loss: 0.6931
         """
         self.downstream_model.eval()
         x = x.to(self.device)
@@ -289,17 +486,51 @@ class AutoDATrainer:
         log_interval: int = 10,
         precompute_features: bool = True,
     ) -> dict[str, list]:
-        """Full training loop.
+        """Execute the full training loop.
 
-        Args:
-            train_loader: DataLoader yielding (x, y) batches.
-            val_loader: Optional validation DataLoader.
-            epochs: Number of training epochs.
-            log_interval: Print progress every N epochs.
-            precompute_features: Whether to precompute and cache features.
+        Trains both the augmentation framework and downstream model jointly
+        over multiple epochs. Optionally precomputes features for efficiency.
+        Prints progress at regular intervals including temperature values
+        for each layer.
 
-        Returns:
-            Dictionary with training history.
+        Parameters
+        ----------
+        train_loader : torch.utils.data.DataLoader
+            Training DataLoader yielding (x, y) batches.
+        val_loader : torch.utils.data.DataLoader | None
+            Optional validation DataLoader. If provided, validation loss is
+                tracked and printed each epoch.
+        epochs : int
+            Number of training epochs. Default 50.
+        log_interval : int
+            Print progress every N epochs. Default 10.
+        precompute_features : bool
+            Whether to precompute and cache features before training for
+                efficiency. Default True (recommended).
+
+        Returns
+        -------
+        dict[str, list]
+            Training history dictionary with keys:
+
+            - ``'train_loss'``: List of average training loss per epoch
+            - ``'val_loss'``: List of validation loss per epoch (if val_loader provided)
+            - ``'val_accuracy'``: List of validation accuracy per epoch (classification only)
+
+        Examples
+        --------
+        >>> import torch
+        >>> from torch.utils.data import DataLoader, TensorDataset
+        >>> from foretools.tsaug import AutoDATimeseries, AutoDATrainer
+        >>> autoda = AutoDATimeseries(num_layers=2)
+        >>> downstream = torch.nn.Linear(10, 2)
+        >>> trainer = AutoDATrainer(autoda, downstream, task="classification")
+        >>> x_train = torch.randn(32, 50, 1)
+        >>> y_train = torch.randint(0, 2, (32,))
+        >>> train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=8)
+        >>> history = trainer.fit(train_loader, epochs=5)  # doctest: +SKIP
+        >>> print(f"Final train loss: {history['train_loss'][-1]:.4f}")  # doctest: +SKIP
+        Final train loss: 0.3456
         """
         history = {"train_loss": [], "val_loss": []}
         if self.task == "classification":

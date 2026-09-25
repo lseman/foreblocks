@@ -1,32 +1,18 @@
-"""foreblocks.models.anomaly.modes.
+"""Detection strategies: build backbones, compute losses, and score batches.
 
-Anomaly detection modes and composable block composition.
-
-Defines anomaly detection modes (reconstruction, forecasting, representation, hybrid,
-patch_mamba, i_transformer) and the AnomalyBlock protocol for modular block composition.
-Provides AnomalyBlockStack to train and combine multiple detection blocks with voting
-strategies (majority, weighted, all, any).
-
-Core API:
-- AnomalyBlock: protocol for composable anomaly-detection blocks
-- AnomalyBlockStack: compose multiple anomaly-detection blocks and combine decisions
-- AnomalyDecisionResult: result from anomaly detection with per-block scores and voting
-- AnomalyBlockSpec: declaration of one anomaly-detection block in a stack
-- ReconstructionMode, ForecastingMode, RepresentationMode, HybridMode, PatchMambaMode, iTransformerMode: detection mode implementations
-- resolve_mode, resolve_block, list_blocks, register_block: block registry utilities
-
+Block contracts and composition live in ``blocks``; numerical scorers live in
+``scorers``. Mode classes adapt those implementations to the detector pipeline.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Protocol
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from foreblocks.models.anomaly.models import (
+from foreblocks.models.anomaly.backbones import (
     DAGMM,
     MLPVAE,
     AnomalyTransformer,
@@ -39,325 +25,24 @@ from foreblocks.models.anomaly.models import (
     association_discrepancy,
     iTransformer,
 )
-
-# ── AnomalyBlock protocol (foreblocks-style composable block) ──
-
-
-@dataclass
-class AnomalyDecisionResult:
-    scores: np.ndarray
-    labels: np.ndarray
-    threshold: float
-    window_scores: np.ndarray
-    block_scores: dict[str, np.ndarray] | None = None
-    block_labels: dict[str, np.ndarray] | None = None
-    voting_info: dict = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class AnomalyBlockSpec:
-    block: str
-    weights: dict[str, float] | None = None
-    kwargs: dict = field(default_factory=dict)
-
-
-class AnomalyBlock(Protocol):
-    def build_model(self, config, n_features: int) -> torch.nn.Module: ...
-
-    def loss(
-        self, model: torch.nn.Module, batch: torch.Tensor, config, epoch: int
-    ) -> torch.Tensor: ...
-
-    def score_batch(
-        self, model: torch.nn.Module, batch: torch.Tensor, config
-    ) -> np.ndarray: ...
-
-    def decide(self, scores: np.ndarray, contamination: float) -> np.ndarray: ...
-
-    def block_type(self) -> str: ...
-
-
-# ── BlockRegistry ──
-
-
-_BLOCK_REGISTRY: dict[str, AnomalyBlock] = {}
-
-
-def register_block(name: str):
-
-    def decorator(cls: type) -> type:
-        _BLOCK_REGISTRY[name] = cls()
-        return cls
-
-    return decorator
-
-
-def resolve_block(name: str) -> AnomalyBlock:
-    if name in _BLOCK_REGISTRY:
-        return _BLOCK_REGISTRY[name]
-    raise ValueError(f"unknown block '{name}'; valid: {list(_BLOCK_REGISTRY.keys())}")
-
-
-def list_blocks() -> list[str]:
-    return list(_BLOCK_REGISTRY.keys())
-
-
-# ── AnomalyBlockStack (compose multiple blocks) ──
-
-
-@dataclass(frozen=True)
-class VotingConfig:
-    strategy: str = "majority"  # majority | weighted | all
-    weights: dict[str, float] | None = None  # block_name -> weight
-    contamination: float = 0.01
-
-
-@dataclass(frozen=True)
-class DecisionConfig:
-    strategy: str = "majority"  # majority | weighted | all | any
-    weights: dict[str, float] | None = None  # block_name -> weight
-    contamination: float = 0.01
-
-
-class AnomalyBlockStack:
-    def __init__(
-        self,
-        blocks: list[str] | list[AnomalyBlockSpec],
-        decision: DecisionConfig | None = None,
-    ) -> None:
-        self._block_specs: list[tuple[str, AnomalyBlock, dict]] = []
-        for b in blocks:
-            if isinstance(b, AnomalyBlockSpec):
-                spec = resolve_block(b.block)
-                self._block_specs.append((b.block, spec, b.kwargs or {}))
-            else:
-                spec = resolve_block(b)
-                self._block_specs.append((b, spec, {}))
-        self.decision = decision or DecisionConfig()
-
-    @property
-    def block_names(self) -> list[str]:
-        return [name for name, _, _ in self._block_specs]
-
-    def build_models(self, config, n_features: int) -> dict[str, torch.nn.Module]:
-        models = {}
-        for name, block, extra_kwargs in self._block_specs:
-            merged = {**config.__dict__, **extra_kwargs}
-            merged_config = (
-                type(config)(**merged) if hasattr(config, "__dict__") else config
-            )
-            models[name] = block.build_model(merged_config, n_features)
-        return models
-
-    def fit(
-        self,
-        models: dict[str, torch.nn.Module],
-        windows: np.ndarray,
-        config,
-        epochs: int = 20,
-        batch_size: int = 128,
-        lr: float = 1e-3,
-        weight_decay: float = 1e-5,
-        patience: int = 5,
-        seed: int | None = 42,
-        device: torch.device | None = None,
-        use_mixed_precision: bool = True,
-        gradient_clip: float = 1.0,
-        num_workers: int = 0,
-    ) -> AnomalyBlockStack:
-        if seed is not None:
-            torch.manual_seed(int(seed))
-            np.random.seed(int(seed))
-
-        device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        use_amp = bool(use_mixed_precision) and device.type == "cuda"
-
-        tensor = torch.from_numpy(windows.astype(np.float32, copy=False))
-        dataset = torch.utils.data.TensorDataset(tensor)
-        loader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=max(0, int(num_workers)),
-            pin_memory=device.type == "cuda",
-        )
-
-        for block_name, block, extra_kwargs in self._block_specs:
-            model = models[block_name].to(device)
-            opt = torch.optim.AdamW(
-                model.parameters(), lr=lr, weight_decay=weight_decay
-            )
-            merged = {**config.__dict__, **extra_kwargs}
-            merged_config = (
-                type(config)(**merged) if hasattr(config, "__dict__") else config
-            )
-
-            for epoch in range(epochs):
-                model.train()
-                for (batch,) in loader:
-                    batch = batch.to(device, non_blocking=True)
-                    if use_amp:
-                        with torch.autocast(device.type):
-                            loss = block.loss(model, batch, merged_config, epoch)
-                    else:
-                        loss = block.loss(model, batch, merged_config, epoch)
-                    opt.zero_grad(set_to_none=True)
-                    loss.backward()
-                    if gradient_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), gradient_clip
-                        )
-                    opt.step()
-
-            models[block_name] = model
-
-        return self
-
-    def predict(
-        self,
-        models: dict[str, torch.nn.Module],
-        windows: np.ndarray,
-        config,
-    ) -> AnomalyDecisionResult:
-        _dev = next(iter(models.values()))
-        device = next(_dev.parameters(), torch.tensor(0.0)).device
-        tensor = torch.from_numpy(windows.astype(np.float32, copy=False))
-        dataset = torch.utils.data.TensorDataset(tensor)
-        loader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=512,
-            shuffle=False,
-        )
-
-        block_scores: list[np.ndarray] = []
-        block_labels: list[np.ndarray] = []
-
-        for name, block, _ in self._block_specs:
-            model = models[name].to(device)
-            scores_list: list[np.ndarray] = []
-            model.eval()
-            with torch.no_grad():
-                for (batch,) in loader:
-                    batch = batch.to(device, non_blocking=True)
-                    scores_list.append(block.score_batch(model, batch, config))
-            raw_scores = np.concatenate(scores_list, axis=0)
-
-            # Per-block decision
-            labels = block.decide(raw_scores, self.decision.contamination)
-
-            block_scores.append(raw_scores)
-            block_labels.append(labels)
-
-        # Combine decisions
-        final_labels, combined_scores, voting_info = self._combine_decisions(
-            block_labels, block_scores, self.decision
-        )
-
-        return AnomalyDecisionResult(
-            scores=combined_scores,
-            labels=final_labels,
-            threshold=0.0,
-            window_scores=(
-                np.block(block_scores).T if block_scores else np.empty((0, 0))
-            ),
-            block_scores={
-                name: scores
-                for name, (_, scores) in zip(
-                    self.block_names, zip(block_scores, block_labels)
-                )
-            },
-            block_labels={
-                name: lbl for name, lbl in zip(self.block_names, block_labels)
-            },
-            voting_info=voting_info,
-        )
-
-    def _combine_decisions(
-        self,
-        block_labels: list[np.ndarray],
-        block_scores: list[np.ndarray],
-        decision: DecisionConfig,
-    ) -> tuple[np.ndarray, np.ndarray, dict]:
-        n_samples = block_labels[0].shape[0]
-        n_blocks = len(block_labels)
-        matrix = np.column_stack(block_labels)  # (n_samples, n_blocks)
-
-        if decision.strategy == "majority":
-            votes_per_sample = matrix.sum(axis=1)
-            threshold = n_blocks / 2
-            final = (votes_per_sample > threshold).astype(np.int8)
-            voting_info = {
-                "method": "majority",
-                "threshold": threshold,
-                "n_blocks": n_blocks,
-            }
-
-        elif decision.strategy == "any":
-            final = matrix.max(axis=1).astype(np.int8)
-            voting_info = {
-                "method": "any",
-                "threshold": 1,
-                "n_blocks": n_blocks,
-            }
-
-        elif decision.strategy == "weighted":
-            weights = self._resolve_weights(n_blocks)
-            weighted_votes = matrix @ weights
-            threshold = weights.sum() / 2
-            final = (weighted_votes > threshold).astype(np.int8)
-            voting_info = {
-                "method": "weighted",
-                "threshold": float(threshold),
-                "n_blocks": n_blocks,
-                "weights": {
-                    self.block_names[i]: float(w) for i, w in enumerate(weights)
-                },
-            }
-
-        elif decision.strategy == "all":
-            final = matrix.min(axis=1).astype(np.int8)
-            voting_info = {
-                "method": "all",
-                "threshold": n_blocks,
-                "n_blocks": n_blocks,
-            }
-
-        else:
-            raise ValueError(f"unknown decision strategy: {decision.strategy}")
-
-        # Combined scores: per-block scores concatenated
-        combined = np.hstack(block_scores)
-
-        return final, combined, voting_info
-
-    def _resolve_weights(self, n: int) -> np.ndarray:
-        weights = self.decision.weights
-        if weights is None:
-            return np.ones(n) / n
-        name_to_weight = {name: w for name, w in weights.items()}
-        return np.array([name_to_weight.get(name, 1.0) for name in self.block_names])
-
-
-# ── Extend AnomalyBlock with decide method ──
-
-
-def _default_decide(scores: np.ndarray, contamination: float) -> np.ndarray:
-    arr = np.asarray(scores, dtype=np.float32)
-    # Reduce 2D scores to 1D per sample via max
-    if arr.ndim == 2:
-        arr = arr.max(axis=1)
-    finite = arr[np.isfinite(arr)]
-    if len(finite) == 0:
-        return np.zeros(arr.shape[0], dtype=np.int8)
-    median = float(np.nanmedian(finite))
-    mad = float(np.nanmedian(np.abs(finite - median)))
-    if mad <= 1e-8:
-        mad = float(np.nanstd(finite)) + 1e-8
-    # Use percentile-based threshold for contamination
-    from foreblocks.models.anomaly.windows import robust_threshold
-
-    thresh = robust_threshold(finite, contamination=contamination)
-    return np.where(np.isfinite(arr) & (arr > thresh), 1, 0)
+from foreblocks.models.anomaly.blocks import (
+    AnomalyBlock,
+    BaseAnomalyBlock,
+    register_block,
+)
+from foreblocks.models.anomaly.scorers import (
+    cusum_score,
+    ebs_score,
+    ewma_score,
+    isolation_forest_score,
+    lof_score,
+    matrix_profile_score,
+    pca_mahalanobis_score,
+    seasonal_hybrid_score,
+    stl_residual_score,
+)
+from foreblocks.models.anomaly.scorers.empirical import COPOD, ECOD, HBOS
+from foreblocks.models.anomaly.scorers.native import NATIVE_MODELS
 
 
 def beta_for_epoch(config, epoch: int) -> float:
@@ -418,7 +103,7 @@ def _reconstruction_score(model: torch.nn.Module, batch: torch.Tensor) -> np.nda
 
 
 @dataclass(frozen=True)
-class ReconstructionMode:
+class ReconstructionMode(BaseAnomalyBlock):
     name: str = "reconstruction"
 
     def build_model(self, config, n_features: int) -> torch.nn.Module:
@@ -480,15 +165,9 @@ class ReconstructionMode:
     ) -> np.ndarray:
         return _reconstruction_score(model, batch)
 
-    def decide(self, scores: np.ndarray, contamination: float) -> np.ndarray:
-        return _default_decide(scores, contamination)
-
-    def block_type(self) -> str:
-        return "reconstruction"
-
 
 @dataclass(frozen=True)
-class ForecastingMode:
+class ForecastingMode(BaseAnomalyBlock):
     name: str = "forecasting"
 
     def build_model(self, config, n_features: int) -> torch.nn.Module:
@@ -534,15 +213,9 @@ class ForecastingMode:
             score = (pred - target).pow(2)
         return score.squeeze(1).detach().cpu().numpy()
 
-    def decide(self, scores: np.ndarray, contamination: float) -> np.ndarray:
-        return _default_decide(scores, contamination)
-
-    def block_type(self) -> str:
-        return "forecasting"
-
 
 @dataclass(frozen=True)
-class RepresentationMode:
+class RepresentationMode(BaseAnomalyBlock):
     name: str = "representation"
 
     def build_model(self, config, n_features: int) -> torch.nn.Module:
@@ -581,15 +254,9 @@ class RepresentationMode:
         score = (emb - centroid.to(emb.device)).pow(2).mean(dim=1, keepdim=True)
         return score.detach().cpu().numpy()
 
-    def decide(self, scores: np.ndarray, contamination: float) -> np.ndarray:
-        return _default_decide(scores, contamination)
-
-    def block_type(self) -> str:
-        return "representation"
-
 
 @dataclass(frozen=True)
-class HybridMode:
+class HybridMode(BaseAnomalyBlock):
     name: str = "hybrid"
 
     def build_model(self, config, n_features: int) -> torch.nn.Module:
@@ -639,19 +306,9 @@ class HybridMode:
         return weights[0] * scores[0] + weights[1] * scores[1] + weights[2] * scores[2]
 
 
-# ── Patch modes with decide() and block_type() for protocol compatibility ──
-
-
-for _mode_cls in (ReconstructionMode, ForecastingMode, RepresentationMode, HybridMode):
-    if not hasattr(_mode_cls, "decide"):
-        _mode_cls.decide = staticmethod(_default_decide)  # type: ignore
-    if not hasattr(_mode_cls, "block_type"):
-        _mode_cls.block_type = lambda self=None: self.name if self else "unknown"  # type: ignore
-
-
 # PatchMamba mode — SSM-based reconstruction
 @dataclass(frozen=True)
-class PatchMambaMode:
+class PatchMambaMode(BaseAnomalyBlock):
     name: str = "patch_mamba"
 
     def build_model(self, config, n_features: int) -> torch.nn.Module:
@@ -662,7 +319,7 @@ class PatchMambaMode:
             d_model=(
                 config.get("d_model", 128) if hasattr(config, "get") else config.d_model
             ),
-            n_layers=config.get("n_layers", 4) if hasattr(config, "get") else 4,
+            n_layers=getattr(config, "n_layers", 4),
             d_state=config.get("d_state", 16) if hasattr(config, "get") else 16,
             dropout=(
                 config.get("dropout", 0.1) if hasattr(config, "get") else config.dropout
@@ -681,13 +338,10 @@ class PatchMambaMode:
             out = model(batch)
         return out.per_token_scores.detach().cpu().numpy()
 
-    def block_type(self) -> str:
-        return "patch_mamba"
-
 
 # iTransformer mode — inverted attention over features
 @dataclass(frozen=True)
-class iTransformerMode:
+class iTransformerMode(BaseAnomalyBlock):
     name: str = "i_transformer"
 
     def build_model(self, config, n_features: int) -> torch.nn.Module:
@@ -697,11 +351,9 @@ class iTransformerMode:
             d_model=(
                 config.get("d_model", 128) if hasattr(config, "get") else config.d_model
             ),
-            n_heads=config.get("n_heads") if hasattr(config, "get") else None,
-            n_layers=config.get("n_layers", 2) if hasattr(config, "get") else 2,
-            dim_feedforward=(
-                config.get("dim_feedforward") if hasattr(config, "get") else None
-            ),
+            n_heads=getattr(config, "n_heads", None),
+            n_layers=getattr(config, "n_layers", 2),
+            dim_feedforward=(getattr(config, "dim_feedforward", None)),
             dropout=(
                 config.get("dropout", 0.1) if hasattr(config, "get") else config.dropout
             ),
@@ -717,10 +369,103 @@ class iTransformerMode:
     ) -> np.ndarray:
         with torch.no_grad():
             out = model(batch)
-        return out.feature_scores.detach().cpu().numpy()
+        return (out.reconstruction - batch).square().mean(dim=(1, 2)).cpu().numpy()
 
-    def block_type(self) -> str:
-        return "i_transformer"
+
+# ── Classical (non-deep) mode ──
+
+
+@dataclass(frozen=True)
+class ClassicalMode(BaseAnomalyBlock):
+    name: str = "classical"
+
+    def build_model(self, config, n_features: int) -> torch.nn.Module:
+        model = torch.nn.Identity()
+        scorers = {"ecod": ECOD, "copod": COPOD, "hbos": HBOS}
+        if config.model_type in scorers:
+            model.scorer = (
+                HBOS(n_bins=config.hbos_bins, alpha=config.hbos_alpha)
+                if config.model_type == "hbos"
+                else scorers[config.model_type]()
+            )
+        return model
+
+    def loss(self, model, batch, config, epoch):
+        return 0.0  # No loss for classical methods
+
+    def score_batch(self, model, batch, config) -> np.ndarray:
+        windows = batch.detach().cpu().numpy()
+        if hasattr(model, "scorer"):
+            return model.scorer.decision_function(windows)
+        if config.model_type == "isolation_forest":
+            return isolation_forest_score(windows)
+        if config.model_type == "lof":
+            return lof_score(windows)
+        if config.model_type == "pca_mahalanobis":
+            return pca_mahalanobis_score(windows)
+        if config.model_type == "matrix_profile":
+            return matrix_profile_score(windows)
+        # Default: isolation forest
+        return isolation_forest_score(windows)
+
+
+@dataclass(frozen=True)
+class NativeMode(ClassicalMode):
+    """Fitted native estimators own their numerical or neural training lifecycle."""
+
+    name: str = "native"
+
+    def build_model(self, config, n_features: int) -> torch.nn.Module:
+        if config.model_type not in NATIVE_MODELS:
+            raise ValueError(
+                f"Unknown native model {config.model_type!r}; "
+                f"choose from {tuple(NATIVE_MODELS)}"
+            )
+        kwargs = {"seed": config.seed, "standardize": False}
+        kind = config.model_type
+        if kind in {"autoencoder", "vae", "deep_svdd"}:
+            kwargs.update(
+                epochs=config.epochs,
+                batch_size=config.batch_size,
+                learning_rate=config.learning_rate,
+                device=config.device,
+                weight_decay=config.weight_decay,
+            )
+        elif kind == "dif":
+            kwargs["batch_size"] = config.batch_size
+        kwargs.update(config.scorer_kwargs)
+        model = torch.nn.Identity()
+        model.scorer = NATIVE_MODELS[kind](**kwargs)
+        return model
+
+
+# ── Statistical mode ──
+
+
+@dataclass(frozen=True)
+class StatisticalMode(BaseAnomalyBlock):
+    name: str = "statistical"
+
+    def build_model(self, config, n_features: int) -> torch.nn.Module:
+        return torch.nn.Identity()  # No model needed; scoring done in score_batch
+
+    def loss(self, model, batch, config, epoch):
+        return 0.0  # No loss for statistical methods
+
+    def score_batch(self, model, batch, config) -> np.ndarray:
+        windows = batch.detach().cpu().numpy()
+        if config.model_type == "ebs":
+            return ebs_score(windows)
+        if config.model_type == "cusum":
+            return cusum_score(windows)
+        if config.model_type == "ewma":
+            return ewma_score(windows)
+        if config.model_type == "seasonal_hybrid":
+            return seasonal_hybrid_score(windows)
+        if config.model_type == "stl_residual":
+            return stl_residual_score(windows)
+        # Default: EBS
+        return ebs_score(windows)
 
 
 # Register built-in blocks
@@ -730,19 +475,39 @@ register_block("representation")(RepresentationMode)
 register_block("hybrid")(HybridMode)
 register_block("patch_mamba")(PatchMambaMode)
 register_block("i_transformer")(iTransformerMode)
-
-# Patch decide/block_type for new modes
-for _mode_cls in (PatchMambaMode, iTransformerMode):
-    if not hasattr(_mode_cls, "decide"):
-        _mode_cls.decide = staticmethod(_default_decide)  # type: ignore
-    if not hasattr(_mode_cls, "block_type"):
-        _mode_cls.block_type = lambda self=None: self.name if self else "unknown"  # type: ignore
+register_block("classical")(ClassicalMode)
+register_block("native")(NativeMode)
+register_block("statistical")(StatisticalMode)
 
 
 def resolve_mode(config) -> AnomalyBlock:
     mode = config.detection_mode
+    if config.model_type in NATIVE_MODELS and mode not in {"auto", "native"}:
+        raise ValueError("Native model types require detection_mode='auto' or 'native'.")
     if mode == "auto":
-        if config.model_type == "tranad":
+        if config.model_type in NATIVE_MODELS:
+            mode = "native"
+        elif config.model_type in {
+            "ecod",
+            "copod",
+            "hbos",
+            "isolation_forest",
+            "lof",
+            "pca_mahalanobis",
+            "matrix_profile",
+        }:
+            mode = "classical"
+        elif config.model_type in {
+            "ebs",
+            "cusum",
+            "ewma",
+            "seasonal_hybrid",
+            "stl_residual",
+        }:
+            mode = "statistical"
+        elif config.model_type in {"patch_mamba", "i_transformer"}:
+            mode = config.model_type
+        elif config.model_type == "tranad":
             mode = "forecasting"
         else:
             mode = "reconstruction"
@@ -754,15 +519,28 @@ def resolve_mode(config) -> AnomalyBlock:
         return RepresentationMode()
     if mode == "hybrid":
         return HybridMode()
+    if mode == "patch_mamba":
+        return PatchMambaMode()
+    if mode == "i_transformer":
+        return iTransformerMode()
+    if mode == "native":
+        return NativeMode()
+    if mode == "classical":
+        return ClassicalMode()
+    if mode == "statistical":
+        return StatisticalMode()
     raise ValueError(
         "detection_mode must be one of "
-        "{'auto','forecasting','reconstruction','representation','hybrid'}"
+        "{'auto','forecasting','reconstruction','representation','hybrid',"
+        "'patch_mamba','i_transformer','classical','native','statistical'}"
     )
 
 
 def fit_mode_state(
     mode: AnomalyBlock, model: torch.nn.Module, windows: np.ndarray, detector
 ) -> None:
+    if hasattr(model, "scorer"):
+        model.scorer.fit(windows)
     if mode.name == "reconstruction" and isinstance(model, DAGMM):
         tensor = torch.from_numpy(windows.astype(np.float32, copy=False)).to(
             detector.device

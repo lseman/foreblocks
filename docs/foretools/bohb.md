@@ -8,7 +8,9 @@ editLink: true
 [[toc]]
 # BOHB Search
 
-`foretools/bohb` provides budgeted black-box optimization built around Hyperband-style successive halving and a configurable TPE proposer.
+`foretools/bohb` provides budgeted black-box optimization built on Hyperband-style successive halving and a multi-fidelity TPE proposer. Serial runs use synchronous successive halving; `parallel_jobs > 1` uses ASHA.
+
+The default sampler (`sampler="mftpe"`) is a vectorized multivariate TPE. It is fit on the largest budget with enough results, and batch proposals are spread with a constant liar. The original per-parameter TPE, with trust regions, qNEI/Thompson batching and a GP surrogate, is still available as `sampler="legacy"` and is configured through `TPEConf`.
 
 Use it when you want to tune hyperparameters, compare search strategies, or benchmark objective functions outside the differentiable architecture-search flow covered by `darts`.
 
@@ -32,6 +34,18 @@ Supported parameter types:
 | `float` with log scaling | `("float", (1e-5, 1e-1, "log"))` | continuous log-uniform style range |
 | `int` | `("int", (16, 256))` | integer range |
 | `choice` | `("choice", ["adam", "adamw", "sgd"])` | categorical choice |
+
+Any entry can take a third options element to make it conditional, for example `("float", (0.0, 0.99), {"condition": {"parent": "opt", "values": ["sgd"]}})`.
+
+## Sampler options
+
+```python
+bohb = BOHB(
+    config_space=config_space,
+    evaluate_fn=objective,
+    sampler_options={"n_ei_candidates": 64, "random_fraction": 0.1, "bandwidth_factor": 1.5},
+)
+```
 
 ## Objective function signatures
 
@@ -65,11 +79,13 @@ except TrialPruned:
     pass
 ```
 
-If you only need a few overrides, `tpe_overrides={...}` is lighter than constructing a full config object.
+`BOHB` catches `TrialPruned` itself, so the `try` block is optional. A pruned trial's last reported loss is still passed to the sampler.
+
+With `sampler="legacy"`, `tpe_overrides={...}` is lighter than constructing a full `TPEConf`.
 
 ## Pruning configuration
 
-`PruningConfig` exposes the pruning thresholds that BOHB uses for both completed evaluations and intermediate `Trial.report()` calls.
+`PruningConfig` exposes the pruning thresholds that BOHB uses for both completed evaluations and intermediate `Trial.report()` calls. A completed evaluation that is "pruned" is still recorded; it is only kept from being promoted to the next budget.
 
 ```python
 from foretools.bohb import BOHB, PruningConfig
