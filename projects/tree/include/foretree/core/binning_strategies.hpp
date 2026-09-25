@@ -892,85 +892,52 @@ struct AdaptiveBinner final : IBinningStrategy {
 
 // Gradient-based categorical encoding (LightGBM-style).
 // Groups categories by their gradient distribution for optimal splits.
+// Binning for categorical features. Every consumer compares bin codes with
+// thresholds and binary-searches the edges, so edges must be sorted by value:
+// each category (distinct finite value) gets its own bin, in value order.
+// Ordering categories by gradient statistics is the split finder's job
+// (categorical partition splits sort bins by G/H at each node), which unlike
+// a fixed binning order adapts to every node's gradients.
+// (Previously the edges were placed between categories in gradient order,
+// i.e. unsorted by value; the edge sanitizer then collapsed most of them and
+// e.g. merged 4 of 6 categories into one bin.)
+// Features with more distinct values than max_bins are not categorical and
+// get quantile bins.
 struct CategoricalGradientBinner final : IBinningStrategy {
     FeatureBins create_bins(const std::vector<double>& values,
                             const std::vector<double>& gradients,
                             const std::vector<double>& hessians,
                             const HistogramConfig& cfg) override {
         const int max_bins_for_feature = std::max(1, cfg.max_bins);
+        std::vector<double> unique_vals;
+        unique_vals.reserve(values.size());
+        for (double v : values)
+            if (std::isfinite(v)) unique_vals.push_back(v);
+        std::sort(unique_vals.begin(), unique_vals.end());
+        unique_vals.erase(std::unique(unique_vals.begin(), unique_vals.end()),
+                          unique_vals.end());
+
         FeatureBins fb;
         fb.strategy = "categorical_gradient";
-
-        // Gather per-category gradient sums
-        struct CatStats {
-            double grad_sum = 0.0;
-            double hess_sum = 0.0;
-            int count = 0;
-            double mean_grad = 0.0;
-        };
-        std::unordered_map<double, CatStats> cat_map;
-        cat_map.reserve(values.size());
-        for (size_t i = 0; i < values.size(); ++i) {
-            const double vi = values[i];
-            if (!std::isfinite(vi)) continue;
-            auto& cs = cat_map[vi];
-            cs.grad_sum += (i < gradients.size() ? gradients[i] : 0.0);
-            cs.hess_sum += (i < hessians.size() ? hessians[i] : 1.0);
-            cs.count++;
-        }
-
-        if (cat_map.empty()) {
+        if (unique_vals.empty()) {
             fb.edges = {0.0, 1.0};
             fb.stats.suggested_bins = 1;
             fb.stats.allocation_reason = "empty_feature";
             finalize_feature_bins(fb, cfg, max_bins_for_feature, true);
             return fb;
         }
-
-        const int unique_count = static_cast<int>(cat_map.size());
+        const int unique_count = static_cast<int>(unique_vals.size());
+        if (unique_count > max_bins_for_feature) {
+            FeatureBins quantile =
+                QuantileBinner{}.create_bins(values, gradients, hessians, cfg);
+            quantile.stats.allocation_reason = "categorical_gradient_high_cardinality";
+            return quantile;
+        }
+        fb.edges = _midpoint_edges_of_unique(unique_vals);
         fb.stats.is_categorical = true;
         fb.stats.unique_count = unique_count;
-
-        // Compute mean gradient per category and sort
-        std::vector<std::pair<double, double>> cat_grads;  // {value, mean_grad}
-        cat_grads.reserve(unique_count);
-        for (auto& [val, cs] : cat_map) {
-            cs.mean_grad = (cs.count > 0) ? cs.grad_sum / cs.count : 0.0;
-            cat_grads.emplace_back(val, cs.mean_grad);
-        }
-        std::sort(
-            cat_grads.begin(), cat_grads.end(),
-            [](const auto& a, const auto& b) { return a.second < b.second; });
-
-        // Create edges between adjacent categories in gradient order
-        if (unique_count <= 1) {
-            fb.edges = {cat_grads[0].first - 1.0, cat_grads[0].first + 1.0};
-            fb.stats.suggested_bins = 1;
-            fb.stats.allocation_reason = "single_category";
-            finalize_feature_bins(fb, cfg, max_bins_for_feature, true);
-            return fb;
-        }
-
-        const int effective_bins = std::min(unique_count, max_bins_for_feature);
-        fb.stats.suggested_bins = effective_bins;
+        fb.stats.suggested_bins = unique_count;
         fb.stats.allocation_reason = "categorical_gradient";
-
-        // Build edges as midpoints between sorted categories
-        std::vector<double> edges;
-        edges.reserve(effective_bins + 1);
-        // First edge: below first category
-        edges.push_back(cat_grads[0].first - 0.5);
-        // Midpoints between adjacent categories
-        for (int i = 0; i + 1 < effective_bins; ++i) {
-            edges.push_back(0.5 *
-                            (cat_grads[static_cast<size_t>(i)].first +
-                             cat_grads[static_cast<size_t>(i + 1)].first));
-        }
-        // Last edge: above last category
-        edges.push_back(
-            cat_grads[static_cast<size_t>(effective_bins - 1)].first + 0.5);
-        fb.edges = std::move(edges);
-
         finalize_feature_bins(fb, cfg, max_bins_for_feature, false);
         return fb;
     }
