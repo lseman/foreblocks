@@ -14,6 +14,7 @@ from foretools.fengineer.transformers import (
     AutoencoderConfig,
     AutoencoderTransformer,
     BinningTransformer,
+    BoostedFeatureGenerator,
     CategoricalTransformer,
     ClusteringTransformer,
     DateTimeTransformer,
@@ -84,8 +85,10 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
     The ``backend`` parameter in ``FeatureConfig`` controls which transformers
     are enabled:
 
-    - ``"tree"`` / ``"gbdt"`` : disables Fourier, RFF, clustering (tree models
-      already handle non-linearities well)
+    - ``"tree"`` / ``"gbdt"`` : disables interactions, Fourier, RFF, clustering
+      (tree models already handle non-linearities well).  The OpenFE-style
+      ``create_boosted`` generator stays available, since it keeps only
+      features that measurably help a GBDT
     - ``"neural"`` : disables binning (neural nets can learn piecewise linear
       functions)
     - ``"linear"`` : enables everything except what conflicts with linear models
@@ -178,6 +181,12 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                         self.config, "datetime_country_holidays", None
                     ),
                 ),
+            ),
+            # Runs before other generators so it only sees raw (+datetime) columns.
+            # Allowed for every backend: its gain is measured with a GBDT.
+            "boosted": (
+                self._is_transformer_enabled("boosted", "create_boosted"),
+                BoostedFeatureGenerator(self.config),
             ),
             "categorical": (
                 self._is_transformer_enabled("categorical", "create_categorical"),

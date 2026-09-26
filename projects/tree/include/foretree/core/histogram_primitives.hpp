@@ -1,7 +1,5 @@
 #pragma once
 
-#include <immintrin.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdint>

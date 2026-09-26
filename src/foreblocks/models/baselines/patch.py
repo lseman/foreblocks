@@ -22,15 +22,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Use your project modules
-from foreblocks.nn.embeddings import PositionalEncoding
-from foreblocks.nn.normalization import create_norm_layer
 from foreblocks.nn.attention.config import (
     AttentionConfig,
     AttentionShapeConfig,
     AttentionVariantConfig,
 )
 from foreblocks.nn.attention.multihead import MultiAttention
+
+# Use your project modules
+from foreblocks.nn.embeddings import PositionalEncoding
+from foreblocks.nn.normalization import create_norm_layer
 
 
 def _patchify_1d(x: torch.Tensor, patch_len: int, stride: int) -> torch.Tensor:
@@ -64,25 +65,22 @@ class PatchTokenEncoder(nn.Module):
         use_final_norm: bool = True,
     ):
         super().__init__()
-        from foreblocks.nn.transformer.encoder import (
-            TransformerEncoderLayer as _EncLayer,
-        )
+        from foreblocks.nn.transformer import TransformerEncoderLayer as _EncLayer
 
         layer_kwargs = dict(
             d_model=d_model,
-            nhead=n_heads,
-            dim_feedforward=dim_feedforward,
+            n_heads=n_heads,
+            ff_dim=dim_feedforward,
             dropout=dropout,
             activation=activation,
-            att_type=att_type,
-            freq_modes=freq_modes,
-            use_swiglu=use_swiglu,
-            layer_norm_eps=layer_norm_eps,
-            norm_strategy=norm_strategy,
-            custom_norm=custom_norm,
-            use_moe=use_moe,
-            num_experts=num_experts,
-            top_k=top_k,
+            attention=att_type,
+            frequency_modes=freq_modes,
+            swiglu=use_swiglu,
+            norm_eps=layer_norm_eps,
+            norm_placement=norm_strategy.removesuffix("_norm"),
+            norm=custom_norm,
+            moe_experts=num_experts if use_moe else 0,
+            moe_top_k=top_k,
         )
         self.layers = nn.ModuleList(
             [_EncLayer(**layer_kwargs) for _ in range(n_layers)]

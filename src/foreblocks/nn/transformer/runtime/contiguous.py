@@ -276,13 +276,17 @@ def contiguous_quantile_loss(
         raise ValueError("predictions must be [B,H,C,Q] and targets [B,H,C]")
     levels = predictions.new_tensor(quantiles)
     errors = targets.unsqueeze(-1) - predictions
+    valid = None
+    if mask is not None:
+        if mask.shape != targets.shape:
+            raise ValueError("quantile loss mask must match targets")
+        valid = (~mask.to(device=errors.device, dtype=torch.bool)).unsqueeze(-1)
+        # Mask before the loss arithmetic: NaN/Inf multiplied by zero is NaN.
+        errors = errors.masked_fill(~valid, 0.0)
     losses = torch.maximum(levels * errors, (levels - 1.0) * errors)
-    if mask is None:
+    if valid is None:
         return losses.mean()
-    if mask.shape != targets.shape:
-        raise ValueError("quantile loss mask must match targets")
-    valid = (~mask.to(device=losses.device, dtype=torch.bool)).unsqueeze(-1)
-    return (losses * valid).sum() / valid.sum().clamp_min(1) / losses.shape[-1]
+    return losses.sum() / valid.sum().clamp_min(1) / losses.shape[-1]
 
 
 __all__ = [

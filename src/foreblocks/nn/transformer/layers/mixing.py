@@ -18,6 +18,7 @@ sequence dimension, so the attention backend receives a 3-D tensor.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -25,12 +26,7 @@ import torch.nn.functional as F
 
 from foreblocks.nn.normalization import create_norm_layer
 from foreblocks.nn.transformer.config import TransformerConfig
-from foreblocks.nn.attention.enums import PositionEncoding
-from foreblocks.nn.attention.multihead import MultiAttention
-
-from foreblocks.nn.transformer.axis_attention import (
-    Axis,
-    MixingAttentionBlock,
+from foreblocks.nn.transformer.layers.axis_attention import (
     make_sequence_block,
     make_variate_block,
 )
@@ -64,21 +60,16 @@ class MixingTransformer(nn.Module):
     otherwise blocked position.  It masks keys on both attention axes.
 
     Parameters are configured via :class:`TransformerConfig`.  When
-    ``use_variate_attention=False`` the layer falls back to sequence-only
+    ``variate_attention=False`` the layer falls back to sequence-only
     attention (the variate sub-block is skipped entirely).
     """
 
     def __init__(
-        self,
-        config: TransformerConfig,
-        use_variate_attention: bool = True,
-        *,
-        variate_position_encoding: bool = False,
+        self, config: TransformerConfig | None = None, **overrides: Any
     ) -> None:
         super().__init__()
+        config = TransformerConfig.resolve(config, **overrides)
         self.config = config
-        self.use_variate_attention = bool(use_variate_attention)
-        self.variate_position_encoding = bool(variate_position_encoding)
 
         # --- Sequence attention ---
         seq_block = make_sequence_block(config, dropout=config.dropout)
@@ -87,10 +78,10 @@ class MixingTransformer(nn.Module):
         self.post_seq_attn_norm = seq_block.post_norm
 
         # --- Variate attention ---
-        if self.use_variate_attention:
+        if config.variate_attention:
             var_block = make_variate_block(
                 config,
-                variate_position_encoding=variate_position_encoding,
+                variate_position_encoding=config.variate_position,
                 dropout=config.dropout,
             )
             self.var_attn = var_block.attention
@@ -103,13 +94,11 @@ class MixingTransformer(nn.Module):
 
         # --- FFN ---
         d_model = config.d_model
-        norm = lambda: create_norm_layer(  # noqa: E731
-            config.custom_norm, d_model, config.layer_norm_eps
-        )
+        norm = lambda: create_norm_layer(config.norm, d_model, config.norm_eps)  # noqa: E731
         self.pre_ff_norm = norm()
         self.post_ff_norm = norm()
-        self.ff0 = nn.Linear(d_model, config.dim_feedforward)
-        self.ff1 = nn.Linear(config.dim_feedforward, d_model)
+        self.ff0 = nn.Linear(d_model, config.ff_dim)
+        self.ff1 = nn.Linear(config.ff_dim, d_model)
         self.ff_dropout = nn.Dropout(config.dropout)
         self.activation = _activation(config.activation)
 
@@ -130,9 +119,7 @@ class MixingTransformer(nn.Module):
             )
         b, v, n, d = input_embeddings.shape
         if b == 0 or v == 0 or n == 0:
-            raise ValueError(
-                "batch, variate, and sequence dimensions must be non-zero"
-            )
+            raise ValueError("batch, variate, and sequence dimensions must be non-zero")
         if patch_mask is not None and patch_mask.shape != (b, v, n):
             raise ValueError(
                 f"patch_mask must have shape {(b, v, n)}, got {tuple(patch_mask.shape)}"
@@ -228,9 +215,7 @@ class MixingTransformer(nn.Module):
                 f"embedding dimension {d} does not match d_model={self.config.d_model}"
             )
         if patch_mask is not None:
-            patch_mask = patch_mask.to(
-                device=input_embeddings.device, dtype=torch.bool
-            )
+            patch_mask = patch_mask.to(device=input_embeddings.device, dtype=torch.bool)
         if sequence_mask is not None:
             sequence_mask = sequence_mask.to(
                 device=input_embeddings.device, dtype=torch.bool
@@ -274,7 +259,9 @@ class MixingTransformer(nn.Module):
             var_input = self.pre_var_attn_norm(hidden)
             var_input = var_input.permute(0, 2, 1, 3).reshape(b * n, v, d)
             var_padding = (
-                None if patch_mask is None else patch_mask.permute(0, 2, 1).reshape(b * n, v)
+                None
+                if patch_mask is None
+                else patch_mask.permute(0, 2, 1).reshape(b * n, v)
             )
             var_padding, var_fully_padded = self._safe_padding_mask(var_padding)
             var_mask = self._expand_batch_mask(
@@ -291,7 +278,9 @@ class MixingTransformer(nn.Module):
             )
             var_update = self.post_var_attn_norm(var_update)
             if var_fully_padded is not None:
-                var_update = var_update.masked_fill(var_fully_padded[:, None, None], 0.0)
+                var_update = var_update.masked_fill(
+                    var_fully_padded[:, None, None], 0.0
+                )
                 if var_weights is not None:
                     var_weights = var_weights.masked_fill(
                         var_fully_padded[:, None, None, None], 0.0
@@ -311,21 +300,14 @@ class StackedMixingTransformer(nn.Module):
     """A stack of :class:`MixingTransformer` layers."""
 
     def __init__(
-        self,
-        config: TransformerConfig,
-        use_variate_attention: bool = True,
-        *,
-        variate_position_encoding: bool = False,
+        self, config: TransformerConfig | None = None, **overrides: Any
     ) -> None:
         super().__init__()
+        config = TransformerConfig.resolve(config, **overrides)
         self.config = config
         self.layers = nn.ModuleList(
-            MixingTransformer(
-                config,
-                use_variate_attention=use_variate_attention,
-                variate_position_encoding=variate_position_encoding,
-            )
-            for _ in range(config.num_layers)
+            MixingTransformer(config.for_layer(index))
+            for index in range(config.num_layers)
         )
 
     def forward(

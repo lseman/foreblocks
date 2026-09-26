@@ -1,9 +1,22 @@
-"""Serializable configuration for Foreblocks transformer models."""
+"""Flat, serializable configuration for Foreblocks transformers.
+
+Every setting is a plain keyword. Modules accept a ``TransformerConfig``, keyword
+overrides, or both::
+
+    encoder = TransformerEncoder(input_size=4, d_model=64, attention="linear")
+
+    config = TransformerConfig(d_model=64, n_heads=4, residual="mhc")
+    encoder = TransformerEncoder(config, input_size=4)
+    decoder = TransformerDecoder(config, input_size=2, output_size=2)
+
+Live collaborators (a custom positional encoder, budget schedulers) are module
+constructor arguments, never config fields, so a config is always plain data.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, fields, replace
-from enum import StrEnum
 from typing import Any, Literal
 
 from foreblocks.nn.attention.config import (
@@ -15,463 +28,375 @@ from foreblocks.nn.attention.config import (
     AttentionVariantConfig,
 )
 
+AttentionPattern = Literal["uniform", "hybrid", "3to1"]
+Position = Literal["rope", "alibi", "sinusoidal", "learnable", "none"]
+RopeScaling = Literal["none", "yarn", "ntk", "linear"]
+Norm = Literal["rms", "layer"]
+NormPlacement = Literal["pre", "post", "sandwich"]
+Residual = Literal["standard", "gateskip", "mhc", "mod", "attention"]
+Patching = Literal["none", "shared", "channel"]
+KVCache = Literal["auto", "dynamic", "paged", "static"]
+Role = Literal["encoder", "decoder"]
 
-class AttentionMode(StrEnum):
-    """Per-layer attention routing mode for ``AttentionConfig.architecture``.
-
-    Also the single source of truth for ``BaseTransformer._ATTN_ROUTES`` keys.
-    """
-
-    STANDARD = "standard"
-    LINEAR = "linear"
-    SYPE = "sype"
-    HYBRID = "hybrid"
-    KIMI = "kimi"
-    HYBRID_KIMI = "hybrid_kimi"
-    KIMI_3TO1 = "kimi_3to1"
-    GATED_DELTA = "gated_delta"
-    HYBRID_GDN = "hybrid_gdn"
-    GDN_3TO1 = "gdn_3to1"
-    GLA = "gla"
-    GLA_HYBRID = "gla_hybrid"
-    GLA_3TO1 = "gla_3to1"
-    DELTANET = "deltanet"
-    DELTANET_HYBRID = "deltanet_hybrid"
-    DELTANET_3TO1 = "deltanet_3to1"
-    GATED_DELTANET = "gated_deltanet"
-    GATED_DELTANET_HYBRID = "gated_deltanet_hybrid"
-    GATED_DELTANET_3TO1 = "gated_deltanet_3to1"
-
-
-_ATTENTION_MODES: frozenset[str] = frozenset(mode.value for mode in AttentionMode)
-
-_SUPPORTED_OPTIONS: set[str] = {
-    "pos_encoder",
-    "mod_budget_scheduler",
-    "layer_dropout_schedule",
+# Advanced attention settings accepted through ``attention_options``: every
+# field of the nested attention groups that has no flat config field.
+_ATTENTION_OPTION_GROUPS: dict[str, type] = {
+    "cache": AttentionCacheConfig,
+    "variant": AttentionVariantConfig,
+    "features": AttentionFeatureConfig,
+}
+_FLAT_ATTENTION_FIELDS = {
+    "name",
+    "backend",
+    "frequency_modes",
+    "use_swiglu",
+    "use_paged_cache",
+}
+ATTENTION_OPTIONS: dict[str, str] = {
+    item.name: group
+    for group, cls in _ATTENTION_OPTION_GROUPS.items()
+    for item in fields(cls)
+    if item.name not in _FLAT_ATTENTION_FIELDS
 }
 
 
 @dataclass(frozen=True)
-class ResidualConfig:
-    policy: Literal["standard", "gateskip", "mhc", "attention_residual", "mod"]
-    norm_strategy: Literal["pre_norm", "post_norm", "sandwich_norm"]
-    norm_type: Literal["rms", "layer", "layernorm", "rmsnorm"]
-
-
-@dataclass(frozen=True)
-class CacheConfig:
-    implementation: Literal["auto", "dynamic", "paged", "static"]
-
-
-@dataclass
 class TransformerConfig:
-    """Shared stack/layer settings plus encoder and decoder feature settings.
+    """Settings for transformer stacks and their layers.
 
-    Flat field names remain stable for serialization and legacy callers.
-    Attention owns its grouped backend settings; constructor resolution and
-    role-specific presets live in ``core.configuration``.
+    Attention
+        ``attention`` names the backend used by every layer: a recurrent or
+        linear backend (``linear``, ``gla``, ``deltanet``, ``gated_deltanet``,
+        ``gated_delta``, ``kimi``) or a softmax variant (``standard``, ``sype``,
+        ``prob_sparse``, ``frequency``, ...). ``attention_pattern`` mixes it
+        with standard attention across depth: ``hybrid`` uses it for every
+        layer but the last, ``3to1`` for three of every four layers.
+        ``attention_options`` sets any remaining field of the nested attention
+        groups by name, e.g. ``{"window_size": 128, "qk_norm": True}``.
+
+    Mixture of experts
+        ``moe_experts > 0`` replaces the feed-forward with routed experts.
+        ``moe_options`` passes further ``FeedForwardBlock`` settings by name,
+        e.g. ``{"num_shared": 1, "router_type": "noisy_topk"}``.
+
+    Residual
+        ``residual`` selects one residual policy: ``standard``, ``gateskip``
+        (learned token gates, ``gate_*``), ``mhc`` (manifold hyper-connections,
+        ``mhc_*``), ``mod`` (Mixture-of-Depths token routing), or
+        ``attention`` (attention over earlier layer outputs,
+        ``attention_residual_*``).
+
+    Encoder input
+        ``patching`` tokenizes the series: ``shared`` embeds patches of the
+        projected input, ``channel`` embeds each channel's patches and fuses
+        them (``channel_fuse``), ``none`` keeps one token per step.
+        ``variate_attention`` keeps each variate as its own token stream and
+        mixes across variates in every layer.
+
+    Decoder
+        ``informer`` makes self-attention non-causal and masks positions after
+        ``label_len`` as padding. ``kv_cache`` selects the incremental cache;
+        ``auto`` and ``paged`` use a paged cache.
     """
 
-    # Input/output dimensions and shared stack shape.
+    # Shape.
     input_size: int = 1
     output_size: int = 1
     d_model: int = 256
-    nhead: int = 8
+    n_heads: int = 8
+    n_kv_heads: int | None = None
     num_layers: int = 6
-    dim_feedforward: int = 1024
+    ff_dim: int = 1024
     dropout: float = 0.1
     activation: str = "gelu"
+    swiglu: bool = True
     max_seq_len: int = 5000
-    attention: AttentionConfig | None = None
-    model_type: str = "transformer"
-    # Normalization and input position encoding.
-    norm_strategy: str = "pre_norm"
-    custom_norm: str = "rms"
-    layer_norm_eps: float = 1e-5
-    pos_encoding_scale: float = 1.0
-    # Encoder patch tokenization.
-    patch_encoder: bool = True
+    # Attention.
+    attention: str = "standard"
+    attention_pattern: AttentionPattern = "uniform"
+    attention_kernel: str = "auto"
+    frequency_modes: int = 32
+    attention_options: Mapping[str, Any] = field(default_factory=dict)
+    # Positions.
+    position: Position = "rope"
+    position_scale: float = 1.0
+    rope_base: float = 10000.0
+    rope_scaling: RopeScaling = "none"
+    rope_scaling_factor: float = 1.0
+    time_encoding: bool = False
+    # Normalization.
+    norm: Norm = "rms"
+    norm_placement: NormPlacement = "pre"
+    norm_eps: float = 1e-5
+    final_norm: bool = True
+    # Feed-forward mixture of experts; 0 experts means a dense feed-forward.
+    moe_experts: int = 0
+    moe_top_k: int = 2
+    moe_latent: bool = False
+    moe_latent_dim: int | None = None
+    moe_latent_ff_dim: int | None = None
+    moe_aux_weight: float = 1.0
+    moe_options: Mapping[str, Any] = field(default_factory=dict)
+    # Residual policy.
+    residual: Residual = "standard"
+    gate_budget: float | None = None
+    gate_aux_weight: float = 0.1
+    mhc_streams: int = 4
+    mhc_sinkhorn_iters: int = 20
+    mhc_collapse: Literal["first", "mean"] = "first"
+    mod_aux_weight: float = 0.05
+    attention_residual_mode: Literal["full", "block"] = "full"
+    attention_residual_block_size: int = 8
+    # Stack execution and initialization.
+    share_layers: bool = False
+    gradient_checkpointing: bool = False
+    init_std: float = 0.02
+    depth_scaled_init: bool = True
+    # Encoder input.
+    patching: Patching = "shared"
     patch_len: int = 16
     patch_stride: int = 8
     patch_pad_end: bool = True
-    # Stack execution and final normalization.
-    use_gradient_checkpointing: bool = False
-    share_layers: bool = False
-    use_final_norm: bool = True
-    # Feed-forward experts and auxiliary loss.
-    use_moe: bool = False
-    num_experts: int = 8
-    top_k: int = 2
-    moe_use_latent: bool = False
-    moe_latent_dim: int | None = None
-    moe_latent_d_ff: int | None = None
-    moe_aux_lambda: float = 1.0
-    # Residual connections and depth routing (shared by stacks and layers).
-    use_gateskip: bool = False
-    gate_budget: float | None = None
-    gate_lambda: float = 0.1
-    use_mhc: bool = False
-    mhc_n_streams: int = 4
-    mhc_sinkhorn_iters: int = 20
-    mhc_collapse: Literal["first", "mean"] = "first"
-    use_mod: bool = False
-    mod_mode: Literal["token", "seq"] = "token"
-    mod_lambda: float = 0.05
-    use_attention_residual: bool = False
-    attn_residual_type: str = "full"
-    attention_residual_block_size: int = 8
-    # Parameter initialization.
-    initializer_range: float = 0.02
-    depth_scaled_init: bool = True
-    # Decoder caching and Informer prefix handling.
-    cache_implementation: Literal["auto", "dynamic", "paged", "static"] = "auto"
-    label_len: int = 0
-    informer_like: bool = True
-    # Shared time embedding.
-    use_time_encoding: bool = False
-    # Encoder channel-wise patches, variate mixing, and contiguous forecasts.
-    ct_patchtst: bool = False
-    ct_patch_len: int = 16
-    ct_patch_stride: int = 8
-    ct_patch_pad_end: bool = True
-    ct_patch_fuse: Literal["mean", "linear"] = "linear"
-    use_variate_attention: bool = False
+    channel_fuse: Literal["mean", "linear"] = "linear"
+    variate_attention: bool = False
     variate_fuse: Literal["mean", "linear", "none"] = "linear"
-    variate_position_encoding: bool = False
-    use_contiguous_patch_decoding: bool = False
-    forecast_quantiles: tuple[float, ...] = (
-        0.1,
-        0.2,
-        0.3,
-        0.4,
-        0.5,
-        0.6,
-        0.7,
-        0.8,
-        0.9,
-    )
-    # Forward output defaults; call-time arguments can override these.
-    output_hidden_states: bool = False
-    output_attentions: bool = False
-    return_dict: bool = True
-    # Injected modules/schedulers, rather than serializable scalar settings.
-    options: dict[str, Any] = field(default_factory=dict)
+    variate_position: bool = False
+    contiguous_decoding: bool = False
+    quantiles: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
+    # Decoder.
+    informer: bool = False
+    label_len: int = 0
+    kv_cache: KVCache = "auto"
 
     def __post_init__(self) -> None:
-        self.forecast_quantiles = tuple(float(q) for q in self.forecast_quantiles)
-        if self.attention is None:
-            self.attention = AttentionConfig(
-                shape=AttentionShapeConfig(
-                    d_model=self.d_model,
-                    n_heads=self.nhead,
-                    dropout=self.dropout,
-                    max_seq_len=self.max_seq_len,
-                )
-            )
-
-        if self.input_size <= 0 or self.output_size <= 0:
-            raise ValueError("input_size and output_size must be positive")
-        if self.d_model <= 0 or self.nhead <= 0 or self.num_layers <= 0:
-            raise ValueError("d_model, nhead, and num_layers must be positive")
-        if self.d_model % self.nhead:
-            raise ValueError("d_model must be divisible by nhead")
+        object.__setattr__(self, "attention_options", dict(self.attention_options))
+        object.__setattr__(self, "moe_options", dict(self.moe_options))
+        object.__setattr__(self, "quantiles", tuple(float(q) for q in self.quantiles))
+        _check_positive(self, "input_size", "output_size", "d_model", "n_heads")
+        _check_positive(self, "num_layers", "ff_dim", "max_seq_len")
+        _check_positive(self, "mhc_streams", "mhc_sinkhorn_iters")
+        _check_positive(self, "patch_len", "patch_stride")
+        _check_positive(self, "attention_residual_block_size", "frequency_modes")
+        if self.d_model % self.n_heads:
+            raise ValueError("d_model must be divisible by n_heads")
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError("dropout must be in [0, 1)")
-        if self.cache_implementation not in {"auto", "dynamic", "paged", "static"}:
-            raise ValueError("unsupported cache_implementation")
-        if self.attention.shape.d_model != self.d_model:
-            raise ValueError("attention.shape.d_model must match d_model")
-        if self.attention.shape.n_heads != self.nhead:
-            raise ValueError("attention.shape.n_heads must match nhead")
-        if self.attention.architecture not in _ATTENTION_MODES:
-            raise ValueError(
-                f"unsupported attention architecture: {self.attention.architecture}"
-            )
-        if self.norm_strategy not in {"pre_norm", "post_norm", "sandwich_norm"}:
-            raise ValueError(f"unsupported norm_strategy: {self.norm_strategy}")
-        if self.custom_norm not in {"rms", "layer", "layernorm", "rmsnorm"}:
-            raise ValueError(f"unsupported custom_norm: {self.custom_norm}")
-        if self.attention.position.encoding not in {
-            "none",
-            "rope",
-            "alibi",
-            "sinusoidal",
-            "learnable",
-        }:
-            raise ValueError(
-                f"unsupported position encoding: {self.attention.position.encoding}"
-            )
-        if self.attention.position.rope_scaling_type not in {
-            "none",
-            "yarn",
-            "ntk",
-            "linear",
-        }:
-            raise ValueError(
-                "unsupported rope scaling type: "
-                f"{self.attention.position.rope_scaling_type}"
-            )
-        if self.layer_norm_eps <= 0:
-            raise ValueError("layer_norm_eps must be positive")
-        if self.attention.variant.frequency_modes <= 0:
-            raise ValueError("freq_modes must be positive")
+        if self.norm_eps <= 0:
+            raise ValueError("norm_eps must be positive")
+        if self.moe_experts < 0 or (self.moe_experts and self.moe_top_k <= 0):
+            raise ValueError("moe_experts must be >= 0 and moe_top_k positive")
         if self.gate_budget is not None and not 0.0 <= self.gate_budget <= 1.0:
             raise ValueError("gate_budget must be in [0, 1]")
-        if self.mhc_n_streams <= 0 or self.mhc_sinkhorn_iters <= 0:
-            raise ValueError("mhc_n_streams and mhc_sinkhorn_iters must be positive")
-        if self.attention_residual_block_size <= 0:
-            raise ValueError("attention_residual_block_size must be positive")
-        if self.variate_fuse not in {"mean", "linear", "none"}:
-            raise ValueError("variate_fuse must be 'mean', 'linear', or 'none'")
-        if self.ct_patch_fuse not in {"mean", "linear"}:
-            raise ValueError("ct_patch_fuse must be 'mean' or 'linear'")
-        if not self.forecast_quantiles:
-            raise ValueError("forecast_quantiles must not be empty")
-        if any(not 0.0 < quantile < 1.0 for quantile in self.forecast_quantiles):
-            raise ValueError("forecast_quantiles must be strictly between 0 and 1")
-        if tuple(sorted(self.forecast_quantiles)) != self.forecast_quantiles:
-            raise ValueError("forecast_quantiles must be sorted")
-        unsupported = sorted(set(self.options) - _SUPPORTED_OPTIONS)
-        if unsupported:
+        if not self.quantiles or any(not 0.0 < q < 1.0 for q in self.quantiles):
+            raise ValueError("quantiles must be non-empty and strictly in (0, 1)")
+        if tuple(sorted(self.quantiles)) != self.quantiles:
+            raise ValueError("quantiles must be sorted")
+        _check_choice(self, "attention_pattern", AttentionPattern)
+        _check_choice(self, "position", Position)
+        _check_choice(self, "rope_scaling", RopeScaling)
+        _check_choice(self, "norm", Norm)
+        _check_choice(self, "norm_placement", NormPlacement)
+        _check_choice(self, "residual", Residual)
+        _check_choice(self, "mhc_collapse", Literal["first", "mean"])
+        _check_choice(self, "attention_residual_mode", Literal["full", "block"])
+        _check_choice(self, "patching", Patching)
+        _check_choice(self, "channel_fuse", Literal["mean", "linear"])
+        _check_choice(self, "variate_fuse", Literal["mean", "linear", "none"])
+        _check_choice(self, "kv_cache", KVCache)
+        unknown = sorted(set(self.attention_options) - ATTENTION_OPTIONS.keys())
+        if unknown:
+            raise ValueError("unknown attention_options: " + ", ".join(unknown))
+        _check_attention_name(self.attention)
+        _check_moe_options(self.moe_options)
+        if self.gradient_checkpointing and self.residual in {"mhc", "attention"}:
             raise ValueError(
-                "unsupported Transformer options: " + ", ".join(unsupported)
+                f"gradient_checkpointing is incompatible with residual={self.residual!r}"
             )
-        self.validate_compatibility()
-
-    @property
-    def residual(self) -> ResidualConfig:
-        if self.use_attention_residual:
-            policy = "attention_residual"
-        elif self.use_mhc:
-            policy = "mhc"
-        elif self.use_mod:
-            policy = "mod"
-        elif self.use_gateskip:
-            policy = "gateskip"
-        else:
-            policy = "standard"
-        return ResidualConfig(policy, self.norm_strategy, self.custom_norm)
-
-    @property
-    def cache(self) -> CacheConfig:
-        return CacheConfig(self.cache_implementation)
-
-    def option(self, name: str, default: Any = None) -> Any:
-        return self.options.get(name, default)
-
-    def validate_compatibility(self, *, role: str | None = None) -> None:
-        attention_residual = self.use_attention_residual
-        mod_mode = self.mod_mode
-        if attention_residual and self.use_gateskip:
-            raise ValueError("use_attention_residual is incompatible with use_gateskip")
-        if attention_residual and self.use_mhc:
-            raise ValueError("use_attention_residual is incompatible with use_mhc")
-        if attention_residual and self.use_mod:
-            raise ValueError("use_attention_residual is incompatible with use_mod")
-        if self.use_gradient_checkpointing and attention_residual:
-            raise ValueError(
-                "use_gradient_checkpointing is incompatible with use_attention_residual"
-            )
-        if self.use_gradient_checkpointing and self.use_mhc:
-            raise ValueError("use_gradient_checkpointing is incompatible with use_mhc")
-        if self.use_mod and self.use_gateskip:
-            raise ValueError("use_mod is incompatible with use_gateskip")
-        if self.use_mod and self.use_mhc:
-            raise ValueError("use_mod is incompatible with use_mhc")
-        if self.use_mod and mod_mode != "token":
-            raise ValueError("use_mod currently requires mod_mode='token'")
-        if (
-            role == "decoder"
-            and self.use_mhc
-            and self.cache_implementation in {"static", "paged"}
-        ):
-            raise ValueError(
-                "decoder use_mhc does not support static/paged KV caching; "
-                "use dynamic full-sequence execution"
-            )
-        if role == "decoder" and self.use_variate_attention:
-            raise ValueError("use_variate_attention is only supported by the encoder")
-        if role == "encoder" and self.use_variate_attention:
-            incompatible = [
+        if self.variate_attention:
+            conflicts = [
                 name
-                for name, enabled in {
-                    "ct_patchtst": self.ct_patchtst,
-                    "use_attention_residual": self.use_attention_residual,
-                    "use_gateskip": self.use_gateskip,
-                    "use_mhc": self.use_mhc,
-                    "use_mod": self.use_mod,
-                    "use_moe": self.use_moe,
+                for name, conflict in {
+                    "patching='channel'": self.patching == "channel",
+                    f"residual={self.residual!r}": self.residual != "standard",
+                    "moe_experts": self.moe_experts > 0,
+                    f"attention_pattern={self.attention_pattern!r}": (
+                        self.share_layers and self.attention_pattern != "uniform"
+                    ),
                 }.items()
-                if enabled
+                if conflict
             ]
-            if incompatible:
+            if conflicts:
                 raise ValueError(
-                    "use_variate_attention is incompatible with: "
-                    + ", ".join(incompatible)
+                    "variate_attention is incompatible with " + ", ".join(conflicts)
                 )
-            routed_attention = str(self.attention.architecture)
-            if self.share_layers and (
-                "hybrid" in routed_attention or routed_attention.endswith("3to1")
-            ):
+        if self.contiguous_decoding:
+            if not self.variate_attention or self.patching != "shared":
                 raise ValueError(
-                    "use_variate_attention with share_layers requires one "
-                    "attention backend, not a hybrid or 3to1 architecture"
-                )
-        if role == "encoder" and self.use_contiguous_patch_decoding:
-            if not self.use_variate_attention:
-                raise ValueError(
-                    "use_contiguous_patch_decoding requires use_variate_attention=True"
-                )
-            if not self.patch_encoder:
-                raise ValueError(
-                    "use_contiguous_patch_decoding requires patch_encoder=True"
+                    "contiguous_decoding requires variate_attention=True and "
+                    "patching='shared'"
                 )
             if self.patch_stride != self.patch_len:
                 raise ValueError(
-                    "contiguous patch decoding requires patch_stride == patch_len"
+                    "contiguous_decoding requires patch_stride == patch_len"
                 )
 
+    # ---- Construction ---------------------------------------------------------
+    @classmethod
+    def resolve(
+        cls, config: TransformerConfig | None = None, **overrides: Any
+    ) -> TransformerConfig:
+        """``config`` (or the defaults) with keyword overrides applied."""
+        if config is None:
+            return cls(**overrides)
+        if not isinstance(config, cls):
+            raise TypeError(f"expected TransformerConfig, got {type(config).__name__}")
+        return replace(config, **overrides) if overrides else config
+
+    def validate_for(self, role: Role) -> None:
+        """Checks that depend on whether the config builds an encoder or decoder."""
+        if role == "decoder":
+            if self.variate_attention:
+                raise ValueError("variate_attention is only supported by the encoder")
+            if self.residual == "mhc" and self.kv_cache in {"static", "paged"}:
+                raise ValueError(
+                    "residual='mhc' does not support static or paged KV caches"
+                )
+
+    # ---- Derived settings -----------------------------------------------------
+    @property
+    def use_moe(self) -> bool:
+        return self.moe_experts > 0
+
+    def layer_attention(self, index: int) -> str:
+        """Attention backend of the layer at depth ``index``."""
+        if self.attention_pattern == "uniform":
+            return self.attention
+        if self.attention_pattern == "hybrid":
+            use_backend = index < self.num_layers - 1
+        else:
+            use_backend = index % 4 < 3
+        return self.attention if use_backend else "standard"
+
+    def for_layer(
+        self, index: int, *, dropout: float | None = None
+    ) -> TransformerConfig:
+        """The uniform config of the layer at depth ``index``."""
+        changes: dict[str, Any] = {}
+        if self.attention_pattern != "uniform":
+            changes["attention"] = self.layer_attention(index)
+            changes["attention_pattern"] = "uniform"
+        if dropout is not None and dropout != self.dropout:
+            changes["dropout"] = dropout
+        return replace(self, **changes) if changes else self
+
+    def attention_config(self, *, cross: bool = False) -> AttentionConfig:
+        """Nested configuration consumed by ``foreblocks.nn.attention``."""
+        options: dict[str, dict[str, Any]] = {
+            group: {} for group in _ATTENTION_OPTION_GROUPS
+        }
+        for name, value in self.attention_options.items():
+            options[ATTENTION_OPTIONS[name]][name] = value
+        # Attention-matching compaction works on full K/V, not an MLA latent.
+        if options["cache"].get("attention_matching"):
+            options["cache"].setdefault("use_mla", False)
+        return AttentionConfig(
+            shape=AttentionShapeConfig(
+                d_model=self.d_model,
+                n_heads=self.n_heads,
+                n_kv_heads=self.n_kv_heads,
+                dropout=self.dropout,
+                max_seq_len=self.max_seq_len,
+                cross_attention=cross,
+            ),
+            cache=AttentionCacheConfig(
+                use_paged_cache=self.kv_cache in {"auto", "paged"},
+                **options["cache"],
+            ),
+            position=AttentionPositionConfig(
+                encoding=self.position,
+                rope_base=self.rope_base,
+                rope_scaling_type=self.rope_scaling,
+                rope_scaling_factor=self.rope_scaling_factor,
+            ),
+            variant=AttentionVariantConfig(
+                name=self.attention,
+                backend=self.attention_kernel,
+                frequency_modes=self.frequency_modes,
+                use_swiglu=self.swiglu,
+                **options["variant"],
+            ),
+            features=AttentionFeatureConfig(**options["features"]),
+        )
+
+    # ---- Serialization --------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-    def with_overrides(self, **overrides: Any) -> TransformerConfig:
-        """Copy the config, keeping shared attention dimensions in sync.
-
-        An explicitly supplied attention config is authoritative and is
-        validated as supplied. Otherwise, changing a shared shape knob also
-        updates its nested attention counterpart.
-        """
-        if "attention" not in overrides:
-            shape_overrides = {
-                attention_name: overrides[name]
-                for name, attention_name in {
-                    "d_model": "d_model",
-                    "nhead": "n_heads",
-                    "dropout": "dropout",
-                    "max_seq_len": "max_seq_len",
-                }.items()
-                if name in overrides
-            }
-            if shape_overrides:
-                overrides["attention"] = replace(
-                    self.attention,
-                    shape=replace(self.attention.shape, **shape_overrides),
-                )
-        return replace(self, **overrides)
-
     @classmethod
-    def from_dict(cls, values: dict[str, Any]) -> TransformerConfig:
-        values = dict(values)
-        attention = values.get("attention")
-        if isinstance(attention, dict):
-            values["attention"] = AttentionConfig(
-                shape=AttentionShapeConfig(**attention["shape"]),
-                architecture=attention.get("architecture", "standard"),
-                cache=AttentionCacheConfig(**attention.get("cache", {})),
-                position=AttentionPositionConfig(**attention.get("position", {})),
-                variant=AttentionVariantConfig(**attention.get("variant", {})),
-                features=AttentionFeatureConfig(**attention.get("features", {})),
-            )
+    def from_dict(cls, values: Mapping[str, Any]) -> TransformerConfig:
         return cls(**values)
 
-    @classmethod
-    def from_legacy_dict(
-        cls, values: dict[str, Any] | None = None, **kwargs: Any
-    ) -> TransformerConfig:
-        """Load the former flat attention configuration representation."""
-        values = {**(values or {}), **kwargs}
-        legacy_options = dict(values.pop("options", {}))
-        known_fields = {item.name for item in fields(cls)} - {"options"}
-        for name in known_fields & legacy_options.keys():
-            values.setdefault(name, legacy_options.pop(name))
-        if values.get("attention") is not None:
-            # Grouped attention is already canonical. Do not silently replace
-            # it with legacy defaults (including serialized model_kwargs).
-            legacy_options.update(
-                (name, values.pop(name))
-                for name in list(values)
-                if name not in known_fields
-            )
-            values["options"] = legacy_options
-            return cls.from_dict(values)
-        attention = AttentionConfig(
-            shape=AttentionShapeConfig(
-                d_model=values.get("d_model", 256),
-                n_heads=values.get("nhead", 8),
-                dropout=values.get("dropout", 0.1),
-                max_seq_len=values.get("max_seq_len", 5000),
-            ),
-            architecture=values.pop("attention_mode", "standard"),
-            cache=AttentionCacheConfig(
-                use_paged_cache=values.get("cache_implementation", "auto")
-                in {"auto", "paged"},
-                use_mla=not values.pop("use_attention_matching_compaction", False),
-                matching_keep_ratio=values.pop("attention_matching_keep_ratio", 0.25),
-                matching_trigger_len=values.pop("attention_matching_trigger_len", 512),
-                matching_min_keep=values.pop("attention_matching_min_keep", 64),
-                matching_query_budget=values.pop("attention_matching_query_budget", 64),
-                matching_force_single_step=values.pop(
-                    "attention_matching_force_single_step", False
-                ),
-            ),
-            position=AttentionPositionConfig(
-                encoding=values.pop("pos_encoding_type", "rope"),
-                rope_base=values.pop("rope_base", 10000.0),
-                rope_scaling_type=values.pop("rope_scaling_type", "none"),
-                rope_scaling_factor=values.pop("rope_scaling_factor", 1.0),
-            ),
-            variant=AttentionVariantConfig(
-                name=values.pop("att_type", "standard"),
-                backend=values.pop("attn_implementation", "auto"),
-                frequency_modes=values.pop("freq_modes", 32),
-                use_swiglu=values.pop("use_swiglu", True),
-                moba_block_size=values.pop("moba_block_size", None),
-                moba_topk=values.pop("moba_topk", 4),
-            ),
-        )
-        attention_matching = not attention.cache.use_mla
-        attention = replace(
-            attention,
-            cache=replace(attention.cache, attention_matching=attention_matching),
-        )
-        values["attention"] = attention
-        known = {item.name for item in fields(cls)} - {"options"}
-        options = legacy_options
-        options.update(
-            (name, values.pop(name)) for name in list(values) if name not in known
-        )
-        values["options"] = options
-        return cls(**values)
 
-    def model_kwargs(self) -> dict[str, Any]:
-        excluded = {
-            "input_size",
-            "output_size",
-            "model_type",
-            "label_len",
-            "informer_like",
-            "use_time_encoding",
-            "cache_implementation",
-            "ct_patchtst",
-            "ct_patch_len",
-            "ct_patch_stride",
-            "ct_patch_pad_end",
-            "ct_patch_fuse",
-            "output_hidden_states",
-            "output_attentions",
-            "return_dict",
-            "options",
-        }
-        values = self.to_dict()
-        kwargs = {key: value for key, value in values.items() if key not in excluded}
-        kwargs.update(self.options)
-        return kwargs
+def _check_positive(config: TransformerConfig, *names: str) -> None:
+    for name in names:
+        if getattr(config, name) <= 0:
+            raise ValueError(f"{name} must be positive")
+
+
+def _check_choice(config: TransformerConfig, name: str, choices: Any) -> None:
+    allowed = choices.__args__
+    value = getattr(config, name)
+    if value not in allowed:
+        raise ValueError(f"{name} must be one of {allowed}, got {value!r}")
+
+
+def _check_attention_name(name: str) -> None:
+    # Imported lazily: the backend registries pull in the attention modules.
+    from foreblocks.nn.attention.variants.registry import ATTENTION_VARIANTS
+    from foreblocks.nn.transformer.attention_backends import LAYER_ATTENTION_BACKENDS
+
+    known = set(LAYER_ATTENTION_BACKENDS) | set(ATTENTION_VARIANTS.names())
+    if name not in known:
+        raise ValueError(
+            f"unknown attention {name!r}; expected one of: {', '.join(sorted(known))}"
+        )
+
+
+# FeedForwardBlock arguments owned by flat fields, or live objects.
+_MOE_RESERVED = {
+    "self",
+    "d_model",
+    "dim_ff",
+    "dropout",
+    "use_swiglu",
+    "activation",
+    "use_moe",
+    "num_experts",
+    "top_k",
+    "moe_use_latent",
+    "moe_latent_dim",
+    "moe_latent_d_ff",
+    "moe_logger",
+    "step_getter",
+}
+
+
+def _check_moe_options(options: Mapping[str, Any]) -> None:
+    if not options:
+        return
+    import inspect
+
+    from foreblocks.nn.moe.feedforward import FeedForwardBlock
+
+    known = set(inspect.signature(FeedForwardBlock.__init__).parameters) - _MOE_RESERVED
+    unknown = sorted(set(options) - known)
+    if unknown:
+        raise ValueError("unknown moe_options: " + ", ".join(unknown))
 
 
 @dataclass(frozen=True)
 class GenerationConfig:
-    """Generation-time configuration, independent from decoder model construction."""
+    """Generation-time configuration, independent from decoder construction."""
 
     max_new_tokens: int = 1
     return_dict: bool = True
@@ -482,11 +407,4 @@ class GenerationConfig:
             raise ValueError("max_new_tokens must be non-negative")
 
 
-__all__ = [
-    "AttentionConfig",
-    "AttentionMode",
-    "CacheConfig",
-    "GenerationConfig",
-    "ResidualConfig",
-    "TransformerConfig",
-]
+__all__ = ["ATTENTION_OPTIONS", "GenerationConfig", "TransformerConfig"]

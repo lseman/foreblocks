@@ -1,272 +1,38 @@
-"""foreblocks.nn.transformer.encoder.
-
-Transformer encoder with lazy multi-backend attention and mixture-of-depths routing.
-
-Implements TransformerEncoderLayer with lazy attention module instantiation
-(~22M fewer dead params per 12-layer model) supporting standard, linear, Kimi,
-GLA, DeltaNet, GatedDeltaNet, and SyPE backends. Includes CT-PatchTST
-alternative tokenization and Mixture-of-Depths layer routing.
-
-Core API:
-- TransformerEncoderLayer: encoder layer with lazy attention backends
-- TransformerEncoder: full encoder with patching, time encoding, and MoD routing
-
-"""
+"""Transformer encoder stack with patching, variate mixing, and depth routing."""
 
 from __future__ import annotations
 
-import dataclasses
 import math
-from typing import Literal
+from typing import ClassVar
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.nn.transformer.config import TransformerConfig
-from foreblocks.nn.transformer.attention_backends import (
-    LazyAttentionBackendMixin,
-)
-from foreblocks.nn.transformer.base import (
-    BaseTransformer,
-    BaseTransformerLayer,
-)
-from foreblocks.nn.transformer.configuration import (
-    resolve_layer_config,
-    resolve_model_config,
-)
-from foreblocks.nn.transformer.mixing import MixingTransformer
-from foreblocks.nn.residual.hyper_connections import mhc_init_streams
-from foreblocks.nn.embeddings.patching import PatchInfo
-from foreblocks.nn.residual.attention_residual import (
-    AttentionResidual,
-    BlockAttentionResidual,
-)
+from foreblocks.nn.embeddings.patching import PatchInfo, PatchTokenizer
+from foreblocks.nn.transformer.base import BaseTransformer, StackTrace
+from foreblocks.nn.transformer.config import Role, TransformerConfig
+from foreblocks.nn.transformer.layers.encoder import TransformerEncoderLayer
+from foreblocks.nn.transformer.layers.mixing import MixingTransformer
 from foreblocks.nn.transformer.runtime.contiguous import (
-    contiguous_quantile_loss as compute_contiguous_quantile_loss,
+    contiguous_quantile_loss,
     prepare_contiguous_forecast,
     project_contiguous_quantiles,
 )
-from foreblocks.nn.transformer.runtime.execution import (
-    MHCExecutionMixin,
-    ModelLayerInvokeStrategy,
-    NormWrapper,
-    ResidualBlockMixin,
+from foreblocks.nn.transformer.runtime.execution import ModelLayerInvokeStrategy
+from foreblocks.nn.transformer.runtime.forward import (
+    LayerResult,
+    execute_encoder_layer,
+    prepare_encoder_input,
 )
-from foreblocks.nn.transformer.runtime.forward import prepare_encoder_input
-from foreblocks.nn.transformer.runtime.outputs import (
-    TransformerEncoderOutput,
-    resolve_output_options,
-)
-from foreblocks.nn.transformer.runtime.residual_state import (
-    AttentionResidualState,
-    init_attention_residual_state,
-)
+from foreblocks.nn.transformer.runtime.outputs import TransformerEncoderOutput
 from foreblocks.nn.transformer.runtime.routing import (
     gateskip_active_mask_from_padding,
     gather_padding_mask,
     gather_sequence_tokens,
     gather_square_mask,
 )
-from foreblocks.nn.embeddings import InformerTimeEmbedding
-from foreblocks.nn.routing.gateskip import ResidualGate
 from foreblocks.studio.node_spec import node
-
-
-class TransformerEncoderLayer(
-    ResidualBlockMixin,
-    MHCExecutionMixin,
-    LazyAttentionBackendMixin,
-    BaseTransformerLayer,
-):
-    def __init__(
-        self,
-        d_model: int | TransformerConfig | None = None,
-        nhead: int | None = None,
-        *,
-        config: TransformerConfig | None = None,
-        layer_attention_type: str = "standard",
-        dropout: float | None = None,
-        **legacy_kwargs,
-    ):
-        config = resolve_layer_config(
-            d_model, nhead, config, role="encoder", overrides=legacy_kwargs
-        )
-
-        dropout = config.dropout if dropout is None else dropout
-        super().__init__(config, dropout=dropout)
-
-        d_model = config.d_model
-        nhead = config.nhead
-
-        self.layer_attention_type = str(layer_attention_type)
-
-        self.attn_norm = NormWrapper.build(
-            d_model,
-            config.custom_norm,
-            config.norm_strategy,
-            dropout,
-            config.layer_norm_eps,
-        )
-        self.ff_norm = NormWrapper.build(
-            d_model,
-            config.custom_norm,
-            config.norm_strategy,
-            dropout,
-            config.layer_norm_eps,
-        )
-
-        self.gate_attn = ResidualGate(d_model)
-        self.gate_ff = ResidualGate(d_model)
-
-        self.mhc_conn_attn: nn.Module | None = None
-        self.mhc_conn_ff: nn.Module | None = None
-        if self.use_mhc:
-            self._ensure_mhc_mixers()
-
-        self.attn_input_residual = (
-            BlockAttentionResidual(d_model)
-            if self.attention_residual_mode == "block"
-            else AttentionResidual(d_model)
-        )
-        self.ff_input_residual = (
-            BlockAttentionResidual(d_model)
-            if self.attention_residual_mode == "block"
-            else AttentionResidual(d_model)
-        )
-        self.materialize_attention_type()
-
-    def _ensure_mhc_mixers(self) -> None:
-        if not self.use_mhc:
-            self.mhc_conn_attn = None
-            self.mhc_conn_ff = None
-            return
-
-        if (self.mhc_conn_attn is None) or (
-            getattr(self.mhc_conn_attn, "n", None) != self.mhc_n_streams
-        ):
-            self.mhc_conn_attn = self._new_mhc_connection()
-        if (self.mhc_conn_ff is None) or (
-            getattr(self.mhc_conn_ff, "n", None) != self.mhc_n_streams
-        ):
-            self.mhc_conn_ff = self._new_mhc_connection()
-
-    def forward(
-        self,
-        src: torch.Tensor,
-        src_mask: torch.Tensor | None = None,
-        src_key_padding_mask: torch.Tensor | None = None,
-        gate_budget: float | None = None,
-        gate_lambda: float | None = None,
-        use_gateskip: bool | None = None,
-        streams: torch.Tensor | None = None,
-        use_mhc: bool | None = None,
-        mhc_n_streams: int | None = None,
-        mhc_sinkhorn_iters: int | None = None,
-        mhc_collapse: str | None = None,
-        mtp_targets: torch.Tensor | None = None,
-        attention_residual_state: AttentionResidualState | None = None,
-        gateskip_active_mask: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        self._reset_aux_loss()
-        gateskip_active_mask = (
-            gateskip_active_mask.to(dtype=torch.bool)
-            if gateskip_active_mask is not None
-            else None
-        )
-
-        self._validate_runtime_mhc_overrides(
-            use_mhc=use_mhc,
-            mhc_n_streams=mhc_n_streams,
-            mhc_sinkhorn_iters=mhc_sinkhorn_iters,
-            mhc_collapse=mhc_collapse,
-        )
-        cfg = self._build_residual_cfg(
-            use_gateskip=use_gateskip,
-            gate_budget=gate_budget,
-            gate_lambda=gate_lambda,
-            training=self.training,
-        )
-        aux_l2_terms: list[torch.Tensor] = []
-
-        attn_mod = self._self_attn()
-
-        if self.use_attention_residual:
-            if cfg.use_gateskip:
-                raise RuntimeError(
-                    "Attention Residuals are not compatible with GateSkip at the layer level."
-                )
-            if self.use_mhc:
-                raise RuntimeError(
-                    "Attention Residuals are not compatible with mHC at the layer level."
-                )
-            if attention_residual_state is None:
-                attention_residual_state = init_attention_residual_state(
-                    src,
-                    self.attention_residual_mode,
-                    self.attention_residual_block_size,
-                )
-
-        strategy = self._make_exec_strategy(
-            x=src, streams=streams, attention_residual_state=attention_residual_state
-        )
-        self._record_aux_loss_device(src.device)
-        if self.use_mhc:
-            assert self.mhc_conn_attn is not None and self.mhc_conn_ff is not None
-
-        def attn_core(x_in):
-            out, _, _ = attn_mod(x_in, x_in, x_in, src_mask, src_key_padding_mask)
-            return out, None
-
-        def attn_mhc_core(x_in: torch.Tensor) -> torch.Tensor:
-            out, _, _ = attn_mod(x_in, x_in, x_in, src_mask, src_key_padding_mask)
-            return out
-
-        strategy.run_block(
-            normw=self.attn_norm,
-            gate=self.gate_attn,
-            cfg=cfg,
-            aux_l2_terms=aux_l2_terms,
-            core_fn=attn_core,
-            mhc_core=attn_mhc_core,
-            hyper_conn=self.mhc_conn_attn,
-            active_mask=gateskip_active_mask,
-            residual_module=self.attn_input_residual,
-        )
-
-        def ff_core(x_in: torch.Tensor) -> tuple[torch.Tensor, dict | None]:
-            return self._ff_forward_with_aux(
-                x_in,
-                mtp_targets=mtp_targets,
-                padding_mask=src_key_padding_mask,
-            ), None
-
-        def ff_mhc_core(x_in: torch.Tensor) -> torch.Tensor:
-            return self._ff_forward_with_aux(
-                x_in,
-                mtp_targets=mtp_targets,
-                padding_mask=src_key_padding_mask,
-            )
-
-        strategy.run_block(
-            normw=self.ff_norm,
-            gate=self.gate_ff,
-            cfg=cfg,
-            aux_l2_terms=aux_l2_terms,
-            core_fn=ff_core,
-            mhc_core=ff_mhc_core,
-            hyper_conn=self.mhc_conn_ff,
-            active_mask=gateskip_active_mask,
-            residual_module=self.ff_input_residual,
-        )
-
-        self._finalize_gateskip_aux(cfg, aux_l2_terms)
-
-        if self.use_attention_residual:
-            return strategy.x, None
-
-        out_src, out_streams = strategy.collapse(self.mhc_collapse)
-        return out_src, out_streams
 
 
 @node(
@@ -275,197 +41,107 @@ class TransformerEncoderLayer(
     category="Encoder",
     outputs=["encoder"],
     color="bg-gradient-to-br from-green-700 to-green-800",
-    config_sources=[BaseTransformerLayer, TransformerEncoderLayer],
 )
 class TransformerEncoder(BaseTransformer):
-    def __init__(
-        self,
-        input_size: int | TransformerConfig | None = None,
-        use_time_encoding: bool | None = None,
-        model_type: str | None = None,
-        ct_patchtst: bool | None = None,
-        ct_patch_len: int | None = None,
-        ct_patch_stride: int | None = None,
-        ct_patch_pad_end: bool | None = None,
-        ct_patch_fuse: Literal["mean", "linear"] | None = None,
-        config: TransformerConfig | None = None,
-        **kwargs,
-    ):
-        overrides = {
-            name: value
-            for name, value in {
-                "use_time_encoding": use_time_encoding,
-                "model_type": model_type,
-                "ct_patchtst": ct_patchtst,
-                "ct_patch_len": ct_patch_len,
-                "ct_patch_stride": ct_patch_stride,
-                "ct_patch_pad_end": ct_patch_pad_end,
-                "ct_patch_fuse": ct_patch_fuse,
-            }.items()
-            if value is not None
-        }
-        config = resolve_model_config(
-            input_size,
-            config,
-            role="encoder",
-            overrides={**kwargs, **overrides},
-        )
-        self.model_type = config.model_type
-        self.use_time_encoding = config.use_time_encoding
-        self.use_variate_attention = config.use_variate_attention
-        self.variate_fuse = config.variate_fuse
-        self.ct_patchtst = config.ct_patchtst
-        self.ct_patch_len = config.ct_patch_len
-        self.ct_patch_stride = config.ct_patch_stride
-        self.ct_patch_pad_end = config.ct_patch_pad_end
-        self.ct_patch_fuse = config.ct_patch_fuse
-        super().__init__(config.input_size, config=config)
-        self.input_size = config.input_size
-        self.time_encoder = (
-            InformerTimeEmbedding(self.d_model) if self.use_time_encoding else None
-        )
-        self.ct_patch_embed = (
-            nn.Linear(self.ct_patch_len, self.d_model) if self.ct_patchtst else None
-        )
-        self.ct_channel_fuse = (
-            nn.Linear(self.input_size * self.d_model, self.d_model)
-            if (self.ct_patchtst and self.ct_patch_fuse == "linear")
-            else None
-        )
-        self.variate_output_fuse = (
-            nn.Linear(self.input_size * self.d_model, self.d_model)
-            if (self.use_variate_attention and self.variate_fuse == "linear")
-            else None
-        )
-        self.missing_token = (
-            nn.Parameter(torch.empty(self.d_model))
-            if self.use_variate_attention
-            else None
-        )
-        self.forecast_quantiles = tuple(config.forecast_quantiles)
-        self.contiguous_patch_head = (
-            nn.Linear(
-                self.d_model,
-                self.patch_len * len(self.forecast_quantiles),
+    """Encoder stack over ``[B, T, C]`` inputs.
+
+    Example::
+
+        encoder = TransformerEncoder(input_size=4, d_model=64, n_heads=4,
+                                     patching="none", residual="gateskip")
+        memory = encoder(x).last_hidden_state
+    """
+
+    role: ClassVar[Role] = "encoder"
+
+    def _build_role_modules(self) -> None:
+        config = self.config
+        d_model = config.d_model
+        self.patcher = (
+            PatchTokenizer(
+                d_model,
+                config.patch_len,
+                config.patch_stride,
+                pad_end=config.patch_pad_end,
             )
-            if config.use_contiguous_patch_decoding
+            if config.patching == "shared"
             else None
         )
-
-        # These modules are created after BaseTransformer has applied the
-        # model-wide initialization policy, so initialize them explicitly.
-        # Otherwise they retain PyTorch defaults and have a seed-dependent
-        # scale that is inconsistent with the rest of the transformer.
-        for module in (
-            self.time_encoder,
-            self.ct_patch_embed,
-            self.ct_channel_fuse,
-            self.variate_output_fuse,
-            self.contiguous_patch_head,
-        ):
-            if module is not None:
-                module.apply(self._init_weights)
+        channel = config.patching == "channel"
+        self.channel_patch_embed = (
+            nn.Linear(config.patch_len, d_model) if channel else None
+        )
+        self.channel_fuse = (
+            nn.Linear(config.input_size * d_model, d_model)
+            if channel and config.channel_fuse == "linear"
+            else None
+        )
+        variate = config.variate_attention
+        self.variate_output_fuse = (
+            nn.Linear(config.input_size * d_model, d_model)
+            if variate and config.variate_fuse == "linear"
+            else None
+        )
+        self.missing_token = nn.Parameter(torch.empty(d_model)) if variate else None
         if self.missing_token is not None:
-            nn.init.normal_(self.missing_token, mean=0.0, std=self.initializer_range)
-
-        # FIX: stash last patched mask + patch info to avoid decoder mismatch bugs
+            nn.init.normal_(self.missing_token, mean=0.0, std=config.init_std)
+        self.contiguous_patch_head = (
+            nn.Linear(d_model, config.patch_len * len(config.quantiles))
+            if config.contiguous_decoding
+            else None
+        )
+        # Padding mask and patch geometry of the last forward, for decoders
+        # that attend to this encoder's (patched) memory.
         self.last_memory_key_padding_mask: torch.Tensor | None = None
         self.last_patch_info: PatchInfo | None = None
 
-    @staticmethod
-    def _compute_ct_patch_pad(T: int, P: int, S: int) -> int:
-        if T <= 0:
-            return 0
-        if T < P:
-            return P - T
-        n_patches = math.ceil((T - P) / S) + 1
-        T_pad = (n_patches - 1) * S + P
-        return max(0, T_pad - T)
+    def _make_layer(self, config: TransformerConfig) -> nn.Module:
+        if config.variate_attention:
+            return MixingTransformer(config)
+        return TransformerEncoderLayer(config)
 
-    def _ct_patchify(self, src: torch.Tensor) -> tuple[torch.Tensor, PatchInfo]:
-        if self.ct_patch_embed is None:
-            raise RuntimeError("CT-PatchTST is not enabled.")
-        if src.dim() != 3:
-            raise ValueError(f"CT-PatchTST expects [B,T,C], got {tuple(src.shape)}")
-
-        B, T, C = src.shape
-        if self.input_size != C:
-            raise ValueError(f"Expected input size {self.input_size}, got {C}")
-
+    # ---- Channel patching -----------------------------------------------------
+    def _channel_patchify(self, src: torch.Tensor) -> tuple[torch.Tensor, PatchInfo]:
+        """Embed each channel's patches, then fuse channels per patch."""
+        config = self.config
+        batch_size, length, channels = src.shape
         x = src.transpose(1, 2).contiguous()  # [B,C,T]
-        pad = (
-            self._compute_ct_patch_pad(T, self.ct_patch_len, self.ct_patch_stride)
-            if self.ct_patch_pad_end
-            else 0
-        )
-        if pad > 0:
+        pad = _end_padding(length, config.patch_len, config.patch_stride)
+        if config.patch_pad_end and pad > 0:
             x = F.pad(x, (0, pad))
-        T_pad = x.size(-1)
-
-        patches = x.unfold(
-            dimension=2, size=self.ct_patch_len, step=self.ct_patch_stride
-        ).contiguous()  # [B,C,Np,P]
-        Np = patches.size(2)
-
-        tok = self.ct_patch_embed(patches)  # [B,C,Np,D]
-        if self.ct_patch_fuse == "mean":
-            tokens = tok.mean(dim=1)  # [B,Np,D]
+        patches = x.unfold(2, config.patch_len, config.patch_stride)  # [B,C,Np,P]
+        num_patches = patches.size(2)
+        tokens = self.channel_patch_embed(patches)  # [B,C,Np,D]
+        if config.channel_fuse == "mean":
+            tokens = tokens.mean(dim=1)
         else:
-            if self.ct_channel_fuse is None:
-                raise RuntimeError("ct_channel_fuse is not initialized.")
-            tok = tok.permute(0, 2, 1, 3).reshape(B, Np, C * self.d_model)
-            tokens = self.ct_channel_fuse(tok)  # [B,Np,D]
-
+            tokens = tokens.permute(0, 2, 1, 3).reshape(
+                batch_size, num_patches, channels * config.d_model
+            )
+            tokens = self.channel_fuse(tokens)
         info = PatchInfo(
-            T_orig=T,
-            T_pad=T_pad,
-            n_patches=Np,
-            patch_len=self.ct_patch_len,
-            stride=self.ct_patch_stride,
+            T_orig=length,
+            T_pad=x.size(-1),
+            n_patches=num_patches,
+            patch_len=config.patch_len,
+            stride=config.patch_stride,
         )
         return tokens, info
 
-    def _make_layer(
-        self,
-        config: TransformerConfig,
-        layer_attention_type: str,
-        dropout: float,
-        informer_like: bool,
-    ) -> nn.Module:
-        if config.use_variate_attention:
-            attention = dataclasses.replace(
-                config.attention,
-                shape=dataclasses.replace(config.attention.shape, dropout=dropout),
-                variant=dataclasses.replace(
-                    config.attention.variant, name=layer_attention_type
-                ),
-            )
-            layer_config = dataclasses.replace(
-                config, attention=attention, dropout=dropout
-            )
-            return MixingTransformer(
-                layer_config,
-                use_variate_attention=True,
-                variate_position_encoding=config.variate_position_encoding,
-            )
-        return TransformerEncoderLayer(
-            config, layer_attention_type=layer_attention_type, dropout=dropout
-        )
-
+    # ---- Variate mixing -------------------------------------------------------
     def _fuse_variate_hidden(
         self,
         hidden_states: torch.Tensor,
         padding_mask: torch.Tensor | None,
     ) -> torch.Tensor:
-        if self.variate_fuse == "none":
+        fuse = self.config.variate_fuse
+        if fuse == "none":
             return hidden_states
-        if self.variate_fuse == "mean":
+        if fuse == "mean":
             if padding_mask is None:
                 return hidden_states.mean(dim=1)
             valid = (~padding_mask).unsqueeze(-1).to(dtype=hidden_states.dtype)
             return (hidden_states * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
-        if self.variate_output_fuse is None:
-            raise RuntimeError("linear variate fusion is not initialized")
         if padding_mask is not None:
             hidden_states = hidden_states.masked_fill(padding_mask.unsqueeze(-1), 0.0)
         batch_size, num_variates, token_length, d_model = hidden_states.shape
@@ -477,7 +153,7 @@ class TransformerEncoder(BaseTransformer):
     def _fuse_variate_mask(
         self, padding_mask: torch.Tensor | None
     ) -> torch.Tensor | None:
-        if padding_mask is None or self.variate_fuse == "none":
+        if padding_mask is None or self.config.variate_fuse == "none":
             return padding_mask
         return padding_mask.all(dim=1)
 
@@ -490,30 +166,21 @@ class TransformerEncoder(BaseTransformer):
         output_hidden_states: bool,
         output_attentions: bool,
         return_dict: bool,
-        preserve_variate_axis: bool = False,
+        preserve_variate_axis: bool,
     ) -> torch.Tensor | TransformerEncoderOutput:
-        use_ckpt = self.training and self.use_gradient_checkpointing
-        used_indices: list[int] = []
-        hidden_states = [x] if output_hidden_states else None
-        sequence_attentions: list[torch.Tensor] = []
+        use_ckpt = self._use_layer_checkpointing()
+        trace = StackTrace.start(x, output_hidden_states)
         variate_attentions: list[torch.Tensor] = []
 
-        for index in range(self.num_layers):
+        for index in range(self.config.num_layers):
             layer = self._resolve_layer(index)
-            if not isinstance(layer, MixingTransformer):
-                raise RuntimeError(
-                    "variate attention requires MixingTransformer layers"
-                )
-            used_indices.append(index)
             if use_ckpt and not output_attentions:
 
                 def run_layer(
-                    value: torch.Tensor, mixing_layer: MixingTransformer = layer
+                    value: torch.Tensor, mixing_layer: nn.Module = layer
                 ) -> torch.Tensor:
                     return mixing_layer(
-                        value,
-                        src_key_padding_mask,
-                        sequence_mask=src_mask,
+                        value, src_key_padding_mask, sequence_mask=src_mask
                     )[0]
 
                 x = self._run_with_checkpoint(run_layer, x, use_checkpoint=True)
@@ -525,52 +192,40 @@ class TransformerEncoder(BaseTransformer):
                     sequence_mask=src_mask,
                     need_weights=output_attentions,
                 )
-            if hidden_states is not None:
-                hidden_states.append(x)
-            if sequence_weights is not None:
-                sequence_attentions.append(sequence_weights)
+            trace.record(
+                index, LayerResult(hidden_states=x, self_attention=sequence_weights)
+            )
             if variate_weights is not None:
                 variate_attentions.append(variate_weights)
 
-        self._finalize_layer_stack(used_indices)
-        x = self.final_norm(x)
-        if hidden_states is not None:
-            hidden_states[-1] = x
-
-        fused_mask = (
-            src_key_padding_mask
-            if preserve_variate_axis
-            else self._fuse_variate_mask(src_key_padding_mask)
-        )
-        fused_output = (
-            x
-            if preserve_variate_axis
-            else self._fuse_variate_hidden(x, src_key_padding_mask)
-        )
+        x = self._finish_stack(x, trace, None)
+        hidden_states = trace.hidden_states
+        if preserve_variate_axis:
+            fused_mask, fused_output = src_key_padding_mask, x
+        else:
+            fused_mask = self._fuse_variate_mask(src_key_padding_mask)
+            fused_output = self._fuse_variate_hidden(x, src_key_padding_mask)
+            if hidden_states is not None:
+                hidden_states = [
+                    self._fuse_variate_hidden(state, src_key_padding_mask)
+                    for state in hidden_states
+                ]
         self.last_memory_key_padding_mask = fused_mask
-        if hidden_states is not None and not preserve_variate_axis:
-            hidden_states = [
-                self._fuse_variate_hidden(state, src_key_padding_mask)
-                for state in hidden_states
-            ]
 
-        if return_dict:
-            return TransformerEncoderOutput(
-                last_hidden_state=fused_output,
-                hidden_states=(
-                    tuple(hidden_states) if hidden_states is not None else None
-                ),
-                aux_loss=self.aux_loss,
-                padding_mask=fused_mask,
-                attentions=(
-                    tuple(sequence_attentions) if sequence_attentions else None
-                ),
-                variate_attentions=(
-                    tuple(variate_attentions) if variate_attentions else None
-                ),
-            )
-        return fused_output
+        if not return_dict:
+            return fused_output
+        return TransformerEncoderOutput(
+            last_hidden_state=fused_output,
+            hidden_states=tuple(hidden_states) if hidden_states is not None else None,
+            aux_loss=self.aux_loss,
+            padding_mask=fused_mask,
+            attentions=tuple(trace.attentions) if trace.attentions else None,
+            variate_attentions=(
+                tuple(variate_attentions) if variate_attentions else None
+            ),
+        )
 
+    # ---- Contiguous multi-patch forecasting ----------------------------------
     def forecast_contiguous(
         self,
         target: torch.Tensor,
@@ -591,15 +246,13 @@ class TransformerEncoder(BaseTransformer):
         over the horizon. The result is ``[B, horizon, C_target, Q]``.
         """
         if self.contiguous_patch_head is None:
-            raise RuntimeError(
-                "contiguous decoding is disabled; set "
-                "use_contiguous_patch_decoding=True"
-            )
+            raise RuntimeError("set contiguous_decoding=True to forecast contiguously")
+        config = self.config
         prepared = prepare_contiguous_forecast(
             target,
             horizon,
-            input_size=self.input_size,
-            patch_length=self.patch_len,
+            input_size=config.input_size,
+            patch_length=config.patch_len,
             past_only_covariates=past_only_covariates,
             past_future_covariates=past_future_covariates,
             target_mask=target_mask,
@@ -614,20 +267,13 @@ class TransformerEncoder(BaseTransformer):
             preserve_variate_axis=True,
             return_dict=False,
         )
-        if not isinstance(encoded, torch.Tensor) or encoded.ndim != 4:
-            raise RuntimeError("contiguous decoding requires 4D variate states")
         return project_contiguous_quantiles(
             encoded,
             self.contiguous_patch_head,
             prepared,
-            patch_length=self.patch_len,
-            num_quantiles=len(self.forecast_quantiles),
+            patch_length=config.patch_len,
+            num_quantiles=len(config.quantiles),
         )
-
-    @torch.no_grad()
-    def decode_contiguous(self, *args, **kwargs) -> torch.Tensor:
-        """Inference-only alias for :meth:`forecast_contiguous`."""
-        return self.forecast_contiguous(*args, **kwargs)
 
     def contiguous_quantile_loss(
         self,
@@ -636,80 +282,47 @@ class TransformerEncoder(BaseTransformer):
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Pinball loss for ``[B,H,C,Q]`` contiguous forecasts."""
-        return compute_contiguous_quantile_loss(
-            predictions, targets, self.forecast_quantiles, mask
+        return contiguous_quantile_loss(
+            predictions, targets, self.config.quantiles, mask
         )
 
+    # ---- Forward ---------------------------------------------------------------
     def forward(
         self,
         src: torch.Tensor,  # [B, T, C]
         src_mask: torch.Tensor | None = None,
         src_key_padding_mask: torch.Tensor | None = None,  # [B,T] bool
         time_features: torch.Tensor | None = None,  # [B, T, F_tf]
-        gateskip_active_mask: torch.Tensor | None = None,  # [B,T] bool
+        active_mask: torch.Tensor | None = None,  # [B,T] bool
         value_mask: torch.Tensor | None = None,
         preserve_variate_axis: bool = False,
-        output_hidden_states: bool | None = None,
-        output_attentions: bool | None = None,
-        return_dict: bool | None = None,
+        output_hidden_states: bool = False,
+        output_attentions: bool = False,
+        return_dict: bool = True,
     ) -> torch.Tensor | TransformerEncoderOutput:
-        output_hidden_states, output_attentions, return_dict = resolve_output_options(
-            self.config, output_hidden_states, output_attentions, return_dict
-        )
-        self.mod_aux_loss = 0.0
+        """Encode ``src``.
+
+        ``active_mask`` marks tokens eligible for GateSkip gating and
+        Mixture-of-Depths routing; it defaults to the non-padded tokens.
+        ``value_mask`` marks missing values (variate mixing only).
+        """
+        self._begin_forward()
         prepared = prepare_encoder_input(
-            self,
-            src,
-            src_key_padding_mask,
-            gateskip_active_mask,
-            value_mask=value_mask,
+            self, src, src_key_padding_mask, active_mask, value_mask=value_mask
         )
         x = prepared.hidden_states
         src_key_padding_mask = prepared.padding_mask
-        gateskip_active_mask = prepared.active_mask
-        patch_info = prepared.patch_info
-
-        if gateskip_active_mask is None:
-            gateskip_active_mask = gateskip_active_mask_from_padding(
-                src_key_padding_mask
-            )
-
-        # FIX: stash for downstream decoder
+        active_mask = prepared.active_mask
+        if active_mask is None:
+            active_mask = gateskip_active_mask_from_padding(src_key_padding_mask)
         self.last_memory_key_padding_mask = src_key_padding_mask
-        self.last_patch_info = patch_info
+        self.last_patch_info = prepared.patch_info
 
-        # Only apply input-level positional encoding for non-RoPE/ALiBi modes.
-        # RoPE and ALiBi handle position encoding internally inside attention.
-        if self.pos_encoding_type in ("sinusoidal", "learnable"):
-            if self.use_variate_attention:
-                batch_size, num_variates, token_length, d_model = x.shape
-                x = self.pos_encoder(
-                    x.reshape(batch_size * num_variates, token_length, d_model)
-                ).reshape(batch_size, num_variates, token_length, d_model)
-            else:
-                x = self.pos_encoder(x)
+        x = self._add_input_positions(x)
+        x = self._add_time_encoding(x, time_features)
+        x = self._input_dropout(x)
 
-        # Time encoding only for timestep-space by default (encoder patching skips it)
-        if (
-            (not self.patch_encoder)
-            and (not self.ct_patchtst)
-            and (self.time_encoder is not None)
-            and (time_features is not None)
-        ):
-            time_emb = self.time_encoder(time_features)  # [B, T, D]
-            expected_shape = (
-                (x.shape[0], x.shape[2]) if self.use_variate_attention else x.shape[:2]
-            )
-            if time_emb.shape[:2] != expected_shape:
-                raise ValueError(
-                    f"Time features shape {time_emb.shape} incompatible with input {x.shape}"
-                )
-            x = x + (time_emb[:, None] if self.use_variate_attention else time_emb)
-
-        if self.training and self.dropout > 0:
-            x = F.dropout(x, p=self.dropout, training=True)
-
-        if self.use_variate_attention:
+        if self.config.variate_attention:
             return self._forward_variate_stack(
                 x,
                 src_mask,
@@ -719,117 +332,98 @@ class TransformerEncoder(BaseTransformer):
                 return_dict=return_dict,
                 preserve_variate_axis=preserve_variate_axis,
             )
-
         if preserve_variate_axis:
-            raise ValueError(
-                "preserve_variate_axis requires use_variate_attention=True"
-            )
+            raise ValueError("preserve_variate_axis requires variate_attention=True")
 
-        self._validate_attention_residual_runtime()
-        self._validate_mod_runtime()
         attention_residual_state = self._init_attention_residual_state(x)
-
-        # mHC streams
-        streams: torch.Tensor | None = (
-            mhc_init_streams(x, self.mhc_n_streams) if self.use_mhc else None
+        streams = self._init_streams(x)
+        invoke = ModelLayerInvokeStrategy(
+            owner=self, use_checkpoint=self._use_layer_checkpointing()
         )
+        budget = self._gate_budget()
 
-        # safest: checkpoint only when not using mHC (streams complicate checkpoint)
-        use_ckpt = (
-            self.training
-            and self.use_gradient_checkpointing
-            and (not self.use_mhc)
-            and (not self.use_attention_residual)
-        )
-        invoke = ModelLayerInvokeStrategy(owner=self, use_checkpoint=use_ckpt)
-        runtime_budget = self._get_runtime_budget()
-
-        used_indices: list[int] = []
-        all_hidden_states: list[torch.Tensor] | None = (
-            [x] if output_hidden_states else None
-        )
-        router_states: list[object] = []
-        all_attentions: list[torch.Tensor] = []
-
-        for i in range(self.num_layers):
-            if self.use_mod:
-
-                def invoke_routed(layer, routed_indices, routed_slots):
-                    nonlocal streams
-                    x_routed = gather_sequence_tokens(x, routed_indices)
-                    src_mask_routed = gather_square_mask(src_mask, routed_indices)
-                    src_kpm_routed = gather_padding_mask(
-                        src_key_padding_mask, routed_indices, routed_slots
-                    )
-                    x_routed_out, streams = invoke.run_encoder_layer(
-                        layer=layer,
-                        x=x_routed,
-                        src_mask=src_mask_routed,
-                        src_key_padding_mask=src_kpm_routed,
-                        budget=runtime_budget,
-                        streams=streams,
-                        attention_residual_state=attention_residual_state,
-                        gateskip_active_mask=routed_slots,
-                    )
-                    return x_routed, x_routed_out
-
-                x, was_used = self._run_mod_layer(
-                    i,
-                    x,
-                    gateskip_active_mask,
-                    all_hidden_states,
-                    router_states,
-                    invoke_routed,
-                )
-                if was_used:
-                    used_indices.append(i)
-                continue
-
-            layer = self._resolve_layer(i)
-            attention_module = layer._self_attn()
-            if hasattr(attention_module, "output_attentions"):
-                attention_module.output_attentions = output_attentions
-            used_indices.append(i)
-            x, streams = invoke.run_encoder_layer(
-                layer=layer,
-                x=x,
+        def run_layer(index: int, hidden: torch.Tensor) -> LayerResult:
+            nonlocal streams
+            result = execute_encoder_layer(
+                self,
+                invoke,
+                layer_index=index,
+                hidden_states=hidden,
                 src_mask=src_mask,
                 src_key_padding_mask=src_key_padding_mask,
-                budget=runtime_budget,
+                budget=budget,
                 streams=streams,
                 attention_residual_state=attention_residual_state,
-                gateskip_active_mask=gateskip_active_mask,
+                active_mask=active_mask,
+                output_attentions=output_attentions,
             )
-            if all_hidden_states is not None:
-                all_hidden_states.append(x)
-            ff_block = getattr(getattr(layer, "feed_forward", None), "block", None)
-            router_state = getattr(ff_block, "last_routing_state", None)
-            if router_state is not None:
-                router_states.append(router_state)
-            attention_weights = getattr(attention_module, "last_attn_weights", None)
-            if attention_weights is not None:
-                all_attentions.append(attention_weights)
+            streams = result.streams
+            return result
 
-        # FIX: aggregate only over executed layers
-        self._finalize_layer_stack(used_indices)
-
-        x = self._finalize_attention_residual_output(attention_residual_state, x)
-        x = self.final_norm(x)
-        if all_hidden_states is not None:
-            all_hidden_states[-1] = x
-        # IMPORTANT: if patch_encoder=True, we DO NOT unpatch here.
-        if return_dict:
-            return TransformerEncoderOutput(
-                last_hidden_state=x,
-                hidden_states=(
-                    tuple(all_hidden_states) if all_hidden_states is not None else None
+        def run_routed(index, hidden, layer, routed_indices, routed_slots):
+            nonlocal streams
+            x_routed = gather_sequence_tokens(hidden, routed_indices)
+            x_routed_out, streams = invoke.run_encoder_layer(
+                layer,
+                x_routed,
+                src_mask=gather_square_mask(src_mask, routed_indices),
+                src_key_padding_mask=gather_padding_mask(
+                    src_key_padding_mask, routed_indices, routed_slots
                 ),
-                aux_loss=self.aux_loss,
-                padding_mask=src_key_padding_mask,
-                router_states=tuple(router_states) if router_states else None,
-                attentions=tuple(all_attentions) if all_attentions else None,
+                gate_budget=budget,
+                streams=streams,
+                attention_residual_state=attention_residual_state,
+                active_mask=routed_slots,
             )
-        return x
+            return x_routed, x_routed_out
+
+        trace = StackTrace.start(x, output_hidden_states)
+        x = self._run_layer_stack(
+            x, active_mask, trace, run_layer=run_layer, run_routed=run_routed
+        )
+        x = self._finish_stack(x, trace, attention_residual_state)
+        if not return_dict:
+            return x
+        return TransformerEncoderOutput(
+            last_hidden_state=x,
+            hidden_states=(
+                tuple(trace.hidden_states) if trace.hidden_states is not None else None
+            ),
+            aux_loss=self.aux_loss,
+            padding_mask=src_key_padding_mask,
+            router_states=tuple(trace.router_states) if trace.router_states else None,
+            attentions=tuple(trace.attentions) if trace.attentions else None,
+        )
+
+    def _add_time_encoding(
+        self, x: torch.Tensor, time_features: torch.Tensor | None
+    ) -> torch.Tensor:
+        # Timestep-space inputs only: patch tokens have no per-step features.
+        if (
+            self.config.patching != "none"
+            or self.time_encoder is None
+            or time_features is None
+        ):
+            return x
+        time_emb = self.time_encoder(time_features)  # [B, T, D]
+        variate = self.config.variate_attention
+        expected = (x.shape[0], x.shape[2]) if variate else x.shape[:2]
+        if time_emb.shape[:2] != expected:
+            raise ValueError(
+                f"time features shape {tuple(time_emb.shape)} does not match "
+                f"input {tuple(x.shape)}"
+            )
+        return x + (time_emb[:, None] if variate else time_emb)
 
 
-__all__ = ["TransformerEncoderLayer", "TransformerEncoder"]
+def _end_padding(length: int, patch_len: int, stride: int) -> int:
+    """Padding that lets strided patches cover every step."""
+    if length <= 0:
+        return 0
+    if length < patch_len:
+        return patch_len - length
+    num_patches = math.ceil((length - patch_len) / stride) + 1
+    return max(0, (num_patches - 1) * stride + patch_len - length)
+
+
+__all__ = ["TransformerEncoder"]

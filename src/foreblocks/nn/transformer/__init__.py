@@ -1,45 +1,53 @@
-"""Transformer configuration, encoders, decoders, mixing, and generation outputs."""
+"""Transformer configuration, encoders, decoders, layers, and outputs."""
 
 from importlib import import_module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from foreblocks.nn.transformer.config import TransformerConfig as TransformerConfig
-    from foreblocks.nn.transformer.config import AttentionMode as AttentionMode
-    from foreblocks.nn.transformer.config import GenerationConfig as GenerationConfig
-    from foreblocks.nn.transformer.config import ResidualConfig as ResidualConfig
-    from foreblocks.nn.transformer.config import CacheConfig as CacheConfig
-    from foreblocks.nn.transformer.encoder import TransformerEncoder as TransformerEncoder
-    from foreblocks.nn.transformer.encoder import TransformerEncoderLayer as TransformerEncoderLayer
-    from foreblocks.nn.transformer.decoder import TransformerDecoder as TransformerDecoder
-    from foreblocks.nn.transformer.decoder import TransformerDecoderLayer as TransformerDecoderLayer
     from foreblocks.nn.transformer.base import BaseTransformer as BaseTransformer
-    from foreblocks.nn.transformer.base import BaseTransformerLayer as BaseTransformerLayer
-    from foreblocks.nn.transformer.mixing import MixingTransformer as MixingTransformer
-    from foreblocks.nn.transformer.mixing import StackedMixingTransformer as StackedMixingTransformer
-    from foreblocks.nn.transformer.runtime.outputs import TransformerEncoderOutput as TransformerEncoderOutput
-    from foreblocks.nn.transformer.runtime.outputs import TransformerDecoderOutput as TransformerDecoderOutput
-    from foreblocks.nn.transformer.runtime.outputs import TransformerGenerationOutput as TransformerGenerationOutput
-    from foreblocks.nn.transformer.tuner import TransformerTuner as TransformerTuner
+    from foreblocks.nn.transformer.config import (
+        GenerationConfig as GenerationConfig,
+        TransformerConfig as TransformerConfig,
+    )
+    from foreblocks.nn.transformer.decoder import (
+        TransformerDecoder as TransformerDecoder,
+    )
+    from foreblocks.nn.transformer.encoder import (
+        TransformerEncoder as TransformerEncoder,
+    )
+    from foreblocks.nn.transformer.layers.base import (
+        BaseTransformerLayer as BaseTransformerLayer,
+    )
+    from foreblocks.nn.transformer.layers.decoder import (
+        TransformerDecoderLayer as TransformerDecoderLayer,
+    )
+    from foreblocks.nn.transformer.layers.encoder import (
+        TransformerEncoderLayer as TransformerEncoderLayer,
+    )
+    from foreblocks.nn.transformer.layers.mixing import (
+        MixingTransformer as MixingTransformer,
+        StackedMixingTransformer as StackedMixingTransformer,
+    )
+    from foreblocks.nn.transformer.runtime.outputs import (
+        TransformerDecoderOutput as TransformerDecoderOutput,
+        TransformerEncoderOutput as TransformerEncoderOutput,
+        TransformerGenerationOutput as TransformerGenerationOutput,
+    )
 
 _EXPORTS = {
-    'TransformerConfig': 'foreblocks.nn.transformer.config',
-    'AttentionMode': 'foreblocks.nn.transformer.config',
-    'GenerationConfig': 'foreblocks.nn.transformer.config',
-    'ResidualConfig': 'foreblocks.nn.transformer.config',
-    'CacheConfig': 'foreblocks.nn.transformer.config',
-    'TransformerEncoder': 'foreblocks.nn.transformer.encoder',
-    'TransformerEncoderLayer': 'foreblocks.nn.transformer.encoder',
-    'TransformerDecoder': 'foreblocks.nn.transformer.decoder',
-    'TransformerDecoderLayer': 'foreblocks.nn.transformer.decoder',
-    'BaseTransformer': 'foreblocks.nn.transformer.base',
-    'BaseTransformerLayer': 'foreblocks.nn.transformer.base',
-    'MixingTransformer': 'foreblocks.nn.transformer.mixing',
-    'StackedMixingTransformer': 'foreblocks.nn.transformer.mixing',
-    'TransformerEncoderOutput': 'foreblocks.nn.transformer.runtime.outputs',
-    'TransformerDecoderOutput': 'foreblocks.nn.transformer.runtime.outputs',
-    'TransformerGenerationOutput': 'foreblocks.nn.transformer.runtime.outputs',
-    'TransformerTuner': 'foreblocks.nn.transformer.tuner',
+    "TransformerConfig": "foreblocks.nn.transformer.config",
+    "GenerationConfig": "foreblocks.nn.transformer.config",
+    "TransformerEncoder": "foreblocks.nn.transformer.encoder",
+    "TransformerDecoder": "foreblocks.nn.transformer.decoder",
+    "BaseTransformer": "foreblocks.nn.transformer.base",
+    "TransformerEncoderLayer": "foreblocks.nn.transformer.layers.encoder",
+    "TransformerDecoderLayer": "foreblocks.nn.transformer.layers.decoder",
+    "BaseTransformerLayer": "foreblocks.nn.transformer.layers.base",
+    "MixingTransformer": "foreblocks.nn.transformer.layers.mixing",
+    "StackedMixingTransformer": "foreblocks.nn.transformer.layers.mixing",
+    "TransformerEncoderOutput": "foreblocks.nn.transformer.runtime.outputs",
+    "TransformerDecoderOutput": "foreblocks.nn.transformer.runtime.outputs",
+    "TransformerGenerationOutput": "foreblocks.nn.transformer.runtime.outputs",
 }
 __all__ = list(_EXPORTS)
 

@@ -8,17 +8,18 @@ from typing import Any, Protocol
 import torch
 import torch.nn as nn
 
+from foreblocks.nn.attention.cache.kv import StaticKVCache
 from foreblocks.nn.embeddings.patching import (
     PatchInfo,
     PatchTokenizer,
     patchify_padding_mask,
 )
+from foreblocks.nn.transformer.config import TransformerConfig
 from foreblocks.nn.transformer.runtime.execution import ModelLayerInvokeStrategy
 from foreblocks.nn.transformer.runtime.outputs import TransformerDecoderOutput
 from foreblocks.nn.transformer.runtime.residual_state import AttentionResidualState
 from foreblocks.nn.transformer.runtime.routing import patchify_gateskip_active_mask
 from foreblocks.nn.transformer.runtime.state import DecoderLayerState, DecoderState
-from foreblocks.nn.attention.cache.kv import StaticKVCache
 
 
 @dataclass(frozen=True)
@@ -30,22 +31,66 @@ class PreparedDecoderState:
     position_offset: torch.Tensor | int | None
 
 
-class DecoderStackOwner(Protocol):
+class StackOwner(Protocol):
     def _resolve_layer(self, layer_index: int) -> Any: ...
 
 
 @dataclass(frozen=True)
-class DecoderLayerResult:
+class LayerResult:
+    """One layer invocation's output state and runtime diagnostics."""
+
     hidden_states: torch.Tensor
-    layer_state: DecoderLayerState | None
-    streams: torch.Tensor | None
-    router_state: object | None
-    self_attention: torch.Tensor | None
-    cross_attention: torch.Tensor | None
+    streams: torch.Tensor | None = None
+    layer_state: DecoderLayerState | None = None
+    router_state: object | None = None
+    self_attention: torch.Tensor | None = None
+    cross_attention: torch.Tensor | None = None
+
+
+def _router_state(layer: Any) -> object | None:
+    ff_block = getattr(getattr(layer, "feed_forward", None), "block", None)
+    return getattr(ff_block, "last_routing_state", None)
+
+
+def execute_encoder_layer(
+    owner: StackOwner,
+    invoke: ModelLayerInvokeStrategy,
+    *,
+    layer_index: int,
+    hidden_states: torch.Tensor,
+    src_mask: torch.Tensor | None,
+    src_key_padding_mask: torch.Tensor | None,
+    budget: float | None,
+    streams: torch.Tensor | None,
+    attention_residual_state: AttentionResidualState | None,
+    active_mask: torch.Tensor | None,
+    output_attentions: bool,
+) -> LayerResult:
+    """Execute one ordinary encoder layer and collect its runtime diagnostics."""
+    layer = owner._resolve_layer(layer_index)
+    attention_module = layer._self_attn()
+    if hasattr(attention_module, "output_attentions"):
+        attention_module.output_attentions = output_attentions
+    hidden_states, streams = invoke.run_encoder_layer(
+        layer,
+        hidden_states,
+        src_mask=src_mask,
+        src_key_padding_mask=src_key_padding_mask,
+        gate_budget=budget,
+        streams=streams,
+        attention_residual_state=attention_residual_state,
+        active_mask=active_mask,
+    )
+    return LayerResult(
+        hidden_states=hidden_states,
+        streams=streams,
+        router_state=_router_state(layer),
+        self_attention=getattr(attention_module, "last_attn_weights", None),
+    )
 
 
 def execute_decoder_layer(
-    owner: DecoderStackOwner,
+    owner: StackOwner,
     invoke: ModelLayerInvokeStrategy,
     *,
     layer_index: int,
@@ -63,7 +108,7 @@ def execute_decoder_layer(
     attention_residual_state: AttentionResidualState | None,
     active_mask: torch.Tensor | None,
     output_attentions: bool,
-) -> DecoderLayerResult:
+) -> LayerResult:
     """Execute one ordinary decoder layer and collect its runtime diagnostics."""
     layer = owner._resolve_layer(layer_index)
     self_attention_module = layer._self_attn()
@@ -72,27 +117,26 @@ def execute_decoder_layer(
         self_attention_module.output_attentions = output_attentions
     cross_attention_module.output_attentions = output_attentions
     hidden_states, layer_state, streams = invoke.run_decoder_layer(
-        layer=layer,
-        x=hidden_states,
+        layer,
+        hidden_states,
         memory=memory,
         tgt_mask=tgt_mask,
         memory_mask=memory_mask,
         tgt_key_padding_mask=tgt_key_padding_mask,
         memory_key_padding_mask=memory_key_padding_mask,
         layer_state=layer_state,
-        prev_state=previous_state,
-        budget=budget,
+        prev_layer_state=previous_state,
+        gate_budget=budget,
         streams=streams,
         mtp_targets=mtp_targets,
         attention_residual_state=attention_residual_state,
-        gateskip_active_mask=active_mask,
+        active_mask=active_mask,
     )
-    ff_block = getattr(getattr(layer, "feed_forward", None), "block", None)
-    return DecoderLayerResult(
+    return LayerResult(
         hidden_states=hidden_states,
         layer_state=layer_state,
         streams=streams,
-        router_state=getattr(ff_block, "last_routing_state", None),
+        router_state=_router_state(layer),
         self_attention=getattr(self_attention_module, "last_attn_weights", None),
         cross_attention=getattr(cross_attention_module, "last_attn_weights", None),
     )
@@ -155,6 +199,27 @@ def prepare_decoder_state(
     )
 
 
+def positions_from_offset(
+    offset: torch.Tensor | int,
+    *,
+    batch_size: int,
+    length: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Absolute ``[B, T]`` positions for a chunk starting at ``offset``."""
+    steps = torch.arange(length, device=device, dtype=torch.long)
+    if isinstance(offset, int):
+        return (steps + offset).unsqueeze(0).expand(batch_size, -1)
+    start = offset.to(device=device, dtype=torch.long)
+    if start.dim() == 0:
+        start = start.view(1).expand(batch_size)
+    if start.dim() != 1 or start.shape[0] != batch_size:
+        raise ValueError(
+            f"position_offset tensor must be scalar or [B], got {tuple(start.shape)}"
+        )
+    return start.unsqueeze(1) + steps.unsqueeze(0)
+
+
 def validate_memory_padding_mask(
     memory: torch.Tensor, mask: torch.Tensor | None
 ) -> None:
@@ -187,22 +252,14 @@ def build_decoder_output(
 
 
 class EncoderPreparationOwner(Protocol):
-    input_size: int
-    max_seq_len: int
-    patch_encoder: bool
-    patch_len: int
-    patch_stride: int
-    patch_pad_end: bool
-    ct_patchtst: bool
-    ct_patch_len: int
-    ct_patch_stride: int
-    ct_patch_pad_end: bool
-    use_variate_attention: bool
+    config: TransformerConfig
     input_adapter: nn.Module
     patcher: PatchTokenizer
     missing_token: torch.Tensor | None
 
-    def _ct_patchify(self, src: torch.Tensor) -> tuple[torch.Tensor, PatchInfo]: ...
+    def _channel_patchify(
+        self, src: torch.Tensor
+    ) -> tuple[torch.Tensor, PatchInfo]: ...
 
 
 @dataclass(frozen=True)
@@ -224,18 +281,15 @@ def prepare_encoder_input(
     if src.ndim != 3:
         raise ValueError(f"encoder expects src [B,T,C], got {tuple(src.shape)}")
     _, sequence_length, input_size = src.shape
-    if owner.input_size != input_size:
-        raise ValueError(f"Expected input size {owner.input_size}, got {input_size}")
-    if (
-        sequence_length > owner.max_seq_len
-        and not owner.patch_encoder
-        and not owner.ct_patchtst
-    ):
+    config = owner.config
+    if config.input_size != input_size:
+        raise ValueError(f"Expected input size {config.input_size}, got {input_size}")
+    if sequence_length > config.max_seq_len and config.patching == "none":
         raise ValueError(
-            f"Sequence length {sequence_length} exceeds max {owner.max_seq_len}"
+            f"Sequence length {sequence_length} exceeds max {config.max_seq_len}"
         )
 
-    if owner.use_variate_attention:
+    if config.variate_attention:
         batch_size, _, num_variates = src.shape
         value_mask_bvt = None
         if value_mask is not None:
@@ -285,28 +339,17 @@ def prepare_encoder_input(
         padding_mask = expand_variate_mask(padding_mask, "src_key_padding_mask")
         active_mask = expand_variate_mask(active_mask, "gateskip_active_mask")
         patch_info = None
-        if owner.patch_encoder:
+        if config.patching == "shared":
             hidden_states, patch_info = owner.patcher(hidden_states)
-            padding_mask = patchify_padding_mask(
-                padding_mask,
-                T=sequence_length,
-                patch_len=owner.patch_len,
-                stride=owner.patch_stride,
-                pad_end=owner.patch_pad_end,
-            )
-            active_mask = patchify_gateskip_active_mask(
-                active_mask,
-                T=sequence_length,
-                patch_len=owner.patch_len,
-                stride=owner.patch_stride,
-                pad_end=owner.patch_pad_end,
+            padding_mask, active_mask = _patchify_masks(
+                config, padding_mask, active_mask, sequence_length
             )
 
         token_length = hidden_states.shape[1]
-        if token_length > owner.max_seq_len:
+        if token_length > config.max_seq_len:
             raise ValueError(
                 f"Encoder token length {token_length} exceeds "
-                f"max_seq_len={owner.max_seq_len}"
+                f"max_seq_len={config.max_seq_len}"
             )
         hidden_states = hidden_states.reshape(
             batch_size, num_variates, token_length, -1
@@ -319,62 +362,56 @@ def prepare_encoder_input(
             hidden_states, padding_mask, active_mask, patch_info
         )
 
-    patch_info: PatchInfo | None = None
     if value_mask is not None:
-        raise ValueError("value_mask requires use_variate_attention=True")
-    if owner.ct_patchtst:
-        hidden_states, patch_info = owner._ct_patchify(src)
-        patch_len, stride, pad_end = (
-            owner.ct_patch_len,
-            owner.ct_patch_stride,
-            owner.ct_patch_pad_end,
-        )
-        label = "CT-patch"
+        raise ValueError("value_mask requires variate_attention=True")
+    if config.patching == "channel":
+        hidden_states, patch_info = owner._channel_patchify(src)
     else:
         hidden_states = owner.input_adapter(src)
-        if not owner.patch_encoder:
-            return PreparedEncoderInput(
-                hidden_states, padding_mask, active_mask, patch_info
-            )
+        if config.patching == "none":
+            return PreparedEncoderInput(hidden_states, padding_mask, active_mask, None)
         hidden_states, patch_info = owner.patcher(hidden_states)
-        patch_len, stride, pad_end = (
-            owner.patch_len,
-            owner.patch_stride,
-            owner.patch_pad_end,
-        )
-        label = "patch"
 
-    if hidden_states.shape[1] > owner.max_seq_len:
+    if hidden_states.shape[1] > config.max_seq_len:
         raise ValueError(
-            f"Encoder {label} token length {hidden_states.shape[1]} exceeds "
-            f"max_seq_len={owner.max_seq_len}. Increase max_seq_len or adjust "
-            f"{label.replace('-', '_')}_len/{label.replace('-', '_')}_stride."
+            f"Encoder patch token length {hidden_states.shape[1]} exceeds "
+            f"max_seq_len={config.max_seq_len}. Increase max_seq_len or adjust "
+            "patch_len/patch_stride."
         )
-    padding_mask = patchify_padding_mask(
-        padding_mask,
-        T=sequence_length,
-        patch_len=patch_len,
-        stride=stride,
-        pad_end=pad_end,
-    )
-    active_mask = patchify_gateskip_active_mask(
-        active_mask,
-        T=sequence_length,
-        patch_len=patch_len,
-        stride=stride,
-        pad_end=pad_end,
+    padding_mask, active_mask = _patchify_masks(
+        config, padding_mask, active_mask, sequence_length
     )
     return PreparedEncoderInput(hidden_states, padding_mask, active_mask, patch_info)
 
 
+def _patchify_masks(
+    config: TransformerConfig,
+    padding_mask: torch.Tensor | None,
+    active_mask: torch.Tensor | None,
+    sequence_length: int,
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    geometry = dict(
+        T=sequence_length,
+        patch_len=config.patch_len,
+        stride=config.patch_stride,
+        pad_end=config.patch_pad_end,
+    )
+    return (
+        patchify_padding_mask(padding_mask, **geometry),
+        patchify_gateskip_active_mask(active_mask, **geometry),
+    )
+
+
 __all__ = [
-    "DecoderLayerResult",
-    "DecoderStackOwner",
+    "LayerResult",
+    "StackOwner",
     "EncoderPreparationOwner",
     "PreparedDecoderState",
     "PreparedEncoderInput",
     "build_decoder_output",
     "execute_decoder_layer",
+    "execute_encoder_layer",
+    "positions_from_offset",
     "prepare_decoder_state",
     "prepare_encoder_input",
     "validate_memory_padding_mask",

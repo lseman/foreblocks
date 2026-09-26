@@ -117,12 +117,14 @@ function(tree_common_setup tgt)
     endif()
 endfunction()
 
+
+# Common Python3 detection (single source for all Python modules)
+if(NOT DEFINED Python3_EXECUTABLE)
+    find_program(Python3_EXECUTABLE NAMES python3.14 python3.13 python3.12 python3.11 python3)
+endif()
+find_package(Python3 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
+
 if(TREE_BUILD_FORETREE)
-    # Prefer Python 3.12+
-    if(NOT DEFINED Python3_EXECUTABLE)
-        find_program(Python3_EXECUTABLE NAMES python3.14 python3.13 python3.12 python3.11 python3)
-    endif()
-    find_package(Python3 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
 
     CPMAddPackage(
         NAME nanobind
@@ -152,11 +154,6 @@ if(TREE_BUILD_FORETREE)
 endif()
 
 if(TREE_BUILD_FOREFOREST)
-    # Prefer Python 3.12+
-    if(NOT DEFINED Python3_EXECUTABLE)
-        find_program(Python3_EXECUTABLE NAMES python3.14 python3.13 python3.12 python3.11 python3)
-    endif()
-    find_package(Python3 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
 
     CPMAddPackage(
         NAME nanobind

@@ -59,19 +59,18 @@ class ETSformer(nn.Module):
             [
                 TransformerEncoderLayer(
                     d_model=d_model,
-                    nhead=n_heads,
-                    dim_feedforward=dim_feedforward,
+                    n_heads=n_heads,
+                    ff_dim=dim_feedforward,
                     dropout=dropout,
                     activation=activation,
-                    att_type=att_type,
-                    freq_modes=freq_modes,
-                    use_swiglu=use_swiglu,
-                    norm_strategy="pre_norm",
-                    custom_norm="rms",
-                    layer_norm_eps=layer_norm_eps,
-                    use_moe=use_moe,
-                    num_experts=num_experts,
-                    top_k=top_k,
+                    attention=att_type,
+                    frequency_modes=freq_modes,
+                    swiglu=use_swiglu,
+                    norm_placement="pre",
+                    norm="rms",
+                    norm_eps=layer_norm_eps,
+                    moe_experts=num_experts if use_moe else 0,
+                    moe_top_k=top_k,
                 )
                 for _ in range(n_layers)
             ]

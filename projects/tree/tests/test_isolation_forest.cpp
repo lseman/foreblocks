@@ -118,6 +118,8 @@ void test_input_validation() {
     }
     assert(threw);
     forest.fit(x.data(), 1, 2);  // one row: a single leaf, still valid
+    // c(psi) = 0 with one row: the score is 0.5 (scikit-learn), not 0/0.
+    assert(forest.anomaly_score(x.data(), 1, 2)[0] == 0.5);
     threw = false;
     try {
         (void)forest.score_samples(x.data(), 2, 1);

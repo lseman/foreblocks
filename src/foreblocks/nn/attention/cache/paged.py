@@ -635,8 +635,8 @@ class PagedKVCache:
                 v_up_proj(empty).view(B_empty, 0, self.Hkv, self.D).transpose(1, 2),
             )
 
-        k_parts: list[Tensor] = []
-        v_parts: list[Tensor] = []
+        k_parts: dict[int, Tensor] = {}
+        v_parts: dict[int, Tensor] = {}
         for b in range(self.B):
             seq_len_b = int(self.seq_len[b].item())
             if seq_len_b == 0 or not self.block_table[b]:
@@ -665,23 +665,17 @@ class PagedKVCache:
                 # Transpose to [Hkv, T_block, D]
                 parts_k.append(k_blk.transpose(0, 1))
                 parts_v.append(v_blk.transpose(0, 1))
-            k_parts.append(torch.cat(parts_k, dim=1))  # [Hkv, seq_len_b, D]
-            v_parts.append(torch.cat(parts_v, dim=1))
+            k_parts[b] = torch.cat(parts_k, dim=1)  # [Hkv, seq_len_b, D]
+            v_parts[b] = torch.cat(parts_v, dim=1)
 
-        # Build output [B, Hkv, T, D]
-        k_out = self.storage_k.new_zeros(
-            self.B, self.Hkv, max_len, self.D
-        )
-        v_out = self.storage_v.new_zeros(
-            self.B, self.Hkv, max_len, self.D
-        )
-        b_idx = 0
-        for b in range(self.B):
-            seq_len_b = int(self.seq_len[b].item())
-            if seq_len_b > 0 and b_idx < len(k_parts):
-                k_out[b, :, :seq_len_b, :] = k_parts[b_idx]
-                v_out[b, :, :seq_len_b, :] = v_parts[b_idx]
-                b_idx += 1
+        # Build output [B, Hkv, T, D]. Latent mode has no dense K/V storage,
+        # so allocate from the up-projected blocks (their dtype and device).
+        reference = next(iter(k_parts.values()), self.storage_latent)
+        k_out = reference.new_zeros(self.B, self.Hkv, max_len, self.D)
+        v_out = reference.new_zeros(self.B, self.Hkv, max_len, self.D)
+        for b, k_part in k_parts.items():
+            k_out[b, :, : k_part.size(1), :] = k_part
+            v_out[b, :, : k_part.size(1), :] = v_parts[b]
         return k_out, v_out
 
     # ---------------------------------------------------------------------

@@ -4,16 +4,16 @@ import pytest
 import torch
 import torch.nn as nn
 
+from foreblocks.nn.routing.mod import LayerDropoutSchedule
+from foreblocks.nn.transformer import (
+    TransformerDecoder,
+    TransformerEncoder,
+)
 from foreblocks.training.config import TrainingConfig
 from foreblocks.training.optimization.llrd import (
     WarmupCosineLR,
     get_llrd_param_groups,
 )
-from foreblocks.nn.transformer.base import (
-    TransformerDecoder,
-    TransformerEncoder,
-)
-from foreblocks.nn.routing.mod import LayerDropoutSchedule
 
 
 class TestLayerDropoutSchedule:
@@ -82,9 +82,9 @@ class TestGetLLRDParamGroups:
         model = TransformerEncoder(
             input_size=1,
             d_model=64,
-            nhead=4,
+            n_heads=4,
             num_layers=3,
-            dim_feedforward=256,
+            ff_dim=256,
         )
         param_groups = get_llrd_param_groups(
             model,
@@ -108,9 +108,9 @@ class TestGetLLRDParamGroups:
         model = TransformerEncoder(
             input_size=1,
             d_model=64,
-            nhead=4,
+            n_heads=4,
             num_layers=3,
-            dim_feedforward=256,
+            ff_dim=256,
         )
         param_groups = get_llrd_param_groups(
             model,
@@ -126,9 +126,9 @@ class TestGetLLRDParamGroups:
         model = TransformerEncoder(
             input_size=1,
             d_model=64,
-            nhead=4,
+            n_heads=4,
             num_layers=2,
-            dim_feedforward=256,
+            ff_dim=256,
         )
         param_groups = get_llrd_param_groups(
             model,
@@ -229,15 +229,15 @@ class TestTransformerWithLayerDropoutSchedule:
         encoder = TransformerEncoder(
             input_size=1,
             d_model=64,
-            nhead=4,
+            n_heads=4,
             num_layers=4,
-            dim_feedforward=256,
-            layer_dropout_schedule=schedule,
+            ff_dim=256,
+            dropout_schedule=schedule,
         )
         # Check that encoder was created
         assert encoder is not None
-        assert encoder.num_layers == 4
-        assert encoder.layer_dropout_schedule == schedule
+        assert encoder.config.num_layers == 4
+        assert encoder.dropout_schedule is schedule
 
     def test_decoder_with_dropout_schedule(self):
         """Test decoder instantiation with dropout schedule."""
@@ -251,14 +251,14 @@ class TestTransformerWithLayerDropoutSchedule:
             input_size=1,
             output_size=1,
             d_model=64,
-            nhead=4,
+            n_heads=4,
             num_layers=4,
-            dim_feedforward=256,
-            layer_dropout_schedule=schedule,
+            ff_dim=256,
+            dropout_schedule=schedule,
         )
         assert decoder is not None
-        assert decoder.num_layers == 4
-        assert decoder.layer_dropout_schedule == schedule
+        assert decoder.config.num_layers == 4
+        assert decoder.dropout_schedule is schedule
 
 
 class TestTrainingConfigExtensions:

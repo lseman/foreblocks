@@ -7,18 +7,18 @@ from typing import Any, cast
 
 import torch
 
-from foreblocks.nn.transformer.runtime.contracts import DecoderOwner
-from foreblocks.nn.transformer.runtime.state import (
-    AttentionCacheState,
-    DecoderLayerState,
-    DecoderState,
-)
 from foreblocks.nn.attention.cache.base import (
     cache_state_dict,
     load_cache_state_dict,
 )
 from foreblocks.nn.attention.cache.kv import StaticKVCache
 from foreblocks.nn.attention.cache.paged import PagedKVCache
+from foreblocks.nn.transformer.runtime.contracts import DecoderOwner
+from foreblocks.nn.transformer.runtime.state import (
+    AttentionCacheState,
+    DecoderLayerState,
+    DecoderState,
+)
 
 
 class DecoderCacheManager:
@@ -62,7 +62,9 @@ class DecoderCacheManager:
         if device is None:
             device = next(self.decoder.parameters()).device
         loaded = load_cache_state_dict(state, device=device)
-        return DecoderState.from_mapping(loaded, num_layers=self.decoder.num_layers)
+        return DecoderState.from_mapping(
+            loaded, num_layers=self.decoder.config.num_layers
+        )
 
     def offload(self, state: DecoderState) -> dict[str, Any]:
         return self.state_dict(state)

@@ -68,16 +68,16 @@ from foreblocks.training.conformal import ConformalPredictionEngine
 
 ## Wavelet & frequency attention
 
-Select via `att_type` on the transformer — no separate import needed:
+Select via `attention=` on the transformer — no separate import needed:
 
 ```python
 from foreblocks import TransformerEncoder
 
 # Wavelet-domain (Haar DWT) attention
-enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, att_type="dwt")
+enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, attention="dwt")
 
 # Frequency-domain (FEDformer-style) attention
-enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, att_type="frequency")
+enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, attention="frequency")
 ```
 
 ## DARTS (separate package)

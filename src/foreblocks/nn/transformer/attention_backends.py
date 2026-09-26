@@ -4,24 +4,28 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import torch.nn as nn
 
-from foreblocks.nn.attention.config import AttentionConfig
 from foreblocks.nn.attention.algorithms import (
     GatedDeltaNetBackend,
     KimiAttentionBackend,
     ModernLinearAttention,
 )
+from foreblocks.nn.attention.config import AttentionConfig
 from foreblocks.nn.attention.multihead import MultiAttention
+
+if TYPE_CHECKING:
+    from foreblocks.nn.transformer.config import TransformerConfig
 
 AttentionKwargsFactory = Callable[[AttentionConfig], dict[str, object]]
 
 
 class LazyAttentionOwner(Protocol):
-    _attention_config: AttentionConfig
+    config: TransformerConfig
     layer_attention_type: str
+    training: bool
 
     def parameters(self, recurse: bool = True): ...
     def add_module(self, name: str, module: nn.Module | None) -> None: ...
@@ -86,8 +90,11 @@ LAYER_ATTENTION_BACKENDS: dict[str, LayerAttentionBackendSpec] = {
 
 
 def build_layer_attention_backend(name: str, config: AttentionConfig) -> nn.Module:
-    spec = LAYER_ATTENTION_BACKENDS.get(name, LAYER_ATTENTION_BACKENDS["standard"])
-    return spec.build(config)
+    spec = LAYER_ATTENTION_BACKENDS.get(name)
+    if spec is not None:
+        return spec.build(config)
+    # MultiAttention validates registered variants; never silently fall back.
+    return LayerAttentionBackendSpec(name, MultiAttention).build(config)
 
 
 class LazyAttentionBackendMixin:
@@ -101,9 +108,11 @@ class LazyAttentionBackendMixin:
         module = cache.get(name)
         if module is None:
             parameter = next(owner.parameters())
-            module = build_layer_attention_backend(name, owner._attention_config).to(
-                parameter.device
+            attention = owner.config.attention_config()
+            module = build_layer_attention_backend(name, attention).to(
+                device=parameter.device, dtype=parameter.dtype
             )
+            module.train(owner.training)
             cache[name] = module
             owner.add_module(f"_attn_backend_{name}", module)
         return module

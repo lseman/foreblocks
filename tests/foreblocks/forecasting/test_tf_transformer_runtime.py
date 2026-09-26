@@ -1,12 +1,26 @@
 import pytest
 import torch
 
-from foreblocks.nn.transformer import GenerationConfig, TransformerConfig
-from foreblocks.nn.transformer.decoder import TransformerDecoder
-from foreblocks.nn.transformer.encoder import (
+from foreblocks.nn.attention.cache import KVCacheProtocol
+from foreblocks.nn.attention.cache.kv import StaticKVCache
+from foreblocks.nn.attention.config import (
+    AttentionConfig,
+)
+from foreblocks.nn.attention.execution.backends import (
+    ATTENTION_BACKENDS,
+    register_attention_backend,
+)
+from foreblocks.nn.attention.multihead import MultiAttention
+from foreblocks.nn.attention.preparation.masking import build_attention_mask
+from foreblocks.nn.routing.gateskip import BudgetScheduler
+from foreblocks.nn.routing.mod import MoDBudgetScheduler
+from foreblocks.nn.transformer import (
+    GenerationConfig,
+    TransformerConfig,
     TransformerEncoder,
     TransformerEncoderLayer,
 )
+from foreblocks.nn.transformer.decoder import TransformerDecoder
 from foreblocks.nn.transformer.runtime.outputs import (
     TransformerDecoderOutput,
     TransformerEncoderOutput,
@@ -24,22 +38,6 @@ from foreblocks.nn.transformer.runtime.state import (
     DecoderLayerState,
     DecoderState,
 )
-from foreblocks.nn.attention.cache import KVCacheProtocol
-from foreblocks.nn.attention.cache.kv import StaticKVCache
-from foreblocks.nn.attention.config import (
-    AttentionConfig,
-    AttentionPositionConfig,
-    AttentionShapeConfig,
-    AttentionVariantConfig,
-)
-from foreblocks.nn.attention.execution.backends import (
-    ATTENTION_BACKENDS,
-    register_attention_backend,
-)
-from foreblocks.nn.attention.multihead import MultiAttention
-from foreblocks.nn.attention.preparation.masking import build_attention_mask
-from foreblocks.nn.routing.gateskip import BudgetScheduler
-from foreblocks.nn.routing.mod import MoDBudgetScheduler
 
 
 def _optimizer_param_ids(optimizer: torch.optim.Optimizer) -> set[int]:
@@ -112,14 +110,13 @@ def test_transformer_schedulers_do_not_step_during_eval():
     model = TransformerEncoder(
         input_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        use_gateskip=True,
+        ff_dim=16,
+        residual="gateskip",
         gate_budget=0.8,
-        use_mod=False,
     )
-    model.set_budget_scheduler(gate_scheduler)
+    model.gate_scheduler = gate_scheduler
 
     x = torch.randn(2, 6, 2)
 
@@ -136,13 +133,11 @@ def test_transformer_gate_scheduler_steps_during_training():
     model = TransformerEncoder(
         input_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        use_gateskip=False,
-        use_mod=False,
+        ff_dim=16,
     )
-    model.set_budget_scheduler(gate_scheduler)
+    model.gate_scheduler = gate_scheduler
 
     x = torch.randn(2, 6, 2)
 
@@ -158,12 +153,11 @@ def test_transformer_mod_scheduler_steps_only_during_training():
     model = TransformerEncoder(
         input_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        use_gateskip=False,
-        use_mod=True,
-        mod_budget_scheduler=mod_scheduler,
+        ff_dim=16,
+        residual="mod",
+        mod_scheduler=mod_scheduler,
     )
 
     x = torch.randn(2, 6, 2)
@@ -178,14 +172,61 @@ def test_transformer_mod_scheduler_steps_only_during_training():
     assert mod_scheduler._step == 1
 
 
+@pytest.mark.parametrize("role", ["encoder", "decoder"])
+def test_mod_routing_preserves_sequence_length(role):
+    # Routed tokens must be scattered back; skipped tokens pass through.
+    common = dict(
+        d_model=8,
+        n_heads=2,
+        num_layers=3,
+        ff_dim=16,
+        residual="mod",
+        mod_scheduler=MoDBudgetScheduler(num_layers=3, start_keep=0.5, end_keep=0.5),
+    )
+    x = torch.randn(2, 16, 2)
+    if role == "encoder":
+        model = TransformerEncoder(input_size=2, patching="none", **common)
+        out = model(x, output_hidden_states=True)
+    else:
+        model = TransformerDecoder(input_size=2, output_size=8, **common)
+        out = model(x, torch.randn(2, 5, 8), output_hidden_states=True)
+
+    assert out.last_hidden_state.shape == (2, 16, 8)
+    assert all(state.shape[1] == 16 for state in out.hidden_states)
+
+
+@pytest.mark.parametrize("role", ["encoder", "decoder"])
+def test_mod_with_every_token_routed_matches_the_dense_stack(role):
+    # Each routed layer must see the previous layer's output, not the input.
+    common = dict(input_size=2, d_model=8, n_heads=2, num_layers=3, dropout=0.0)
+    if role == "encoder":
+        cls, common["patching"] = TransformerEncoder, "none"
+        inputs = (torch.randn(2, 6, 2),)
+    else:
+        cls, common["output_size"] = TransformerDecoder, 8
+        inputs = (torch.randn(2, 6, 2), torch.randn(2, 4, 8))
+    routed = cls(
+        **common, residual="mod", mod_scheduler=MoDBudgetScheduler(3, 1.0, 1.0)
+    ).eval()
+    dense = cls(**common).eval()
+    unexpected = dense.load_state_dict(
+        routed.state_dict(), strict=False
+    ).unexpected_keys
+    assert all(key.startswith("mod_routers.") for key in unexpected)
+    with torch.no_grad():
+        torch.testing.assert_close(
+            routed(*inputs).last_hidden_state, dense(*inputs).last_hidden_state
+        )
+
+
 def test_transformer_attention_params_are_optimizer_visible_before_forward():
     model = TransformerEncoder(
         input_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
+        ff_dim=16,
+        patching="none",
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     before_param_count = len(list(model.parameters()))
@@ -200,12 +241,13 @@ def test_shared_hybrid_attention_materializes_configured_backends():
     model = TransformerEncoder(
         input_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=2,
-        dim_feedforward=16,
-        attention_mode="hybrid",
+        ff_dim=16,
+        attention="linear",
+        attention_pattern="hybrid",
         share_layers=True,
-        patch_encoder=False,
+        patching="none",
     )
     layer = model.shared_layer
 
@@ -220,9 +262,9 @@ def test_shared_hybrid_attention_materializes_configured_backends():
 def test_standalone_encoder_layer_materializes_selected_attention():
     layer = TransformerEncoderLayer(
         d_model=8,
-        nhead=2,
-        dim_feedforward=16,
-        layer_attention_type="linear",
+        n_heads=2,
+        ff_dim=16,
+        attention="linear",
     )
 
     assert layer._attn_backends.get("linear") is not None
@@ -260,10 +302,10 @@ def test_encoder_structured_output_and_hidden_states():
     model = TransformerEncoder(
         input_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=2,
-        dim_feedforward=16,
-        patch_encoder=False,
+        ff_dim=16,
+        patching="none",
     ).eval()
     result = model(
         torch.randn(2, 5, 2),
@@ -280,13 +322,12 @@ def test_encoder_propagates_padding_mask_to_moe_router():
     model = TransformerEncoder(
         input_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
-        use_moe=True,
-        num_experts=4,
-        top_k=2,
+        ff_dim=16,
+        patching="none",
+        moe_experts=4,
+        moe_top_k=2,
     ).eval()
     padding = torch.tensor([[False, False, True, True], [False, True, False, True]])
     result = model(
@@ -306,11 +347,11 @@ def test_decoder_structured_output_carries_incremental_state():
         input_size=2,
         output_size=3,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
-        informer_like=False,
+        ff_dim=16,
+        patching="none",
+        informer=False,
     ).eval()
     result = decoder(
         torch.randn(2, 3, 2),
@@ -332,11 +373,11 @@ def test_depth_scaled_initialization_targets_residual_outputs():
     model = TransformerEncoder(
         input_size=16,
         d_model=64,
-        nhead=4,
+        n_heads=4,
         num_layers=4,
-        dim_feedforward=128,
-        patch_encoder=False,
-        initializer_range=0.04,
+        ff_dim=128,
+        patching="none",
+        init_std=0.04,
         depth_scaled_init=True,
     )
     layer = model.layers[0]
@@ -354,71 +395,49 @@ def test_decoder_specific_modules_use_transformer_initialization():
         input_size=2,
         output_size=3,
         d_model=64,
-        nhead=4,
+        n_heads=4,
         num_layers=1,
-        dim_feedforward=128,
-        patch_encoder=False,
-        use_time_encoding=True,
-        initializer_range=0.03,
+        ff_dim=128,
+        patching="none",
+        time_encoding=True,
+        init_std=0.03,
     )
 
     assert decoder.output_projection.weight.std().item() == pytest.approx(0.03, rel=0.2)
     assert torch.count_nonzero(decoder.output_projection.bias) == 0
 
 
-def test_encoder_ct_patch_modules_use_transformer_initialization():
+def test_encoder_channel_patch_modules_use_transformer_initialization():
     encoder = TransformerEncoder(
         input_size=3,
         d_model=64,
-        nhead=4,
+        n_heads=4,
         num_layers=1,
-        dim_feedforward=128,
-        ct_patchtst=True,
-        ct_patch_len=8,
-        initializer_range=0.03,
+        ff_dim=128,
+        patching="channel",
+        patch_len=8,
+        init_std=0.03,
     )
 
-    assert encoder.ct_patch_embed.weight.std().item() == pytest.approx(0.03, rel=0.2)
-    assert encoder.ct_channel_fuse.weight.std().item() == pytest.approx(0.03, rel=0.2)
-    assert torch.count_nonzero(encoder.ct_patch_embed.bias) == 0
-    assert torch.count_nonzero(encoder.ct_channel_fuse.bias) == 0
-
-
-def test_transformer_config_rejects_incompatible_residual_policies_early():
-    with pytest.raises(ValueError, match="incompatible"):
-        TransformerConfig(
-            use_gateskip=True,
-            use_attention_residual=True,
-        )
-
-
-def test_transformer_config_rejects_legacy_modes_and_option_typos():
-    with pytest.raises(ValueError, match="unsupported attention architecture"):
-        TransformerConfig(
-            attention=AttentionConfig(
-                shape=AttentionShapeConfig(d_model=256, n_heads=8),
-                architecture="hybrid_linear",
-            )
-        )
-
-    config = TransformerConfig()
-    assert config.residual.policy == "standard"
-    assert config.cache.implementation == "auto"
-
-    with pytest.raises(ValueError, match="unsupported Transformer options"):
-        TransformerConfig(options={"use_gateksip": True})
-
-
-def test_runtime_mhc_arguments_cannot_mutate_layer_configuration():
-    layer = TransformerEncoderLayer(
-        d_model=8,
-        nhead=2,
-        dim_feedforward=16,
-        use_mhc=False,
+    assert encoder.channel_patch_embed.weight.std().item() == pytest.approx(
+        0.03, rel=0.2
     )
-    with pytest.raises(ValueError, match="runtime mHC overrides"):
-        layer(torch.randn(1, 3, 8), use_mhc=True)
-    assert layer.use_mhc is False
+    assert encoder.channel_fuse.weight.std().item() == pytest.approx(0.03, rel=0.2)
+    assert torch.count_nonzero(encoder.channel_patch_embed.bias) == 0
+    assert torch.count_nonzero(encoder.channel_fuse.bias) == 0
+
+
+def test_transformer_config_rejects_invalid_settings_early():
+    with pytest.raises(ValueError, match="variate_attention is incompatible"):
+        TransformerConfig(variate_attention=True, residual="gateskip")
+    with pytest.raises(ValueError, match="residual must be one of"):
+        TransformerConfig(residual="gateksip")
+    with pytest.raises(ValueError, match="unknown attention 'hybrid_linear'"):
+        TransformerConfig(attention="hybrid_linear")
+    with pytest.raises(ValueError, match="unknown attention_options: qk_nrom"):
+        TransformerConfig(attention_options={"qk_nrom": True})
+    with pytest.raises(TypeError, match="use_gateskip"):
+        TransformerConfig(use_gateskip=True)
 
 
 def test_incremental_decoder_returns_typed_mapping_compatible_state():
@@ -426,11 +445,11 @@ def test_incremental_decoder_returns_typed_mapping_compatible_state():
         input_size=2,
         output_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
-        informer_like=False,
+        ff_dim=16,
+        patching="none",
+        informer=False,
         dropout=0.0,
     ).eval()
     result = decoder(
@@ -450,12 +469,12 @@ def test_static_cache_incremental_decode_matches_full_decode_last_token():
         input_size=2,
         output_size=3,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
-        informer_like=False,
-        cache_implementation="static",
+        ff_dim=16,
+        patching="none",
+        informer=False,
+        kv_cache="static",
         max_seq_len=8,
         dropout=0.0,
     ).eval()
@@ -493,13 +512,12 @@ def test_structured_output_collects_router_states():
     model = TransformerEncoder(
         input_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=2,
-        dim_feedforward=16,
-        patch_encoder=False,
-        use_moe=True,
-        num_experts=4,
-        top_k=2,
+        ff_dim=16,
+        patching="none",
+        moe_experts=4,
+        moe_top_k=2,
     ).eval()
     result = model(torch.randn(1, 4, 2), return_dict=True)
     assert result.router_states is not None
@@ -555,10 +573,10 @@ def test_structured_outputs_capture_attention_weights_on_request():
     encoder = TransformerEncoder(
         input_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
+        ff_dim=16,
+        patching="none",
         dropout=0.0,
     ).eval()
     result = encoder(
@@ -618,12 +636,12 @@ def test_decoder_generate_reuses_static_cache():
         input_size=2,
         output_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
-        informer_like=False,
-        cache_implementation="static",
+        ff_dim=16,
+        patching="none",
+        informer=False,
+        kv_cache="static",
         max_seq_len=8,
         dropout=0.0,
     ).eval()
@@ -663,12 +681,12 @@ def test_decoder_prefill_and_decode_entry_points():
         input_size=2,
         output_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
-        informer_like=False,
-        cache_implementation="static",
+        ff_dim=16,
+        patching="none",
+        informer=False,
+        kv_cache="static",
         max_seq_len=8,
         dropout=0.0,
     ).eval()
@@ -693,12 +711,12 @@ def _small_static_decoder():
         input_size=2,
         output_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
-        informer_like=False,
-        cache_implementation="static",
+        ff_dim=16,
+        patching="none",
+        informer=False,
+        kv_cache="static",
         max_seq_len=12,
         dropout=0.0,
     ).eval()
@@ -750,84 +768,37 @@ def test_generic_beam_search_reorders_static_cache():
     assert cache.keys.size(0) == 2
 
 
-def test_transformer_config_drives_structured_output_defaults():
-    config = TransformerConfig(
-        input_size=2,
-        output_size=3,
-        d_model=8,
-        nhead=2,
-        num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
-    )
-    encoder = TransformerEncoder(config).eval()
-    decoder = TransformerDecoder(config).eval()
-
-    encoded = encoder(torch.randn(1, 4, 2))
-    decoded = decoder(torch.randn(1, 2, 2), encoded.last_hidden_state)
-
-    assert isinstance(encoded, TransformerEncoderOutput)
-    assert isinstance(decoded, TransformerDecoderOutput)
-    assert encoder.config is config
-    assert decoder.config is config
-
-
-def test_transformer_config_promotes_stable_layer_options_to_fields():
+def test_layers_read_every_setting_from_the_config():
     config = TransformerConfig(
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        layer_norm_eps=1e-6,
-        attention=AttentionConfig(
-            shape=AttentionShapeConfig(d_model=8, n_heads=2),
-            position=AttentionPositionConfig(encoding="rope"),
-            variant=AttentionVariantConfig(frequency_modes=7, use_swiglu=False),
-        ),
-        gate_lambda=0.25,
-        mhc_n_streams=3,
-        initializer_range=0.01,
+        norm_eps=1e-6,
+        frequency_modes=7,
+        swiglu=False,
+        residual="gateskip",
+        gate_aux_weight=0.25,
+        init_std=0.01,
     )
-
     model = TransformerEncoder(config)
     layer = model._get_layer(0)
 
     assert model.config is config
     assert layer.config is config
-    assert model.gate_lambda == 0.25
-    assert model.mhc_n_streams == 3
-    assert model.initializer_range == 0.01
-    assert layer._attention_config.variant.frequency_modes == 7
-    assert layer._attention_config.shape.d_model == config.d_model
-    assert (
-        layer._attention_config.position.encoding == config.attention.position.encoding
-    )
+    assert layer.config.attention_config().variant.frequency_modes == 7
+    assert layer.gate_attn is not None and layer.mhc_conn_attn is None
     assert type(layer.feed_forward.block).__name__ == "_StandardFeedForwardBlock"
 
 
-def test_transformer_config_loads_legacy_promoted_options():
-    config = TransformerConfig.from_legacy_dict(
-        {
-            "d_model": 8,
-            "nhead": 2,
-            "num_layers": 1,
-            "options": {"gate_lambda": 0.4, "use_final_norm": False},
-        }
-    )
-
-    assert config.gate_lambda == 0.4
-    assert config.use_final_norm is False
-    assert config.options == {}
-
-
-@pytest.mark.parametrize("feature", ["use_mhc", "use_attention_residual"])
-def test_checkpointing_rejects_stateful_residual_policies(feature):
-    with pytest.raises(ValueError, match="use_gradient_checkpointing is incompatible"):
+@pytest.mark.parametrize("residual", ["mhc", "attention"])
+def test_checkpointing_rejects_stateful_residual_policies(residual):
+    with pytest.raises(ValueError, match="gradient_checkpointing is incompatible"):
         TransformerConfig(
             d_model=8,
-            nhead=2,
+            n_heads=2,
             num_layers=1,
-            use_gradient_checkpointing=True,
-            **{feature: True},
+            gradient_checkpointing=True,
+            residual=residual,
         )
 
 
@@ -836,10 +807,10 @@ def test_generation_config_is_separate_from_decoder_config():
         input_size=2,
         output_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
+        ff_dim=16,
+        patching="none",
     )
     decoder = TransformerDecoder(config).eval()
     result = decoder.generate(
@@ -849,3 +820,40 @@ def test_generation_config_is_separate_from_decoder_config():
     )
 
     assert result.sequences.shape == (1, 2, 2)
+
+
+@pytest.mark.parametrize("accepted", [0, 1, 3])
+@torch.no_grad()
+def test_speculative_decode_preserves_per_sequence_lengths_and_continuation(accepted):
+    decoder = _small_static_decoder()
+    memory = torch.randn(2, 3, 8)
+    _, state = decoder.forward_one_step(torch.randn(2, 2, 2), memory)
+    _, state = decoder.decode(
+        torch.randn(2, 1, 2),
+        memory,
+        state,
+        cache_update_mask=torch.tensor([True, False]),
+    )
+    start_decoded_length = state.decoded_length
+    reference = decoder.load_cache_state_dict(decoder.offload_cache(state))
+    draft = torch.randn(2, 3, 2)
+    if accepted:
+        _, reference = decoder.forward_multi_step(
+            draft[:, :accepted], memory, reference
+        )
+    _, state, actual_accepted = decoder.speculative_decode(
+        draft,
+        memory,
+        state,
+        verifier_fn=lambda output, tokens: accepted,
+    )
+    assert actual_accepted == accepted
+    assert state.layers[0].self_attention.cache.get_seq_lengths().tolist() == [
+        3 + accepted,
+        2 + accepted,
+    ]
+    assert state.decoded_length == start_decoded_length + accepted
+    next_token = torch.randn(2, 1, 2)
+    actual, _ = decoder.decode(next_token, memory, state)
+    expected, _ = decoder.decode(next_token, memory, reference)
+    torch.testing.assert_close(actual, expected)

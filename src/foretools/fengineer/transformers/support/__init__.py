@@ -8,6 +8,7 @@ from .base import (
 from .config import (
     AutoencoderConfig,
     BinningConfig,
+    BoostedConfig,
     CategoricalConfig,
     ClusteringConfig,
     DateTimeConfig,
@@ -47,6 +48,7 @@ __all__ = [
     # Config
     "FeatureConfig",
     "BinningConfig",
+    "BoostedConfig",
     "CategoricalConfig",
     "ClusteringConfig",
     "DateTimeConfig",

@@ -90,7 +90,7 @@ def get_dropout_p(layer: nn.Module | None) -> float:
 
 
 def _is_norm_wrapper(layer: nn.Module) -> bool:
-    return hasattr(layer, "norm") and hasattr(layer, "strategy")
+    return hasattr(layer, "norm") and hasattr(layer, "placement")
 
 
 def _apply_norm(norm_layer: nn.Module | None, x: torch.Tensor) -> torch.Tensor:

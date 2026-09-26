@@ -156,10 +156,10 @@ dropout_schedule = LayerDropoutSchedule(
 encoder = TransformerEncoder(
     input_size=1,
     d_model=256,
-    nhead=8,
+    n_heads=8,
     num_layers=6,
-    dim_feedforward=1024,
-    layer_dropout_schedule=dropout_schedule,
+    ff_dim=1024,
+    dropout_schedule=dropout_schedule,
 )
 ```
 
@@ -198,9 +198,9 @@ decoder = TransformerDecoder(
     input_size=1,
     output_size=1,
     d_model=256,
-    nhead=8,
+    n_heads=8,
     num_layers=4,
-    layer_dropout_schedule=dropout_schedule,
+    dropout_schedule=dropout_schedule,
 )
 
 trainer = Trainer(model=decoder, config=config)
@@ -212,178 +212,73 @@ No config changes needed — dropout schedule is a model-level choice, not a tra
 
 ## Advanced Attention Mechanisms
 
-### Attention Configuration Structure
+### Attention settings
 
-ForeBlocks uses a structured `AttentionConfig` with sub-configurations:
+Attention is configured with flat keywords on the transformer:
 
 ```python
-from foreblocks.nn.transformer.config import TransformerConfig
-from foreblocks.nn.attention.config import (
-    AttentionConfig,
-    AttentionShapeConfig,
-    AttentionCacheConfig,
-    AttentionPositionConfig,
-    AttentionVariantConfig,
-    AttentionFeatureConfig,
-)
+from foreblocks import TransformerEncoder
 
-config = TransformerConfig(
+encoder = TransformerEncoder(
+    input_size=8,
     d_model=256,
-    nhead=8,
-    attention=AttentionConfig(
-        shape=AttentionShapeConfig(
-            d_model=256,
-            n_heads=8,
-            n_kv_heads=None,  # None for MHA, or specific for GQA/MQA
-            dropout=0.1,
-            max_seq_len=4096,
-            cross_attention=False,
-        ),
-        architecture="standard",  # or "linear", "gla", "deltanet", etc.
-        cache=AttentionCacheConfig(
-            use_paged_cache=True,
-            block_size=128,
-            max_blocks=2048,
-            use_mla=True,
-            kv_latent_dim=None,
-            attention_matching=False,
-            matching_keep_ratio=0.25,
-            matching_trigger_len=512,
-            matching_min_keep=64,
-            matching_query_budget=64,
-            matching_force_single_step=False,
-        ),
-        position=AttentionPositionConfig(
-            encoding="rope",          # "rope", "alibi", "sinusoidal", "learnable"
-            rope_base=10000.0,
-            rope_scaling_type="none", # "none", "yarn", "ntk", "linear"
-            rope_scaling_factor=1.0,
-        ),
-        variant=AttentionVariantConfig(
-            name="standard",
-            backend="auto",
-            window_size=64,
-            chunk_size=1024,
-            probability_factor=0.4,
-            frequency_modes=32,
-            softpick_chunk_size=128,
-            global_attention_ratio=0.1,
-            use_flash_sliding=True,
-            use_swiglu=True,
-            nsa_block_size=None,
-            nsa_topk_ratio=None,
-            moba_block_size=None,
-            moba_topk=4,
-            dilation=2,
-            dilated_window_size=None,
-        ),
-        features=AttentionFeatureConfig(
-            qk_norm=False,
-            qk_norm_type="rms",
-            logit_softcap=None,
-            learned_temperature=False,
-            gated_attention=False,
-            normalized_output=False,
-            head_importance=False,
-            gated_attention_mode="per_head",
-            gated_attention_bias=True,
-            temperature_init=1.0,
-            subquery_norm=False,
-            subquery_norm_mode="learned",
-            multiscale_mask=False,
-            multiscale_window_ratio=0.2,
-            multiscale_topk=16,
-            normalized_output_type="rms",
-            head_importance_sparsity=0.1,
-            verbose_init=False,
-        ),
-    ),
+    n_heads=8,
+    n_kv_heads=2,              # grouped-query attention; None = one per head
+    max_seq_len=4096,
+    attention="standard",      # backend used by every layer
+    attention_kernel="auto",   # "auto", "sdpa", "eager", ...
+    position="rope",           # "rope", "alibi", "sinusoidal", "learnable", "none"
+    rope_base=10000.0,
+    rope_scaling="none",       # "none", "yarn", "ntk", "linear"
+    kv_cache="auto",           # "auto"/"paged" use a paged KV cache
+    attention_options={        # any other foreblocks.nn.attention.config field
+        "qk_norm": True,
+        "logit_softcap": 30.0,
+        "gated_attention": True,
+    },
 )
 ```
 
-### Attention Architecture Modes
+`attention_options` accepts the field names of `AttentionCacheConfig`,
+`AttentionVariantConfig`, and `AttentionFeatureConfig` (for example
+`window_size`, `chunk_size`, `moba_topk`, `use_mla`, `attention_matching`,
+`matching_keep_ratio`). Unknown names raise when the config is built.
+`config.attention_config()` returns the nested `AttentionConfig` the layers use.
 
-Choose the attention architecture via `attention.architecture`:
+### Attention backends
 
-#### Standard (Scaled Dot-Product)
+`attention=` selects the backend:
 
-```python
-attention.architecture="standard"
-variant.name="standard"
-```
+| Backend | Kind | Notes |
+| --- | --- | --- |
+| `standard` | Softmax | O(T²); best for short sequences |
+| `sype`, `prob_sparse`, `frequency`, `sliding_window`, `dilated_window`, `moba`, `nsa`, `softpick`, `autocor`, `dwt` | Softmax variants | Tune via `attention_options` |
+| `linear` | Linear attention | O(T) |
+| `gla` | Gated linear attention | Gate-controlled recurrence; long sequences |
+| `deltanet` | Delta rule | Delta-based state update; streaming |
+| `gated_deltanet`, `gated_delta` | Gated delta rule | Improved stability for streaming |
+| `kimi` | Learned linear recurrence | Competitive with quadratic attention |
 
-Full-rank attention, O(T²) complexity. Good for short sequences (<1000 tokens).
+Recurrent and linear backends are self-attention only; decoder
+cross-attention uses standard attention for them.
 
-#### Linear Attention Variants
+### Mixing backends across depth
 
-**Gated Linear Attention (GLA):**
-```python
-attention.architecture="gla"
-variant.name="gla"
-```
-
-Gate-controlled recurrence, O(T) complexity. Effective for long sequences.
-
-Variants: `gla`, `gla_hybrid`, `gla_3to1`
-
-**DeltaNet (Gated Delta Rule):**
-```python
-attention.architecture="deltanet"
-variant.name="deltanet"
-```
-
-Delta-based state update, efficient for streaming.
-
-Variants: `deltanet`, `deltanet_hybrid`, `deltanet_3to1`
-
-**Gated DeltaNet:**
-```python
-attention.architecture="gated_deltanet"
-variant.name="gated_deltanet"
-```
-
-Gated delta-based state update, improved stability for streaming.
-
-Variants: `gated_deltanet`, `gated_deltanet_hybrid`, `gated_deltanet_3to1`
-
-**Kimi (Learned Linear Recurrence):**
-```python
-attention.architecture="kimi"
-variant.name="kimi"
-```
-
-Learned diagonal recurrence, competitive with quadratic attention.
-
-Variants: `kimi`, `hybrid_kimi`, `kimi_3to1`
-
-#### Hybrid Modes
-
-Mix standard and linear attention across layers:
+`attention_pattern` interleaves the chosen backend with standard attention:
 
 ```python
-attention.architecture="hybrid"  # Alternates standard and linear
-attention.architecture="hybrid_kimi"  # Alternates standard and kimi
-attention.architecture="hybrid_gdn"  # Alternates standard and GDN
-attention.architecture="gla_hybrid"  # Alternates standard and GLA
-attention.architecture="deltanet_hybrid"  # Alternates standard and DeltaNet
-attention.architecture="gated_deltanet_hybrid"  # Alternates standard and Gated DeltaNet
+# layers 0-2 use GLA, layer 3 uses standard attention, and so on
+encoder = TransformerEncoder(input_size=8, num_layers=8, attention="gla", attention_pattern="3to1")
+
+# every layer but the last uses Kimi
+encoder = TransformerEncoder(input_size=8, num_layers=6, attention="kimi", attention_pattern="hybrid")
 ```
 
-#### Positional Encoding
+### Positional encoding
 
-Configured via `attention.position.encoding`:
-
-```python
-attention.position.encoding="rope"    # Rotary Position Embedding (modern)
-# OR
-attention.position.encoding="alibi"   # ALiBi (length-generalization)
-# OR
-attention.position.encoding="sinusoidal"  # Sinusoidal (classic)
-# OR
-attention.position.encoding="learnable"
-```
-
-**RoPE** integrates seamlessly with all attention modes. Applied inside the attention module before matmuls.
+`position="rope"` and `"alibi"` are applied inside attention;
+`"sinusoidal"` and `"learnable"` are added to the input embeddings. Pass
+`pos_encoder=` to the constructor to use your own input-level module.
 
 ---
 
@@ -400,15 +295,22 @@ encoder = TransformerEncoder(
     input_size=1,
     d_model=256,
     num_layers=6,
-    use_gateskip=True,
     gate_budget=1.0,  # Initial gate magnitude (1.0 = no gating initially)
-    gate_lambda=0.1,  # Auxiliary loss weight
+    gate_aux_weight=0.1,  # Auxiliary loss weight
+    residual="gateskip"
 )
 ```
 
-**gate_budget** can be set per-layer dynamically:
+To anneal the budget during training, pass a scheduler; it steps once per
+training forward:
 ```python
-encoder.set_gate_budget(0.5)  # Anneals gating strength during training
+from foreblocks.nn.routing.gateskip import BudgetScheduler
+
+encoder = TransformerEncoder(
+    input_size=1,
+    residual="gateskip",
+    gate_scheduler=BudgetScheduler(b_start=1.0, b_end=0.5, total_steps=10_000),
+)
 ```
 
 ---
@@ -437,10 +339,9 @@ encoder = TransformerEncoder(
     input_size=1,
     d_model=256,
     num_layers=6,
-    use_mod=True,
-    mod_mode="token",      # "token" or "seq"
-    mod_lambda=0.05,       # Auxiliary loss weight
-    mod_budget_scheduler=budget_scheduler,
+    mod_aux_weight=0.05,       # Auxiliary loss weight
+    mod_scheduler=budget_scheduler,
+    residual="mod",
 )
 ```
 
@@ -464,10 +365,10 @@ encoder = TransformerEncoder(
     input_size=1,
     d_model=256,
     num_layers=6,
-    use_mhc=True,
-    mhc_n_streams=4,         # Number of parallel streams
+    mhc_streams=4,         # Number of parallel streams
     mhc_sinkhorn_iters=20,   # Sinkhorn iterations for doubly-stochastic projection
     mhc_collapse="first",    # "first" or "mean" (how to collapse streams to output)
+    residual="mhc"
 )
 ```
 
@@ -488,9 +389,9 @@ encoder = TransformerEncoder(
     input_size=1,
     d_model=256,
     num_layers=6,
-    use_attention_residual=True,
-    attn_residual_type="full",  # or "block"
+    attention_residual_mode="full",  # or "block"
     attention_residual_block_size=8,
+    residual="attention",
 )
 ```
 
@@ -510,27 +411,12 @@ Compress long sequences into patch tokens, reducing internal computation:
 encoder = TransformerEncoder(
     input_size=1,
     d_model=256,
-    patch_encoder=True,
+    patching="shared",
     patch_len=16,        # Patch length in timesteps
     patch_stride=8,      # Stride between patches
     patch_pad_end=True,  # Pad end to align patches
 )
 # Input: [B, T, 1] → Patches: [B, Np, 256] where Np = ceil((T - patch_len) / stride) + 1
-```
-
-### Decoder Patching (Optional)
-
-Decoder can optionally patch for full-sequence decoding (not compatible with KV-cached incremental):
-
-```python
-decoder = TransformerDecoder(
-    input_size=1,
-    output_size=1,
-    patch_decoder=True,
-    patch_len=16,
-    patch_stride=8,
-    # Requires unpatching at output
-)
 ```
 
 ### CT-PatchTST: Channel-Time Patching
@@ -540,10 +426,10 @@ Forecasting-specific: treat channels as a dimension, create channel-time patches
 ```python
 encoder = TransformerEncoder(
     input_size=8,  # 8 variables
-    ct_patchtst=True,
-    ct_patch_len=16,
-    ct_patch_stride=8,
-    ct_patch_fuse="linear",  # or "mean" (fuse channels)
+    patching="channel",
+    patch_len=16,
+    patch_stride=8,
+    channel_fuse="linear",  # or "mean" (fuse channels)
 )
 ```
 
@@ -560,7 +446,7 @@ encoder = TransformerEncoder(
     input_size=1,
     d_model=256,
     num_layers=12,
-    use_gradient_checkpointing=True,
+    gradient_checkpointing=True,
 )
 ```
 
@@ -605,10 +491,9 @@ moe_ffn = FeedForwardBlock(
 encoder = TransformerEncoder(
     input_size=1,
     d_model=256,
-    dim_feedforward=1024,
-    use_moe=True,
-    num_experts=8,
-    top_k=2,
+    ff_dim=1024,
+    moe_experts=8,
+    moe_top_k=2,
 )
 ```
 
@@ -619,7 +504,7 @@ Auxiliary losses prevent expert collapse:
 ```python
 config = TrainingConfig(
     # In FeedForwardBlock / TransformerEncoder, 
-    # moe_aux_lambda controls scaling (passed via trainer)
+    # moe_aux_weight on the transformer scales the MoE auxiliary loss
 )
 
 # Access auxiliary losses during training:
@@ -689,22 +574,20 @@ mod_scheduler = MoDBudgetScheduler(
 encoder = TransformerEncoder(
     input_size=8,
     d_model=256,
-    nhead=8,
+    n_heads=8,
     num_layers=6,
-    dim_feedforward=1024,
-    attention_mode="hybrid",
-    use_moe=True,
-    num_experts=8,
-    top_k=2,
-    use_mod=True,
-    mod_budget_scheduler=mod_scheduler,
-    use_gateskip=True,
-    gate_lambda=0.1,
-    use_gradient_checkpointing=True,
-    patch_encoder=True,
+    ff_dim=1024,
+    attention="linear", attention_pattern="hybrid",
+    moe_experts=8,
+    moe_top_k=2,
+    mod_scheduler=mod_scheduler,
+    gate_aux_weight=0.1,
+    gradient_checkpointing=True,
+    patching="shared",
     patch_len=16,
     patch_stride=8,
-    layer_dropout_schedule=dropout_schedule,
+    dropout_schedule=dropout_schedule,
+    residual="gateskip"  # one policy; also: mod,
 )
 
 # ── Decoder ──
@@ -712,17 +595,16 @@ decoder = TransformerDecoder(
     input_size=8,
     output_size=1,
     d_model=256,
-    nhead=8,
+    n_heads=8,
     num_layers=4,
-    dim_feedforward=1024,
-    attention_mode="standard",
-    use_moe=False,  # MoE in encoder usually sufficient
-    use_gateskip=True,
-    layer_dropout_schedule=LayerDropoutSchedule(
+    ff_dim=1024,
+    attention="standard",
+    dropout_schedule=LayerDropoutSchedule(
         num_layers=4,
         base_dropout=0.03,
         max_dropout=0.1,
     ),
+    residual="gateskip",
 )
 
 # ── Training Config ──
@@ -756,11 +638,11 @@ history = trainer.train(train_dl, val_dl, epochs=50)
 
 | Goal | Recommended Config |
 |------|-------------------|
-| **Long sequences** | `attention_mode="gla"` or `deltanet` + `use_mod=True` + `patch_encoder=True` |
-| **Large models** | `use_gradient_checkpointing=True` + `share_layers=True` + `use_moe=True` |
+| **Long sequences** | `attention="gla"` or `"deltanet"` + `residual="mod"` + `patching="shared"` |
+| **Large models** | `gradient_checkpointing=True` + `share_layers=True` + `moe_experts=16` |
 | **Fine-tuning** | `use_llrd=True` + `llrd_decay=0.9` + `scheduler_type="warmup_cosine"` |
-| **Low latency** | `attention_mode="kimi"` or `gated_delta` + `router_type="hash"` (for MoE) |
-| **Stable training** | `use_gateskip=True` + `layer_dropout_schedule` + `mhc=True` |
+| **Low latency** | `attention="kimi"` or `"gated_delta"` + `moe_options={"router_type": "hash"}` |
+| **Stable training** | `residual="gateskip"` (or `"mhc"`) + `dropout_schedule=` |
 
 ---
 

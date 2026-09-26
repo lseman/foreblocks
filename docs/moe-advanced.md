@@ -43,11 +43,10 @@ Auxiliary losses computed alongside:
 encoder = TransformerEncoder(
     input_size=8,
     d_model=256,
-    nhead=8,
+    n_heads=8,
     num_layers=6,
-    use_moe=True,
-    num_experts=8,     # Total number of experts
-    top_k=2,           # Route to top-k experts per token
+    moe_experts=8,     # Total number of experts
+    moe_top_k=2,           # Route to top-k experts per token
 )
 ```
 
@@ -556,33 +555,26 @@ from foreblocks.nn.transformer.encoder import TransformerEncoder
 encoder = TransformerEncoder(
     input_size=8,
     d_model=384,
-    nhead=8,
+    n_heads=8,
     num_layers=6,
-    dim_feedforward=2048,
+    ff_dim=2048,
     # ── MoE ──
-    use_moe=True,
-    num_experts=16,
-    num_shared=2,
-    top_k=2,
-    router_type="noisy_topk",
-    routing_mode="token_choice",
-    load_balance_weight=0.02,
-    z_loss_weight=0.001,
-    moe_aux_lambda=1.0,
+    moe_experts=16,
+    moe_top_k=2,
+    moe_aux_weight=1.0,
     # ── Latent routing ──
-    moe_use_latent=True,
+    moe_latent=True,
     moe_latent_dim=192,
-    moe_latent_d_ff=768,
+    moe_latent_ff_dim=768,
     # ── Capacity ──
-    moe_capacity_factor=1.5,
-    # ── Efficiency ──
-    use_gradient_checkpointing=True,
+    gradient_checkpointing=True,
     # ── Per-layer dropout (see transformer-advanced.md) ──
-    layer_dropout_schedule=LayerDropoutSchedule(
+    dropout_schedule=LayerDropoutSchedule(
         num_layers=6,
         base_dropout=0.05,
         max_dropout=0.15,
     ),
+    moe_options={"num_shared": 2, "router_type": "noisy_topk", "routing_mode": "token_choice", "load_balance_weight": 0.02, "z_loss_weight": 0.001, "moe_capacity_factor": 1.5,},
 )
 
 config = TrainingConfig(
@@ -608,15 +600,21 @@ history = trainer.train(train_loader, val_loader)
 
 Enable logging:
 ```python
+from foreblocks.nn.moe.feedforward import FeedForwardBlock
 from foreblocks.nn.moe.logging import MoELogger
 
 moe_logger = MoELogger()
-encoder = TransformerEncoder(
-    ...,
+ffn = FeedForwardBlock(
+    d_model=256,
+    dim_ff=1024,
+    use_moe=True,
     moe_logger=moe_logger,
     step_getter=lambda: trainer.global_step,
 )
 ```
+
+The logger is a live object, so it is set on a `FeedForwardBlock` directly
+rather than through `TransformerConfig.moe_options`.
 
 Access per-step metrics:
 ```python
@@ -670,9 +668,7 @@ MoE output can be cached in paged KV cache (see Attention docs):
 ```python
 # In transformer decoder with MoE
 decoder = TransformerDecoder(
-    ...,
-    use_moe=True,
-    # KV caching transparent to MoE layer
+    ...
 )
 ```
 

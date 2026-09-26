@@ -10,41 +10,26 @@ from foreblocks.nn.transformer import (
 )
 from foreblocks.nn.transformer.encoder import TransformerEncoder
 from foreblocks.nn.transformer.runtime.outputs import TransformerEncoderOutput
-from foreblocks.nn.attention import (
-    AttentionCacheConfig,
-    AttentionConfig,
-    AttentionPositionConfig,
-    AttentionShapeConfig,
-    AttentionVariantConfig,
-    PositionEncoding,
-)
 
 
-def _config(*, num_layers: int = 1) -> TransformerConfig:
-    return TransformerConfig(
+def _config(**overrides) -> TransformerConfig:
+    settings = dict(
         d_model=8,
-        nhead=2,
-        num_layers=num_layers,
-        dim_feedforward=16,
+        n_heads=2,
+        num_layers=1,
+        ff_dim=16,
         dropout=0.0,
-        patch_encoder=False,
-        custom_norm="rms",
-        attention=AttentionConfig(
-            shape=AttentionShapeConfig(
-                d_model=8,
-                n_heads=2,
-                dropout=0.0,
-                max_seq_len=32,
-            ),
-            cache=AttentionCacheConfig(use_paged_cache=False, use_mla=False),
-            position=AttentionPositionConfig(encoding=PositionEncoding.ROPE),
-            variant=AttentionVariantConfig(name="standard", use_swiglu=False),
-        ),
+        max_seq_len=32,
+        patching="none",
+        swiglu=False,
+        kv_cache="dynamic",
+        attention_options={"use_mla": False},
     )
+    return TransformerConfig(**{**settings, **overrides})
 
 
 def test_mixing_transformer_shape_weights_and_gradients() -> None:
-    layer = MixingTransformer(_config())
+    layer = MixingTransformer(_config(variate_attention=True))
     inputs = torch.randn(2, 3, 5, 8, requires_grad=True)
 
     output, sequence_weights, variate_weights = layer(inputs, need_weights=True)
@@ -62,7 +47,7 @@ def test_mixing_transformer_shape_weights_and_gradients() -> None:
 
 
 def test_patch_mask_is_applied_on_both_attention_axes() -> None:
-    layer = MixingTransformer(_config())
+    layer = MixingTransformer(_config(variate_attention=True))
     inputs = torch.randn(1, 2, 3, 8)
     patch_mask = torch.tensor([[[False, False, True], [False, False, True]]])
 
@@ -82,7 +67,7 @@ def test_patch_mask_is_applied_on_both_attention_axes() -> None:
 
 
 def test_sequence_attention_can_be_causal_without_causal_variate_attention() -> None:
-    layer = MixingTransformer(_config())
+    layer = MixingTransformer(_config(variate_attention=True))
     inputs = torch.randn(1, 3, 4, 8)
 
     _, sequence_weights, variate_weights = layer(
@@ -96,7 +81,7 @@ def test_sequence_attention_can_be_causal_without_causal_variate_attention() -> 
 
 
 def test_per_example_masks_are_repeated_across_each_mixing_axis() -> None:
-    layer = MixingTransformer(_config())
+    layer = MixingTransformer(_config(variate_attention=True))
     inputs = torch.randn(2, 3, 4, 8)
     sequence_mask = torch.zeros(2, 4, 4, dtype=torch.bool)
     sequence_mask[0, :, 3] = True
@@ -119,7 +104,7 @@ def test_per_example_masks_are_repeated_across_each_mixing_axis() -> None:
 
 
 def test_variate_attention_can_be_disabled() -> None:
-    layer = MixingTransformer(_config(), use_variate_attention=False)
+    layer = MixingTransformer(_config())
     inputs = torch.randn(2, 3, 4, 8)
 
     output, _, variate_weights = layer(inputs, need_weights=True)
@@ -130,7 +115,7 @@ def test_variate_attention_can_be_disabled() -> None:
 
 
 def test_stacked_mixing_transformer_runs_every_layer() -> None:
-    model = StackedMixingTransformer(_config(num_layers=3))
+    model = StackedMixingTransformer(_config(num_layers=3, variate_attention=True))
     inputs = torch.randn(2, 2, 4, 8)
 
     output, sequence_weights, variate_weights = model(inputs)
@@ -152,25 +137,25 @@ def test_stacked_mixing_transformer_runs_every_layer() -> None:
 def test_mixing_transformer_validates_embedding_shape(
     shape: tuple[int, ...], message: str
 ) -> None:
-    layer = MixingTransformer(_config())
+    layer = MixingTransformer(_config(variate_attention=True))
 
     with pytest.raises(ValueError, match=message):
         layer(torch.randn(shape))
 
 
 def test_mixing_transformer_validates_patch_mask_shape() -> None:
-    layer = MixingTransformer(_config())
+    layer = MixingTransformer(_config(variate_attention=True))
 
     with pytest.raises(ValueError, match="patch_mask must have shape"):
         layer(torch.randn(2, 3, 4, 8), torch.zeros(2, 4, dtype=torch.bool))
 
 
 def test_transformer_encoder_enables_variate_attention_as_an_option() -> None:
-    config = _config(num_layers=2).with_overrides(
+    config = _config(
+        num_layers=2,
         input_size=3,
-        patch_encoder=False,
-        use_variate_attention=True,
-        return_dict=True,
+        patching="none",
+        variate_attention=True,
     )
     encoder = TransformerEncoder(config)
     inputs = torch.randn(2, 5, 3, requires_grad=True)
@@ -200,29 +185,27 @@ def test_transformer_encoder_enables_variate_attention_as_an_option() -> None:
 
 
 def test_transformer_encoder_can_keep_the_variate_axis() -> None:
-    config = _config().with_overrides(
+    config = _config(
         input_size=3,
-        patch_encoder=False,
-        use_variate_attention=True,
+        patching="none",
+        variate_attention=True,
         variate_fuse="none",
-        return_dict=False,
     )
     encoder = TransformerEncoder(config)
 
-    output = encoder(torch.randn(2, 5, 3))
+    output = encoder(torch.randn(2, 5, 3), return_dict=False)
 
     assert isinstance(output, torch.Tensor)
     assert output.shape == (2, 3, 5, 8)
 
 
 def test_transformer_encoder_patches_each_variate_independently() -> None:
-    config = _config().with_overrides(
+    config = _config(
         input_size=3,
-        patch_encoder=True,
+        patching="shared",
         patch_len=3,
         patch_stride=2,
-        use_variate_attention=True,
-        return_dict=True,
+        variate_attention=True,
     )
     encoder = TransformerEncoder(config)
 
@@ -238,17 +221,17 @@ def test_transformer_encoder_patches_each_variate_independently() -> None:
 
 
 def test_variate_encoder_supports_gradient_checkpointing() -> None:
-    config = _config(num_layers=2).with_overrides(
+    config = _config(
+        num_layers=2,
         input_size=3,
-        patch_encoder=False,
-        use_variate_attention=True,
-        use_gradient_checkpointing=True,
-        return_dict=False,
+        patching="none",
+        variate_attention=True,
+        gradient_checkpointing=True,
     )
     encoder = TransformerEncoder(config).train()
     inputs = torch.randn(2, 5, 3, requires_grad=True)
 
-    output = encoder(inputs)
+    output = encoder(inputs, return_dict=False)
     assert isinstance(output, torch.Tensor)
     output.square().mean().backward()
 
@@ -261,30 +244,31 @@ def test_variate_encoder_supports_gradient_checkpointing() -> None:
 
 
 @pytest.mark.parametrize(
-    "feature", ["use_mhc", "use_mod", "use_gateskip", "use_moe", "ct_patchtst"]
+    "feature",
+    [
+        {"residual": "mhc"},
+        {"residual": "mod"},
+        {"residual": "gateskip"},
+        {"moe_experts": 2},
+        {"patching": "channel"},
+    ],
 )
 def test_variate_encoder_rejects_incompatible_three_dimensional_features(
-    feature: str,
+    feature: dict,
 ) -> None:
-    with pytest.raises(ValueError, match="use_variate_attention is incompatible"):
-        TransformerEncoder(
-            _config().with_overrides(
-                input_size=3,
-                use_variate_attention=True,
-                **{feature: True},
-            )
-        )
+    with pytest.raises(ValueError, match="variate_attention is incompatible"):
+        TransformerEncoder(_config(input_size=3, variate_attention=True, **feature))
 
 
 def _contiguous_encoder(*, num_layers: int = 2) -> TransformerEncoder:
-    config = _config(num_layers=num_layers).with_overrides(
+    config = _config(
+        num_layers=num_layers,
         input_size=3,
-        patch_encoder=True,
+        patching="shared",
         patch_len=2,
         patch_stride=2,
-        use_variate_attention=True,
-        use_contiguous_patch_decoding=True,
-        return_dict=True,
+        variate_attention=True,
+        contiguous_decoding=True,
     )
     return TransformerEncoder(config)
 
@@ -303,11 +287,12 @@ def test_contiguous_decode_predicts_all_horizon_patches_in_one_pass() -> None:
 
         hooks.append(layer.register_forward_hook(count_call))
 
-    forecasts = encoder.decode_contiguous(
-        target,
-        past_only_covariates=past_only,
-        past_future_covariates=known_future,
-    )
+    with torch.no_grad():
+        forecasts = encoder.forecast_contiguous(
+            target,
+            past_only_covariates=past_only,
+            past_future_covariates=known_future,
+        )
     for hook in hooks:
         hook.remove()
 
@@ -380,7 +365,7 @@ def test_contiguous_decode_masks_unknown_horizon_but_not_its_tokens(
         return original_forward(src, *args, **kwargs)
 
     monkeypatch.setattr(encoder, "forward", capture_forward)
-    encoder.decode_contiguous(
+    encoder.forecast_contiguous(
         torch.randn(1, 3, 1),
         horizon=3,
         past_only_covariates=torch.randn(1, 3, 1),
@@ -396,28 +381,44 @@ def test_contiguous_decode_masks_unknown_horizon_but_not_its_tokens(
     assert not attention_padding[:, 4:].any()  # placeholders remain attention keys
 
 
-def test_contiguous_quantile_loss_respects_missing_target_mask() -> None:
+@pytest.mark.parametrize("missing", [100.0, float("nan"), float("inf")])
+def test_contiguous_quantile_loss_respects_missing_target_mask(missing) -> None:
     encoder = _contiguous_encoder(num_layers=1)
-    predictions = torch.zeros(1, 2, 1, 9)
-    targets = torch.tensor([[[1.0], [100.0]]])
+    predictions = torch.zeros(1, 2, 1, 9, requires_grad=True)
+    targets = torch.tensor([[[1.0], [missing]]])
     mask = torch.tensor([[[False], [True]]])
 
     loss = encoder.contiguous_quantile_loss(predictions, targets, mask)
 
     assert loss.item() == pytest.approx(0.5)
+    loss.backward()
+    assert torch.isfinite(predictions.grad).all()
+    assert not predictions.grad[:, 1].any()
 
 
 def test_contiguous_decode_requires_compatible_patch_configuration() -> None:
-    with pytest.raises(ValueError, match="requires use_variate_attention"):
-        TransformerEncoder(_config().with_overrides(use_contiguous_patch_decoding=True))
+    with pytest.raises(ValueError, match="requires variate_attention"):
+        TransformerEncoder(_config(contiguous_decoding=True))
     with pytest.raises(ValueError, match="patch_stride == patch_len"):
         TransformerEncoder(
-            _config().with_overrides(
+            _config(
                 input_size=2,
-                use_variate_attention=True,
-                use_contiguous_patch_decoding=True,
-                patch_encoder=True,
+                variate_attention=True,
+                contiguous_decoding=True,
+                patching="shared",
                 patch_len=4,
                 patch_stride=2,
             )
         )
+
+
+def test_contiguous_quantile_loss_all_missing_has_zero_loss_and_gradient() -> None:
+    encoder = _contiguous_encoder(num_layers=1)
+    predictions = torch.zeros(1, 2, 1, 9, requires_grad=True)
+    targets = torch.full((1, 2, 1), float("nan"))
+    loss = encoder.contiguous_quantile_loss(
+        predictions, targets, torch.ones_like(targets, dtype=torch.bool)
+    )
+    assert loss.item() == 0.0
+    loss.backward()
+    assert torch.equal(predictions.grad, torch.zeros_like(predictions))

@@ -76,10 +76,10 @@ def test_decoder_validates_targets_only_when_mtp_is_active(monkeypatch):
         input_size=2,
         output_size=2,
         d_model=8,
-        nhead=2,
+        n_heads=2,
         num_layers=1,
-        dim_feedforward=16,
-        patch_encoder=False,
+        ff_dim=16,
+        patching="none",
         dropout=0.0,
     )
     monkeypatch.setattr(decoder, "_infer_mtp_num_heads", lambda: 2)

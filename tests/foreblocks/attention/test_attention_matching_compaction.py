@@ -1,8 +1,8 @@
 import torch
 
-from foreblocks.nn.transformer.encoder import TransformerEncoderLayer
 from foreblocks.nn.attention.config import AttentionConfig
 from foreblocks.nn.attention.multihead import MultiAttention
+from foreblocks.nn.transformer import TransformerEncoderLayer
 
 
 def test_multiattention_attention_matching_compacts_cache():
@@ -43,13 +43,15 @@ def test_multiattention_attention_matching_compacts_cache():
 def test_transformer_encoder_attention_matching_runs():
     layer = TransformerEncoderLayer(
         d_model=32,
-        nhead=4,
-        dim_feedforward=64,
+        n_heads=4,
+        ff_dim=64,
         dropout=0.0,
-        use_attention_matching_compaction=True,
-        attention_matching_trigger_len=8,
-        attention_matching_min_keep=4,
-        attention_matching_keep_ratio=0.5,
+        attention_options={
+            "attention_matching": True,
+            "matching_trigger_len": 8,
+            "matching_min_keep": 4,
+            "matching_keep_ratio": 0.5,
+        },
     )
     layer.eval()
 

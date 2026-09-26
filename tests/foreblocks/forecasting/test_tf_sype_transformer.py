@@ -2,10 +2,10 @@ import unittest
 
 import torch
 
-from foreblocks.nn.embeddings import LearnablePositionalEncoding, PositionalEncoding
-from foreblocks.nn.transformer.encoder import TransformerEncoder
 from foreblocks.nn.attention.config import AttentionConfig
 from foreblocks.nn.attention.multihead import MultiAttention
+from foreblocks.nn.embeddings import LearnablePositionalEncoding, PositionalEncoding
+from foreblocks.nn.transformer.encoder import TransformerEncoder
 
 
 class TestSyPETransformer(unittest.TestCase):
@@ -59,12 +59,12 @@ class TestSyPETransformer(unittest.TestCase):
         model = TransformerEncoder(
             input_size=3,
             d_model=16,
-            nhead=4,
+            n_heads=4,
             num_layers=1,
             dropout=0.0,
-            att_type="sype",
-            patch_encoder=False,
-            pos_encoding_type="learnable",
+            attention="sype",
+            patching="none",
+            position="learnable",
         )
         self.assertIsInstance(model.pos_encoder, LearnablePositionalEncoding)
 
@@ -72,12 +72,12 @@ class TestSyPETransformer(unittest.TestCase):
         model = TransformerEncoder(
             input_size=3,
             d_model=16,
-            nhead=4,
+            n_heads=4,
             num_layers=1,
             dropout=0.0,
-            att_type="standard",
-            patch_encoder=False,
-            pos_encoding_type="sinusoidal",
+            attention="standard",
+            patching="none",
+            position="sinusoidal",
         )
         self.assertIsInstance(model.pos_encoder, PositionalEncoding)
 

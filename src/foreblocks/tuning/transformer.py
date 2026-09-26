@@ -1,4 +1,4 @@
-"""foreblocks.nn.transformer.tuner.
+"""foreblocks.tuning.transformer.
 
 Auto-tuning for transformer hyperparameters from time series characteristics.
 
@@ -20,16 +20,15 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
 import numpy as np
-import torch
 
 # pip install pydantic
 from pydantic import BaseModel, Field, field_validator
 
-from foreblocks.nn.transformer.signal_analysis import (
+from foreblocks.tuning.signal_analysis import (
     _autocorrelation,
     _choose_nearest_candidate,
-    _cwt_energy_profile,
     _clamp,
+    _cwt_energy_profile,
     _difference,
     _find_acf_peaks,
     _lempel_ziv_complexity,

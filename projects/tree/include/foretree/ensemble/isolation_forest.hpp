@@ -9,6 +9,14 @@
 // `extension_level + 1` random features (Extended IF; removes the axis-aligned
 // artifacts of the classic score). Trees stop at depth ceil(log2(max_samples)).
 //
+// Deviation from Hariri et al.: hyperplane weights are N(0, 1) divided by the
+// node's range on each chosen feature (the paper uses unscaled N(0, 1)), so
+// the hyperplane orientation does not depend on the features' units.
+//
+// Validation: in classic mode the per-point scores match scikit-learn's
+// IsolationForest to Monte Carlo noise (3000 trees: mean |diff| 0.0018, the
+// same as between two scikit-learn seeds; mean bias 1e-4).
+//
 // The anomaly score of x is s(x) = 2^(-E[h(x)] / c(psi)), where h(x) is the
 // path length to x's leaf plus c(leaf size), and c(n) is the average path
 // length of an unsuccessful BST search over n points. s is near 1 for
@@ -113,11 +121,13 @@ public:
         return out;
     }
 
-    // s(x) in (0, 1]; higher is more anomalous.
+    // s(x) in (0, 1]; higher is more anomalous. With a single training row,
+    // c(psi) = 0 and every path is 0: the score is 0.5 (as in scikit-learn),
+    // not 0/0.
     [[nodiscard]] std::vector<double> anomaly_score(const double* X, int N, int P) const {
         std::vector<double> out = mean_path_length(X, N, P);
         for (double& v : out)
-            v = std::exp2(-v / c_psi_);
+            v = c_psi_ > 0.0 ? std::exp2(-v / c_psi_) : 0.5;
         return out;
     }
 

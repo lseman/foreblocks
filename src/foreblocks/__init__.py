@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from foreblocks.nn.blocks.recurrent import GRUDecoder as GRUDecoder
     from foreblocks.nn.transformer.encoder import TransformerEncoder as TransformerEncoder
     from foreblocks.nn.transformer.decoder import TransformerDecoder as TransformerDecoder
-    from foreblocks.nn.transformer.tuner import TransformerTuner as TransformerTuner
+    from foreblocks.tuning.transformer import TransformerTuner as TransformerTuner
     from foreblocks.nn.attention.layer import AttentionLayer as AttentionLayer
 
 _EXPORTS = {
@@ -38,7 +38,7 @@ _EXPORTS = {
     'GRUDecoder': 'foreblocks.nn.blocks.recurrent',
     'TransformerEncoder': 'foreblocks.nn.transformer.encoder',
     'TransformerDecoder': 'foreblocks.nn.transformer.decoder',
-    'TransformerTuner': 'foreblocks.nn.transformer.tuner',
+    'TransformerTuner': 'foreblocks.tuning.transformer',
     'AttentionLayer': 'foreblocks.nn.attention.layer',
 }
 __all__ = list(_EXPORTS)

@@ -12,17 +12,12 @@ ForeBlocks ships a flexible encoder-decoder transformer stack centered on `Trans
 
 The current implementation supports:
 
-- **Training optimization**: Layer-wise LR decay (LLRD) + warmup-cosine scheduler for SOTA fine-tuning
-- **Per-layer dropout schedule**: Depth-scaled attention dropout (deeper layers → higher dropout)
-- multiple attention backends and per-layer attention routing
-- encoder and decoder patching
-- CT-PatchTST-style encoder tokenization
-- paper-style Attention Residuals
-- GateSkip (residual path gating)
-- Mixture-of-Depths (MoD) dynamic layer skipping
-- mHC residual stream mixing (manifold-constrained hyper-connections)
+- multiple attention backends, mixed across depth
+- encoder patching (shared or per-channel) and variate mixing
+- one residual policy per model: standard, GateSkip, mHC, Mixture-of-Depths, or Attention Residuals
 - MoE feedforward blocks with multiple routers and load-balancing
-- gradient checkpointing and shared-layer reuse
+- per-layer dropout schedules, gradient checkpointing, and shared-layer reuse
+- incremental KV-cache decoding (greedy, beam, speculative)
 
 Related docs:
 
@@ -34,231 +29,140 @@ Related docs:
 - [MoE](moe)
 - [DARTS](darts)
 
-## Import
+## Building a model
 
-::: code-group
-
-```python [Encoder]
-from foreblocks import TransformerEncoder
-```
-
-```python [Decoder]
-from foreblocks import TransformerDecoder
-```
-
-:::
-
-## Baseline decoder
+Every setting is a keyword argument. Pass them directly, collect them in a
+`TransformerConfig`, or both — keywords override the config:
 
 ```python
-decoder = TransformerDecoder(
-    input_size=1,
-    output_size=1,
-    d_model=256,
-    nhead=8,
-    num_layers=4,
-    patch_decoder=False,
-    informer_like=False,
-)
+from foreblocks import TransformerDecoder, TransformerEncoder
+from foreblocks.nn.transformer import TransformerConfig
+
+encoder = TransformerEncoder(input_size=8, d_model=256, n_heads=8, num_layers=4)
+
+config = TransformerConfig(d_model=256, n_heads=8, num_layers=4, residual="gateskip")
+encoder = TransformerEncoder(config, input_size=8)
+decoder = TransformerDecoder(config, input_size=1, output_size=1)
 ```
 
-#### `attention.architecture` — routing schedule
+A config is frozen, plain data: `config.to_dict()` is JSON-serializable and
+`TransformerConfig.from_dict(...)` restores it. Unknown names and invalid values
+raise immediately.
 
-Supported `attention.architecture` values currently include:
+Live objects are constructor arguments rather than config fields:
+`pos_encoder=`, `gate_scheduler=`, `mod_scheduler=`, and `dropout_schedule=`.
 
-- `standard`
-- `linear`
-- `sype`
-- `hybrid`
-- `kimi`
-- `hybrid_kimi`
-- `kimi_3to1`
-- `gated_delta`
-- `hybrid_gdn`
-- `gdn_3to1`
-- `gla`
-- `gla_hybrid`
-- `gla_3to1`
-- `deltanet`
-- `deltanet_hybrid`
-- `deltanet_3to1`
-- `gated_deltanet`
-- `gated_deltanet_hybrid`
-- `gated_deltanet_3to1`
+## Settings
 
-Important behavior:
+| Group | Settings |
+| --- | --- |
+| Shape | `input_size`, `output_size`, `d_model`, `n_heads`, `n_kv_heads`, `num_layers`, `ff_dim`, `dropout`, `activation`, `swiglu`, `max_seq_len` |
+| Attention | `attention`, `attention_pattern`, `attention_kernel`, `frequency_modes`, `attention_options` |
+| Positions | `position`, `position_scale`, `rope_base`, `rope_scaling`, `rope_scaling_factor`, `time_encoding` |
+| Normalization | `norm` (`rms`/`layer`), `norm_placement` (`pre`/`post`/`sandwich`), `norm_eps`, `final_norm` |
+| Mixture of experts | `moe_experts` (0 = dense), `moe_top_k`, `moe_latent`, `moe_latent_dim`, `moe_latent_ff_dim`, `moe_aux_weight`, `moe_options` |
+| Residual | `residual`, `gate_budget`, `gate_aux_weight`, `mhc_streams`, `mhc_sinkhorn_iters`, `mhc_collapse`, `mod_aux_weight`, `attention_residual_mode`, `attention_residual_block_size` |
+| Execution | `share_layers`, `gradient_checkpointing`, `init_std`, `depth_scaled_init` |
+| Encoder input | `patching`, `patch_len`, `patch_stride`, `patch_pad_end`, `channel_fuse`, `variate_attention`, `variate_fuse`, `variate_position`, `contiguous_decoding`, `quantiles` |
+| Decoder | `informer`, `label_len`, `kv_cache` |
 
-- if `attention.architecture="standard"` but the variant `name` is a routed type such as `linear`, `sype`, `kimi`, `gated_delta`, `gla`, `deltanet`, or `gated_deltanet`, the model promotes the architecture automatically
+## Attention
 
-### Patching
+`attention` names the backend of every layer. It is either a recurrent or
+linear backend — `linear`, `gla`, `deltanet`, `gated_deltanet`,
+`gated_delta`, `kimi` — or a softmax variant: `standard`, `sype`,
+`prob_sparse`, `frequency`, `sliding_window`, `dilated_window`, `moba`, `nsa`,
+`softpick`, `autocor`, `dwt`, ...
 
-- `patch_encoder`
-- `patch_decoder`
-- `patch_len`
-- `patch_stride`
-- `patch_pad_end`
+`attention_pattern` mixes that backend with standard attention across depth:
 
-### Efficiency
-
-- `use_gradient_checkpointing`
-- `share_layers`
-
-### Advanced modules
-
-- Attention Residuals:
-  `use_attention_residual`, `attn_residual_type`, `attention_residual_block_size`
-- GateSkip:
-  `use_gateskip`, `gate_budget`, `gate_lambda`
-- MoD:
-  `use_mod`, `mod_mode`, `mod_lambda`, `mod_budget_scheduler`
-- mHC:
-  `use_mhc`, `mhc_n_streams`, `mhc_sinkhorn_iters`, `mhc_collapse`
-- MoE:
-  `use_moe`, `num_experts`, `top_k`, `moe_aux_lambda`
-
-## Recommended patching strategy
-
-The recommended pattern for forecasting is:
-
-- `patch_encoder=True`
-- `patch_decoder=False`
-
-Why:
-
-- the encoder benefits from shorter token sequences
-- the decoder stays easier to reason about
-- autoregressive decoding stays compatible with `forward_one_step(...)`
-
-`patch_decoder=True` is supported for full-sequence decoding, but it is not compatible with KV-cached incremental decoding.
-
-When the encoder is patched, the memory sequence length becomes patch-token length. The decoder validates that `memory_key_padding_mask` matches the actual memory length, so patched and unpatched masks cannot be mixed silently.
-
-## CT-PatchTST encoder mode
-
-The encoder also supports a channel-token PatchTST-style path:
+- `uniform` (default): every layer uses `attention`
+- `hybrid`: every layer but the last uses `attention`
+- `3to1`: three of every four layers use `attention`
 
 ```python
 encoder = TransformerEncoder(
-    input_size=8,
-    ct_patchtst=True,
-    ct_patch_len=16,
-    ct_patch_stride=8,
-    ct_patch_pad_end=True,
-    ct_patch_fuse="linear",  # or "mean"
-    d_model=256,
+    input_size=8, d_model=256, num_layers=8,
+    attention="gla", attention_pattern="3to1",
 )
 ```
 
-### Informer-like decoding
+Rarely used attention settings go through `attention_options`, keyed by the
+field names of `foreblocks.nn.attention.config` (`window_size`, `qk_norm`,
+`logit_softcap`, `use_mla`, `attention_matching`, ...):
 
-`model_type="informer-like"` changes defaults so that:
+```python
+encoder = TransformerEncoder(
+    input_size=8, attention="sliding_window",
+    attention_options={"window_size": 128, "qk_norm": True},
+)
+```
 
-- encoder time encoding is enabled
-- decoder informer-like behavior is enabled
-- decoder prompt masking follows `label_len`
+## Residual policies
 
-Typical setup:
+Exactly one residual policy is active per model:
+
+| `residual=` | Behavior | Settings |
+| --- | --- | --- |
+| `standard` | Ordinary residual connections | — |
+| `gateskip` | Learned per-token gates on each sublayer update | `gate_budget`, `gate_aux_weight`, `gate_scheduler=` |
+| `mhc` | Manifold-constrained hyper-connections over parallel streams | `mhc_streams`, `mhc_sinkhorn_iters`, `mhc_collapse` |
+| `mod` | Mixture-of-Depths: each layer processes only routed tokens | `mod_aux_weight`, `mod_scheduler=` |
+| `attention` | Attention Residuals over earlier layer outputs | `attention_residual_mode` (`full`/`block`), `attention_residual_block_size` |
+
+`mhc` and `attention` cannot be combined with `gradient_checkpointing`; `mhc`
+and `mod` do not support KV-cached decoding.
+
+## Encoder patching
+
+`patching` selects how the encoder tokenizes `[B, T, C]` input:
+
+- `shared` (default): project each step, then embed patches of `patch_len` steps every `patch_stride` steps
+- `channel`: embed each channel's patches and fuse channels per patch (`channel_fuse="linear"` or `"mean"`)
+- `none`: one token per step
+
+When the encoder is patched, the memory sequence length becomes the number of
+patches. The decoder validates that `memory_key_padding_mask` matches the
+memory length, so patched and unpatched masks cannot be mixed silently.
+
+`variate_attention=True` keeps each channel as its own token stream and mixes
+across channels in every layer; with `contiguous_decoding=True` the encoder
+forecasts a whole horizon in one pass (`encoder.forecast_contiguous(...)`).
+
+## Informer-style decoding
+
+`informer=True` makes decoder self-attention non-causal and masks positions
+after `label_len` as padding, so the decoder reads a known prefix and fills
+the horizon in one pass:
 
 ```python
 decoder = TransformerDecoder(
-    input_size=1,
-    output_size=1,
-    model_type="informer-like",
-    label_len=12,
-    d_model=256,
-    nhead=8,
-    num_layers=4,
+    input_size=1, output_size=1, d_model=256, n_heads=8, num_layers=4,
+    informer=True, label_len=12, time_encoding=True,
 )
 ```
 
-Recommended usage:
+The default (`informer=False`) is an ordinary causal decoder, which supports
+incremental decoding through `prefill`, `decode`, `forward_one_step`, and
+`generate`.
 
-- first call: pass the available prefix
-- later calls: pass either the growing prefix or only the newest token
-- once cache exists, the implementation consumes only the newest step
+## Active-position masks
 
-Current constraints:
-
-- requires `patch_decoder=False`
-- does not support `use_mod=True`
-- does not support `use_mhc=True`
-
-## Active-position masks for time series
-
-Both GateSkip and MoD operate over active positions. The public runtime input is:
-
-- encoder: `gateskip_active_mask`
-- decoder: `gateskip_active_mask`
-
-For time series, the intended meaning is:
-
-- `True`: this timestep or token participates in budgeting or routing
-- `False`: inactive position such as padding or masked-out region
-
-Default behavior:
-
-- encoder: active positions are derived from `src_key_padding_mask` when available
-- decoder: active positions are derived from the user-provided target padding mask
-- the auto-generated Informer forecast mask is intentionally not treated as inactivity for GateSkip or MoD
-
-With patching enabled, the active mask is patchified too, so routing stays aligned with patch tokens.
-
-## Attention Residuals
-
-The transformer now implements paper-style Attention Residuals rather than the older local residual trick.
-
-Controls:
-
-- `use_attention_residual`
-- `attn_residual_type`: `full` or `block`
-- `attention_residual_block_size`
-
-Behavior:
-
-- `full`: aggregates over the running layer history
-- `block`: aggregates over block summaries
-
-Notes:
-
-- this is enabled by default
-- it replaces the normal residual path for the affected blocks
-
-Current compatibility rules:
-
-- not compatible with `use_gateskip=True`
-- not compatible with `use_mhc=True`
-- not compatible with `use_mod=True`
-
-If you want GateSkip, MoD, or mHC, disable Attention Residuals explicitly:
-
-```python
-use_attention_residual=False
-```
-
-See the dedicated guide for routing and auxiliary-loss details:
-
-- [MoE Guide](moe)
+GateSkip and Mixture-of-Depths operate over active positions, passed to
+`forward` as `active_mask` (`True` marks a position that participates). By
+default it is derived from the caller's padding mask. The decoder's automatic
+Informer horizon mask is intentionally not treated as inactivity. With
+patching, the active mask is patchified too, so routing stays aligned with
+patch tokens.
 
 ## Integration with `ForecastingModel`
 
 See the [Custom Blocks Guide](custom_blocks) for wiring transformers into `ForecastingModel`.
 
-## Transformer Configuration Structure
-
-ForeBlocks now uses a structured configuration system for transformers and attention:
-
-- `TransformerConfig`: Main transformer configuration
-- `AttentionConfig`: Attention settings with sub-configs:
-  - `shape`: `AttentionShapeConfig` (d_model, n_heads, n_kv_heads, dropout, max_seq_len, cross_attention)
-  - `architecture`: Attention mode (standard, linear, gla, deltanet, etc.)
-  - `cache`: `AttentionCacheConfig` (use_paged_cache, block_size, max_blocks, use_mla, attention_matching)
-  - `position`: `AttentionPositionConfig` (encoding, rope_base, rope_scaling_type, rope_scaling_factor)
-  - `variant`: `AttentionVariantConfig` (name, backend, window_size, chunk_size, frequency_modes, use_flash_sliding, use_swiglu, nsa_block_size, moba_topk, dilation)
-  - `features`: `AttentionFeatureConfig` (qk_norm, logit_softcap, learned_temperature, gated_attention, normalized_output, head_importance, multiscale_mask, subquery_norm)
-
 ## Transformer Tuner
 
-ForeBlocks provides `TransformerTuner` for auto-hyperparameter selection and feature analysis:
+`foreblocks.tuning.TransformerTuner` recommends patch lengths, attention, and
+preprocessing from series characteristics:
 
 - **Lempel-Ziv complexity** analysis for sequence structure
 - **Continuous Wavelet Transform (CWT) energy** features for frequency domain analysis

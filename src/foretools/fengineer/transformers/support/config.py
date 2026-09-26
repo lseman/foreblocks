@@ -51,7 +51,7 @@ class CategoricalConfig:
     use_james_stein: bool = False
     n_splits: int = 5
     target_min_samples: int = 100
-    smoothing_prior: float = 10.0
+    smoothing_prior: float | str = 10.0  # m-estimate weight, or "auto" (empirical Bayes)
     use_stratified_kfold: bool = True
     target_noise_std: float = 0.0
     fold_strategy: str = "auto"  # "auto" | "kfold" | "group" | "time"
@@ -157,6 +157,38 @@ class DateTimeConfig:
     include_elapsed: bool = True
     group_key: str | None = None
     country_holidays: str | None = None
+
+
+@dataclass
+class BoostedConfig:
+    """Configuration for :class:`BoostedFeatureGenerator` (OpenFE-style)."""
+
+    max_features: int = 30
+    max_base_features: int = 20
+    max_group_keys: int = 5
+    max_group_cardinality: int = 1000
+    binary_ops: tuple[str, ...] = ("add", "sub", "mul", "div")
+    group_aggs: tuple[str, ...] = (
+        "mean", "std", "min", "max", "median", "dev", "ratio", "rank",
+    )
+    include_freq: bool = True
+    include_combine: bool = True
+    max_rows: int = 20000
+    min_rows: int = 200
+    halving_min_rows: int = 1000
+    max_halving_rounds: int = 4
+    valid_fraction: float = 0.25
+    dedup_threshold: float = 0.95
+    oof_folds: int = 3
+    base_max_iter: int = 100
+    n_rounds: int = 3
+    learning_rate: float = 0.3
+    tree_max_leaves: int = 16
+    reg_lambda: float = 1.0
+    min_gain: float = 1e-4
+    confirm: bool = True  # greedy conditional-gain selection stage
+    confirm_pool: int = 90
+    n_shadows: int = 30
 
 
 @dataclass
@@ -690,6 +722,7 @@ class FeatureConfig(_FeatureConfigCompatMixin):
     create_clustering: bool = True
     create_fourier: bool = False
     create_rff: bool = True
+    create_boosted: bool = False  # OpenFE-style incremental-gain generation
 
     # ── correlation ────────────────────────────────────────────────────
 
@@ -720,6 +753,7 @@ class FeatureConfig(_FeatureConfigCompatMixin):
     datetime: DateTimeConfig = DateTimeConfig()
     selector: SelectorConfig = SelectorConfig()
     autoencoder: AutoencoderConfig = AutoencoderConfig()
+    boosted: BoostedConfig = BoostedConfig()
 
     # ── init ───────────────────────────────────────────────────────────
 
@@ -750,6 +784,7 @@ class FeatureConfig(_FeatureConfigCompatMixin):
         self.datetime = DateTimeConfig(**self.datetime.__dict__)
         self.selector = SelectorConfig(**self.selector.__dict__)
         self.autoencoder = AutoencoderConfig(**self.autoencoder.__dict__)
+        self.boosted = BoostedConfig(**self.boosted.__dict__)
 
         # Route legacy flat params to sub-configs
         legacy_routing = {
@@ -782,6 +817,7 @@ class FeatureConfig(_FeatureConfigCompatMixin):
             "rfecv_": "selector",
             "mi_": "selector",
             "ae_": "autoencoder",
+            "boosted_": "boosted",
         }
         for key in kwargs:
             for prefix, group in prefixes.items():

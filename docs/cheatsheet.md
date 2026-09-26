@@ -15,7 +15,7 @@ from foreblocks import TransformerDecoder, Trainer, TrainingConfig
 
 model = TransformerDecoder(
     input_size=1, output_size=1,
-    d_model=256, nhead=8, num_layers=4, dim_feedforward=1024,
+    d_model=256, n_heads=8, num_layers=4, ff_dim=1024,
 )
 
 config = TrainingConfig(
@@ -38,15 +38,15 @@ from foreblocks.nn.transformer.encoder import TransformerEncoder
 from foreblocks.nn.transformer.decoder import TransformerDecoder
 
 encoder = TransformerEncoder(
-    input_size=8, d_model=256, num_layers=6, nhead=8,
-    layer_dropout_schedule=LayerDropoutSchedule(
+    input_size=8, d_model=256, num_layers=6, n_heads=8,
+    dropout_schedule=LayerDropoutSchedule(
         num_layers=6, base_dropout=0.03, max_dropout=0.1, profile="deeper_more"
     ),
 )
 
 decoder = TransformerDecoder(
-    input_size=8, output_size=1, d_model=256, num_layers=4, nhead=8,
-    layer_dropout_schedule=LayerDropoutSchedule(
+    input_size=8, output_size=1, d_model=256, num_layers=4, n_heads=8,
+    dropout_schedule=LayerDropoutSchedule(
         num_layers=4, base_dropout=0.02, max_dropout=0.08,
     ),
 )
@@ -78,10 +78,10 @@ mod_sched = MoDBudgetScheduler(
 )
 
 encoder = TransformerEncoder(
-    input_size=8, d_model=256, num_layers=6, nhead=8,
-    patch_encoder=True, patch_len=16, patch_stride=8,
-    use_mod=True, mod_budget_scheduler=mod_sched,
-    use_gradient_checkpointing=True,
+    input_size=8, d_model=256, num_layers=6, n_heads=8,
+    patching="shared", patch_len=16, patch_stride=8, mod_scheduler=mod_sched,
+    gradient_checkpointing=True,
+    residual="mod",
 )
 
 # Configure attention architecture via config
@@ -108,13 +108,11 @@ trainer.train(train_loader, val_loader)
 from foreblocks.nn.transformer.encoder import TransformerEncoder
 
 encoder = TransformerEncoder(
-    input_size=8, d_model=384, num_layers=6, nhead=8,
-    dim_feedforward=2048,
-    use_moe=True, num_experts=16, num_shared=2, top_k=2,
-    router_type="noisy_topk",
-    load_balance_weight=0.02, z_loss_weight=0.001,
-    moe_use_latent=True, moe_latent_dim=192,
-    use_gradient_checkpointing=True,
+    input_size=8, d_model=384, num_layers=6, n_heads=8,
+    ff_dim=2048, moe_experts=16, moe_top_k=2,
+    moe_latent=True, moe_latent_dim=192,
+    gradient_checkpointing=True,
+    moe_options={"num_shared": 2, "router_type": "noisy_topk", "load_balance_weight": 0.02, "z_loss_weight": 0.001},
 )
 
 config = TrainingConfig(
@@ -139,13 +137,12 @@ from foreblocks.nn.routing.mod import LayerDropoutSchedule
 from foreblocks.nn.transformer.encoder import TransformerEncoder
 
 encoder = TransformerEncoder(
-    input_size=8, d_model=256, num_layers=12, nhead=8,
-    use_gateskip=True, gate_lambda=0.1,
-    use_mhc=True, mhc_n_streams=4,
-    layer_dropout_schedule=LayerDropoutSchedule(
+    input_size=8, d_model=256, num_layers=12, n_heads=8,
+    residual="gateskip", gate_aux_weight=0.1,  # or residual="mhc" without checkpointing
+    dropout_schedule=LayerDropoutSchedule(
         num_layers=12, base_dropout=0.05, max_dropout=0.2,
     ),
-    use_gradient_checkpointing=True,
+    gradient_checkpointing=True,
 )
 
 config = TrainingConfig(
@@ -168,13 +165,13 @@ trainer.train(train_loader, val_loader)
 
 | Feature | Enable | Default | Why |
 |---------|--------|---------|-----|
-| **Long sequences** | `attention.architecture="linear"` or `gla` or `deltanet` | "standard" | O(T) vs O(T²) |
-| **Variable tokens** | `use_mod=True` | False | Skip layers for easy tokens |
-| **Overfitting** | `layer_dropout_schedule` | None | Deeper layers → higher dropout |
-| **Capacity** | `use_moe=True` | False | Router to 16+ experts |
-| **Stability (deep)** | `use_gateskip=True` | False | Learn residual magnitude |
-| **Redundancy** | `use_mhc=True` | False | Parallel streams, learned mixing |
-| **Memory-bound** | `use_gradient_checkpointing=True` | False | Recompute to save memory |
+| **Long sequences** | `attention="linear"` or `"gla"` or `"deltanet"` | `"standard"` | O(T) vs O(T²) |
+| **Variable tokens** | `residual="mod"` | `"standard"` | Skip layers for easy tokens |
+| **Overfitting** | `dropout_schedule=` | None | Deeper layers → higher dropout |
+| **Capacity** | `moe_experts=16` | 0 | Router to 16+ experts |
+| **Stability (deep)** | `residual="gateskip"` | `"standard"` | Learn residual magnitude |
+| **Redundancy** | `residual="mhc"` | `"standard"` | Parallel streams, learned mixing |
+| **Memory-bound** | `gradient_checkpointing=True` | False | Recompute to save memory |
 | **Efficiency** | `share_layers=True` | False | Reuse weights (1/n params) |
 
 ---
@@ -187,7 +184,7 @@ trainer.train(train_loader, val_loader)
 | **From scratch** | `use_llrd=True, llrd_decay=0.9` | False | All layers decay equally |
 | **Convergence** | `scheduler_type="warmup_cosine"` | None | Warmup + cosine > step-decay |
 | **Stability** | `gradient_clip_val=1.0` | None | Prevent exploding gradients |
-| **Fast training** | `use_gradient_checkpointing=False` | False | Save memory, slower (trade-off) |
+| **Fast training** | `gradient_checkpointing=False` | False | Faster, uses more memory |
 
 ---
 
@@ -277,28 +274,21 @@ gradient_clip_val=1.0,
 ### Attention configuration (new)
 
 ```python
-from foreblocks.nn.transformer.config import TransformerConfig
-from foreblocks.nn.attention.config import (
-    AttentionConfig, AttentionShapeConfig, AttentionPositionConfig,
-    AttentionVariantConfig,
-)
+from foreblocks.nn.transformer import TransformerConfig
 
 config = TransformerConfig(
-    d_model=256, nhead=8,
-    attention=AttentionConfig(
-        shape=AttentionShapeConfig(d_model=256, n_heads=8, max_seq_len=4096),
-        architecture="linear",  # or "standard", "gla", "deltanet", etc.
-        position=AttentionPositionConfig(encoding="rope"),
-        variant=AttentionVariantConfig(use_swiglu=True),
-    ),
+    d_model=256, n_heads=8, max_seq_len=4096,
+    attention="linear",  # or "standard", "gla", "deltanet", ...
+    position="rope",
+    swiglu=True,
 )
 ```
 
 ### Optional efficiency
 
 ```python
-use_gradient_checkpointing=True,
-gradient_accumulation_steps=2,
+gradient_checkpointing=True,  # TransformerConfig
+gradient_accumulation_steps=2,  # TrainingConfig
 ```
 
 ---
@@ -308,10 +298,10 @@ gradient_accumulation_steps=2,
 | Param | Small Model | Large Model | Notes |
 |-------|------------|------------|-------|
 | d_model | 128–256 | 512–1024 | Embedding dim |
-| nhead | 4–8 | 8–16 | Attention heads |
+| n_heads | 4–8 | 8–16 | Attention heads |
 | num_layers (enc) | 2–4 | 6–12 | Encoder depth |
 | num_layers (dec) | 2–4 | 4–6 | Decoder depth |
-| dim_feedforward | 512–1024 | 2048–4096 | FFN hidden |
+| ff_dim | 512–1024 | 2048–4096 | FFN hidden |
 | dropout | 0.1–0.3 | 0.05–0.15 | Attention/residual |
 | learning_rate | 5e-4–1e-3 | 1e-4–1e-3 | Use LLRD for large |
 | batch_size | 16–32 | 32–128 | GPU memory permitting |
@@ -323,9 +313,9 @@ gradient_accumulation_steps=2,
 ### Training speed
 
 1. Increase `batch_size` (if GPU memory allows)
-2. Use `attention_mode="linear"` for long sequences
-3. Enable `use_gradient_checkpointing=False` to trade memory for speed
-4. Use `router_type="hash"` with MoE (no learned routing)
+2. Use `attention="linear"` for long sequences
+3. Keep `gradient_checkpointing=False` to trade memory for speed
+4. Use `moe_options={"router_type": "hash"}` with MoE (no learned routing)
 
 ### Convergence
 
@@ -335,17 +325,17 @@ gradient_accumulation_steps=2,
 
 ### Memory efficiency
 
-1. Enable `use_gradient_checkpointing=True`
+1. Enable `gradient_checkpointing=True`
 2. Use `share_layers=True` (reuse weights)
 3. Reduce `batch_size`
-4. Use `patch_encoder=True` (compress sequences)
+4. Use `patching="shared"` (compress sequences)
 
 ### Accuracy (after you have a baseline)
 
-1. Try `layer_dropout_schedule` (stochastic depth)
-2. Enable MoE: `use_moe=True, num_experts=16`
-3. Try `attention_mode="hybrid"` (mixed standard/linear)
-4. Increase model capacity: larger `d_model`, `dim_feedforward`
+1. Try `dropout_schedule=` (stochastic depth)
+2. Enable MoE: `moe_experts=16`
+3. Try `attention="linear", attention_pattern="hybrid"` (mixed standard/linear)
+4. Increase model capacity: larger `d_model`, `ff_dim`
 
 ---
 

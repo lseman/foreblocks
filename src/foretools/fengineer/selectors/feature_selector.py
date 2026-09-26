@@ -393,6 +393,10 @@ class PipelineSelector(FeatureSelectorABC):
     def _clean_target(y: pd.Series) -> pd.Series:
         return clean_target(y)
 
+    @staticmethod
+    def _is_classification(y: pd.Series) -> bool:
+        return bool(is_classification_target(pd.Series(y)))
+
 
 # Backward-compatibility alias
 FeatureSelector = PipelineSelector

@@ -27,10 +27,19 @@ import numpy as np
 # Internal helpers – read tree data from packed representation
 # ---------------------------------------------------------------------------
 
-_SPLIT_KIND_AXIS = 0
-_SPLIT_KIND_CATEGORICAL = 1
-_SPLIT_KIND_OBLIQUE = 2
-_SPLIT_KIND_PAIR = 3
+from enum import IntEnum
+
+
+class SplitKind(IntEnum):
+    """Split kind for packed tree nodes.
+
+    Values MUST match ``splitx::SplitKind`` in ``split_helpers.hpp``:
+    Axis=0, CategoricalPartition=1, Oblique=2, PairInteraction=3
+    """
+    AXIS = 0
+    CATEGORICAL_PARTITION = 1
+    OBLIQUE = 2
+    PAIR_INTERACTION = 3
 
 
 def _tree_to_dict(packed_tree, num_features: int) -> dict[str, Any]:
@@ -47,27 +56,27 @@ def _tree_to_dict(packed_tree, num_features: int) -> dict[str, Any]:
         if is_leaf:
             node["Weight"] = float(packed_tree.leaf_values[i])
         else:
-            kind = packed_tree.split_kinds[i] if i < len(packed_tree.split_kinds) else _SPLIT_KIND_AXIS
+            kind = packed_tree.split_kinds[i] if i < len(packed_tree.split_kinds) else SplitKind.AXIS
 
-            if kind == _SPLIT_KIND_AXIS:
+            if kind == SplitKind.AXIS:
                 feat = int(packed_tree.features[i])
                 thresh = float(packed_tree.thresholds[i])
                 # Threshold in PackedTree is a bin index; we need the actual split value.
                 # For Treelite we use the bin index directly (Treelite works with binned data).
                 node["Split"] = {"feature": feat, "condition": "<=", "threshold": thresh}
-            elif kind == _SPLIT_KIND_CATEGORICAL:
+            elif kind == SplitKind.CATEGORICAL_PARTITION:
                 # Categorical partition – not directly supported by Treelite's
                 # simple split representation. Fall back to axis split if possible.
                 feat = int(packed_tree.features[i])
                 thresh = float(packed_tree.thresholds[i])
                 node["Split"] = {"feature": feat, "condition": "<=", "threshold": thresh}
-            elif kind == _SPLIT_KIND_OBLIQUE:
+            elif kind == SplitKind.OBLIQUE:
                 # Oblique split: k-feature hyperplane. Not natively supported.
                 # Fall back to best axis feature.
                 feat = int(packed_tree.features[i])
                 thresh = float(packed_tree.thresholds[i])
                 node["Split"] = {"feature": feat, "condition": "<=", "threshold": thresh}
-            elif kind == _SPLIT_KIND_PAIR:
+            elif kind == SplitKind.PAIR_INTERACTION:
                 feat = int(packed_tree.features[i])
                 thresh = float(packed_tree.thresholds[i])
                 node["Split"] = {"feature": feat, "condition": "<=", "threshold": thresh}

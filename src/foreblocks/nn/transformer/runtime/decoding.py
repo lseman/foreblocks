@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 
+from foreblocks.nn.attention.cache.kv import StaticKVCache
 from foreblocks.nn.transformer.config import GenerationConfig
 from foreblocks.nn.transformer.runtime.cache import DecoderCacheManager
 from foreblocks.nn.transformer.runtime.contracts import DecoderOwner
@@ -81,9 +82,15 @@ def speculative_decode(
     verifier_fn: Callable[[torch.Tensor, torch.Tensor], int] | None = None,
     **kwargs: Any,
 ) -> tuple[torch.Tensor, DecoderState, int]:
+    start_decoded_length = state.decoded_length
     caches = [layer.self_attention.cache for layer in state.layers]
     start_lengths = [
-        cache.get_seq_length() if cache is not None else None for cache in caches
+        cache.get_seq_lengths()
+        if isinstance(cache, StaticKVCache)
+        else cache.get_seq_length()
+        if cache is not None
+        else None
+        for cache in caches
     ]
     output, state = decoder.forward_multi_step(draft_tokens, memory, state, **kwargs)
     accepted = (
@@ -95,8 +102,13 @@ def speculative_decode(
     if accepted != draft_tokens.size(1):
         for start, layer in zip(start_lengths, state.layers, strict=True):
             cache = layer.self_attention.cache
-            if start is not None and cache is not None:
+            if isinstance(cache, StaticKVCache) and isinstance(start, torch.Tensor):
+                # Each sequence may have a different prefix length. Preserve
+                # inactive rows rather than advancing them during rollback.
+                cache.lengths.copy_(torch.minimum(cache.lengths, start + accepted))
+            elif start is not None and cache is not None:
                 cache.crop(start + accepted)
+        state.decoded_length = start_decoded_length + accepted
     return output[:, :accepted], state, accepted
 
 
@@ -155,14 +167,16 @@ class GenerationEngine:
         return_dict = (
             generation_config.return_dict if return_dict is None else return_dict
         )
-        if feedback_fn is None and self.decoder.output_size != initial_tgt.size(-1):
+        if feedback_fn is None and self.decoder.config.output_size != initial_tgt.size(
+            -1
+        ):
             raise ValueError(
                 "output_size must match decoder input width unless feedback_fn is provided"
             )
         state = incremental_state
         if max_new_tokens == 0:
             sequences = initial_tgt.new_empty(
-                initial_tgt.size(0), 0, self.decoder.output_size
+                initial_tgt.size(0), 0, self.decoder.config.output_size
             )
         else:
             output, state = self.decoder.forward_one_step(

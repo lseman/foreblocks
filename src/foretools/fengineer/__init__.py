@@ -15,6 +15,8 @@ framework with:
     - ClusteringTransformer  : k-means / GMM cluster-distance features
     - StatisticalTransformer  : row-wise statistics (mean, std, entropy)
     - AutoencoderTransformer  : non-linear dimensionality via PyTorch
+    - BoostedFeatureGenerator  : OpenFE-style binary/group-by features kept only
+      if they reduce a GBDT's validation loss (``create_boosted=True``)
 
 **Feature Selection** — multi-stage pipelines that try several selectors::
 
@@ -54,6 +56,7 @@ from .fengineer import FeatureEngineer
 from .transformers.support.config import (
     AutoencoderConfig,
     BinningConfig,
+    BoostedConfig,
     CategoricalConfig,
     ClusteringConfig,
     DateTimeConfig,
@@ -69,6 +72,7 @@ from .transformers.support.config import (
 from .transformers import (
     AutoencoderTransformer,
     BinningTransformer,
+    BoostedFeatureGenerator,
     CategoricalTransformer,
     ClusteringTransformer,
     DateTimeTransformer,
@@ -101,6 +105,7 @@ __all__ = [
     # Configuration
     "FeatureConfig",
     "BinningConfig",
+    "BoostedConfig",
     "CategoricalConfig",
     "ClusteringConfig",
     "DateTimeConfig",
@@ -116,6 +121,7 @@ __all__ = [
     "DateTimeTransformer",
     "CategoricalTransformer",
     "BinningTransformer",
+    "BoostedFeatureGenerator",
     "MathematicalTransformer",
     "InteractionTransformer",
     "PolynomialTransformer",

@@ -53,12 +53,12 @@ class ForeblocksEncoderStack(nn.Module):
         super().__init__()
         kwargs = {
             "d_model": int(d_model),
-            "nhead": int(n_heads),
-            "dim_feedforward": int(dim_feedforward),
+            "n_heads": int(n_heads),
+            "ff_dim": int(dim_feedforward),
             "dropout": float(dropout),
             "activation": "gelu",
-            "layer_attention_type": layer_attention_type,
-            "pos_encoding_type": "sinusoidal",
+            "attention": layer_attention_type,
+            "position": "sinusoidal",
         }
         self.layers = nn.ModuleList(
             TransformerEncoderLayer(**kwargs) for _ in range(int(n_layers))

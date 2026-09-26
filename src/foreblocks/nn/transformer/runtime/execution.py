@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -20,103 +21,103 @@ from foreblocks.nn.residual.hyper_connections import (
     mhc_apply_norm_streamwise,
     mhc_collapse_streams,
 )
+from foreblocks.nn.routing.gateskip import apply_skip_to_kv
 from foreblocks.nn.transformer.runtime.residual_state import (
     AttentionResidualState,
     append_attention_residual_update,
     attention_residual_input,
 )
-from foreblocks.nn.routing.gateskip import apply_skip_to_kv
+
+
+@contextmanager
+def _selected_attention(layer, attention_type: str):
+    """Replay the original backend even after a shared layer changes routes."""
+    previous = layer.layer_attention_type
+    layer.set_layer_attention_type(attention_type)
+    try:
+        yield
+    finally:
+        layer.set_layer_attention_type(previous)
 
 
 class LayerInvokeOwner(Protocol):
-    gate_lambda: float
-    use_gateskip: bool
-    use_mhc: bool
-    mhc_n_streams: int
-    mhc_sinkhorn_iters: int
-    mhc_collapse: str
+    def _record_layer_aux_loss(self, loss: torch.Tensor) -> None: ...
 
     def _run_with_checkpoint(
         self,
-        fn: Callable[..., torch.Tensor],
+        fn: Callable[..., Any],
         *inputs: torch.Tensor,
         use_checkpoint: bool,
-    ) -> torch.Tensor: ...
+    ) -> Any: ...
 
 
 @dataclass(frozen=True)
 class ModelLayerInvokeStrategy:
+    """Invoke layers for a stack, optionally under activation checkpointing.
+
+    Checkpointing re-runs the layer in backward, so it replays the attention
+    backend selected at call time and records the layer's auxiliary loss
+    outside the checkpointed closure.
+    """
+
     owner: LayerInvokeOwner
     use_checkpoint: bool
 
     def run_encoder_layer(
         self,
+        layer: Any,
+        x: torch.Tensor,
         *,
-        layer,
-        x,
-        src_mask,
-        src_key_padding_mask,
-        budget,
-        streams,
-        attention_residual_state,
-        gateskip_active_mask,
-    ):
+        src_mask: torch.Tensor | None,
+        src_key_padding_mask: torch.Tensor | None,
+        gate_budget: float | None,
+        streams: torch.Tensor | None,
+        attention_residual_state: AttentionResidualState | None,
+        active_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        common = dict(gate_budget=gate_budget, active_mask=active_mask)
         if self.use_checkpoint:
+            attention_type = layer.layer_attention_type
 
             def checkpointed(value):
-                result, _ = layer(
-                    value,
-                    src_mask,
-                    src_key_padding_mask,
-                    gate_budget=budget,
-                    gate_lambda=self.owner.gate_lambda,
-                    use_gateskip=self.owner.use_gateskip,
-                    streams=None,
-                    use_mhc=self.owner.use_mhc,
-                    mhc_n_streams=self.owner.mhc_n_streams,
-                    mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
-                    mhc_collapse=self.owner.mhc_collapse,
-                    gateskip_active_mask=gateskip_active_mask,
-                )
-                return result
+                with _selected_attention(layer, attention_type):
+                    result, _ = layer(value, src_mask, src_key_padding_mask, **common)
+                    return result, layer.aux_loss
 
-            return self.owner._run_with_checkpoint(
+            result, aux_loss = self.owner._run_with_checkpoint(
                 checkpointed, x, use_checkpoint=True
-            ), streams
-        return layer(
+            )
+            self.owner._record_layer_aux_loss(aux_loss)
+            return result, streams
+        result = layer(
             x,
             src_mask,
             src_key_padding_mask,
-            gate_budget=budget,
-            gate_lambda=self.owner.gate_lambda,
-            use_gateskip=self.owner.use_gateskip,
             streams=streams,
-            use_mhc=self.owner.use_mhc,
-            mhc_n_streams=self.owner.mhc_n_streams,
-            mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
-            mhc_collapse=self.owner.mhc_collapse,
             attention_residual_state=attention_residual_state,
-            gateskip_active_mask=gateskip_active_mask,
+            **common,
         )
+        self.owner._record_layer_aux_loss(layer.aux_loss)
+        return result
 
     def run_decoder_layer(
         self,
+        layer: Any,
+        x: torch.Tensor,
         *,
-        layer,
-        x,
-        memory,
-        tgt_mask,
-        memory_mask,
-        tgt_key_padding_mask,
-        memory_key_padding_mask,
-        layer_state,
-        prev_state,
-        budget,
-        streams,
-        mtp_targets,
-        attention_residual_state,
-        gateskip_active_mask,
-    ):
+        memory: torch.Tensor,
+        tgt_mask: torch.Tensor | None,
+        memory_mask: torch.Tensor | None,
+        tgt_key_padding_mask: torch.Tensor | None,
+        memory_key_padding_mask: torch.Tensor | None,
+        layer_state: Any,
+        prev_layer_state: Any,
+        gate_budget: float | None,
+        streams: torch.Tensor | None,
+        mtp_targets: torch.Tensor | None,
+        attention_residual_state: AttentionResidualState | None,
+        active_mask: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, Any, torch.Tensor | None]:
         args = (
             memory,
             tgt_mask,
@@ -125,57 +126,58 @@ class ModelLayerInvokeStrategy:
             memory_key_padding_mask,
         )
         common = dict(
-            incremental_state=layer_state,
-            prev_layer_state=prev_state,
-            gate_budget=budget,
-            gate_lambda=self.owner.gate_lambda,
-            use_gateskip=self.owner.use_gateskip,
-            use_mhc=self.owner.use_mhc,
-            mhc_n_streams=self.owner.mhc_n_streams,
-            mhc_sinkhorn_iters=self.owner.mhc_sinkhorn_iters,
-            mhc_collapse=self.owner.mhc_collapse,
+            layer_state=layer_state,
+            prev_layer_state=prev_layer_state,
+            gate_budget=gate_budget,
             mtp_targets=mtp_targets,
-            gateskip_active_mask=gateskip_active_mask,
+            active_mask=active_mask,
         )
         if self.use_checkpoint:
+            attention_type = layer.layer_attention_type
 
             def checkpointed(value):
-                result, _, _ = layer(value, *args, streams=None, **common)
-                return result
+                with _selected_attention(layer, attention_type):
+                    result, _, _ = layer(value, *args, **common)
+                    return result, layer.aux_loss
 
-            result = self.owner._run_with_checkpoint(
+            result, aux_loss = self.owner._run_with_checkpoint(
                 checkpointed, x, use_checkpoint=True
             )
+            self.owner._record_layer_aux_loss(aux_loss)
             return result, layer_state, streams
-        return layer(
+        result = layer(
             x,
             *args,
             streams=streams,
             attention_residual_state=attention_residual_state,
             **common,
         )
+        self.owner._record_layer_aux_loss(layer.aux_loss)
+        return result
 
 
 class NormWrapper(nn.Module):
-    def __init__(self, norm: nn.Module, strategy: str, dropout: nn.Module) -> None:
+    """A sublayer's norm and dropout, plus where the norm is placed."""
+
+    def __init__(self, norm: nn.Module, placement: str, dropout: nn.Module) -> None:
         super().__init__()
-        if strategy not in {"pre_norm", "post_norm", "sandwich_norm"}:
-            raise ValueError("invalid norm strategy")
+        if placement not in {"pre", "post", "sandwich"}:
+            raise ValueError(f"invalid norm placement: {placement!r}")
         self.norm = norm
-        self.strategy = strategy
+        self.placement = placement
         self.dropout = dropout
 
     @staticmethod
     def build(
         d_model: int,
         norm_type: str = "rms",
-        strategy: str = "pre_norm",
+        placement: str = "pre",
         dropout: float = 0.0,
         eps: float = 1e-5,
     ) -> NormWrapper:
         norm = create_norm_layer(norm_type, d_model, eps)
         dropout_layer = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        return NormWrapper(norm=norm, strategy=strategy, dropout=dropout_layer)
+        return NormWrapper(norm=norm, placement=placement, dropout=dropout_layer)
 
     def forward(self, *_args: object, **_kwargs: object) -> torch.Tensor:
         raise RuntimeError(
@@ -236,7 +238,7 @@ class ResidualBlockMixin:
                 gate_budget=cfg.gate_budget,
                 aux_l2_terms=aux_l2_terms,
                 gate_lambda=cfg.gate_lambda,
-                norm_layer=(normw if normw.strategy != "pre_norm" else None),
+                norm_layer=(normw if normw.placement != "pre" else None),
                 p=p,
                 training=cfg.training,
                 active_mask=active_mask,
@@ -246,9 +248,9 @@ class ResidualBlockMixin:
                     updated_kv, skip_mask, prev_layer_state, kv_key
                 )
             return x2, updated_kv, skip_mask
-        if normw.strategy in ("pre_norm", "sandwich_norm"):
+        if normw.placement in ("pre", "sandwich"):
             x2 = fused_dropout_add(x, update, p=p, training=cfg.training)
-            if normw.strategy == "sandwich_norm":
+            if normw.placement == "sandwich":
                 x2 = normw.norm(x2)
         else:
             x2 = fused_dropout_add_norm(
@@ -272,7 +274,7 @@ class ResidualBlockMixin:
         kv_key: str | None = None,
         active_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, Any, torch.Tensor | None]:
-        x_in = normw.norm(x) if normw.strategy in ("pre_norm", "sandwich_norm") else x
+        x_in = normw.norm(x) if normw.placement in ("pre", "sandwich") else x
         update, updated_kv = core_fn(x_in)
         return self._residual_apply(
             x,
@@ -298,16 +300,15 @@ class MHCExecutionMixin:
         core_fn: Callable[[torch.Tensor], torch.Tensor],
     ) -> torch.Tensor:
         x_in, maps = hyper_conn.pre_aggregate(streams)
-        if normw.strategy in ("pre_norm", "sandwich_norm"):
+        if normw.placement in ("pre", "sandwich"):
             x_in = normw.norm(x_in)
         streams = hyper_conn.combine(streams, normw.dropout(core_fn(x_in)), maps=maps)
-        if normw.strategy in ("post_norm", "sandwich_norm"):
+        if normw.placement in ("post", "sandwich"):
             streams = mhc_apply_norm_streamwise(normw.norm, streams)
         return streams
 
 
 CoreFn = Callable[[torch.Tensor], tuple[torch.Tensor, Any | None]]
-MhcCoreFn = Callable[[torch.Tensor], torch.Tensor]
 
 
 @dataclass
@@ -327,7 +328,6 @@ class LayerExecutionStrategy:
         cfg: ResidualRunCfg,
         aux_l2_terms: list[torch.Tensor],
         core_fn: CoreFn | None = None,
-        mhc_core: MhcCoreFn | None = None,
         hyper_conn: MHCConnectionOwner | None = None,
         prev_layer_state: Any | None = None,
         kv_key: str | None = None,
@@ -351,12 +351,13 @@ class LayerExecutionStrategy:
             return updated, None
 
         if self.use_mhc:
-            if self.streams is None or mhc_core is None or hyper_conn is None:
+            if self.streams is None or core_fn is None or hyper_conn is None:
                 raise RuntimeError(
                     "mHC residual execution requires streams, core, and connection"
                 )
+            # mHC mixes streams itself and never carries KV state.
             self.streams = self.owner._mhc_run_block(
-                self.streams, normw, hyper_conn, mhc_core
+                self.streams, normw, hyper_conn, lambda x_in: core_fn(x_in)[0]
             )
             return None, None
 

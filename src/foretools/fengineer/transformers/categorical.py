@@ -14,12 +14,27 @@ class CategoricalTransformer(BaseFeatureTransformer):
     """
     Modern categorical transformer:
       - Strategies: 'auto', 'onehot', 'freq', 'hashing', 'target_kfold', 'ordinal', 'loo', 'james-stein'
-      - Leakage-safe target encoding (k-fold, with prior smoothing)
-      - Leave-One-Out (LOO) encoding for small-leakage high cardinality
-      - James-Stein shrinkage encoding
+      - Leakage-safe target encoding: every target-based strategy is computed
+        out-of-fold on training rows and with full-data statistics at
+        inference, using the same shrinkage formula in both cases
+      - Smoothing: m-estimate (``smoothing_prior`` float) or empirical-Bayes
+        (``smoothing_prior="auto"``, the variance-ratio shrinkage used by
+        sklearn's ``TargetEncoder``)
+      - Multiclass targets (``task="classification"`` or non-numeric labels
+        with >2 classes) get one-vs-rest encodings, one column per class
       - Robust rare handling: frequency threshold, min count, top-k cap
       - Stable output schema across fit/transform
+
+    Notes
+    -----
+    'loo' is kept for API compatibility but is computed out-of-fold with an
+    unsmoothed mean: in-sample leave-one-out encodings are a decreasing
+    function of the row's own target within each category, which leaks y.
+    'james-stein' is the empirical-Bayes shrinkage and matches
+    ``smoothing_prior="auto"``.
     """
+
+    _TARGET_STRATEGIES = ("target_kfold", "loo", "james-stein")
 
     def __init__(
         self,
@@ -31,12 +46,17 @@ class CategoricalTransformer(BaseFeatureTransformer):
         min_count: int = 1,  # absolute count for rare categories
         top_k: int | None = None,  # keep top_k most frequent; others -> OTHER
         hashing_dim: int = 64,
-        n_splits: int = 5,
-        target_min_samples: int = 100,  # only consider target encoding if enough data
-        smoothing_prior: float = 10.0,  # target encoding prior weight
-        random_state: int = 42,
+        n_splits: int | None = None,  # falls back to config.categorical.n_splits
+        target_min_samples: int | None = None,  # min rows to consider target encoding
+        smoothing_prior: float | str | None = None,  # m-estimate weight or "auto"
+        random_state: int | None = None,
     ):
         super().__init__(config)
+        cat_cfg = getattr(config, "categorical", None)
+
+        def _cfg(name: str, default: Any) -> Any:
+            return getattr(cat_cfg, name, default) if cat_cfg is not None else default
+
         self.strategies = strategies
         self.rare_threshold = (
             rare_threshold
@@ -46,10 +66,25 @@ class CategoricalTransformer(BaseFeatureTransformer):
         self.min_count = int(min_count)
         self.top_k = top_k or getattr(config, "cat_top_k", None)
         self.hashing_dim = int(hashing_dim)
-        self.n_splits = int(n_splits)
-        self.target_min_samples = int(target_min_samples)
-        self.smoothing_prior = float(smoothing_prior)
-        self.random_state = int(random_state)
+        self.n_splits = int(n_splits if n_splits is not None else _cfg("n_splits", 5))
+        self.target_min_samples = int(
+            target_min_samples
+            if target_min_samples is not None
+            else _cfg("target_min_samples", 100)
+        )
+        smoothing = (
+            smoothing_prior
+            if smoothing_prior is not None
+            else _cfg("smoothing_prior", 10.0)
+        )
+        self.smoothing_prior: float | str = (
+            "auto" if str(smoothing).lower() == "auto" else float(smoothing)
+        )
+        self.random_state = int(
+            random_state
+            if random_state is not None
+            else getattr(config, "random_state", 42)
+        )
         self.use_stratified_kfold = bool(
             getattr(config, "cat_use_stratified_kfold", True)
         )
@@ -321,35 +356,48 @@ class CategoricalTransformer(BaseFeatureTransformer):
                     feature_names=[f"{col}_hash_{i}" for i in range(n_feat)],
                 )
 
-            elif strategy in ["target_kfold", "loo", "james-stein"] and y is not None:
-                # store per-category stats for smoothing + kfold plan
-                y_series = self._to_numeric_target(pd.Series(y).reindex(X.index))
-                global_mean = float(np.nanmean(y_series.values))
-                # Fit-time we only keep category means and counts
-                grp = pd.DataFrame({"cat": s, "y": y_series}).groupby("cat")["y"]
-                cat_mean = grp.mean().to_dict()
-                cat_count = grp.size().to_dict()
+            elif strategy in self._TARGET_STRATEGIES and y is not None:
+                y_full = pd.Series(y).reindex(X.index)
+                classes = self._multiclass_labels(y_full)
+                targets = self._target_matrix(y_full, classes)
 
                 feat_suffix = {
                     "target_kfold": "te",
                     "loo": "loo",
                     "james-stein": "js",
                 }.get(strategy, "enc")
+                target_suffixes = (
+                    [f"_{c}" for c in classes] if classes is not None else [""]
+                )
+
+                # Full-data statistics define the inference-time encoding.
+                priors, enc_maps = {}, {}
+                for t_suffix, t_col in zip(target_suffixes, targets.columns):
+                    prior, enc_map = self._fit_encoding(
+                        s, targets[t_col], strategy
+                    )
+                    priors[t_suffix] = prior
+                    enc_maps[t_suffix] = enc_map
 
                 info.update(
-                    global_mean=global_mean,
-                    cat_mean=cat_mean,
-                    cat_count=cat_count,
-                    feature_names=[f"{col}_{feat_suffix}"],
+                    classes=classes,
+                    target_suffixes=target_suffixes,
+                    priors=priors,
+                    enc_maps=enc_maps,
+                    feature_names=[
+                        f"{col}_{feat_suffix}{t}" for t in target_suffixes
+                    ],
                 )
                 info["is_classification_target"] = self._is_classification_target(
                     pd.Series(y)
                 )
             else:
-                # fallback
+                # fallback (also used when a target strategy is requested without y)
                 vc = s.value_counts(normalize=True, dropna=False)
                 mapping = vc.to_dict()
-                info.update(mapping=mapping, feature_names=[f"{col}_freq"])
+                info.update(
+                    strategy="freq", mapping=mapping, feature_names=[f"{col}_freq"]
+                )
 
             self.col_info_[col] = info
 
@@ -358,158 +406,155 @@ class CategoricalTransformer(BaseFeatureTransformer):
 
     # -------------------------- transform --------------------------
 
-    def _target_kfold_transform(
+    def _multiclass_labels(self, y: pd.Series) -> list[Any] | None:
+        """Class labels needing one-vs-rest encoding, or None for a single column.
+
+        Binary and regression targets are encoded through their numeric mean.
+        Multiclass means >2 labels and either non-numeric labels or an explicit
+        ``task="classification"`` (numeric targets with few distinct values are
+        often ordinal/regression, where the mean is meaningful).
+        """
+        y_valid = y.dropna()
+        labels = pd.unique(y_valid)
+        if len(labels) <= 2:
+            return None
+        explicit_cls = (
+            str(getattr(self.config, "task", "regression")).lower() == "classification"
+        )
+        if explicit_cls or not pd.api.types.is_numeric_dtype(y_valid):
+            try:
+                return sorted(labels.tolist())
+            except TypeError:
+                return list(labels)
+        return None
+
+    def _target_matrix(self, y: pd.Series, classes: list[Any] | None) -> pd.DataFrame:
+        """Numeric target columns: one per class (one-vs-rest) or the target itself."""
+        if classes is None:
+            return self._to_numeric_target(y).to_frame("y")
+        valid = y.notna()
+        return pd.DataFrame(
+            {
+                f"y{i}": (y == c).astype(float).where(valid, np.nan)
+                for i, c in enumerate(classes)
+            },
+            index=y.index,
+        )
+
+    def _shrunk_means(
+        self,
+        stats: pd.DataFrame,
+        prior: float,
+        y_var: float,
+        strategy: str,
+    ) -> pd.Series:
+        """Per-category encoding from (mean, var, count) statistics.
+
+        - target_kfold: m-estimate ``(n*mean + a*prior) / (n + a)``, or
+          empirical-Bayes when ``smoothing_prior == "auto"``
+        - james-stein: empirical-Bayes ``lam = n*var_y / (n*var_y + var_cat)``
+        - loo: unsmoothed mean (applied out-of-fold only)
+        """
+        n = stats["count"].astype(float)
+        mean = stats["mean"].astype(float)
+
+        if strategy == "loo":
+            return mean
+
+        use_eb = strategy == "james-stein" or self.smoothing_prior == "auto"
+        if use_eb:
+            if not np.isfinite(y_var) or y_var <= 0:
+                return pd.Series(prior, index=stats.index, dtype=float)
+            var_cat = stats["var"].astype(float)
+            # Singletons have no within-category variance estimate; use the
+            # pooled within-category variance instead of trusting them fully.
+            multi = n > 1
+            if multi.any():
+                pooled = float(
+                    ((n[multi] - 1) * var_cat[multi]).sum() / (n[multi] - 1).sum()
+                )
+            else:
+                pooled = y_var
+            var_cat = var_cat.where(multi & var_cat.notna(), pooled)
+            lam = (n * y_var) / (n * y_var + var_cat)
+            lam = lam.fillna(1.0).clip(0.0, 1.0)
+            return lam * mean + (1.0 - lam) * prior
+
+        alpha = float(self.smoothing_prior)
+        return (n * mean + alpha * prior) / (n + alpha)
+
+    def _fit_encoding(
+        self, s: pd.Series, y_num: pd.Series, strategy: str
+    ) -> tuple[float, dict[Any, float]]:
+        """Return (prior, category -> encoding) fitted on the given rows."""
+        valid = y_num.notna()
+        prior = float(y_num[valid].mean()) if valid.any() else 0.0
+        if not np.isfinite(prior):
+            prior = 0.0
+        if not valid.any():
+            return prior, {}
+        y_var = float(y_num[valid].var(ddof=0))
+        stats = (
+            pd.DataFrame({"cat": s[valid], "y": y_num[valid]})
+            .groupby("cat")["y"]
+            .agg(["mean", "var", "count"])
+        )
+        return prior, self._shrunk_means(stats, prior, y_var, strategy).to_dict()
+
+    def _target_encode_transform(
         self,
         X: pd.DataFrame,
         s: pd.Series,
         y: pd.Series | None,
         info: dict[str, Any],
         index: pd.Index,
-    ):
-        # If y is provided at transform (train), do KFold out-of-fold encoding.
-        # If not (inference), use smoothed mean from fit stats.
-        name = info["feature_names"][0]
-        prior = info["global_mean"]
-        alpha = self.smoothing_prior
+    ) -> pd.DataFrame:
+        """Out-of-fold encoding when y is given (train), fitted maps otherwise."""
+        strategy = info["strategy"]
+        names = info["feature_names"]
+        suffixes = info["target_suffixes"]
 
-        if y is not None:
-            y_series = self._to_numeric_target(pd.Series(y).reindex(index))
-            valid = y_series.notna()
-            out = pd.Series(prior, index=index, dtype=float)
-            if valid.sum() < 4:
-                return pd.DataFrame({name: out.values}, index=index)
+        if y is None:
+            return pd.DataFrame(
+                {
+                    name: s.map(info["enc_maps"][t]).astype(float).fillna(
+                        info["priors"][t]
+                    ).to_numpy()
+                    for name, t in zip(names, suffixes)
+                },
+                index=index,
+            )
 
-            s_valid = s.loc[valid]
-            y_valid = y_series.loc[valid]
-            is_cls = bool(info.get("is_classification_target", False))
+        y_full = pd.Series(y).reindex(index)
+        targets = self._target_matrix(y_full, info.get("classes"))
+        valid = targets.notna().all(axis=1)
+        is_cls = bool(info.get("is_classification_target", False))
 
-            fold_pairs = self._iter_target_folds(X, s_valid, y_valid, is_cls)
-            if not fold_pairs:
-                return pd.DataFrame({name: out.values}, index=index)
+        fold_pairs = []
+        if valid.sum() >= 4:
+            fold_pairs = self._iter_target_folds(
+                X, s.loc[valid], y_full.loc[valid], is_cls
+            )
 
-            out = pd.Series(prior, index=index, dtype=float)
+        out: dict[str, pd.Series] = {}
+        for name, t, t_col in zip(names, suffixes, targets.columns):
+            y_num = targets[t_col]
+            prior = float(y_num[valid].mean()) if valid.any() else info["priors"][t]
+            col_out = pd.Series(prior, index=index, dtype=float)
             for tr_keys, te_keys in fold_pairs:
-                tr_c = s_valid.loc[tr_keys]
-                tr_y = y_valid.loc[tr_keys]
-                stats = (
-                    pd.DataFrame({"cat": tr_c, "y": tr_y})
-                    .groupby("cat")["y"]
-                    .agg(["mean", "count"])
+                fold_prior, enc_map = self._fit_encoding(
+                    s.loc[tr_keys], y_num.loc[tr_keys], strategy
                 )
-                # smoothing
-                smoothed = (stats["count"] * stats["mean"] + alpha * prior) / (
-                    stats["count"] + alpha
-                )
-                enc_map = smoothed.to_dict()
                 te_index = pd.Index(te_keys)
-                out.loc[te_index] = (
-                    s_valid.loc[te_index].map(enc_map).fillna(prior).values
+                col_out.loc[te_index] = (
+                    s.loc[te_index].map(enc_map).astype(float).fillna(fold_prior).values
                 )
             if self.target_noise_std > 0:
                 rng = np.random.RandomState(self.random_state)
-                noise = rng.normal(0.0, self.target_noise_std, size=len(out))
-                out = out + noise
-            out = out.fillna(prior)
-            return pd.DataFrame({name: out.values}, index=index)
-        else:
-            # test-time: use global fit stats with smoothing
-            cat_mean = info["cat_mean"]
-            cat_count = info["cat_count"]
-            vals = []
-            for v in s.values:
-                m = cat_mean.get(v, prior)
-                c = cat_count.get(v, 0)
-                vals.append((c * m + alpha * prior) / (c + alpha))
-            return pd.DataFrame({name: vals}, index=index)
+                col_out = col_out + rng.normal(0.0, self.target_noise_std, len(col_out))
+            out[name] = col_out.fillna(prior)
 
-    def _loo_transform(
-        self,
-        s: pd.Series,
-        y: pd.Series | None,
-        info: dict[str, Any],
-        index: pd.Index,
-    ):
-        """Leave-One-Out encoding: (TargetSum - CurrentY) / (Count - 1)"""
-        name = info["feature_names"][0]
-        prior = info["global_mean"]
-
-        if y is not None:
-            y_series = self._to_numeric_target(pd.Series(y).reindex(index))
-            # Calculate counts and sums per category
-            cat_stats = (
-                pd.DataFrame({"cat": s, "y": y_series})
-                .groupby("cat")["y"]
-                .agg(["sum", "count"])
-            )
-
-            # Map stats back to rows
-            row_sum = s.map(cat_stats["sum"]).fillna(0)
-            row_count = s.map(cat_stats["count"]).fillna(0)
-
-            # (TotalSum - SelfY) / (TotalCount - 1)
-            # Avoid division by zero
-            loo = (row_sum - y_series.fillna(0)) / (row_count - 1).replace(0, 1)
-            # Fill cases where count was 1 with prior
-            loo = loo.where(row_count > 1, prior)
-
-            # Add noise for regularization
-            if self.target_noise_std > 0:
-                rng = np.random.RandomState(self.random_state)
-                loo += rng.normal(0, self.target_noise_std, size=len(loo))
-
-            return pd.DataFrame({name: loo.values}, index=index)
-        else:
-            # Inference: use pre-calculated means
-            cat_mean = info["cat_mean"]
-            return pd.DataFrame(
-                {name: s.map(cat_mean).fillna(prior).values}, index=index
-            )
-
-    def _james_stein_transform(
-        self,
-        s: pd.Series,
-        y: pd.Series | None,
-        info: dict[str, Any],
-        index: pd.Index,
-    ):
-        """James-Stein encoder: Shrinkage toward the global mean."""
-        name = info["feature_names"][0]
-        prior = info["global_mean"]
-
-        # Calculate stats
-        if y is not None:
-            y_series = self._to_numeric_target(pd.Series(y).reindex(index))
-            global_var = y_series.var()
-            if global_var == 0 or np.isnan(global_var):
-                return pd.DataFrame({name: [prior] * len(index)}, index=index)
-
-            stats = (
-                pd.DataFrame({"cat": s, "y": y_series})
-                .groupby("cat")["y"]
-                .agg(["mean", "var", "count"])
-            )
-
-            # Weight = 1 - (var_within / (var_within + var_between))
-            # Simplified JS: Weight = 1 - (pooled_var / (pooled_var + category_var * count))
-            # We use a common version: B = VarAcrossCategories / (VarAcrossCategories + VarWithinCategory / Count)
-
-            # Map means and counts to rows
-            row_mean = s.map(stats["mean"]).fillna(prior)
-            row_var = s.map(stats["var"]).fillna(0)
-            row_count = s.map(stats["count"]).fillna(0)
-
-            # Shrinkage factor
-            B = global_var / (global_var + (row_var / row_count.replace(0, 1)))
-            B = B.clip(0, 1)  # Ensure weight is between 0 and 1
-
-            js = (1 - B) * prior + B * row_mean
-            return pd.DataFrame({name: js.values}, index=index)
-        else:
-            # Simplified inference for JS
-            cat_mean = info["cat_mean"]
-            return pd.DataFrame(
-                {name: s.map(cat_mean).fillna(prior).values}, index=index
-            )
+        return pd.DataFrame(out, index=index)
 
     def transform(self, X: pd.DataFrame, y: pd.Series | None = None) -> pd.DataFrame:
         if not self.categorical_cols_:
@@ -561,16 +606,8 @@ class CategoricalTransformer(BaseFeatureTransformer):
                 )
                 outputs.append(df)
 
-            elif strategy == "target_kfold":
-                df = self._target_kfold_transform(X, s, y, info, X.index)
-                outputs.append(df.astype(float))
-
-            elif strategy == "loo":
-                df = self._loo_transform(s, y, info, X.index)
-                outputs.append(df.astype(float))
-
-            elif strategy == "james-stein":
-                df = self._james_stein_transform(s, y, info, X.index)
+            elif strategy in self._TARGET_STRATEGIES:
+                df = self._target_encode_transform(X, s, y, info, X.index)
                 outputs.append(df.astype(float))
 
             else:  # fallback to frequency

@@ -19,10 +19,10 @@ from enum import Enum, auto
 import torch
 import torch.nn as nn
 
-from foreblocks.nn.normalization import create_norm_layer
-from foreblocks.nn.transformer.config import TransformerConfig
 from foreblocks.nn.attention.enums import PositionEncoding
 from foreblocks.nn.attention.multihead import MultiAttention
+from foreblocks.nn.normalization import create_norm_layer
+from foreblocks.nn.transformer.config import TransformerConfig
 
 
 class Axis(Enum):
@@ -40,10 +40,11 @@ class AttentionAxisConfig:
         axis: Which axis to attend over.
         causal: Apply causal masking. Sequence attention is causal;
             variate attention is never causal.
-        position_encoding: Which position encoding to apply. Variate
-            attention typically uses :attr:`PositionEncoding.NONE`.
+        position_encoding: Position encoding for this axis; ``None`` keeps
+            the configured one. Variate attention uses
+            :attr:`PositionEncoding.NONE` unless ``variate_position=True``.
         enforce_standard_attn: If ``True``, always use dense MHA
-            regardless of :attr:`TransformerConfig.attention.variant`.
+            regardless of :attr:`TransformerConfig.attention`.
             This is required for variate attention where temporal
             variants (linear, sparse, recurrent) have no meaningful
             semantics on an unordered set of variables.
@@ -51,7 +52,7 @@ class AttentionAxisConfig:
 
     axis: Axis
     causal: bool
-    position_encoding: PositionEncoding = PositionEncoding.NONE
+    position_encoding: PositionEncoding | None = None
     enforce_standard_attn: bool = False
 
 
@@ -86,39 +87,25 @@ class MixingAttentionBlock(nn.Module):
         self.axis = axis_config.axis
         self._causal = axis_config.causal
 
-        d_model = config.d_model
-        self._norm = lambda: create_norm_layer(  # noqa: E731
-            config.custom_norm, d_model, config.layer_norm_eps
+        self._norm = lambda: create_norm_layer(
+            config.norm, config.d_model, config.norm_eps
         )
-
-        # Pre- and post-attention norms
         self.pre_norm = self._norm()
         self.post_norm = self._norm()
 
-        # Build the attention config for this axis
-        attn_cfg = config.attention
-        assert attn_cfg is not None
-
+        changes: dict[str, object] = {}
         if axis_config.enforce_standard_attn:
-            attn_cfg = replace(
-                attn_cfg,
-                variant=replace(attn_cfg.variant, name="standard"),
-            )
-
-        if axis_config.position_encoding is not PositionEncoding.NONE:
+            changes["attention"] = "standard"
+        if dropout is not None:
+            changes["dropout"] = dropout
+        attn_cfg = replace(config, **changes).attention_config()
+        if axis_config.position_encoding is not None:
             attn_cfg = replace(
                 attn_cfg,
                 position=replace(
-                    attn_cfg.position,
-                    encoding=axis_config.position_encoding,
+                    attn_cfg.position, encoding=axis_config.position_encoding
                 ),
             )
-
-        dropout = config.dropout if dropout is None else dropout
-        attn_cfg = replace(
-            attn_cfg,
-            shape=replace(attn_cfg.shape, dropout=dropout),
-        )
         self.attention = MultiAttention(attn_cfg)
 
     def forward(
@@ -192,14 +179,10 @@ def make_variate_block(
     """Create a variate-axis attention block.
 
     Variate attention is **never** causal and never uses temporal
-    attention variants. Position encoding is only applied when
-    ``variate_position_encoding=True``.
+    attention variants. The configured position encoding is applied over the
+    variate index only when ``variate_position_encoding=True``.
     """
-    pos_enc = (
-        PositionEncoding.LEARNED
-        if variate_position_encoding
-        else PositionEncoding.NONE
-    )
+    pos_enc = None if variate_position_encoding else PositionEncoding.NONE
     return MixingAttentionBlock(
         config,
         AttentionAxisConfig(

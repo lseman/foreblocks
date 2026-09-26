@@ -39,7 +39,7 @@ foreblocks/
 │
 ├── nn/                            # Reusable nn.Module primitives
 │   ├── attention/                 # Attention config, variants, KV cache, layer.py (AttentionLayer)
-│   ├── transformer/                # Encoder/decoder stack, patching, fusions, tuner
+│   ├── transformer/                # Encoder/decoder stack, patching, fusions
 │   ├── blocks/                    # Research blocks: TCN, ODE, Fourier, wavelets, xLSTM, recurrent.py (LSTM/GRU enc-dec)
 │   ├── heads/                     # Head composition: engine/composer.py (HeadComposer), core/types.py (HeadSpec), blocks/
 │   ├── moe/                       # Experts, routers, feed-forward MoE
@@ -82,6 +82,8 @@ foreblocks/
 │   └── visualization.py
 │
 ├── quantization/                  # FakeQuantize, DynamicQuantizedLinear
+│
+├── tuning/                        # Data-driven hyperparameter recommendations (TransformerTuner)
 │
 ├── data/                          # Dataset and dataloader helpers
 │   ├── dataset.py                 # TimeSeriesDataset, create_dataloaders

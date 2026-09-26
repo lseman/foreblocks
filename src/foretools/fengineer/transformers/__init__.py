@@ -5,6 +5,7 @@ Structure
 Each transformer lives in its own file under this package:
   - ``autoencoder.py`` — Non-linear embeddings via PyTorch
   - ``binning.py`` — Adaptive binning with multiple strategies
+  - ``boosted.py`` — OpenFE-style features scored by incremental GBDT gain
   - ``categorical.py`` — Categorical encoding strategies
   - ``clustering.py`` — Clustering/embedding features
   - ``datetime.py`` — Datetime feature extraction
@@ -50,6 +51,7 @@ from .support import (
     require_fitted,
     AutoencoderConfig,
     BinningConfig,
+    BoostedConfig,
     CategoricalConfig,
     ClusteringConfig,
     DateTimeConfig,
@@ -62,6 +64,7 @@ from .support import (
 )
 from .autoencoder import AutoencoderTransformer
 from .binning import BinningTransformer
+from .boosted import BoostedFeatureGenerator
 from .categorical import CategoricalTransformer
 from .clustering import ClusteringTransformer
 from .datetime import DateTimeTransformer
@@ -78,6 +81,7 @@ __all__ = [
     # Configs
     "FeatureConfig",
     "BinningConfig",
+    "BoostedConfig",
     "CategoricalConfig",
     "ClusteringConfig",
     "DateTimeConfig",
@@ -96,6 +100,7 @@ __all__ = [
     "MathematicalTransformer",
     "CategoricalTransformer",
     "BinningTransformer",
+    "BoostedFeatureGenerator",
     "DateTimeTransformer",
     "InteractionTransformer",
     "PolynomialTransformer",

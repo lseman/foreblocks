@@ -1,64 +1,32 @@
-"""foreblocks.nn.transformer.base.
+"""Shared transformer stack construction and execution.
 
-Base classes and execution plumbing for modular transformer encoder/decoder.
-
-Provides support for pre/post/sandwich normalization, GateSkip residual
-gating, manifold-constrained hyper-connections (mHC), Mixture-of-Depths
-routing, and attention residual tracking. ResidualBlockMixin and
-MHCExecutionMixin (the mixins encoder/decoder layers use for this) live in
-``runtime.execution``. Attention-residual state lives in ``residual_state``
-and tensor routing lives in ``routing``; this module owns layer/model base
-classes.
-
-Core API:
-- BaseTransformerLayer: base layer with FFN/MoE and aux_loss tracking
-- BaseTransformer: abstract encoder/decoder base with embedding, layer building
-
-"""
+``BaseTransformer`` owns embeddings, layer construction, Mixture-of-Depths
+routing, and the forward steps shared by the encoder and decoder stacks.
+Settings are read from ``self.config``; live collaborators are constructor
+arguments."""
 
 from __future__ import annotations
 
+import functools
 import math
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import replace
-from typing import TYPE_CHECKING, ClassVar, Literal
+from dataclasses import dataclass, field
+from typing import Any, ClassVar
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from foreblocks.nn.transformer.config import AttentionMode, TransformerConfig
-from foreblocks.nn.transformer.construction import (
-    build_layer_modules,
-    build_positional_encoder,
-)
-from foreblocks.nn.residual.hyper_connections import (
-    MHCHyperConnection,
-    mhc_init_streams,
-)
-from foreblocks.nn.embeddings.patching import (
-    PatchTokenizer,
-)
-from foreblocks.nn.residual.attention_residual import (
-    AttentionResidual,
-    normalize_attention_residual_mode,
-)
-from foreblocks.nn.transformer.runtime.execution import (
-    LayerExecutionStrategy,
-    NormWrapper,
-    ResidualRunCfg,
-)
-from foreblocks.nn.transformer.runtime.residual_state import (
-    AttentionResidualState,
-    attention_residual_values,
-    init_attention_residual_state,
+from foreblocks.nn.embeddings import (
+    InformerTimeEmbedding,
+    LearnablePositionalEncoding,
+    PositionalEncoding,
 )
 from foreblocks.nn.normalization import RMSNorm, create_norm_layer
-from foreblocks.nn.moe.feedforward import FeedForwardBlock
-from foreblocks.nn.routing.gateskip import (
-    BudgetScheduler,
-)
+from foreblocks.nn.residual.attention_residual import AttentionResidual
+from foreblocks.nn.residual.hyper_connections import mhc_init_streams
+from foreblocks.nn.routing.gateskip import BudgetScheduler
 from foreblocks.nn.routing.mod import (
     LayerDropoutSchedule,
     MoDBudgetScheduler,
@@ -68,387 +36,269 @@ from foreblocks.nn.routing.mod import (
     mod_router_aux_loss,
     mod_topk_mask,
 )
+from foreblocks.nn.transformer.config import Role, TransformerConfig
+from foreblocks.nn.transformer.runtime.forward import (
+    LayerResult,
+    positions_from_offset,
+)
+from foreblocks.nn.transformer.runtime.residual_state import (
+    AttentionResidualState,
+    attention_residual_values,
+    init_attention_residual_state,
+)
+from foreblocks.nn.transformer.runtime.routing import run_mod_layer
 
-if TYPE_CHECKING:
-    from foreblocks.nn.transformer.decoder import TransformerDecoder
-    from foreblocks.nn.transformer.encoder import TransformerEncoder
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Shared transformer layer base
-# ──────────────────────────────────────────────────────────────────────────────
-class BaseTransformerLayer(nn.Module):
-    def __init__(
-        self,
-        config: TransformerConfig,
-        *,
-        dropout: float | None = None,
-    ):
-        super().__init__()
-        self.config = config
-        dropout = config.dropout if dropout is None else dropout
-        self.use_moe = config.use_moe
-        self.use_gateskip = config.use_gateskip
-        self.gate_budget = config.gate_budget
-        self.gate_lambda = config.gate_lambda
-        self.d_model = int(config.d_model)
-
-        # mHC knobs (layer-level)
-        self.use_mhc = bool(config.use_mhc)
-        self.mhc_n_streams = int(config.mhc_n_streams)
-        self.mhc_sinkhorn_iters = int(config.mhc_sinkhorn_iters)
-        self.mhc_collapse = str(config.mhc_collapse)
-
-        self._attention_config = replace(
-            config.attention,
-            shape=replace(config.attention.shape, dropout=dropout),
+def _build_positional_encoder(config: TransformerConfig) -> nn.Module | None:
+    """Input-level position encoding; RoPE and ALiBi live inside attention."""
+    if config.position == "learnable":
+        return LearnablePositionalEncoding(
+            config.d_model,
+            max_len=config.max_seq_len,
+            dropout=config.dropout,
+            scale_strategy="fixed",
+            scale_value=config.position_scale,
+            use_layer_norm=False,
         )
-        self.use_attention_residual = config.use_attention_residual
-        self.attention_residual_mode = normalize_attention_residual_mode(
-            config.attn_residual_type
+    if config.position == "sinusoidal":
+        return PositionalEncoding(
+            config.d_model, max_len=config.max_seq_len, scale=config.position_scale
         )
-        self.attention_residual_block_size = config.attention_residual_block_size
-
-        self.feed_forward = FeedForwardBlock(
-            d_model=config.d_model,
-            dim_ff=config.dim_feedforward,
-            dropout=dropout,
-            use_swiglu=config.attention.variant.use_swiglu,
-            activation=config.activation,
-            use_moe=config.use_moe,
-            num_experts=config.num_experts,
-            top_k=config.top_k,
-            moe_use_latent=config.moe_use_latent,
-            moe_latent_dim=config.moe_latent_dim,
-            moe_latent_d_ff=config.moe_latent_d_ff,
-        )
-
-        self.register_buffer("aux_loss", torch.tensor(0.0), persistent=False)
-
-        # Float accumulator for MoE/aux loss, aggregated by the parent model.
-        # Stored as float (not tensor) so _aggregate_aux_loss in BaseTransformer
-        # can combine per-layer values into a single loss tensor.
-        self._aux_loss: float = 0.0
-        self._aux_loss_device: torch.device | None = None
-
-    def _reset_aux_loss(self) -> None:
-        self._aux_loss = 0.0
-
-    def _update_aux_loss(self, new_loss: float | torch.Tensor) -> None:
-        if torch.is_tensor(new_loss):
-            val = float(new_loss.detach())
-        else:
-            val = float(new_loss)
-        if val:
-            self._aux_loss += val
-
-    def _record_aux_loss_device(self, device: torch.device) -> None:
-        self._aux_loss_device = device
-
-    def _make_exec_strategy(
-        self,
-        *,
-        x: torch.Tensor,
-        streams: torch.Tensor | None,
-        attention_residual_state: AttentionResidualState | None = None,
-    ) -> LayerExecutionStrategy:
-        if attention_residual_state is not None:
-            return LayerExecutionStrategy(
-                owner=self,
-                use_mhc=False,
-                x=attention_residual_state.current,
-                use_attention_residual=True,
-                attention_residual_state=attention_residual_state,
-            )
-
-        if not self.use_mhc:
-            return LayerExecutionStrategy(owner=self, use_mhc=False, x=x)
-
-        self._ensure_mhc_mixers()
-        if streams is None:
-            streams = mhc_init_streams(x, self.mhc_n_streams)
-        else:
-            if streams.dim() != 4:
-                raise ValueError(f"mHC streams must be [B,N,T,D], got {streams.shape}")
-            if streams.shape[1] != self.mhc_n_streams:
-                raise ValueError(
-                    f"mHC streams N={streams.shape[1]} != configured {self.mhc_n_streams}"
-                )
-
-        return LayerExecutionStrategy(owner=self, use_mhc=True, streams=streams)
-
-    def _new_mhc_connection(self) -> MHCHyperConnection:
-        conn = MHCHyperConnection(
-            d_model=self.d_model,
-            n_streams=self.mhc_n_streams,
-            sinkhorn_iters=self.mhc_sinkhorn_iters,
-        )
-        ref = next(self.parameters(), None)
-        if ref is not None:
-            conn = conn.to(device=ref.device, dtype=ref.dtype)
-        return conn
-
-    def _validate_runtime_mhc_overrides(
-        self,
-        *,
-        use_mhc: bool | None,
-        mhc_n_streams: int | None,
-        mhc_sinkhorn_iters: int | None,
-        mhc_collapse: str | None,
-    ) -> None:
-        requested = {
-            "use_mhc": use_mhc,
-            "mhc_n_streams": mhc_n_streams,
-            "mhc_sinkhorn_iters": mhc_sinkhorn_iters,
-            "mhc_collapse": mhc_collapse,
-        }
-        configured = {
-            "use_mhc": self.use_mhc,
-            "mhc_n_streams": self.mhc_n_streams,
-            "mhc_sinkhorn_iters": self.mhc_sinkhorn_iters,
-            "mhc_collapse": self.mhc_collapse,
-        }
-        conflicts = [
-            name
-            for name, value in requested.items()
-            if value is not None and value != configured[name]
-        ]
-        if conflicts:
-            names = ", ".join(conflicts)
-            raise ValueError(
-                f"runtime mHC overrides ({names}) are no longer mutable; "
-                "configure them when constructing the transformer"
-            )
-
-    def _build_residual_cfg(
-        self,
-        *,
-        use_gateskip: bool | None,
-        gate_budget: float | None,
-        gate_lambda: float | None,
-        training: bool,
-    ) -> ResidualRunCfg:
-        _use_gk = self.use_gateskip if use_gateskip is None else bool(use_gateskip)
-        _budget = self.gate_budget if gate_budget is None else gate_budget
-        _lambda = self.gate_lambda if gate_lambda is None else float(gate_lambda)
-        return ResidualRunCfg(
-            use_gateskip=_use_gk,
-            gate_budget=_budget,
-            gate_lambda=_lambda,
-            training=training,
-        )
-
-    def _finalize_gateskip_aux(
-        self,
-        cfg: ResidualRunCfg,
-        aux_l2_terms: list[torch.Tensor],
-    ) -> None:
-        if cfg.use_gateskip and cfg.gate_lambda > 0 and aux_l2_terms:
-            self._update_aux_loss(cfg.gate_lambda * torch.stack(aux_l2_terms).mean())
-
-    def _ff_forward_with_aux(
-        self,
-        x: torch.Tensor,
-        mtp_targets: torch.Tensor | None = None,
-        padding_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        if self.use_moe:
-            out, aux = self.feed_forward(
-                x,
-                return_aux_loss=True,
-                mtp_targets=mtp_targets,
-                padding_mask=padding_mask,
-            )
-            self._update_aux_loss(aux)
-            return out
-        return self.feed_forward(x)
-
-    def _run_attnres_core(
-        self,
-        x: torch.Tensor,
-        normw: NormWrapper,
-        core_fn: Callable[[torch.Tensor], tuple[torch.Tensor, dict | None]],
-    ) -> tuple[torch.Tensor, dict | None]:
-        x_in = normw.norm(x) if normw.strategy in ("pre_norm", "sandwich_norm") else x
-        out, updated = core_fn(x_in)
-        out = normw.dropout(out)
-        if normw.strategy in ("post_norm", "sandwich_norm"):
-            out = normw.norm(out)
-        return out, updated
+    return None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Base transformer
-# ──────────────────────────────────────────────────────────────────────────────
+@dataclass
+class StackTrace:
+    """Diagnostics collected while one forward pass runs the layer stack."""
+
+    hidden_states: list[torch.Tensor] | None
+    used_indices: list[int] = field(default_factory=list)
+    router_states: list[object] = field(default_factory=list)
+    attentions: list[torch.Tensor] = field(default_factory=list)
+    cross_attentions: list[torch.Tensor] = field(default_factory=list)
+
+    @classmethod
+    def start(cls, x: torch.Tensor, output_hidden_states: bool) -> StackTrace:
+        return cls(hidden_states=[x] if output_hidden_states else None)
+
+    def record(self, index: int, result: LayerResult) -> None:
+        self.used_indices.append(index)
+        if self.hidden_states is not None:
+            self.hidden_states.append(result.hidden_states)
+        if result.router_state is not None:
+            self.router_states.append(result.router_state)
+        if result.self_attention is not None:
+            self.attentions.append(result.self_attention)
+        if result.cross_attention is not None:
+            self.cross_attentions.append(result.cross_attention)
+
+
 class BaseTransformer(nn.Module, ABC):
+    """Common stack behavior for :class:`TransformerEncoder` and decoder.
+
+    Args:
+        config: Base settings; defaults to ``TransformerConfig()``.
+        pos_encoder: Replaces the input-level position encoding.
+        gate_scheduler: Anneals the GateSkip budget during training.
+        mod_scheduler: Per-layer Mixture-of-Depths keep rates.
+        dropout_schedule: Per-layer dropout rates.
+        **overrides: Any ``TransformerConfig`` field, applied over ``config``.
+    """
+
+    Config: ClassVar[type[TransformerConfig]] = TransformerConfig
+    role: ClassVar[Role]
+
     def __init__(
         self,
-        input_size: int,
-        config: TransformerConfig,
+        config: TransformerConfig | None = None,
         *,
-        informer_like: bool = False,
         pos_encoder: nn.Module | None = None,
-        mod_budget_scheduler: MoDBudgetScheduler | None = None,
-        layer_dropout_schedule: LayerDropoutSchedule | None = None,
+        gate_scheduler: BudgetScheduler | None = None,
+        mod_scheduler: MoDBudgetScheduler | None = None,
+        dropout_schedule: LayerDropoutSchedule | None = None,
+        **overrides: Any,
     ):
         super().__init__()
+        config = TransformerConfig.resolve(config, **overrides)
+        config.validate_for(self.role)
         self.config = config
-        if pos_encoder is None:
-            pos_encoder = config.option("pos_encoder")
-        if mod_budget_scheduler is None:
-            mod_budget_scheduler = config.option("mod_budget_scheduler")
-        if layer_dropout_schedule is None:
-            layer_dropout_schedule = config.option("layer_dropout_schedule")
-        d_model = config.d_model
-        att_type = config.attention.variant.name
-        attention_mode = config.attention.architecture
-        dropout = config.dropout
-        num_layers = config.num_layers
-        max_seq_len = config.max_seq_len
-        custom_norm = config.custom_norm
-        layer_norm_eps = config.layer_norm_eps
-        pos_encoding_scale = config.pos_encoding_scale
-        share_layers = config.share_layers
-        use_final_norm = config.use_final_norm
-        self.d_model = d_model
-        self.num_layers = num_layers
-        self.dropout = dropout
-        self.max_seq_len = max_seq_len
-        self.use_gradient_checkpointing = config.use_gradient_checkpointing
-        self.use_gateskip = config.use_gateskip
-        self.gate_budget = config.gate_budget
-        self.gate_lambda = config.gate_lambda
-        self.pos_encoding_type = str(config.attention.position.encoding)
-        self.rope_base = float(config.attention.position.rope_base)
-        self.rope_scaling_type = str(config.attention.position.rope_scaling_type)
-        self.rope_scaling_factor = float(config.attention.position.rope_scaling_factor)
-        # Backward-compatible behavior:
-        # if caller sets att_type to a routed mode but leaves attention_mode default,
-        # promote attention_mode so the intended path is used.
-        if attention_mode == "standard" and att_type in {
-            "linear",
-            "sype",
-            "kimi",
-            "gated_delta",
-        }:
-            attention_mode = att_type
-        self.attention_mode = attention_mode
-        self.att_type = att_type
-        self.budget_scheduler: BudgetScheduler | None = None
+        self.gate_scheduler = gate_scheduler
+        self.mod_scheduler = mod_scheduler
+        self.dropout_schedule = dropout_schedule
 
-        # MoE aux scaling (FIX)
-        self.moe_aux_lambda = float(config.moe_aux_lambda)
-
-        self.use_attention_residual = bool(config.use_attention_residual)
-        self.attention_residual_mode = normalize_attention_residual_mode(
-            config.attn_residual_type
+        # Variate mixing keeps each input channel as its own token stream, so
+        # its shared scalar adapter consumes one channel at a time.
+        adapter_input_size = 1 if config.variate_attention else config.input_size
+        self.input_adapter = nn.Linear(adapter_input_size, config.d_model)
+        self.pos_encoder = (
+            pos_encoder
+            if pos_encoder is not None
+            else _build_positional_encoder(config)
         )
-        self.attention_residual_block_size = int(config.attention_residual_block_size)
-        if self.attention_residual_block_size <= 0:
-            raise ValueError("attention_residual_block_size must be > 0")
-        self.output_attention_residual = (
-            AttentionResidual(self.d_model) if self.use_attention_residual else None
+        self.time_encoder = (
+            InformerTimeEmbedding(config.d_model) if config.time_encoding else None
         )
-
-        # mHC model-level
-        self.use_mhc = bool(config.use_mhc)
-        self.mhc_n_streams = int(config.mhc_n_streams)
-        self.mhc_sinkhorn_iters = int(config.mhc_sinkhorn_iters)
-        self.mhc_collapse = str(config.mhc_collapse)
-
-        # PatchTST-style patching knobs (subclasses decide whether to apply)
-        self.patch_encoder = bool(config.patch_encoder)
-        self.patch_len = int(config.patch_len)
-        self.patch_stride = int(config.patch_stride)
-        self.patch_pad_end = bool(config.patch_pad_end)
-
-        # Mixture-of-Depths knobs
-        self.use_mod = bool(config.use_mod)
-        self.mod_mode = str(config.mod_mode)
-        self.mod_lambda = float(config.mod_lambda)
-        self.mod_budget_scheduler = mod_budget_scheduler
-
-        # Per-layer dropout schedule
-        self.layer_dropout_schedule = layer_dropout_schedule
-        self.initializer_range = float(config.initializer_range)
-        self.depth_scaled_init = bool(config.depth_scaled_init)
-
-        # Modules
-        self.patcher = PatchTokenizer(
-            self.d_model, self.patch_len, self.patch_stride, pad_end=self.patch_pad_end
-        )
-
-        # Variate mixing preserves each input channel as its own token stream,
-        # so its shared scalar adapter consumes one channel at a time.
-        adapter_input_size = 1 if config.use_variate_attention else input_size
-        self.input_adapter = nn.Linear(adapter_input_size, self.d_model)
-        # Only instantiate input-level positional encoding when pos_encoding_type
-        # demands it (sinusoidal / learnable). RoPE and ALiBi handle position
-        # encoding internally inside the attention module.
-        self.pos_encoder = build_positional_encoder(
-            d_model=self.d_model,
-            max_seq_len=max_seq_len,
-            dropout=dropout,
-            encoding_type=self.pos_encoding_type,
-            attention_mode=self.attention_mode,
-            scale=pos_encoding_scale,
-            supplied=pos_encoder,
-        )
-
         self.register_buffer("_causal_mask", torch.empty(0, 0), persistent=False)
 
-        # Build layers (per-layer attention type decided by attention_mode)
-        self.shared_layer, self.layers = build_layer_modules(
-            num_layers=num_layers,
-            dropout=dropout,
-            share_layers=share_layers,
-            attention_type_for=self._get_layer_attention_type,
-            layer_factory=lambda attention_type, layer_dropout: self._make_layer(
-                config, attention_type, layer_dropout, informer_like
-            ),
-            dropout_for=(
-                self.layer_dropout_schedule.get_dropout
-                if self.layer_dropout_schedule is not None
-                else None
-            ),
-        )
-
+        self.shared_layer, self.layers = self._build_layers()
         self.final_norm = (
-            create_norm_layer(custom_norm, d_model, layer_norm_eps)
-            if use_final_norm
+            create_norm_layer(config.norm, config.d_model, config.norm_eps)
+            if config.final_norm
             else nn.Identity()
         )
-
-        # Per-layer gates (even if share_layers=True)
-        self.mod_routers = nn.ModuleList(
-            [
-                MoDRouter(
-                    d_model=self.d_model,
-                    mode=self.mod_mode,
-                    hidden=0,
-                    init_bias=2.0,
-                )
-                for _ in range(self.num_layers)
-            ]
+        self.mod_routers = (
+            nn.ModuleList(
+                MoDRouter(d_model=config.d_model, mode="token", hidden=0, init_bias=2.0)
+                for _ in range(config.num_layers)
+            )
+            if config.residual == "mod"
+            else None
         )
+        self.output_attention_residual = (
+            AttentionResidual(config.d_model)
+            if config.residual == "attention"
+            else None
+        )
+        self._build_role_modules()
 
-        # Model-level aux_loss is a tensor buffer (set by _aggregate_aux_loss).
-        # mod_aux_loss is a simple float accumulated during forward.
-        self.aux_loss: torch.Tensor = torch.tensor(0.0)
-        self.mod_aux_loss: float = 0.0
+        self.register_buffer("aux_loss", torch.tensor(0.0), persistent=False)
+        self.mod_aux_loss: float | torch.Tensor = 0.0
+        self._layer_aux_losses: list[torch.Tensor] = []
         self._materialize_configured_attention_backends()
         self.apply(self._init_weights)
         self._apply_depth_scaled_initialization()
-        self._print_init_summary(
-            att_type=att_type,
-            custom_norm=custom_norm,
-            norm_strategy=config.norm_strategy,
-            use_moe=config.use_moe,
-            num_experts=config.num_experts,
-            top_k=config.top_k,
-            share_layers=share_layers,
-            use_final_norm=use_final_norm,
+        self._print_init_summary()
+
+    # ---- Sequence-module interface ------------------------------------------------
+    # Composers such as ForecastingModel duck-type any encoder/decoder by these
+    # sizes (RNN backbones expose the same names).
+    @property
+    def input_size(self) -> int:
+        return self.config.input_size
+
+    @property
+    def output_size(self) -> int:
+        return self.config.output_size
+
+    @property
+    def d_model(self) -> int:
+        return self.config.d_model
+
+    # ---- Construction ------------------------------------------------------------
+    @abstractmethod
+    def _make_layer(self, config: TransformerConfig) -> nn.Module: ...
+
+    def _build_role_modules(self) -> None:
+        """Create encoder/decoder modules; runs before weight initialization."""
+
+    def _build_layers(self) -> tuple[nn.Module | None, nn.ModuleList | None]:
+        config = self.config
+        schedule = self.dropout_schedule
+        dropouts = [
+            schedule.get_dropout(index) if schedule is not None else None
+            for index in range(config.num_layers)
+        ]
+        if config.share_layers:
+            if any(value != dropouts[0] for value in dropouts[1:]):
+                raise ValueError(
+                    "share_layers requires a constant layer dropout schedule"
+                )
+            # One module serves every depth; it materializes each depth's
+            # backend and switches between them at run time.
+            return self._make_layer(config.for_layer(0, dropout=dropouts[0])), None
+        layers = nn.ModuleList(
+            self._make_layer(config.for_layer(index, dropout=dropouts[index]))
+            for index in range(config.num_layers)
         )
+        return None, layers
+
+    def _init_weights(self, m: nn.Module) -> None:
+        std = self.config.init_std
+        if isinstance(m, nn.Linear):
+            nn.init.normal_(m.weight, mean=0.0, std=std)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+        elif isinstance(m, (nn.LayerNorm, RMSNorm)):
+            if getattr(m, "weight", None) is not None:
+                nn.init.ones_(m.weight)
+            if getattr(m, "bias", None) is not None:
+                nn.init.zeros_(m.bias)
+        elif isinstance(m, nn.Embedding):
+            nn.init.normal_(m.weight, mean=0.0, std=std)
+
+    def _apply_depth_scaled_initialization(self) -> None:
+        config = self.config
+        if not config.depth_scaled_init:
+            return
+        residual_std = config.init_std / math.sqrt(2.0 * config.num_layers)
+        residual_suffixes = ("out_proj", "o_proj", "w3", "fc2")
+        with torch.no_grad():
+            for name, module in self.named_modules():
+                if not isinstance(module, nn.Linear):
+                    continue
+                leaf_name = name.rsplit(".", 1)[-1]
+                if leaf_name in residual_suffixes or name.endswith("out_proj.2"):
+                    nn.init.normal_(module.weight, mean=0.0, std=residual_std)
+
+    def _print_init_summary(self) -> None:
+        dist = torch.distributed
+        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+            return
+        config = self.config
+        lines = [
+            f"[{type(self).__name__}]",
+            f"  shape:     d_model={config.d_model} n_heads={config.n_heads} "
+            f"layers={config.num_layers} max_seq_len={config.max_seq_len} "
+            f"dropout={config.dropout}",
+            f"  attention: {config.attention} pattern={config.attention_pattern} "
+            f"(layers={', '.join(self._configured_attention_types())})",
+            f"  norm:      {config.norm}/{config.norm_placement} "
+            f"final_norm={config.final_norm}",
+            f"  residual:  {config.residual}",
+        ]
+        if config.use_moe:
+            lines.append(
+                f"  moe:       experts={config.moe_experts} top_k={config.moe_top_k}"
+            )
+        if self.role == "encoder" and config.patching != "none":
+            lines.append(
+                f"  patching:  {config.patching} len={config.patch_len} "
+                f"stride={config.patch_stride}"
+            )
+        lines.append(
+            f"  runtime:   share_layers={config.share_layers} "
+            f"gradient_checkpointing={config.gradient_checkpointing}"
+        )
+        print("\n".join(lines))
+
+    # ---- Layers ------------------------------------------------------------------
+    def _get_layer(self, idx: int) -> nn.Module:
+        return self.shared_layer if self.layers is None else self.layers[idx]
+
+    def _resolve_layer(self, layer_idx: int) -> nn.Module:
+        layer = self._get_layer(layer_idx)
+        if self.shared_layer is not None and hasattr(layer, "set_layer_attention_type"):
+            layer.set_layer_attention_type(self.config.layer_attention(layer_idx))
+        return layer
+
+    def _configured_attention_types(self) -> list[str]:
+        return sorted(
+            {self.config.layer_attention(i) for i in range(self.config.num_layers)}
+        )
+
+    def _materialize_configured_attention_backends(self) -> None:
+        if self.shared_layer is not None:
+            materialize = getattr(self.shared_layer, "materialize_attention_type", None)
+            if callable(materialize):
+                for attention_type in self._configured_attention_types():
+                    materialize(attention_type)
+            return
+        for index in range(self.config.num_layers):
+            materialize = getattr(
+                self._get_layer(index), "materialize_attention_type", None
+            )
+            if callable(materialize):
+                materialize(self.config.layer_attention(index))
 
     def _generate_causal_mask(
         self,
@@ -459,383 +309,158 @@ class BaseTransformer(nn.Module, ABC):
         size = int(size)
         if size <= 0:
             return torch.empty(0, 0, device=device, dtype=dtype)
-
         mask = self._causal_mask
-        needs_rebuild = (
-            mask.numel() == 0
-            or mask.device != device
-            or mask.size(0) < size
-            or mask.size(1) < size
-        )
-        if needs_rebuild:
+        if mask.numel() == 0 or mask.device != device or mask.size(0) < size:
             mask = torch.triu(
-                torch.full(
-                    (size, size), float("-inf"), device=device, dtype=torch.float32
-                ),
+                torch.full((size, size), float("-inf"), device=device),
                 diagonal=1,
             )
             self._causal_mask = mask
         else:
             mask = mask[:size, :size]
+        return mask if mask.dtype == dtype else mask.to(dtype=dtype)
 
-        if mask.dtype != dtype:
-            mask = mask.to(dtype=dtype)
-        return mask
+    # ---- Forward steps shared by encoder and decoder ------------------------------
+    def _begin_forward(self) -> None:
+        self.mod_aux_loss = 0.0
+        self._layer_aux_losses.clear()
 
-    # ---- Attention mode routing ------------------------------------------------
-    # Routing tables define which backend each layer uses.
-    # pattern="all" → single backend; "hybrid" → early layers use secondary,
-    # last layer uses primary; "3to1" → every group of 4 uses secondary 3 times.
-    _ATTN_ROUTES: ClassVar[
-        dict[AttentionMode, tuple[str, str, Literal["all", "hybrid", "3to1"]]]
-    ] = {
-        AttentionMode.STANDARD: ("standard", "standard", "all"),
-        AttentionMode.LINEAR: ("linear", "linear", "all"),
-        AttentionMode.SYPE: ("sype", "sype", "all"),
-        AttentionMode.KIMI: ("kimi", "kimi", "all"),
-        AttentionMode.GATED_DELTA: ("gated_delta", "gated_delta", "all"),
-        AttentionMode.GLA: ("gla", "gla", "all"),
-        AttentionMode.DELTANET: ("deltanet", "deltanet", "all"),
-        AttentionMode.GATED_DELTANET: ("gated_deltanet", "gated_deltanet", "all"),
-        AttentionMode.HYBRID: ("standard", "linear", "hybrid"),
-        AttentionMode.HYBRID_KIMI: ("standard", "kimi", "hybrid"),
-        AttentionMode.KIMI_3TO1: ("standard", "kimi", "3to1"),
-        AttentionMode.HYBRID_GDN: ("standard", "gated_delta", "hybrid"),
-        AttentionMode.GDN_3TO1: ("standard", "gated_delta", "3to1"),
-        AttentionMode.GLA_HYBRID: ("standard", "gla", "hybrid"),
-        AttentionMode.GLA_3TO1: ("standard", "gla", "3to1"),
-        AttentionMode.DELTANET_HYBRID: ("standard", "deltanet", "hybrid"),
-        AttentionMode.DELTANET_3TO1: ("standard", "deltanet", "3to1"),
-        AttentionMode.GATED_DELTANET_HYBRID: ("standard", "gated_deltanet", "hybrid"),
-        AttentionMode.GATED_DELTANET_3TO1: ("standard", "gated_deltanet", "3to1"),
-    }
+    def _add_input_positions(
+        self, x: torch.Tensor, position_offset: torch.Tensor | int | None = None
+    ) -> torch.Tensor:
+        """Apply the input-level position encoding, if any.
 
-    def _get_layer_attention_type(self, layer_idx: int) -> str:
-        primary, secondary, pattern = self._ATTN_ROUTES[self.attention_mode]
-        match pattern:
-            case "all":
-                return primary
-            case "hybrid":
-                return secondary if layer_idx < (self.num_layers - 1) else primary
-            case "3to1":
-                return secondary if (layer_idx % 4) < 3 else primary
-        # unreachable — _ATTN_ROUTES only contains "all", "hybrid", "3to1"
-        raise RuntimeError(f"unreachable pattern {pattern!r}")
-
-    # ---- GateSkip runtime setters ---------------------------------------------
-    def _set_layer_gateskip_attrs(self, layer: nn.Module) -> None:
-        if hasattr(layer, "use_gateskip"):
-            layer.use_gateskip = bool(self.use_gateskip)
-        if hasattr(layer, "gate_budget"):
-            layer.gate_budget = self.gate_budget
-        if hasattr(layer, "gate_lambda"):
-            layer.gate_lambda = float(self.gate_lambda)
-
-    def set_use_gateskip(self, flag: bool) -> None:
-        self.use_gateskip = bool(flag)
-        for i in range(self.num_layers):
-            layer = self._get_layer(i)
-            self._set_layer_gateskip_attrs(layer)
-
-    def set_gate_budget(self, budget: float | None) -> None:
-        self.gate_budget = budget
-        for i in range(self.num_layers):
-            layer = self._get_layer(i)
-            self._set_layer_gateskip_attrs(layer)
-
-    def set_gate_lambda(self, lam: float) -> None:
-        self.gate_lambda = float(lam)
-        for i in range(self.num_layers):
-            layer = self._get_layer(i)
-            self._set_layer_gateskip_attrs(layer)
-
-    def set_budget_scheduler(self, scheduler: BudgetScheduler) -> None:
-        self.budget_scheduler = scheduler
-
-    # ---- mHC runtime setters (deprecated) --------------------------------------
-    # These mutate attributes after construction which can leave already-
-    # instantiated attention modules in an inconsistent state.  Configure
-    # use_mhc / mhc_n_streams / etc. at construction time instead.
-
-    def _set_layer_mhc_attrs(self, layer: nn.Module) -> None:
-        if hasattr(layer, "use_mhc"):
-            layer.use_mhc = bool(self.use_mhc)
-        if hasattr(layer, "mhc_n_streams"):
-            layer.mhc_n_streams = int(self.mhc_n_streams)
-        if hasattr(layer, "mhc_sinkhorn_iters"):
-            layer.mhc_sinkhorn_iters = int(self.mhc_sinkhorn_iters)
-        if hasattr(layer, "mhc_collapse"):
-            layer.mhc_collapse = str(self.mhc_collapse)
-        if hasattr(layer, "_ensure_mhc_mixers"):
-            layer._ensure_mhc_mixers()
-
-    def set_use_mhc(self, flag: bool) -> None:
-        warnings.warn(
-            "set_use_mhc is deprecated; set use_mhc in TransformerConfig or "
-            "the model constructor instead.",
-            DeprecationWarning,
-            stacklevel=2,
+        A 4D ``[B, V, T, D]`` input (variate mixing) is encoded per variate.
+        ``position_offset`` (scalar or ``[B]``) starts positions mid-sequence,
+        as in cached decoding.
+        """
+        if self.pos_encoder is None:
+            return x
+        if x.ndim == 4:
+            batch_size, num_variates, token_length, d_model = x.shape
+            flat = x.reshape(batch_size * num_variates, token_length, d_model)
+            return self.pos_encoder(flat).reshape(x.shape)
+        if position_offset is None:
+            return self.pos_encoder(x)
+        positions = positions_from_offset(
+            position_offset,
+            batch_size=x.shape[0],
+            length=x.shape[1],
+            device=x.device,
         )
-        self.use_mhc = bool(flag)
-        for i in range(self.num_layers):
-            layer = self._get_layer(i)
-            self._set_layer_mhc_attrs(layer)
+        return self.pos_encoder(x, pos=positions)
 
-    def set_mhc_params(
-        self,
-        n_streams: int | None = None,
-        sinkhorn_iters: int | None = None,
-        collapse: str | None = None,
-    ) -> None:
-        warnings.warn(
-            "set_mhc_params is deprecated; configure use_mhc, mhc_n_streams, "
-            "and mhc_collapse in the model constructor instead.",
-            DeprecationWarning,
-            stacklevel=2,
+    def _input_dropout(self, x: torch.Tensor) -> torch.Tensor:
+        if self.training and self.config.dropout > 0:
+            return F.dropout(x, p=self.config.dropout, training=True)
+        return x
+
+    def _use_layer_checkpointing(self) -> bool:
+        # The config rejects checkpointing with mHC and attention residuals,
+        # whose streams and state are not threaded through checkpoints.
+        return self.training and self.config.gradient_checkpointing
+
+    def _init_streams(self, x: torch.Tensor) -> torch.Tensor | None:
+        if self.config.residual != "mhc":
+            return None
+        return mhc_init_streams(x, self.config.mhc_streams)
+
+    def _init_attention_residual_state(
+        self, x: torch.Tensor
+    ) -> AttentionResidualState | None:
+        if self.config.residual != "attention":
+            return None
+        return init_attention_residual_state(
+            x,
+            self.config.attention_residual_mode,
+            self.config.attention_residual_block_size,
         )
-        if n_streams is not None:
-            self.mhc_n_streams = int(n_streams)
-        if sinkhorn_iters is not None:
-            self.mhc_sinkhorn_iters = int(sinkhorn_iters)
-        if collapse is not None:
-            self.mhc_collapse = str(collapse)
-        for i in range(self.num_layers):
-            layer = self._get_layer(i)
-            self._set_layer_mhc_attrs(layer)
 
-    # ---- Mixture-of-Depths setters --------------------------------------------
-    def set_use_mod(self, flag: bool) -> None:
-        self.use_mod = bool(flag)
+    def _gate_budget(self) -> float | None:
+        if self.training and self.gate_scheduler is not None:
+            return self.gate_scheduler.get_budget()
+        return self.config.gate_budget
 
-    def set_mod_budget_scheduler(self, scheduler: MoDBudgetScheduler) -> None:
-        self.mod_budget_scheduler = scheduler
-
-    # ---- Layer factory ---------------------------------------------------------
-    @abstractmethod
-    def _make_layer(
+    def _run_layer_stack(
         self,
-        config: TransformerConfig,
-        layer_attention_type: str,
-        dropout: float,
-        informer_like: bool,
-    ) -> nn.Module: ...
-
-    # ---- Init & helpers --------------------------------------------------------
-    def _init_weights(self, m: nn.Module) -> None:
-        if isinstance(m, nn.Linear):
-            nn.init.normal_(m.weight, mean=0.0, std=self.initializer_range)
-            if m.bias is not None:
-                nn.init.zeros_(m.bias)
-        elif isinstance(m, (nn.LayerNorm, RMSNorm)):
-            if hasattr(m, "weight") and m.weight is not None:
-                nn.init.ones_(m.weight)
-            if hasattr(m, "bias") and m.bias is not None:
-                nn.init.zeros_(m.bias)
-        elif isinstance(m, nn.Embedding):
-            nn.init.normal_(m.weight, mean=0.0, std=self.initializer_range)
-
-    def _apply_depth_scaled_initialization(self) -> None:
-        if not self.depth_scaled_init or self.num_layers <= 0:
-            return
-        residual_std = self.initializer_range / math.sqrt(2.0 * self.num_layers)
-        residual_suffixes = (
-            "out_proj",
-            "o_proj",
-            "w3",
-            "fc2",
-        )
-        with torch.no_grad():
-            for name, module in self.named_modules():
-                if not isinstance(module, nn.Linear):
-                    continue
-                leaf_name = name.rsplit(".", 1)[-1]
-                if leaf_name in residual_suffixes or name.endswith("out_proj.2"):
-                    nn.init.normal_(module.weight, mean=0.0, std=residual_std)
-
-    def _get_layer(self, idx: int) -> nn.Module:
-        return self.shared_layer if self.layers is None else self.layers[idx]
-
-    def _should_print_init_summary(self) -> bool:
-        dist = torch.distributed
-        if dist.is_available() and dist.is_initialized():
-            return dist.get_rank() == 0
-        return True
-
-    def _print_init_summary(
-        self,
+        x: torch.Tensor,
+        active_mask: torch.Tensor | None,
+        trace: StackTrace,
         *,
-        att_type: str,
-        custom_norm: str,
-        norm_strategy: str,
-        use_moe: bool,
-        num_experts: int,
-        top_k: int,
-        share_layers: bool,
-        use_final_norm: bool,
-    ) -> None:
-        if not self._should_print_init_summary():
-            return
+        run_layer: Callable[[int, torch.Tensor], LayerResult],
+        run_routed: Callable[
+            [int, torch.Tensor, nn.Module, torch.Tensor, torch.Tensor],
+            tuple[torch.Tensor, torch.Tensor],
+        ],
+    ) -> torch.Tensor:
+        """Run every layer, through Mixture-of-Depths routing when enabled.
 
-        per_layer_attn = [
-            self._get_layer_attention_type(i) for i in range(self.num_layers)
-        ]
-        attn_mix = ", ".join(sorted(set(per_layer_attn)))
+        ``run_layer(index, x)`` executes a layer on the full sequence.
+        ``run_routed(index, x, layer, indices, slots)`` gathers the routed
+        tokens of ``x``, executes the layer on them, and returns
+        ``(routed_input, routed_output)``.
+        """
+        for index in range(self.config.num_layers):
+            if self.config.residual == "mod":
+                x, used = run_mod_layer(
+                    self,
+                    index,
+                    x,
+                    active_mask,
+                    trace.hidden_states,
+                    trace.router_states,
+                    functools.partial(run_routed, index, x),
+                )
+                if used:
+                    trace.used_indices.append(index)
+                continue
+            result = run_layer(index, x)
+            x = result.hidden_states
+            trace.record(index, result)
+        return x
 
-        lines = [f"[{self.__class__.__name__}]"]
-        lines.append(
-            f"  shape:     d_model={self.d_model} nhead={self.config.nhead} "
-            f"layers={self.num_layers} max_seq_len={self.max_seq_len} "
-            f"dropout={self.dropout}"
-        )
-        lines.append(
-            f"  attention: att_type={att_type} mode={self.attention_mode} "
-            f"(layers={attn_mix})"
-        )
-        lines.append(
-            f"  norm:      {custom_norm}/{norm_strategy} final_norm={use_final_norm}"
-        )
-        if use_moe:
-            lines.append(
-                f"  moe:       experts={num_experts} top_k={top_k} "
-                f"aux_lambda={self.moe_aux_lambda}"
+    def _finish_stack(
+        self,
+        x: torch.Tensor,
+        trace: StackTrace,
+        attention_residual_state: AttentionResidualState | None,
+    ) -> torch.Tensor:
+        """Aggregate auxiliary losses, step schedulers, and normalize outputs."""
+        self._aggregate_aux_loss(trace.used_indices)
+        if self.training and self.gate_scheduler is not None:
+            self.gate_scheduler.step()
+        if self.training and self.mod_scheduler is not None:
+            self.mod_scheduler.step()
+        if attention_residual_state is not None and self.output_attention_residual:
+            x = self.output_attention_residual(
+                attention_residual_values(attention_residual_state)
             )
-        if self.use_gateskip:
-            lines.append(
-                f"  gateskip:  budget={self.gate_budget} gate_lambda={self.gate_lambda}"
-            )
-        if self.use_attention_residual:
-            lines.append(
-                f"  attn_res:  mode={self.attention_residual_mode} "
-                f"block={self.attention_residual_block_size}"
-            )
-        if self.use_mhc:
-            lines.append(
-                f"  mhc:       streams={self.mhc_n_streams} collapse={self.mhc_collapse}"
-            )
-        if self.patch_encoder:
-            lines.append(
-                f"  patch:     len={self.patch_len} stride={self.patch_stride}"
-            )
-        if self.use_mod:
-            lines.append(f"  mod:       mode={self.mod_mode}")
-        lines.append(
-            f"  runtime:   shared_layers={share_layers} "
-            f"grad_ckpt={self.use_gradient_checkpointing}"
-        )
-        print("\n".join(lines))
+        x = self.final_norm(x)
+        if trace.hidden_states is not None:
+            trace.hidden_states[-1] = x
+        return x
 
-    # FIX: aggregate aux loss over executed layer indices (supports skipping)
+    # ---- Auxiliary losses and routing ------------------------------------------
+    def _record_layer_aux_loss(self, loss: torch.Tensor) -> None:
+        # Snapshot each invocation before a shared layer is executed again.
+        # This runs outside checkpoint closures, so backward cannot append twice.
+        self._layer_aux_losses.append(loss)
+
     def _aggregate_aux_loss(self, used_indices: list[int]) -> None:
-        total_aux: float = 0.0
-        device: torch.device | None = None
-        for i in used_indices:
-            layer = self._get_layer(i)
-            if hasattr(layer, "_aux_loss"):
-                layer._record_aux_loss_device(next(self.parameters()).device)
-                if layer._aux_loss_device is not None:
-                    device = layer._aux_loss_device
-                total_aux += layer._aux_loss
-        denom = max(len(used_indices), 1)
-        mod_aux = float(self.mod_aux_loss) if hasattr(self, "mod_aux_loss") else 0.0
-        if device is None:
-            device = next(self.parameters()).device
-        self.aux_loss = torch.tensor(
-            ((total_aux / denom) * self.moe_aux_lambda + mod_aux),
-            device=device,
+        total = self.aux_loss.new_zeros(())
+        for loss in self._layer_aux_losses:
+            total = total + loss
+        self.aux_loss = (
+            total / max(len(used_indices), 1) * self.config.moe_aux_weight
+            + self.mod_aux_loss
         )
+        self._layer_aux_losses.clear()
 
     @staticmethod
     def _run_with_checkpoint(fn, *inputs: torch.Tensor, use_checkpoint: bool):
         if not use_checkpoint:
             return fn(*inputs)
         return torch.utils.checkpoint.checkpoint(fn, *inputs, use_reentrant=False)
-
-    def _get_runtime_budget(self) -> float | None:
-        if self.training and (self.budget_scheduler is not None):
-            return self.budget_scheduler.get_budget()
-        return self.gate_budget
-
-    def _validate_attention_residual_runtime(self) -> None:
-        if not self.use_attention_residual:
-            return
-        if self.use_gateskip:
-            raise RuntimeError(
-                "Paper-style Attention Residuals replace the residual path and are "
-                "not compatible with GateSkip in this implementation."
-            )
-        if self.use_mhc:
-            raise RuntimeError(
-                "Paper-style Attention Residuals are not wired for mHC stream mixing."
-            )
-        if self.use_mod:
-            raise RuntimeError(
-                "Paper-style Attention Residuals are not wired for Mixture-of-Depths."
-            )
-
-    def _init_attention_residual_state(
-        self, x: torch.Tensor
-    ) -> AttentionResidualState | None:
-        if not self.use_attention_residual:
-            return None
-        return init_attention_residual_state(
-            x, self.attention_residual_mode, self.attention_residual_block_size
-        )
-
-    def _finalize_attention_residual_output(
-        self, state: dict | None, fallback: torch.Tensor
-    ) -> torch.Tensor:
-        if not self.use_attention_residual or state is None:
-            return fallback
-        if self.output_attention_residual is None:
-            return fallback
-        return self.output_attention_residual(attention_residual_values(state))
-
-    def _validate_mod_runtime(self) -> None:
-        if not self.use_mod:
-            return
-        if self.mod_mode != "token":
-            raise RuntimeError(
-                "Mixture-of-Depths only supports token routing. Set mod_mode='token'."
-            )
-        if self.use_gateskip:
-            raise RuntimeError(
-                "Mixture-of-Depths is not wired together with GateSkip in this implementation."
-            )
-        if self.use_mhc:
-            raise RuntimeError("Mixture-of-Depths is not wired for mHC stream mixing.")
-
-    def _resolve_layer(self, layer_idx: int) -> nn.Module:
-        layer = self._get_layer(layer_idx)
-        if (self.shared_layer is not None) and hasattr(
-            layer, "set_layer_attention_type"
-        ):
-            layer.set_layer_attention_type(self._get_layer_attention_type(layer_idx))
-        return layer
-
-    def _configured_attention_types(self) -> list[str]:
-        return sorted(
-            {self._get_layer_attention_type(i) for i in range(self.num_layers)}
-        )
-
-    def _materialize_configured_attention_backends(self) -> None:
-        if self.shared_layer is not None:
-            layer = self.shared_layer
-            materialize = getattr(layer, "materialize_attention_type", None)
-            if callable(materialize):
-                for attn_type in self._configured_attention_types():
-                    materialize(attn_type)
-            return
-
-        for i in range(self.num_layers):
-            layer = self._get_layer(i)
-            materialize = getattr(layer, "materialize_attention_type", None)
-            if callable(materialize):
-                materialize(self._get_layer_attention_type(i))
-
-    def _get_layer_keep_rate(self, layer_idx: int) -> float:
-        if self.mod_budget_scheduler is None:
-            return 1.0
-        return float(self.mod_budget_scheduler.get_keep_rate(layer_idx))
 
     def _prepare_layer_routing(
         self,
@@ -850,22 +475,20 @@ class BaseTransformer(nn.Module, ABC):
         torch.Tensor | None,
     ]:
         layer = self._resolve_layer(layer_idx)
-        if not self.use_mod:
+        if self.mod_routers is None:
             return layer, None, None, None, None
 
         router_logits = self.mod_routers[layer_idx](x).squeeze(-1)
-        keep_mask = mod_topk_mask(
-            router_logits,
-            self._get_layer_keep_rate(layer_idx),
-            active_mask=active_mask,
+        keep_rate = (
+            1.0
+            if self.mod_scheduler is None
+            else float(self.mod_scheduler.get_keep_rate(layer_idx))
         )
-        if self.training and self.mod_lambda > 0:
-            self.mod_aux_loss += self.mod_lambda * float(
-                mod_router_aux_loss(
-                    router_logits,
-                    keep_mask,
-                    active_mask=active_mask,
-                ).detach()
+        keep_mask = mod_topk_mask(router_logits, keep_rate, active_mask=active_mask)
+        weight = self.config.mod_aux_weight
+        if self.training and weight > 0:
+            self.mod_aux_loss = self.mod_aux_loss + weight * mod_router_aux_loss(
+                router_logits, keep_mask, active_mask=active_mask
             )
 
         capacity = mod_capacity(keep_mask)
@@ -874,70 +497,5 @@ class BaseTransformer(nn.Module, ABC):
         indices, slot_mask = mod_routed_indices(keep_mask, capacity=capacity)
         return layer, router_logits, keep_mask, indices, slot_mask
 
-    def _finalize_layer_stack(self, used_indices: list[int]) -> None:
-        self._aggregate_aux_loss(used_indices)
-        if self.training and self.budget_scheduler is not None:
-            self.budget_scheduler.step()
-        if self.training and self.mod_budget_scheduler is not None:
-            self.mod_budget_scheduler.step()
 
-    def _run_mod_layer(
-        self,
-        layer_idx: int,
-        x: torch.Tensor,
-        gateskip_active_mask: torch.Tensor | None,
-        all_hidden_states: list[torch.Tensor] | None,
-        router_states: list[object],
-        invoke_fn: Callable[
-            [nn.Module, torch.Tensor, torch.Tensor | None],
-            tuple[torch.Tensor, object],
-        ],
-    ) -> tuple[torch.Tensor, bool]:
-        """Run one layer through Mixture-of-Depths routing.
-
-        Encapsulates the shared MoD pattern: prepare routing → gather routed
-        inputs → invoke layer → return routed output and whether the layer was used.
-
-        Parameters
-        ----------
-        invoke_fn:
-            Called as ``invoke_fn(layer, routed_indices, routed_slots)``.
-            Must return ``(x_routed, x_routed_out)`` where ``x_routed_out`` is
-            the layer's processed output.  The callable is responsible for
-            gathering tokens/masks and invoking the correct layer method.
-        """
-        layer, _, _, routed_indices, routed_slots = (
-            self._prepare_layer_routing(layer_idx, x, gateskip_active_mask)
-        )
-
-        if routed_indices is None:
-            return x, False
-
-        _, x_routed_out = invoke_fn(layer, routed_indices, routed_slots)
-        if all_hidden_states is not None:
-            all_hidden_states.append(x_routed_out)
-
-        return x_routed_out, True
-
-
-__all__ = [
-    "BaseTransformerLayer",
-    "BaseTransformer",
-    "TransformerEncoder",
-    "TransformerDecoder",
-]
-
-
-def __getattr__(name: str):
-    # Lazy re-export: encoder.py/decoder.py both import FROM this module, so
-    # importing them back at module load time would be circular. Resolve on
-    # first attribute access instead (PEP 562).
-    if name == "TransformerEncoder":
-        from foreblocks.nn.transformer.encoder import TransformerEncoder
-
-        return TransformerEncoder
-    if name == "TransformerDecoder":
-        from foreblocks.nn.transformer.decoder import TransformerDecoder
-
-        return TransformerDecoder
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+__all__ = ["BaseTransformer", "StackTrace"]

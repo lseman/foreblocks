@@ -103,7 +103,7 @@ class VariableSelectionNetwork(nn.Module):
             d_hidden=d_hidden,
             d_out=num_vars,
             dropout=dropout,
-            custom_norm=custom_norm,
+            norm=custom_norm,
             eps=eps,
         )
 
@@ -113,7 +113,7 @@ class VariableSelectionNetwork(nn.Module):
             d_hidden=d_hidden,
             d_out=d_model,
             dropout=dropout,
-            custom_norm=custom_norm,
+            norm=custom_norm,
             eps=eps,
         )
 
@@ -214,7 +214,7 @@ class TemporalFusionTransformer(nn.Module):
             d_model=d_model,
             d_hidden=dim_ff,
             dropout=dropout,
-            custom_norm=custom_norm,
+            norm=custom_norm,
             eps=layer_norm_eps,
             name="VSN_Enc",
         )
@@ -227,7 +227,7 @@ class TemporalFusionTransformer(nn.Module):
             d_model=d_model,
             d_hidden=dim_ff,
             dropout=dropout,
-            custom_norm=custom_norm,
+            norm=custom_norm,
             eps=layer_norm_eps,
             name="VSN_Dec",
         )
@@ -241,7 +241,7 @@ class TemporalFusionTransformer(nn.Module):
                 d_hidden=dim_ff,
                 d_out=d_model,
                 dropout=dropout,
-                custom_norm=custom_norm,
+                norm=custom_norm,
                 eps=layer_norm_eps,
             )
         else:
@@ -253,56 +253,54 @@ class TemporalFusionTransformer(nn.Module):
         self.encoder = TransformerEncoder(
             input_size=d_model,
             d_model=d_model,
-            nhead=n_heads,
+            n_heads=n_heads,
             num_layers=n_layers_enc,
-            dim_feedforward=dim_ff,
+            ff_dim=dim_ff,
             dropout=dropout,
             activation=activation,
-            att_type=att_type,
-            layer_norm_eps=layer_norm_eps,
-            norm_strategy=norm_strategy,
-            custom_norm=custom_norm,
+            attention=att_type,
+            norm_eps=layer_norm_eps,
+            norm_placement=norm_strategy.removesuffix("_norm"),
+            norm=custom_norm,
             max_seq_len=10_000,
             pos_encoder=(
                 PositionalEncoding(d_model, max_len=10_000)
                 if use_positional_encoding
                 else nn.Identity()
             ),
-            use_final_norm=True,
-            use_swiglu=use_swiglu,
-            freq_modes=freq_modes,
-            use_moe=use_moe,
-            num_experts=num_experts,
-            top_k=top_k,
+            final_norm=True,
+            swiglu=use_swiglu,
+            frequency_modes=freq_modes,
+            moe_experts=num_experts if use_moe else 0,
+            moe_top_k=top_k,
         )
 
         self.decoder = TransformerDecoder(
             input_size=d_model,
             output_size=d_model,
             d_model=d_model,
-            nhead=n_heads,
+            n_heads=n_heads,
             num_layers=n_layers_dec,
-            dim_feedforward=dim_ff,
+            ff_dim=dim_ff,
             dropout=dropout,
             activation=activation,
-            att_type=att_type,
-            layer_norm_eps=layer_norm_eps,
-            norm_strategy=norm_strategy,
-            custom_norm=custom_norm,
+            attention=att_type,
+            norm_eps=layer_norm_eps,
+            norm_placement=norm_strategy.removesuffix("_norm"),
+            norm=custom_norm,
             max_seq_len=10_000,
             pos_encoder=(
                 PositionalEncoding(d_model, max_len=10_000)
                 if use_positional_encoding
                 else nn.Identity()
             ),
-            use_final_norm=True,
-            use_swiglu=use_swiglu,
-            freq_modes=freq_modes,
-            use_moe=use_moe,
-            num_experts=num_experts,
-            top_k=top_k,
-            informer_like=False,
-            use_time_encoding=use_time_encoding,
+            final_norm=True,
+            swiglu=use_swiglu,
+            frequency_modes=freq_modes,
+            moe_experts=num_experts if use_moe else 0,
+            moe_top_k=top_k,
+            informer=False,
+            time_encoding=use_time_encoding,
         )
 
         # -------- Fusion & output --------
@@ -311,7 +309,7 @@ class TemporalFusionTransformer(nn.Module):
             d_hidden=dim_ff,
             d_out=d_model,
             dropout=dropout,
-            custom_norm=custom_norm,
+            norm=custom_norm,
             eps=layer_norm_eps,
             d_context=d_model,  # static enrichment context
         )
@@ -320,7 +318,7 @@ class TemporalFusionTransformer(nn.Module):
             d_hidden=dim_ff,
             d_out=d_model,
             dropout=dropout,
-            custom_norm=custom_norm,
+            norm=custom_norm,
             eps=layer_norm_eps,
             d_context=d_model,
         )

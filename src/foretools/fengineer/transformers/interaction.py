@@ -97,8 +97,14 @@ class InteractionTransformer(BaseFeatureTransformer):
                 getattr(config, "include_norm_ratio", True),
                 lambda a, b, meta=None: (a - b) / (np.abs(a) + np.abs(b) + self.eps),
             ),
-            "min": (getattr(config, "include_minmax", True), np.minimum),
-            "max": (getattr(config, "include_minmax", True), np.maximum),
+            "min": (
+                getattr(config, "include_minmax", True),
+                lambda a, b, meta=None: np.minimum(a, b),
+            ),
+            "max": (
+                getattr(config, "include_minmax", True),
+                lambda a, b, meta=None: np.maximum(a, b),
+            ),
             "zdiff": (
                 getattr(config, "include_zdiff", True),
                 lambda a, b, meta=None: (

@@ -30,22 +30,20 @@ from foreblocks import TransformerEncoder, TransformerDecoder
 encoder = TransformerEncoder(
     input_size=8,
     d_model=256,
-    nhead=8,
+    n_heads=8,
     num_layers=4,
-    use_moe=True,
-    num_experts=8,
-    top_k=2,
+    moe_experts=8,
+    moe_top_k=2,
 )
 
 decoder = TransformerDecoder(
     input_size=1,
     output_size=1,
     d_model=256,
-    nhead=8,
+    n_heads=8,
     num_layers=4,
-    use_moe=True,
-    num_experts=8,
-    top_k=2,
+    moe_experts=8,
+    moe_top_k=2,
 )
 ```
 
@@ -57,16 +55,12 @@ decoder = TransformerDecoder(
 encoder = TransformerEncoder(
     input_size=8,
     d_model=256,
-    nhead=8,
+    n_heads=8,
     num_layers=4,
-    use_moe=True,
-    num_experts=8,
-    num_shared=1,
-    top_k=2,
-    router_type="noisy_topk",
-    routing_mode="token_choice",
-    z_loss_weight=1e-3,
-    moe_aux_lambda=1.0,
+    moe_experts=8,
+    moe_top_k=2,
+    moe_aux_weight=1.0,
+    moe_options={"num_shared": 1, "router_type": "noisy_topk", "routing_mode": "token_choice", "z_loss_weight": 1e-3},
 )
 ```
 
@@ -76,16 +70,12 @@ encoder = TransformerEncoder(
 encoder = TransformerEncoder(
     input_size=8,
     d_model=384,
-    nhead=8,
+    n_heads=8,
     num_layers=6,
-    use_moe=True,
-    num_experts=16,
-    num_shared=2,
-    top_k=2,
-    routing_mode="expert_choice",
-    moe_capacity_factor=1.5,
-    z_loss_weight=1e-3,
-    use_gradient_checkpointing=True,
+    moe_experts=16,
+    moe_top_k=2,
+    gradient_checkpointing=True,
+    moe_options={"num_shared": 2, "routing_mode": "expert_choice", "moe_capacity_factor": 1.5, "z_loss_weight": 1e-3},
 )
 ```
 

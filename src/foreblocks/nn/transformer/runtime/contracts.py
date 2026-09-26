@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from foreblocks.nn.transformer.config import TransformerConfig
+
 from collections.abc import Iterator
 from typing import Any, Protocol
 
@@ -12,8 +17,7 @@ from foreblocks.nn.transformer.runtime.state import DecoderState
 
 
 class DecoderOwner(Protocol):
-    output_size: int
-    num_layers: int
+    config: TransformerConfig
 
     def parameters(self, recurse: bool = True) -> Iterator[nn.Parameter]: ...
     def forward_one_step(

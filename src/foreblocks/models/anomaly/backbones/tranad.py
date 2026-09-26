@@ -54,11 +54,11 @@ class TranAD(nn.Module):
 
         layer_kwargs = {
             "d_model": self.d_model,
-            "nhead": self.n_heads,
-            "dim_feedforward": max(16, self.d_model),
+            "n_heads": self.n_heads,
+            "ff_dim": max(16, self.d_model),
             "dropout": dropout,
             "activation": "gelu",
-            "pos_encoding_type": "sinusoidal",
+            "position": "sinusoidal",
         }
         self.transformer_encoder = nn.ModuleList(
             TransformerEncoderLayer(**layer_kwargs) for _ in range(n_layers)

@@ -55,4 +55,4 @@ the subpackage:
 | `LSTMEncoder`, `LSTMDecoder`, `GRUEncoder`, `GRUDecoder` | `foreblocks.nn.blocks.recurrent` |
 | `TransformerEncoder` | `foreblocks.nn.transformer.encoder` |
 | `TransformerDecoder` | `foreblocks.nn.transformer.decoder` |
-| `TransformerTuner` | `foreblocks.nn.transformer.tuner` |
+| `TransformerTuner` | `foreblocks.tuning.transformer` |
