@@ -6,9 +6,9 @@ from foreblocks.nn.moe.dispatchers import (
     ConfidenceCapacityDispatcher,
     DroplessPackedDispatcher,
 )
+from foreblocks.nn.moe.feedforward import FeedForwardBlock
 from foreblocks.nn.moe.layer import MoERoutingState
 from foreblocks.nn.moe.routers import RouterOutput
-from foreblocks.nn.moe.feedforward import FeedForwardBlock
 
 
 def test_latent_moe_preserves_output_shape_and_aux():
@@ -78,7 +78,7 @@ def test_moe_falls_back_when_scripted_topk_router_fails(monkeypatch):
     )
     x = torch.randn(2, 4, 12)
 
-    def broken_topk(logits, k):
+    def broken_topk(logits, k, selection_logits=None):
         raise RuntimeError(
             "nvrtc: error: failed to open libnvrtc-builtins.so.13.0"
         )
@@ -425,3 +425,114 @@ def test_router_entropy_stays_tensor_in_training_forward():
     assert isinstance(out.router_entropy, torch.Tensor)
     assert out.router_entropy.ndim == 0
     assert out.router_entropy.requires_grad is False
+
+
+@pytest.fixture
+def regression_moe(monkeypatch):
+    monkeypatch.setattr(moe, "optimized_topk_routing", moe.eager_topk_routing)
+
+    def build(**options):
+        kwargs = dict(
+            d_model=8,
+            d_ff=16,
+            num_experts=4,
+            top_k=2,
+            compile_router=False,
+            use_grouped_kernel=False,
+            use_fused_router_topk=False,
+            jitter=0.0,
+            moe_aux_loss_weight=0.0,
+            z_loss_weight=0.0,
+        )
+        kwargs.update(options)
+        return moe.MoEFeedForwardDMoE(**kwargs)
+
+    return build
+
+
+def test_top1_router_receives_task_gradient(regression_moe):
+    block = regression_moe(top_k=1)
+    block(torch.randn(2, 5, 8), return_aux_loss=False).square().mean().backward()
+    grad = block.router.router.weight.grad
+    assert grad is not None and grad.norm() > 0
+
+
+def test_bias_balances_assignment_counts_and_corrects_overload(regression_moe):
+    block = regression_moe()
+    block.momentum.zero_()
+    block._update_expert_usage_ema(torch.tensor([[0.99, 0.01]]), torch.tensor([[0, 1]]))
+    torch.testing.assert_close(block.expert_usage, torch.tensor([0.5, 0.5, 0.0, 0.0]))
+    block.expert_usage.copy_(torch.tensor([0.7, 0.1, 0.1, 0.1]))
+    block._maybe_update_router_bias()
+    assert block.router.expert_bias[0] < 0
+    assert (block.router.expert_bias[1:] > 0).all()
+    assert not block.router.expert_bias.requires_grad
+
+
+def test_bias_changes_selection_without_changing_combine_scores():
+    logits = torch.tensor([[3.0, 2.0, 1.0, 0.0]], requires_grad=True)
+    bias = torch.tensor([-10.0, 0.0, 10.0, 0.0])
+    weights, indices = moe.eager_topk_routing(logits, 2, logits + bias)
+    assert set(indices[0].tolist()) == {1, 2}
+    torch.testing.assert_close(weights, logits.gather(-1, indices).softmax(-1))
+
+
+def test_positive_adaptive_reward_increases_selected_probability(regression_moe):
+    block = regression_moe(router_type="adaptive_noisy_topk")
+    logits = torch.zeros(2, requires_grad=True)
+    block.last_log_prob_k = logits.log_softmax(0)[0].view(1)
+    block.compute_adaptive_k_reinforce_loss(torch.tensor(1.0)).backward()
+    assert logits.grad[0] < 0
+    assert logits.grad[1] > 0
+
+
+def test_grouped_eval_without_step_getter_and_weight_updates(regression_moe):
+    assert moe.grouped_mlp_swiglu is not None
+    block = regression_moe(use_grouped_kernel=True).eval()
+    reference = regression_moe().eval()
+    reference.load_state_dict(block.state_dict())
+    x = torch.randn(2, 5, 8)
+    with torch.no_grad():
+        torch.testing.assert_close(block(x)[0], reference(x)[0])
+        block.experts.w3.mul_(2)
+        reference.load_state_dict(block.state_dict())
+        torch.testing.assert_close(block(x)[0], reference(x)[0])
+
+
+def test_group_balancing_is_conditional_within_groups(regression_moe):
+    block = regression_moe(moe_aux_loss_weight=1.0, moe_num_groups=2)
+    # Unequal group traffic, but balanced experts within each group.
+    logits = torch.tensor([[3.0, 3.0, 0.0, 0.0]]).expand(10, -1)
+    assignments = torch.tensor([0] * 4 + [1] * 4 + [2, 3])
+    grouped = block._compute_aux_loss(logits, 10, assignments)
+    torch.testing.assert_close(grouped, torch.tensor(1.0))
+    block.moe_num_groups = 1
+    assert block._compute_aux_loss(logits, 10, assignments) > grouped
+
+
+def test_bias_warmup_advances_without_step_callback(regression_moe):
+    block = regression_moe(moe_router_bias_warmup_steps=2)
+    block.expert_usage.copy_(torch.tensor([0.7, 0.1, 0.1, 0.1]))
+    block._maybe_update_router_bias()
+    block._maybe_update_router_bias()
+    assert torch.count_nonzero(block.router.expert_bias) == 0
+    block._maybe_update_router_bias()
+    assert torch.count_nonzero(block.router.expert_bias) == 4
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_grouped_moe_cuda_training_and_eval(regression_moe):
+    block = regression_moe(use_grouped_kernel=True).cuda()
+    x = torch.randn(2, 5, 8, device="cuda", requires_grad=True)
+    output, aux = block(x)
+    (output.square().mean() + aux).backward()
+    assert torch.isfinite(x.grad).all()
+    assert block.experts.w12.grad.norm() > 0
+    block.eval()
+    with torch.no_grad():
+        assert torch.isfinite(block(x)[0]).all()
+
+
+def test_grouped_expert_dropout_is_preserved(regression_moe):
+    block = regression_moe(use_grouped_kernel=True, expert_dropout=1.0)
+    assert torch.count_nonzero(block(torch.randn(2, 5, 8))[0]) == 0

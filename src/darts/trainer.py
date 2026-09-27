@@ -20,7 +20,6 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from torch.amp import GradScaler
 
 from .architecture.darts.finalization import (
     derive_final_architecture as derive_fixed_architecture,
@@ -57,6 +56,7 @@ from .search.phases import (
 )
 from .search.phases.lr_sensitivity import bilevel_lr_sensitivity
 from .training import final_trainer as _ft_mod, training_loop as _dl_mod
+from .training.data import create_bilevel_loaders
 from .training.optimizers import AlphaTracker
 from .training.regularization import (
     default_as_probability_vector as _as_probability_vector,
@@ -65,7 +65,6 @@ from .utils.training_helpers import (
     autocast_ctx,
     create_progress_bar,
     get_loss_function,
-    unpack_forecasting_batch,
 )
 
 _DEFAULT_OPS = list(SEARCH_DEFAULT_OPS)
@@ -176,83 +175,6 @@ class DARTSTrainer:
     def _create_progress_bar(self, iterable, desc: str, leave: bool = True, **kwargs):
         return create_progress_bar(iterable, desc=desc, leave=leave, **kwargs)
 
-    def _run_model_training_epoch(
-        self,
-        *,
-        model: nn.Module,
-        train_model_loader,
-        model_params: list,
-        model_optimizer,
-        model_scheduler,
-        scaler: GradScaler,
-        loss_fn,
-        gradient_accumulation_steps: int,
-        use_amp: bool,
-        verbose: bool,
-        epoch: int,
-    ) -> float:
-        model.train()
-        total_loss = 0.0
-        batch_iter = (
-            self._create_progress_bar(
-                enumerate(train_model_loader),
-                f"Epoch {epoch + 1:3d}",
-                leave=False,
-                total=len(train_model_loader),
-            )
-            if verbose
-            else enumerate(train_model_loader)
-        )
-        model_optimizer.zero_grad()
-        for i, batch in batch_iter:
-            bx, by, model_kwargs = unpack_forecasting_batch(
-                batch,
-                self.device,
-                include_decoder_targets=True,
-            )
-            with self._autocast(use_amp):
-                preds = model(bx, **model_kwargs)
-                loss = loss_fn(preds, by) / gradient_accumulation_steps
-            scaler.scale(loss).backward()
-            if (i + 1) % gradient_accumulation_steps == 0:
-                scaler.unscale_(model_optimizer)
-                torch.nn.utils.clip_grad_norm_(model_params, max_norm=5.0)
-                scaler.step(model_optimizer)
-                scaler.update()
-                model_scheduler.step()
-                model_optimizer.zero_grad()
-            total_loss += loss.item() * gradient_accumulation_steps
-        return total_loss / max(len(train_model_loader), 1)
-
-    def _run_validation_epoch(
-        self,
-        *,
-        model: nn.Module,
-        val_loader,
-        loss_fn,
-        use_amp: bool,
-        verbose: bool,
-    ) -> float:
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            val_iter = (
-                self._create_progress_bar(val_loader, "Val", leave=False)
-                if verbose
-                else val_loader
-            )
-            for batch in val_iter:
-                bx, by, model_kwargs = unpack_forecasting_batch(
-                    batch,
-                    self.device,
-                    include_decoder_targets=False,
-                    teacher_forcing_ratio=0.0,
-                )
-                with self._autocast(use_amp):
-                    preds = model(bx, **model_kwargs)
-                    val_loss += loss_fn(preds, by).item()
-        return val_loss / max(len(val_loader), 1)
-
     def _evaluate_model(
         self,
         model: nn.Module,
@@ -316,35 +238,7 @@ class DARTSTrainer:
         ).to(self.device)
 
     def _create_bilevel_loaders(self, train_loader, seed: int = 42):
-        dataset = train_loader.dataset
-        if len(dataset) < 2:
-            raise ValueError("Bilevel search requires at least two training samples")
-        train_size = int(0.7 * len(dataset))
-        train_size = min(max(train_size, 1), len(dataset) - 1)
-        arch_size = len(dataset) - train_size
-        # Dataset order is chronological for forecasting. Random splitting lets
-        # later windows influence weight fitting while earlier windows guide
-        # architecture selection, which leaks future information.
-        train_ds = torch.utils.data.Subset(dataset, range(train_size))
-        arch_ds = torch.utils.data.Subset(dataset, range(train_size, train_size + arch_size))
-        _pin = train_loader.pin_memory
-        train_model_loader = torch.utils.data.DataLoader(
-            train_ds,
-            batch_size=train_loader.batch_size,
-            shuffle=True,
-            pin_memory=_pin,
-            num_workers=train_loader.num_workers,
-            persistent_workers=bool(train_loader.num_workers > 0),
-        )
-        train_arch_loader = torch.utils.data.DataLoader(
-            arch_ds,
-            batch_size=train_loader.batch_size,
-            shuffle=True,
-            pin_memory=_pin,
-            num_workers=train_loader.num_workers,
-            persistent_workers=bool(train_loader.num_workers > 0),
-        )
-        return train_arch_loader, train_model_loader
+        return create_bilevel_loaders(train_loader, seed=seed)
 
     def _plot_training_curve(
         self,
@@ -500,57 +394,17 @@ class DARTSTrainer:
         if train_config is None:
             train_config = DARTSTrainConfig()
 
-        return _dl_mod.train_darts_model(
-            self,
+        results = _dl_mod.train_darts_model(
             model,
             train_loader,
             val_loader,
-            epochs=train_config.epochs,
-            arch_learning_rate=train_config.arch_learning_rate,
-            model_learning_rate=train_config.model_learning_rate,
-            arch_weight_decay=train_config.arch_weight_decay,
-            model_weight_decay=train_config.model_weight_decay,
-            patience=train_config.patience,
-            loss_type=train_config.loss_type,
-            use_swa=train_config.use_swa,
-            warmup_epochs=train_config.warmup_epochs,
-            architecture_update_freq=train_config.architecture_update_freq,
-            diversity_check_freq=train_config.diversity_check_freq,
-            progressive_shrinking=train_config.progressive_shrinking,
-            hybrid_pruning_start_epoch=train_config.hybrid_pruning_start_epoch,
-            hybrid_pruning_interval=train_config.hybrid_pruning_interval,
-            hybrid_pruning_base_threshold=train_config.hybrid_pruning_base_threshold,
-            hybrid_pruning_strategy=train_config.hybrid_pruning_strategy,
-            hybrid_pruning_freeze_logit=train_config.hybrid_pruning_freeze_logit,
-            use_bilevel_optimization=train_config.use_bilevel_optimization,
-            use_amp=train_config.use_amp,
-            gradient_accumulation_steps=train_config.gradient_accumulation_steps,
-            verbose=train_config.verbose,
-            regularization_types=train_config.regularization_types,
-            regularization_weights=train_config.regularization_weights,
-            temperature_schedule=train_config.temperature_schedule,
-            edge_sharpening_max_weight=train_config.edge_sharpening_max_weight,
-            edge_sharpening_start_frac=train_config.edge_sharpening_start_frac,
-            hessian_penalty_weight=train_config.hessian_penalty_weight,
-            hessian_fd_eps=train_config.hessian_fd_eps,
-            hessian_update_freq=train_config.hessian_update_freq,
-            bilevel_split_seed=train_config.bilevel_split_seed,
-            state_mix_ortho_reg_weight=train_config.state_mix_ortho_reg_weight,
-            edge_diversity_weight=train_config.edge_diversity_weight,
-            edge_usage_balance_weight=train_config.edge_usage_balance_weight,
-            edge_identity_cap=train_config.edge_identity_cap,
-            edge_identity_cap_weight=train_config.edge_identity_cap_weight,
-            arch_grad_ema_beta=train_config.arch_grad_ema_beta,
-            beta_darts_weight=train_config.beta_darts_weight,
-            moe_balance_weight=train_config.moe_balance_weight,
-            transformer_exploration_weight=train_config.transformer_exploration_weight,
-            op_gdas=train_config.op_gdas,
-            variant_gdas=train_config.variant_gdas,
+            config=train_config,
+            device=self.device,
+            alpha_tracker=self.alpha_tracker,
             compute_metrics=compute_metrics,
-            max_train_batches=train_config.max_train_batches,
-            max_val_batches=train_config.max_val_batches,
-            engine=train_config.engine,
         )
+        self.training_history.append(results)
+        return results
 
     # ── Final model training ──────────────────────────────────────────────
 

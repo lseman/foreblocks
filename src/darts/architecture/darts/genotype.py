@@ -29,11 +29,21 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+from ..common.norms import NORM_NAMES
 from ..ops.fixed import FixedOp
-from ..ops.registry import build_op
+from ..ops.registry import OP_REGISTRY, build_op
 from .converter import ArchitectureConverter
 
-__all__ = ["EdgeGenotype", "CellGenotype", "TransformerGenotype", "Genotype", "build_model_from_genotype"]
+__all__ = [
+    "EdgeGenotype",
+    "CellGenotype",
+    "TransformerGenotype",
+    "Genotype",
+    "apply_cell_choices",
+    "apply_norm_choice",
+    "build_model_from_genotype",
+    "resolve_op_name",
+]
 
 SCHEMA_VERSION = 1
 
@@ -124,6 +134,89 @@ class Genotype:
         return cls.from_dict(json.loads(text))
 
 
+# Earlier ``derive_final_architecture`` recorded ops by class name minus the
+# ``Op`` suffix instead of by registry name. These are the only four where the
+# two differ; mapping them keeps genotypes saved under the old scheme loadable.
+_LEGACY_OP_NAMES = {
+    "MLPMixer": "TimeMixer",
+    "SwiGLUFFN": "SwiGLU",
+    "GeGLUFFN": "GeGLU",
+    "GatedGeLUFFN": "GatedGELU",
+}
+
+
+def resolve_op_name(name: str) -> str:
+    """Map a recorded edge operation to its :data:`OP_REGISTRY` key."""
+    if name in OP_REGISTRY:
+        return name
+    legacy = _LEGACY_OP_NAMES.get(name)
+    if legacy is not None:
+        return legacy
+    raise ValueError(
+        f"unknown operation {name!r}; expected one of {sorted(OP_REGISTRY)}"
+    )
+
+
+def apply_cell_choices(
+    model: nn.Module, cells: list[CellGenotype], *, reuse_trained_ops: bool
+) -> None:
+    """Replace every mixed cell edge of *model* with its recorded op, in place.
+
+    With ``reuse_trained_ops`` the op module is taken from the mixed edge
+    itself (keeping its searched weights); otherwise a fresh op is built from
+    the registry.
+    """
+    if len(model.cells) != len(cells):
+        raise ValueError(
+            f"genotype has {len(cells)} cells but model has "
+            f"{len(model.cells)} — build the mixed model with the "
+            "same num_cells as the search that produced this genotype."
+        )
+    for cell, cell_geno in zip(model.cells, cells):
+        if len(cell.edges) != len(cell_geno.edges):
+            raise ValueError(
+                f"cell {cell_geno.cell_idx} has {len(cell_geno.edges)} "
+                f"recorded edges but the mixed model's cell has "
+                f"{len(cell.edges)} — num_nodes must match."
+            )
+        new_edges = nn.ModuleList()
+        for edge, edge_geno in zip(cell.edges, cell_geno.edges):
+            name = resolve_op_name(edge_geno.operation)
+            if reuse_trained_ops:
+                if name not in edge.available_ops:
+                    raise ValueError(
+                        f"cell {cell_geno.cell_idx} edge {edge_geno.edge_idx}: "
+                        f"{name!r} is not in this edge's search space "
+                        f"{list(edge.available_ops)}"
+                    )
+                op = edge.ops[edge.available_ops.index(name)]
+            else:
+                op = build_op(name, edge.input_dim, edge.latent_dim, edge.seq_length)
+            new_edges.append(FixedOp(op))
+        cell.edges = new_edges
+        cell.selected_edge_specs = [asdict(e) for e in cell_geno.edges]
+        cell.selected_op_distribution = dict(cell_geno.op_distribution)
+
+
+def apply_norm_choice(model: nn.Module, norm: str) -> None:
+    """Pin *model*'s searchable input normalization to *norm*, in place."""
+    if not hasattr(model, "norm_alpha"):
+        return
+    if norm not in NORM_NAMES:
+        raise ValueError(f"unknown normalization {norm!r}; expected one of {NORM_NAMES}")
+    if model.norm_alpha.numel() != len(NORM_NAMES):
+        raise ValueError(
+            f"model has {model.norm_alpha.numel()} normalization modes, "
+            f"expected {len(NORM_NAMES)} ({NORM_NAMES})"
+        )
+    with torch.no_grad():
+        hard_logits = torch.full_like(model.norm_alpha, -12.0)
+        hard_logits[NORM_NAMES.index(norm)] = 12.0
+        model.norm_alpha.copy_(hard_logits)
+    model.norm_alpha.requires_grad_(False)
+    model.selected_norm = norm
+
+
 def build_model_from_genotype(mixed_model: nn.Module, genotype: Genotype) -> nn.Module:
     """Apply a recorded :class:`Genotype` to a freshly built mixed model.
 
@@ -137,42 +230,9 @@ def build_model_from_genotype(mixed_model: nn.Module, genotype: Genotype) -> nn.
     new_model = mixed_model
 
     if hasattr(new_model, "cells"):
-        if len(new_model.cells) != len(genotype.cells):
-            raise ValueError(
-                f"genotype has {len(genotype.cells)} cells but model has "
-                f"{len(new_model.cells)} — build the mixed model with the "
-                "same num_cells as the search that produced this genotype."
-            )
-        for cell, cell_geno in zip(new_model.cells, genotype.cells):
-            if len(cell.edges) != len(cell_geno.edges):
-                raise ValueError(
-                    f"cell {cell_geno.cell_idx} has {len(cell_geno.edges)} "
-                    f"recorded edges but the mixed model's cell has "
-                    f"{len(cell.edges)} — num_nodes must match."
-                )
-            new_edges = nn.ModuleList()
-            for edge, edge_geno in zip(cell.edges, cell_geno.edges):
-                op = build_op(
-                    edge_geno.operation,
-                    edge.input_dim,
-                    edge.latent_dim,
-                    edge.seq_length,
-                )
-                new_edges.append(FixedOp(op))
-            cell.edges = new_edges
-            cell.selected_edge_specs = [asdict(e) for e in cell_geno.edges]
-            cell.selected_op_distribution = dict(cell_geno.op_distribution)
-
-    if genotype.norm is not None and hasattr(new_model, "norm_alpha"):
-        norm_names = ["revin", "instance_norm", "identity"]
-        if genotype.norm in norm_names:
-            top_idx = norm_names.index(genotype.norm)
-            with torch.no_grad():
-                hard_logits = torch.full_like(new_model.norm_alpha, -12.0)
-                hard_logits[top_idx] = 12.0
-                new_model.norm_alpha.copy_(hard_logits)
-            new_model.norm_alpha.requires_grad_(False)
-            new_model.selected_norm = genotype.norm
+        apply_cell_choices(new_model, genotype.cells, reuse_trained_ops=False)
+    if genotype.norm is not None:
+        apply_norm_choice(new_model, genotype.norm)
 
     device = next(new_model.parameters()).device
 

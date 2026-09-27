@@ -15,6 +15,12 @@ except Exception:  # pragma: no cover - foreblocks namespace may exclude transfo
         return False
 
 
+# Input-normalization modes searched by ``SearchableNorm``, in ``norm_alpha``
+# index order. Anything that maps a ``norm_alpha`` index to a name (derivation,
+# genotype rebuild, inspection) must use this tuple, not a local literal.
+NORM_NAMES = ("revin", "instance_norm", "rms_norm", "identity")
+
+
 class RMSNorm(nn.Module):
     """Simple RMS normalization with Triton acceleration when available."""
 

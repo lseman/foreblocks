@@ -12,13 +12,14 @@ import faulthandler
 import os
 import sys
 import time
+from dataclasses import replace
 from typing import Any
 
 import torch
 import torch.nn as nn
 from torch.amp import GradScaler
 
-from ..config import DARTSEngineConfig
+from ..config import DARTSEngineConfig, DARTSTrainConfig
 from ..evaluation.metrics import compute_final_metrics
 from ..training.architecture_step import (
     ArchitectureLossConfig,
@@ -32,7 +33,7 @@ from ..training.dynamic_scheduling import (
     _dynamic_arch_update_freq,
     _dynamic_inner_arch_iters,
 )
-from ..training.optimizers import BilevelOptimizer
+from ..training.optimizers import AlphaTracker, BilevelOptimizer
 from ..training.perturbation_hessian import (
     _apply_darts_pt_perturbation,
     _restore_model_params,
@@ -51,10 +52,12 @@ from ..utils.training_helpers import (
     build_arch_param_groups,
     capture_progressive_state,
     create_progress_bar,
+    get_loss_function,
     restore_progressive_state,
     split_arch_and_model_params,
     unpack_forecasting_batch,
 )
+from .data import create_bilevel_loaders
 
 # ---------------------------------------------------------------------------
 # Public entry-point
@@ -124,80 +127,23 @@ def _prepare_edge_routing(model: nn.Module) -> None:
 
 
 def train_darts_model(
-    trainer,
     model: nn.Module,
     train_loader,
     val_loader,
     *,
-    epochs: int = 50,
-    arch_learning_rate: float = 1e-2,
-    model_learning_rate: float = 1e-3,
-    arch_weight_decay: float = 1e-3,
-    model_weight_decay: float = 1e-4,
-    patience: int = 10,
-    loss_type: str = "huber",
-    use_swa: bool = False,
-    warmup_epochs: int = 2,
-    architecture_update_freq: int = 3,
-    diversity_check_freq: int = 1,
-    progressive_shrinking: bool = True,
-    hybrid_pruning_start_epoch: int = 20,
-    hybrid_pruning_interval: int = 10,
-    hybrid_pruning_base_threshold: float = 0.15,
-    hybrid_pruning_strategy: str = "performance",
-    hybrid_pruning_freeze_logit: float = -20.0,
-    use_bilevel_optimization: bool = True,
-    use_amp: bool = True,
-    gradient_accumulation_steps: int = 1,
-    verbose: bool = True,
-    regularization_types: list[str] | None = None,
-    regularization_weights: list[float] | None = None,
-    temperature_schedule: str = "cosine",
-    edge_sharpening_max_weight: float = 0.03,
-    edge_sharpening_start_frac: float = 0.35,
-    hessian_penalty_weight: float = 0.0,
-    hessian_fd_eps: float = 1e-2,
-    hessian_update_freq: int = 1,
-    bilevel_split_seed: int = 42,
-    state_mix_ortho_reg_weight: float = 1e-3,
-    edge_diversity_weight: float = 0.03,
-    edge_usage_balance_weight: float = 0.04,
-    edge_identity_cap: float = 0.45,
-    edge_identity_cap_weight: float = 0.02,
-    arch_grad_ema_beta: float = 0.0,
-    beta_darts_weight: float = 0.0,
-    moe_balance_weight: float = 5e-3,
-    transformer_exploration_weight: float = 1e-2,
-    use_darts_pt: bool = False,
-    darts_pt_xi: float = 0.01,
-    initial_drnas_concentration: float = 10.0,
-    final_drnas_concentration: float = 2.0,
-    op_gdas: bool | None = None,
-    variant_gdas: bool | None = None,
+    config: DARTSTrainConfig,
+    device: str,
+    alpha_tracker: AlphaTracker,
     compute_metrics: bool = True,
-    max_train_batches: int | None = None,
-    max_val_batches: int | None = None,
-    engine: DARTSEngineConfig | None = None,
 ) -> dict[str, Any]:
-    """
-    Run one DARTS bilevel training cycle.
+    """Run bilevel search with explicit dependencies and return its result.
 
-    Args:
-        trainer: DARTSTrainer instance providing ``device``, ``alpha_tracker``,
-                 and helper methods.
-        model:   The DARTS mixed-operation model.
-        train_loader: DataLoader for training data.
-        val_loader:   DataLoader for validation data.
-        epochs / arch_learning_rate / ... : See :class:`~darts.config.DARTSTrainConfig`.
-
-    Returns:
-        Dict with keys: ``model``, ``train_losses``, ``val_losses``,
-        ``alpha_values``, ``diversity_scores``, ``best_val_loss``,
-        ``training_time``, ``final_metrics``.
+    Run-local scheduling adjustments never mutate the caller's configuration.
+    The caller owns history recording.
     """
-    device = trainer.device
+    config = replace(config)
     _enable_fatal_signal_tracebacks()
-    loss_fn = trainer._get_loss_function(loss_type)
+    loss_fn = get_loss_function(config.loss_type)
     with _crash_trace("model.to(device)", device):
         model = model.to(device)
     start_time = time.time()
@@ -213,19 +159,19 @@ def train_darts_model(
         # shape. That one-off cost only pays off over many steps, so for short
         # runs (e.g. phase-3 ASHA rungs of 2-4 epochs) it is net-negative —
         # gate it on a minimum epoch budget.
-        torch.backends.cudnn.benchmark = epochs >= 10
+        torch.backends.cudnn.benchmark = config.epochs >= 10
 
     # Warm-up must leave room for at least one architecture-update epoch.
     # The arch loop runs only when ``epoch >= warmup_epochs``; with the default
     # warmup_epochs=2 a 2-epoch run (epochs 0,1) would never update the
     # architecture at all — training weights but doing zero search. Cap warmup
     # so short rungs still search.
-    if warmup_epochs >= epochs:
-        warmup_epochs = max(0, epochs - 1)
+    if config.warmup_epochs >= config.epochs:
+        config.warmup_epochs = max(0, config.epochs - 1)
 
     resolved_engine_variant = None
-    if engine is not None:
-        resolved_engine_variant = engine.resolve_variant().value
+    if config.engine is not None:
+        resolved_engine_variant = config.engine.resolve_variant().value
 
     # ── Parameter groups ──────────────────────────────────────────────────
     (
@@ -233,9 +179,9 @@ def train_darts_model(
         model_params,
         edge_arch_params,
         component_arch_params,
-    ) = split_arch_and_model_params(model, alpha_tracker=trainer.alpha_tracker)
+    ) = split_arch_and_model_params(model, alpha_tracker=alpha_tracker)
 
-    if verbose:
+    if config.verbose:
         print(
             f"Architecture params: {len(arch_params)}, Model params: {len(model_params)}"
         )
@@ -244,7 +190,7 @@ def train_darts_model(
         edge_arch_params=edge_arch_params,
         component_arch_params=component_arch_params,
         arch_params=arch_params,
-        arch_learning_rate=arch_learning_rate,
+        arch_learning_rate=config.arch_learning_rate,
     )
 
     # ── Optimizers ────────────────────────────────────────────────────────
@@ -257,48 +203,50 @@ def train_darts_model(
             arch_optimizer = torch.optim.Adam(
                 arch_param_groups,
                 betas=(0.5, 0.999),
-                weight_decay=arch_weight_decay,
+                weight_decay=config.arch_weight_decay,
                 **optimizer_kwargs,
             )
             model_optimizer = torch.optim.AdamW(
                 model_params,
-                lr=model_learning_rate,
-                weight_decay=model_weight_decay,
+                lr=config.model_learning_rate,
+                weight_decay=config.model_weight_decay,
                 **optimizer_kwargs,
             )
         except (TypeError, RuntimeError):
             arch_optimizer = torch.optim.Adam(
                 arch_param_groups,
                 betas=(0.5, 0.999),
-                weight_decay=arch_weight_decay,
+                weight_decay=config.arch_weight_decay,
             )
             model_optimizer = torch.optim.AdamW(
-                model_params, lr=model_learning_rate, weight_decay=model_weight_decay
+                model_params,
+                lr=config.model_learning_rate,
+                weight_decay=config.model_weight_decay,
             )
 
     # ── Bilevel split ─────────────────────────────────────────────────────
     # Resolve this before sizing OneCycleLR: the model-side split can contain
     # fewer batches than the original loader.
     train_arch_loader = None
-    if use_bilevel_optimization:
-        train_arch_loader, train_model_loader = trainer._create_bilevel_loaders(
-            train_loader, seed=bilevel_split_seed
+    if config.use_bilevel_optimization:
+        train_arch_loader, train_model_loader = create_bilevel_loaders(
+            train_loader, seed=config.bilevel_split_seed
         )
     else:
         train_model_loader = train_loader
 
     # ── Schedulers ────────────────────────────────────────────────────────
     arch_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        arch_optimizer, T_max=epochs, eta_min=arch_learning_rate * 0.01
+        arch_optimizer, T_max=config.epochs, eta_min=config.arch_learning_rate * 0.01
     )
     model_scheduler = torch.optim.lr_scheduler.OneCycleLR(
         model_optimizer,
-        max_lr=model_learning_rate,
-        epochs=epochs,
+        max_lr=config.model_learning_rate,
+        epochs=config.epochs,
         steps_per_epoch=_optimizer_steps_per_epoch(
             len(train_model_loader),
-            max_train_batches,
-            gradient_accumulation_steps,
+            config.max_train_batches,
+            config.gradient_accumulation_steps,
         ),
         pct_start=0.3,
         anneal_strategy="cos",
@@ -310,50 +258,53 @@ def train_darts_model(
         arch_params=arch_params,
         edge_arch_params=edge_arch_params,
         component_arch_params=component_arch_params,
-        use_bilevel_optimization=use_bilevel_optimization,
+        use_bilevel_optimization=config.use_bilevel_optimization,
         train_arch_loader=train_arch_loader,
         val_loader=val_loader,
         train_model_loader=train_model_loader,
-        arch_grad_ema_beta=arch_grad_ema_beta,
+        arch_grad_ema_beta=config.arch_grad_ema_beta,
     )
 
     # ── Regularization & temperature ──────────────────────────────────────
-    regularization_types = regularization_types or ["kl_divergence", "efficiency"]
-    regularization_weights = regularization_weights or [0.05, 0.01]
-    reg_types = [RegularizationType(rt) for rt in regularization_types]
-    regularizer = ArchitectureRegularizer(reg_types, regularization_weights)
+    config.regularization_types = config.regularization_types or [
+        "kl_divergence",
+        "efficiency",
+    ]
+    config.regularization_weights = config.regularization_weights or [0.05, 0.01]
+    reg_types = [RegularizationType(rt) for rt in config.regularization_types]
+    regularizer = ArchitectureRegularizer(reg_types, config.regularization_weights)
     architecture_loss_config = ArchitectureLossConfig(
-        epochs=epochs,
-        warmup_epochs=warmup_epochs,
+        epochs=config.epochs,
+        warmup_epochs=config.warmup_epochs,
         device=device,
-        state_mix_ortho_reg_weight=state_mix_ortho_reg_weight,
-        beta_darts_weight=beta_darts_weight,
-        edge_diversity_weight=edge_diversity_weight,
-        edge_usage_balance_weight=edge_usage_balance_weight,
-        edge_identity_cap=edge_identity_cap,
-        edge_identity_cap_weight=edge_identity_cap_weight,
-        moe_balance_weight=moe_balance_weight,
-        transformer_exploration_weight=transformer_exploration_weight,
-        edge_sharpening_max_weight=edge_sharpening_max_weight,
-        edge_sharpening_start_frac=edge_sharpening_start_frac,
+        state_mix_ortho_reg_weight=config.state_mix_ortho_reg_weight,
+        beta_darts_weight=config.beta_darts_weight,
+        edge_diversity_weight=config.edge_diversity_weight,
+        edge_usage_balance_weight=config.edge_usage_balance_weight,
+        edge_identity_cap=config.edge_identity_cap,
+        edge_identity_cap_weight=config.edge_identity_cap_weight,
+        moe_balance_weight=config.moe_balance_weight,
+        transformer_exploration_weight=config.transformer_exploration_weight,
+        edge_sharpening_max_weight=config.edge_sharpening_max_weight,
+        edge_sharpening_start_frac=config.edge_sharpening_start_frac,
     )
 
     temp_scheduler = TemperatureScheduler(
         initial_temp=2.0,
         final_temp=0.1,
-        schedule_type=temperature_schedule,
-        warmup_epochs=warmup_epochs,
-        initial_drnas_concentration=initial_drnas_concentration,
-        final_drnas_concentration=final_drnas_concentration,
+        schedule_type=config.temperature_schedule,
+        warmup_epochs=config.warmup_epochs,
+        initial_drnas_concentration=config.initial_drnas_concentration,
+        final_drnas_concentration=config.final_drnas_concentration,
     )
 
     # ── SWA setup ─────────────────────────────────────────────────────────
     swa_model, swa_start = None, None
-    if use_swa:
-        swa_start = max(epochs // 2, warmup_epochs + 5)
+    if config.use_swa:
+        swa_start = max(config.epochs // 2, config.warmup_epochs + 5)
         swa_model = torch.optim.swa_utils.AveragedModel(model).to(device)
 
-    scaler = GradScaler(enabled=use_amp and device.startswith("cuda"))
+    scaler = GradScaler(enabled=config.use_amp and device.startswith("cuda"))
 
     # ── State ─────────────────────────────────────────────────────────────
     best_val_loss = float("inf")
@@ -369,33 +320,37 @@ def train_darts_model(
     last_edge_entropy = float("nan")
     last_edge_sharpen_weight = 0.0
 
-    if verbose:
-        print(f"Training DARTS for {epochs} epochs")
-        print(f"  Arch LR: {arch_learning_rate}, Model LR: {model_learning_rate}")
-        print(f"  Bilevel: {use_bilevel_optimization}, SWA: {use_swa}, AMP: {use_amp}")
+    if config.verbose:
+        print(f"Training DARTS for {config.epochs} epochs")
+        print(
+            f"  Arch LR: {config.arch_learning_rate}, Model LR: {config.model_learning_rate}"
+        )
+        print(
+            f"  Bilevel: {config.use_bilevel_optimization}, SWA: {config.use_swa}, AMP: {config.use_amp}"
+        )
         if hasattr(model, "max_active_edges_per_node"):
             print(
                 f"  Cell edge budget: max_active_edges_per_node="
                 f"{int(getattr(model, 'max_active_edges_per_node', 0))}"
             )
         print(
-            f"  Edge regs: cosine={edge_diversity_weight:.3f}, "
-            f"usage={edge_usage_balance_weight:.3f}, "
-            f"id_cap={edge_identity_cap:.2f}@{edge_identity_cap_weight:.3f}"
+            f"  Edge regs: cosine={config.edge_diversity_weight:.3f}, "
+            f"usage={config.edge_usage_balance_weight:.3f}, "
+            f"id_cap={config.edge_identity_cap:.2f}@{config.edge_identity_cap_weight:.3f}"
         )
-        if moe_balance_weight > 0.0:
-            print(f"  MoE balance regularizer: {moe_balance_weight:.4f}")
-        if transformer_exploration_weight > 0.0:
+        if config.moe_balance_weight > 0.0:
+            print(f"  MoE balance regularizer: {config.moe_balance_weight:.4f}")
+        if config.transformer_exploration_weight > 0.0:
             print(
                 "  Transformer exploration regularizer: "
-                f"{transformer_exploration_weight:.4f}"
+                f"{config.transformer_exploration_weight:.4f}"
             )
         print("-" * 60)
 
     epoch_pbar = (
-        create_progress_bar(range(epochs), "DARTS", leave=True, unit="epoch")
-        if verbose
-        else range(epochs)
+        create_progress_bar(range(config.epochs), "DARTS", leave=True, unit="epoch")
+        if config.verbose
+        else range(config.epochs)
     )
 
     epoch = 0
@@ -406,13 +361,13 @@ def train_darts_model(
         if hasattr(model, "schedule_temperature"):
             current_temperature = model.schedule_temperature(
                 epoch=epoch,
-                total_epochs=epochs,
-                schedule_type=temperature_schedule,
+                total_epochs=config.epochs,
+                schedule_type=config.temperature_schedule,
                 final_temp=temp_scheduler.final_temp,
-                warmup_epochs=warmup_epochs,
+                warmup_epochs=config.warmup_epochs,
             )
         else:
-            current_temperature = temp_scheduler.get_temperature(epoch, epochs)
+            current_temperature = temp_scheduler.get_temperature(epoch, config.epochs)
 
         if hasattr(model, "set_temperature") and not hasattr(
             model, "schedule_temperature"
@@ -422,13 +377,15 @@ def train_darts_model(
         # DrNAS concentration annealing: high → exploration (samples near mean),
         # low → exploitation (samples near simplex vertices).
         current_drnas_concentration = temp_scheduler.get_drnas_concentration(
-            epoch, epochs
+            epoch, config.epochs
         )
         if hasattr(model, "set_drnas_concentration"):
             model.set_drnas_concentration(current_drnas_concentration)
 
-        if progressive_shrinking and hasattr(model, "schedule_progressive_stage"):
-            model.schedule_progressive_stage(epoch=epoch, total_epochs=epochs)
+        if config.progressive_shrinking and hasattr(
+            model, "schedule_progressive_stage"
+        ):
+            model.schedule_progressive_stage(epoch=epoch, total_epochs=config.epochs)
 
         # Apply the variant after generic scheduling so fixed variant policy
         # (for example GD-DARTS commitment temperature) wins for this epoch.
@@ -436,18 +393,18 @@ def train_darts_model(
             configure_mixed_op_for_variant(
                 model=model,
                 variant=resolved_engine_variant,
-                engine_cfg=engine,
+                engine_cfg=config.engine,
                 epoch=epoch,
-                total_epochs=epochs,
+                total_epochs=config.epochs,
             )
 
         # Engine policy supplies the default, while an explicit run-level flag
         # is the final override. Keep transformer and cell sampling aligned
         # unless variant_gdas was intentionally decoupled.
-        if op_gdas is not None:
+        if config.op_gdas is not None:
             for module in model.modules():
                 if hasattr(module, "op_gdas"):
-                    module.op_gdas = bool(op_gdas)
+                    module.op_gdas = bool(config.op_gdas)
         effective_op_gdas = next(
             (
                 bool(module.op_gdas)
@@ -457,7 +414,7 @@ def train_darts_model(
             True,
         )
         effective_variant_gdas = bool(
-            effective_op_gdas if variant_gdas is None else variant_gdas
+            effective_op_gdas if config.variant_gdas is None else config.variant_gdas
         )
         for module in model.modules():
             if hasattr(module, "variant_gdas"):
@@ -466,19 +423,24 @@ def train_darts_model(
         _prepare_edge_routing(model)
 
         if epoch % 5 == 0:
-            alpha_values.append(trainer.alpha_tracker.extract_alpha_values(model))
+            alpha_values.append(alpha_tracker.extract_alpha_values(model))
 
         # -- Architecture parameter updates ----------------------------------
         _arch_freq = _dynamic_arch_update_freq(
-            epoch, epochs, warmup_epochs, architecture_update_freq
+            epoch, config.epochs, config.warmup_epochs, config.architecture_update_freq
         )
-        _arch_iters = _dynamic_inner_arch_iters(epoch, epochs, warmup_epochs)
+        _arch_iters = _dynamic_inner_arch_iters(
+            epoch, config.epochs, config.warmup_epochs
+        )
         # Count the update cadence from the warm-up boundary so the first
         # post-warmup epoch always updates the architecture. The previous
         # ``epoch % _arch_freq`` keyed off the absolute epoch index, which on
         # short runs (e.g. a 2-epoch phase-3 rung) could skip the only eligible
         # epoch entirely — training weights but never searching.
-        if epoch >= warmup_epochs and (epoch - warmup_epochs) % _arch_freq == 0:
+        if (
+            epoch >= config.warmup_epochs
+            and (epoch - config.warmup_epochs) % _arch_freq == 0
+        ):
             for _ in range(_arch_iters):
                 arch_batch = bilevel_optimizer.next_arch_batch()
                 arch_x, arch_y, arch_model_kwargs = unpack_forecasting_batch(
@@ -500,10 +462,10 @@ def train_darts_model(
                 implicit_corrections: list[torch.Tensor | None] | None = None
                 hessian_penalty = torch.tensor(0.0, device=device)
                 if (
-                    hessian_penalty_weight > 0.0
-                    and hessian_fd_eps > 0.0
-                    and hessian_update_freq > 0
-                    and (epoch - warmup_epochs) % hessian_update_freq == 0
+                    config.hessian_penalty_weight > 0.0
+                    and config.hessian_fd_eps > 0.0
+                    and config.hessian_update_freq > 0
+                    and (epoch - config.warmup_epochs) % config.hessian_update_freq == 0
                     and model_params
                     and arch_params
                 ):
@@ -524,10 +486,10 @@ def train_darts_model(
                         train_model_kwargs=h_train_model_kwargs,
                         model_params=model_params,
                         arch_params=arch_params,
-                        xi=hessian_penalty_weight,
-                        eps=hessian_fd_eps,
+                        xi=config.hessian_penalty_weight,
+                        eps=config.hessian_fd_eps,
                         device=device,
-                        use_amp=use_amp,
+                        use_amp=config.use_amp,
                     )
 
                 # -- DARTS-PT: perturb model weights toward training minimum ----
@@ -535,7 +497,7 @@ def train_darts_model(
                 # computed at w' instead of w, reducing bias from shared weights
                 # being positioned sub-optimally relative to the arch optimum.
                 darts_pt_originals: list[torch.Tensor] | None = None
-                if use_darts_pt and model_params:
+                if config.use_darts_pt and model_params:
                     pt_batch = bilevel_optimizer.next_hessian_batch()
                     pt_train_x, pt_train_y, pt_train_model_kwargs = (
                         unpack_forecasting_batch(
@@ -549,12 +511,12 @@ def train_darts_model(
                         train_y=pt_train_y,
                         train_model_kwargs=pt_train_model_kwargs,
                         loss_fn=loss_fn,
-                        xi=darts_pt_xi,
+                        xi=config.darts_pt_xi,
                         device=device,
-                        use_amp=use_amp,
+                        use_amp=config.use_amp,
                     )
 
-                with autocast_ctx(device, enabled=use_amp):
+                with autocast_ctx(device, enabled=config.use_amp):
                     arch_result = compose_architecture_loss(
                         model=model,
                         x=arch_x,
@@ -562,17 +524,15 @@ def train_darts_model(
                         model_kwargs=arch_model_kwargs,
                         loss_fn=loss_fn,
                         regularizer=regularizer,
-                        alpha_tracker=trainer.alpha_tracker,
+                        alpha_tracker=alpha_tracker,
                         arch_params=arch_params,
                         epoch=epoch,
                         engine_variant=resolved_engine_variant,
-                        engine_cfg=engine,
+                        engine_cfg=config.engine,
                         config=architecture_loss_config,
                     )
                     total_arch_loss = arch_result.loss
-                    last_edge_entropy = float(
-                        arch_result.edge_entropy.detach().item()
-                    )
+                    last_edge_entropy = float(arch_result.edge_entropy.detach().item())
                     last_edge_sharpen_weight = arch_result.edge_sharpen_weight
 
                 # Restore DARTS-PT perturbation before optimizer step.
@@ -589,38 +549,40 @@ def train_darts_model(
                     gradient_balance_params=(
                         model_params
                         if resolved_engine_variant == "r_darts"
-                        and engine is not None
-                        and engine.r_darts.balance_gradient_norms
+                        and config.engine is not None
+                        and config.engine.r_darts.balance_gradient_norms
                         else None
                     ),
                     gradient_balance_warmup=(
-                        engine.r_darts.norm_balance_warmup
-                        if resolved_engine_variant == "r_darts" and engine is not None
+                        config.engine.r_darts.norm_balance_warmup
+                        if resolved_engine_variant == "r_darts"
+                        and config.engine is not None
                         else 0
                     ),
                     gradient_balance_epoch=epoch,
                     arch_grad_scale=(
-                        engine.r_darts.arch_grad_scale
-                        if resolved_engine_variant == "r_darts" and engine is not None
+                        config.engine.r_darts.arch_grad_scale
+                        if resolved_engine_variant == "r_darts"
+                        and config.engine is not None
                         else 1.0
                     ),
                 )
                 scaler.update()
 
-                if verbose and hasattr(model, "forecast_encoder"):
+                if config.verbose and hasattr(model, "forecast_encoder"):
                     _log_arch_gradients(model)
 
             bilevel_optimizer.step_scheduler()
 
-            if verbose:
+            if config.verbose:
                 with torch.no_grad():
-                    trainer.alpha_tracker.log_architecture_update_block(
+                    alpha_tracker.log_architecture_update_block(
                         model=model,
                         prev_component_probs=prev_component_probs,
                         prev_edge_probs=prev_edge_probs,
                         last_edge_sharpen_weight=last_edge_sharpen_weight,
                         last_edge_entropy=last_edge_entropy,
-                        hessian_penalty_weight=hessian_penalty_weight,
+                        hessian_penalty_weight=config.hessian_penalty_weight,
                         hessian_penalty=hessian_penalty,
                     )
 
@@ -637,14 +599,14 @@ def train_darts_model(
             model_scheduler=model_scheduler,
             scaler=scaler,
             loss_fn=loss_fn,
-            gradient_accumulation_steps=gradient_accumulation_steps,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
             device=device,
-            use_amp=use_amp,
-            verbose=verbose,
+            use_amp=config.use_amp,
+            verbose=config.verbose,
             epoch=epoch,
-            max_batches=max_train_batches,
+            max_batches=config.max_train_batches,
             engine_variant=resolved_engine_variant,
-            engine_cfg=engine,
+            engine_cfg=config.engine,
         )
 
         avg_val_loss = _run_validation_epoch(
@@ -652,9 +614,9 @@ def train_darts_model(
             val_loader=val_loader,
             loss_fn=loss_fn,
             device=device,
-            use_amp=use_amp,
-            verbose=verbose,
-            max_batches=max_val_batches,
+            use_amp=config.use_amp,
+            verbose=config.verbose,
+            max_batches=config.max_val_batches,
         )
         train_losses.append(avg_train_loss)
         val_losses.append(avg_val_loss)
@@ -663,14 +625,14 @@ def train_darts_model(
         _maybe_prune(
             model=model,
             epoch=epoch,
-            epochs=epochs,
-            progressive_shrinking=progressive_shrinking,
-            hybrid_pruning_start_epoch=hybrid_pruning_start_epoch,
-            hybrid_pruning_interval=hybrid_pruning_interval,
-            hybrid_pruning_base_threshold=hybrid_pruning_base_threshold,
-            hybrid_pruning_strategy=hybrid_pruning_strategy,
-            hybrid_pruning_freeze_logit=hybrid_pruning_freeze_logit,
-            verbose=verbose,
+            epochs=config.epochs,
+            progressive_shrinking=config.progressive_shrinking,
+            hybrid_pruning_start_epoch=config.hybrid_pruning_start_epoch,
+            hybrid_pruning_interval=config.hybrid_pruning_interval,
+            hybrid_pruning_base_threshold=config.hybrid_pruning_base_threshold,
+            hybrid_pruning_strategy=config.hybrid_pruning_strategy,
+            hybrid_pruning_freeze_logit=config.hybrid_pruning_freeze_logit,
+            verbose=config.verbose,
         )
 
         # -- Early stopping --------------------------------------------------
@@ -680,7 +642,7 @@ def train_darts_model(
             best_state = snapshot_state_dict(model)
             best_progressive_state = capture_progressive_state(model)
             if (
-                use_swa
+                config.use_swa
                 and swa_model is not None
                 and swa_start is not None
                 and epoch >= swa_start
@@ -688,52 +650,60 @@ def train_darts_model(
                 swa_model.update_parameters(model)
         else:
             patience_counter += 1
-            if patience_counter >= patience:
-                if verbose:
+            if patience_counter >= config.patience:
+                if config.verbose:
                     print(f"\nEarly stopping at epoch {epoch + 1}")
                 break
 
-        if verbose and hasattr(epoch_pbar, "set_postfix"):
+        if config.verbose and hasattr(epoch_pbar, "set_postfix"):
             epoch_pbar.set_postfix(
                 {
                     "train": f"{avg_train_loss:.4f}",
                     "val": f"{avg_val_loss:.4f}",
                     "best": f"{best_val_loss:.4f}",
-                    "patience": f"{patience_counter}/{patience}",
+                    "patience": f"{patience_counter}/{config.patience}",
                     "conc": f"{current_drnas_concentration:.1f}",
                 }
             )
 
-    if verbose and hasattr(epoch_pbar, "close"):
+    if config.verbose and hasattr(epoch_pbar, "close"):
         epoch_pbar.close()
 
     training_time = time.time() - start_time
 
     # ── SWA finalization ──────────────────────────────────────────────────
     if (
-        use_swa
+        config.use_swa
         and swa_model is not None
         and swa_start is not None
         and epoch >= swa_start
     ):
-        if verbose:
+        if config.verbose:
             print("\nFinalizing SWA...")
         try:
             torch.optim.swa_utils.update_bn(train_loader, swa_model, device=device)
-            swa_val_loss = trainer._evaluate_model(swa_model, val_loader, loss_type)
+            swa_val_loss = _run_validation_epoch(
+                model=swa_model,
+                val_loader=val_loader,
+                loss_fn=loss_fn,
+                device=device,
+                use_amp=config.use_amp,
+                verbose=False,
+                max_batches=config.max_val_batches,
+            )
             if swa_val_loss < best_val_loss:
-                if verbose:
+                if config.verbose:
                     print("SWA model is better")
                 best_state = snapshot_state_dict(swa_model.module)
                 best_progressive_state = capture_progressive_state(model)
                 best_val_loss = swa_val_loss
         except Exception as exc:
-            if verbose:
+            if config.verbose:
                 print(f"Warning: SWA failed ({exc})")
 
     # ── Load best weights ─────────────────────────────────────────────────
     restore_progressive_state(model, best_progressive_state)
-    _safe_load_state(model, best_state, verbose=verbose)
+    _safe_load_state(model, best_state, verbose=config.verbose)
 
     if hasattr(model, "ensure_float32_dtype"):
         model.ensure_float32_dtype()
@@ -750,7 +720,7 @@ def train_darts_model(
             else {"mse": float("nan"), "mae": float("nan")}
         )
 
-    if verbose:
+    if config.verbose:
         print(f"\nTraining completed in {training_time:.1f}s")
         print(f"Best Val Loss: {best_val_loss:.6f}")
         print(f"MSE: {final_metrics['mse']:.6f} | MAE: {final_metrics['mae']:.6f}")
@@ -766,7 +736,6 @@ def train_darts_model(
         "training_time": training_time,
         "final_metrics": final_metrics,
     }
-    trainer.training_history.append(results)
     return results
 
 
@@ -811,14 +780,17 @@ def _run_model_training_epoch(
     model_optimizer.zero_grad()
     batches_seen = 0
     batches_since_step = 0
-    for batch_idx, (batch_x, batch_y, *_) in batch_pbar:
+    for batch_idx, batch in batch_pbar:
         if max_batches is not None and batch_idx >= int(max_batches):
             break
         batches_seen += 1
         batches_since_step += 1
-        with _crash_trace(f"epoch {epoch + 1}: train batch {batch_idx} transfer", device):
-            batch_x = batch_x.to(device, non_blocking=True)
-            batch_y = batch_y.to(device, non_blocking=True)
+        with _crash_trace(
+            f"epoch {epoch + 1}: train batch {batch_idx} transfer", device
+        ):
+            batch_x, batch_y, model_kwargs = unpack_forecasting_batch(
+                batch, device, include_decoder_targets=True
+            )
 
         with (
             _crash_trace(f"epoch {epoch + 1}: train batch {batch_idx} forward", device),
@@ -832,12 +804,15 @@ def _run_model_training_epoch(
                     loss_fn=loss_fn,
                     backward_loss_weight=engine_cfg.bi_darts.backward_loss_weight,
                     backward_passes=engine_cfg.bi_darts.backward_passes,
+                    model_kwargs=model_kwargs,
                 )
             else:
-                raw_loss = loss_fn(model(batch_x), batch_y)
+                raw_loss = loss_fn(model(batch_x, **model_kwargs), batch_y)
             loss = raw_loss / accumulation_steps
 
-        with _crash_trace(f"epoch {epoch + 1}: train batch {batch_idx} backward", device):
+        with _crash_trace(
+            f"epoch {epoch + 1}: train batch {batch_idx} backward", device
+        ):
             scaler.scale(loss).backward()
 
         if batches_since_step >= accumulation_steps:
@@ -913,13 +888,17 @@ def _run_validation_epoch(
                 break
             batches_seen += 1
             with _crash_trace(f"val batch {batch_idx} transfer", device):
-                x = batch_data[0].to(device, non_blocking=True)
-                y = batch_data[1].to(device, non_blocking=True)
+                x, y, model_kwargs = unpack_forecasting_batch(
+                    batch_data,
+                    device,
+                    include_decoder_targets=False,
+                    teacher_forcing_ratio=0.0,
+                )
             with (
                 _crash_trace(f"val batch {batch_idx} forward", device),
                 autocast_ctx(device, enabled=use_amp),
             ):
-                val_loss += loss_fn(model(x), y).item()
+                val_loss += loss_fn(model(x, **model_kwargs), y).item()
             if verbose and hasattr(val_pbar, "set_postfix"):
                 val_pbar.set_postfix(
                     {"val_loss": f"{val_loss / max(batches_seen, 1):.4f}"}

@@ -132,3 +132,30 @@ def test_checkpointed_shared_hybrid_matches_ordinary_gradients(constructor):
             torch.testing.assert_close(
                 parameter.grad, checkpoint_parameter.grad, msg=name
             )
+
+
+@pytest.mark.parametrize("constructor", [TransformerEncoder, TransformerDecoder])
+def test_checkpointed_shared_moe_matches_gradients_and_routing_buffers(constructor):
+    torch.manual_seed(456)
+    ordinary = make_model(constructor, share_layers=True, moe_experts=4, moe_top_k=1)
+    checkpointed = constructor(ordinary.config, gradient_checkpointing=True).train()
+    checkpointed.load_state_dict(ordinary.state_dict())
+    inputs = inputs_for(constructor)
+    outputs = []
+    for model in (ordinary, checkpointed):
+        torch.manual_seed(789)
+        output = model(*inputs)
+        outputs.append(output)
+        (output.last_hidden_state.square().sum() + output.aux_loss).backward()
+    torch.testing.assert_close(outputs[0].last_hidden_state, outputs[1].last_hidden_state)
+    torch.testing.assert_close(outputs[0].aux_loss, outputs[1].aux_loss)
+    for (name, parameter), (_, other) in zip(
+        ordinary.named_parameters(), checkpointed.named_parameters()
+    ):
+        assert (parameter.grad is None) == (other.grad is None), name
+        if parameter.grad is not None:
+            torch.testing.assert_close(parameter.grad, other.grad, msg=name)
+    other_buffers = dict(checkpointed.named_buffers())
+    for name, buffer in ordinary.named_buffers():
+        if name.endswith(("expert_bias", "expert_usage", "adaptive_k_baseline")):
+            torch.testing.assert_close(buffer, other_buffers[name], msg=name)

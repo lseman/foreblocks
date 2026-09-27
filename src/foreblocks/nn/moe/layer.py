@@ -51,14 +51,6 @@ from foreblocks.nn.moe.experts import (
     MTPHead,
     PackedExpertBank,
 )
-from foreblocks.nn.moe.utils import (
-    autocast_bf16_enabled as _autocast_bf16_enabled,
-    eager_topk_routing,
-    maybe_compile,
-    optimized_topk_routing,
-    should_fallback_router_topk as _should_fallback_router_topk,
-    supports_grouped_prepacked as _supports_grouped_prepacked,
-)
 from foreblocks.nn.moe.routers import (
     AdaptiveNoisyTopKRouter,
     AuxiliaryTokenRouter,
@@ -69,6 +61,14 @@ from foreblocks.nn.moe.routers import (
     Router,
     SoftDenseRouter,
     StraightThroughTopKRouter,
+)
+from foreblocks.nn.moe.utils import (
+    autocast_bf16_enabled as _autocast_bf16_enabled,
+    eager_topk_routing,
+    maybe_compile,
+    optimized_topk_routing,
+    should_fallback_router_topk as _should_fallback_router_topk,
+    supports_grouped_prepacked as _supports_grouped_prepacked,
 )
 
 
@@ -94,12 +94,13 @@ except Exception:
 try:
     # Prefer a wrapper that accepts B12_cat_prepacked / B3_cat_prepacked
     from foreblocks.kernels.activations.swiglu import (  # type: ignore
-        fused_router_topk,
         grouped_mlp_swiglu,
     )
-except Exception:
+except ImportError:
     grouped_mlp_swiglu = None  # fallback uses Python loop
-    fused_router_topk = None  # type: ignore
+
+# No fused top-k implementation is currently shipped.
+fused_router_topk = None
 
 
 # -----------------------------------------------------------------------------
@@ -316,9 +317,7 @@ class MoEFeedForwardDMoE(nn.Module):
             f"  routing:   mode={routing_mode} router={router_type} "
             f"ec_tokens={ec_tokens_desc} cap={soft_cap}"
         )
-        moe_lines.append(
-            f"  combine:   swiglu={use_swiglu} shared={shared_combine}"
-        )
+        moe_lines.append(f"  combine:   swiglu={use_swiglu} shared={shared_combine}")
         moe_lines.append(
             f"  aux:       lb={aux_status} z_loss={z_loss_weight} "
             f"entropy_reg={moe_entropy_reg_weight}"
@@ -370,6 +369,7 @@ class MoEFeedForwardDMoE(nn.Module):
         # ── Router bias balance (aux-loss-free load balancing) ────────────
         self.moe_router_bias_balance = bool(moe_router_bias_balance)
         self.moe_router_bias_warmup_steps = int(moe_router_bias_warmup_steps)
+        # Legacy compatibility only: all deviations from target are corrected.
         self.moe_router_bias_min_usage = float(moe_router_bias_min_usage)
         self._current_step = 0
 
@@ -594,10 +594,6 @@ class MoEFeedForwardDMoE(nn.Module):
             )
         self.aux_loss = torch.tensor(0.0)
 
-        # Prepacked expert weights cache (optional fast path)
-        self._packed_step = -1
-        self._B12_cat = None  # [E, D, 2H] or [E, K, N] depending on wrapper
-        self._B3_cat = None  # [E, H, D]
         self._last_num_assignments = 0
         self.last_per_token_k: torch.Tensor | None = None
         self.last_log_prob_k: torch.Tensor | None = None
@@ -654,25 +650,11 @@ class MoEFeedForwardDMoE(nn.Module):
         )
         return state
 
-    # ---------- Prepack expert weights (bf16) and reuse per step ----------
-    @torch.no_grad()
-    def _refresh_packed_weights(self, step: int):
-        if step == self._packed_step:
-            return
-        B12, B3 = self.get_packed_expert_weights()
-        # Inference cache: parameters are canonical in ``self.experts`` while
-        # kernels consume the Transformers-style [E, ...] tensors.
-        self._B12_cat = B12.to(dtype=torch.bfloat16)
-        self._B3_cat = B3.to(dtype=torch.bfloat16)
-        self._packed_step = step
-
     def get_packed_expert_weights(self) -> tuple[torch.Tensor, torch.Tensor]:
         return self.experts.w12, self.experts.w3
 
     def invalidate_packed_weights(self):
-        self._packed_step = -1
-        self._B12_cat = None
-        self._B3_cat = None
+        """Compatibility hook: packed weights now always use live parameters."""
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         packed_w12 = prefix + "experts.w12"
@@ -755,7 +737,10 @@ class MoEFeedForwardDMoE(nn.Module):
         self, logits: torch.Tensor, per_token_k: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # Sorted top-k so we can take first K entries per token
-        top_v, top_i = torch.topk(logits, self.top_k, dim=-1, sorted=True)
+        bias = self._get_router_expert_bias()
+        scores = logits if bias is None else logits + bias
+        top_i = torch.topk(scores, self.top_k, dim=-1, sorted=True).indices
+        top_v = logits.gather(-1, top_i)
         ranks = torch.arange(self.top_k, device=logits.device).unsqueeze(0)
         mask = ranks < per_token_k.unsqueeze(1)
         route_dtype = top_v.dtype
@@ -763,13 +748,16 @@ class MoEFeedForwardDMoE(nn.Module):
         m = masked_top_v.max(dim=-1, keepdim=True).values
         expv = torch.exp(masked_top_v - m) * mask
         top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
+        single_p = F.softmax(logits.float(), dim=-1).gather(-1, top_i) * mask
+        top_p = torch.where((per_token_k == 1).unsqueeze(-1), single_p, top_p)
         return top_p.to(route_dtype), top_i
 
     def _update_expert_usage_ema(self, top_p: torch.Tensor, top_i: torch.Tensor):
         with torch.no_grad():
             cur = torch.zeros(self.num_routed_experts, device=top_p.device)
-            cur.scatter_add_(0, top_i.reshape(-1), top_p.reshape(-1))
-            cur = cur / max(top_i.size(0), 1)
+            active = (top_p > 0).to(cur.dtype)
+            cur.scatter_add_(0, top_i.reshape(-1), active.reshape(-1))
+            cur = cur / active.sum().clamp_min(1)
             decay = float(self.momentum)
             self.expert_usage.mul_(decay).add_(cur, alpha=1.0 - decay)
 
@@ -807,10 +795,9 @@ class MoEFeedForwardDMoE(nn.Module):
                 if self.step_getter is not None
                 else self._current_step
             )
+            self._current_step = step + 1
             if step < self.moe_router_bias_warmup_steps:
-                self._current_step = step
                 return
-            self._current_step = step
 
         bias = self._get_router_expert_bias()
         if bias is None:
@@ -822,10 +809,8 @@ class MoEFeedForwardDMoE(nn.Module):
             valid = ((usage.max() >= 1e-6) & (usage_sum >= 1e-12)).to(usage)
             usage = usage / usage_sum.clamp_min(1e-12)
             target = torch.full_like(usage, 1.0 / self.num_routed_experts)
-            underused = (usage < self.moe_router_bias_min_usage).to(usage)
-            bias.add_(
-                self.router_bias_update_rate * valid * underused * (target - usage)
-            )
+            # Correct every imbalance, including overloaded experts.
+            bias.add_(self.router_bias_update_rate * valid * (target - usage).sign())
             if self.router_bias_clip > 0:
                 bias.clamp_(-self.router_bias_clip, self.router_bias_clip)
 
@@ -979,6 +964,10 @@ class MoEFeedForwardDMoE(nn.Module):
                         use_shared_b=self.triton_use_shared_b,
                         allow_triton_training=True,
                     )
+                    if self.training and sh_experts[0].expert_dropout_p > 0:
+                        packed_sh_y = F.dropout(
+                            packed_sh_y, p=sh_experts[0].expert_dropout_p, training=True
+                        )
                     shared_chunks = packed_sh_y.view(
                         self.num_shared, T_flat, self.d_model
                     )  # [num_shared, T, D]
@@ -1043,13 +1032,16 @@ class MoEFeedForwardDMoE(nn.Module):
                     self.last_per_token_k = None
                     self.last_log_prob_k = None
                 elif per_token_k is None:
+                    bias = self._get_router_expert_bias()
+                    selection_logits = logits if bias is None else logits + bias
                     can_use_fused_topk = (
                         (fused_router_topk is not None)
                         and self.use_fused_router_topk
                         and (not self._force_eager_router_topk)
                         and (not self.training)
                         and logits.is_cuda
-                        and (self.top_k in (1, 2))
+                        and (self.top_k == 2)
+                        and bias is None
                     )
                     if can_use_fused_topk:
                         try:
@@ -1059,18 +1051,26 @@ class MoEFeedForwardDMoE(nn.Module):
                                 raise
                             self._force_eager_router_topk = True
                             self.use_fused_router_topk = False
-                            top_p, top_i = eager_topk_routing(logits, self.top_k)
+                            top_p, top_i = eager_topk_routing(
+                                logits, self.top_k, selection_logits
+                            )
                     elif self._force_eager_router_topk:
-                        top_p, top_i = eager_topk_routing(logits, self.top_k)
+                        top_p, top_i = eager_topk_routing(
+                            logits, self.top_k, selection_logits
+                        )
                     else:
                         try:
-                            top_p, top_i = optimized_topk_routing(logits, self.top_k)
+                            top_p, top_i = optimized_topk_routing(
+                                logits, self.top_k, selection_logits
+                            )
                         except RuntimeError as exc:
                             if not _should_fallback_router_topk(exc):
                                 raise
                             self._force_eager_router_topk = True
                             self.use_fused_router_topk = False
-                            top_p, top_i = eager_topk_routing(logits, self.top_k)
+                            top_p, top_i = eager_topk_routing(
+                                logits, self.top_k, selection_logits
+                            )
                     self.last_per_token_k = None
                     self.last_log_prob_k = None
                 else:
@@ -1168,16 +1168,12 @@ class MoEFeedForwardDMoE(nn.Module):
                 self.use_swiglu
                 and self.use_grouped_kernel
                 and grouped_mlp_swiglu is not None
+                and not (self.training and self.use_gradient_checkpointing)
             ):
-                # Optional prepacked expert weights (refresh once per step)
-                step = int(self.step_getter()) if self.step_getter is not None else -1
+                # Canonical packed parameters need no inference cache.
                 use_prepacked = self._grouped_kernel_prepacked
                 if use_prepacked:
-                    if self.training:
-                        B12_cat, B3_cat = self.get_packed_expert_weights()
-                    else:
-                        self._refresh_packed_weights(step)
-                        B12_cat, B3_cat = self._B12_cat, self._B3_cat
+                    B12_cat, B3_cat = self.get_packed_expert_weights()
                     packed_y = grouped_mlp_swiglu(
                         packed_x,
                         offsets,
@@ -1203,6 +1199,10 @@ class MoEFeedForwardDMoE(nn.Module):
                         use_fp16_acc=self.triton_use_fp16_acc,
                         use_shared_b=self.triton_use_shared_b,
                         allow_triton_training=True,
+                    )
+                if self.training and self.experts.expert_dropout_p > 0:
+                    packed_y = F.dropout(
+                        packed_y, p=self.experts.expert_dropout_p, training=True
                     )
             else:
                 # Fallback: loop (optionally checkpoint)
@@ -1275,7 +1275,7 @@ class MoEFeedForwardDMoE(nn.Module):
                 reward = -downstream_loss + self.adaptive_k_sparsity_lambda * (
                     self.top_k - self.last_per_token_k.float().mean()
                 )
-                baseline = self.adaptive_k_baseline
+                baseline = self.adaptive_k_baseline.clone()
                 with torch.no_grad():
                     r_mean: Tensor = reward.detach().mean()
                     self.adaptive_k_baseline.mul_(
@@ -1284,7 +1284,7 @@ class MoEFeedForwardDMoE(nn.Module):
                 advantage = (reward - baseline).detach()
                 if advantage.dim() == 0:
                     advantage = advantage.expand_as(self.last_log_prob_k)
-                reinforce_loss = (advantage * self.last_log_prob_k).mean()
+                reinforce_loss = -(advantage * self.last_log_prob_k).mean()
                 aux = aux + reinforce_loss
             self.aux_loss = aux.detach()
         else:
@@ -1382,8 +1382,10 @@ class MoEFeedForwardDMoE(nn.Module):
                     end = start + group_size
                     freq_g = expert_freq[start:end]
                     gate_g = avg_gate[start:end]
-                    group_aux = group_aux + (freq_g * gate_g).sum()
-                aux = aux + self.moe_aux_loss_weight * num_routed * group_aux
+                    freq_g = freq_g / freq_g.sum().clamp_min(1e-12)
+                    gate_g = gate_g / gate_g.sum().clamp_min(1e-12)
+                    group_aux = group_aux + group_size * (freq_g * gate_g).sum()
+                aux = aux + self.moe_aux_loss_weight * group_aux / self.moe_num_groups
             else:
                 # Standard (global) load-balancing loss
                 aux = (
@@ -1413,7 +1415,7 @@ class MoEFeedForwardDMoE(nn.Module):
             reward_t = reward.detach()
         else:
             reward_t = reward
-        baseline = self.adaptive_k_baseline
+        baseline = self.adaptive_k_baseline.clone()
         # Update baseline with mean reward
         with torch.no_grad():
             r_mean = reward_t.mean()
@@ -1424,7 +1426,7 @@ class MoEFeedForwardDMoE(nn.Module):
         # If reward is scalar, broadcast over tokens
         if advantage.dim() == 0:
             advantage = advantage.expand_as(self.last_log_prob_k)
-        return (advantage * self.last_log_prob_k).mean()
+        return -(advantage * self.last_log_prob_k).mean()
 
     def get_last_per_token_k(self) -> torch.Tensor | None:
         return self.last_per_token_k

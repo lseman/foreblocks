@@ -51,6 +51,26 @@ Three-logit causal-attention checkpoints from the restricted search space load
 with `linear` and `probsparse` initialized to low logits. Recreate architecture
 optimizer state when expanding those logits.
 
+## Training module interfaces
+
+`DARTSTrainer.train_darts_model(model, train_loader, val_loader,
+train_config=...)` remains the high-level entry point and records training
+history. The standalone `darts.training.train_darts_model` takes the model and
+loaders plus explicit `config`, `device`, and `alpha_tracker` keyword arguments;
+it returns results without accessing or mutating a trainer. Run-local schedule
+adjustments do not mutate the supplied `DARTSTrainConfig`.
+
+Bilevel data splitting lives in `training/data.py`. It preserves the loader's
+collation, worker initialization, worker settings, and `drop_last` policy. The
+split remains chronological, while independent seeded generators shuffle each
+partition. Custom samplers are replaced by partition-local shuffling. Custom
+batch samplers and splits with no batches are rejected explicitly.
+
+Weight updates, architecture updates, and validation use the shared forecasting
+batch parser. Both `(x, y, future_covariates)` and `(x, y, {"x_future": ...})`
+are supported. Validation disables teacher forcing and does not pass targets
+to the model.
+
 ## Directory Structure
 
 ```

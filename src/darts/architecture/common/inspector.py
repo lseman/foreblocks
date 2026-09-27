@@ -26,6 +26,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .norms import NORM_NAMES
+
 
 def _get_first_layer_attribute(module: nn.Module, attr: str) -> Any:
     """Get *attr* from the first transformer layer (dict-based or attribute-based)."""
@@ -370,10 +372,9 @@ class ArchitectureInspector:
 
     def extract_normalization(self) -> str:
         alpha = getattr(self.model, "norm_alpha", None)
-        if isinstance(alpha, torch.Tensor) and alpha.numel() >= 3:
-            names = ["revin", "instance_norm", "identity"]
+        if isinstance(alpha, torch.Tensor) and alpha.numel() == len(NORM_NAMES):
             idx = int(torch.argmax(alpha.detach()).item())
-            return names[idx] if 0 <= idx < len(names) else f"norm_{idx}"
+            return NORM_NAMES[idx]
         return "unknown"
 
     def selected_norm(self) -> str | None:

@@ -95,7 +95,7 @@ class DroplessPackedDispatcher:
 
         # Sort by expert (stable)
         torch.argsort(experts, stable=True, out=self._sort_buffer[:S])
-        sort_idx = self._sort_buffer[:S]
+        sort_idx = self._sort_buffer[:S].clone()
         experts_sorted = experts[sort_idx]  # [S]
         weights_sorted = weights[sort_idx]  # [S]
         tokens_sorted = tokens[sort_idx]  # [S]

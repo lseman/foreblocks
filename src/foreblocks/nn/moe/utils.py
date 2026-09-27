@@ -59,35 +59,20 @@ def supports_grouped_prepacked() -> bool:
         return False
 
 
-@torch.compile
-def optimized_topk_routing(logits: torch.Tensor, k: int):
+def eager_topk_routing(
+    logits: torch.Tensor, k: int, selection_logits: torch.Tensor | None = None
+):
+    scores = logits if selection_logits is None else selection_logits
+    top_i = torch.topk(scores, k, dim=-1, sorted=False).indices
     if k == 1:
-        top_v, top_i = torch.max(logits, dim=-1, keepdim=True)
-        top_p = torch.ones_like(top_v)
-        return top_p, top_i
-    top_v, top_i = torch.topk(logits, k, dim=-1, sorted=False)
-    # Match production MoE routers (for example Mixtral): normalize routing
-    # probabilities in fp32 even when the expert block runs under autocast.
-    route_dtype = top_v.dtype
-    top_v = top_v.float()
-    m = top_v.max(dim=-1, keepdim=True).values
-    expv = torch.exp(top_v - m)
-    top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
-    return top_p.to(route_dtype), top_i
+        # Keep the selected probability's task gradient (Switch-style gating).
+        top_p = torch.softmax(logits.float(), dim=-1).gather(-1, top_i)
+    else:
+        top_p = torch.softmax(logits.float().gather(-1, top_i), dim=-1)
+    return top_p.to(logits.dtype), top_i
 
 
-def eager_topk_routing(logits: torch.Tensor, k: int):
-    if k == 1:
-        top_v, top_i = torch.max(logits, dim=-1, keepdim=True)
-        top_p = torch.ones_like(top_v)
-        return top_p, top_i
-    top_v, top_i = torch.topk(logits, k, dim=-1, sorted=False)
-    route_dtype = top_v.dtype
-    top_v = top_v.float()
-    m = top_v.max(dim=-1, keepdim=True).values
-    expv = torch.exp(top_v - m)
-    top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
-    return top_p.to(route_dtype), top_i
+optimized_topk_routing = torch.compile(eager_topk_routing)
 
 
 def should_fallback_router_topk(exc: RuntimeError) -> bool:

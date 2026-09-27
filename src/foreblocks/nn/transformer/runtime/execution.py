@@ -40,6 +40,44 @@ def _selected_attention(layer, attention_type: str):
         layer.set_layer_attention_type(previous)
 
 
+def _moe_checkpoint_replay(layer):
+    """Replay routing buffers as they were before this particular invocation."""
+    block = getattr(getattr(layer, "feed_forward", None), "block", None)
+    snapshots = []
+    if block is not None and hasattr(block, "expert_usage"):
+        for module in block.modules():
+            for name, value in module.named_buffers(recurse=False):
+                if name in {"expert_bias", "expert_usage", "adaptive_k_baseline"}:
+                    snapshots.append((module, name, value.detach().clone()))
+    initial_step = getattr(block, "_current_step", None)
+    first_call = True
+
+    @contextmanager
+    def replay():
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            yield
+            return
+        current = [
+            (module, name, getattr(module, name)) for module, name, _ in snapshots
+        ]
+        current_step = getattr(block, "_current_step", None)
+        try:
+            for module, name, value in snapshots:
+                setattr(module, name, value.clone())
+            if initial_step is not None:
+                block._current_step = initial_step
+            yield
+        finally:
+            for module, name, value in current:
+                setattr(module, name, value)
+            if current_step is not None:
+                block._current_step = current_step
+
+    return replay
+
+
 class LayerInvokeOwner(Protocol):
     def _record_layer_aux_loss(self, loss: torch.Tensor) -> None: ...
 
@@ -78,9 +116,10 @@ class ModelLayerInvokeStrategy:
         common = dict(gate_budget=gate_budget, active_mask=active_mask)
         if self.use_checkpoint:
             attention_type = layer.layer_attention_type
+            replay_moe = _moe_checkpoint_replay(layer)
 
             def checkpointed(value):
-                with _selected_attention(layer, attention_type):
+                with _selected_attention(layer, attention_type), replay_moe():
                     result, _ = layer(value, src_mask, src_key_padding_mask, **common)
                     return result, layer.aux_loss
 
@@ -134,9 +173,10 @@ class ModelLayerInvokeStrategy:
         )
         if self.use_checkpoint:
             attention_type = layer.layer_attention_type
+            replay_moe = _moe_checkpoint_replay(layer)
 
             def checkpointed(value):
-                with _selected_attention(layer, attention_type):
+                with _selected_attention(layer, attention_type), replay_moe():
                     result, _, _ = layer(value, *args, **common)
                     return result, layer.aux_loss
 

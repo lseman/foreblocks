@@ -98,7 +98,7 @@ router_perturb_noise=0.01       # Gaussian noise std (jitter)
 ```
 
 **Behavior:**
-1. Compute router logits: `logits = linear(x) + expert_bias`
+1. Compute router logits: `logits = linear(x)`; apply `expert_bias` only when selecting experts
 2. Add Gumbel/jitter noise: `logits += torch.randn_like(logits) * jitter`
 3. Clamp to `(-1e4, 1e4)` for stability
 4. Select top-k (differentiable via Gumbel-max trick)
@@ -201,7 +201,7 @@ Soft assignment to all experts (no sparsity).
 **Use case:** Debugging, baseline comparison. Not recommended for production (no compute savings).
 
 **Behavior:**
-1. Compute logits: `logits = linear(x) + expert_bias`
+1. Compute logits: `logits = linear(x)`; apply `expert_bias` only when selecting experts
 2. Apply temperature-scaled softmax: `gate_probs = softmax(logits / temp)`
 3. Return gate_probs as continuous assignment weights
 
@@ -304,15 +304,15 @@ Encourages each expert to specialize.
 
 ### Router Bias Balance (Optional)
 
-Learned per-expert router biases, annealed during training:
+Non-trainable per-expert selection biases, updated from assignment-count usage during training:
 
 ```python
 moe_router_bias_balance=True
 moe_router_bias_warmup_steps=1000
-moe_router_bias_min_usage=0.01
+moe_router_bias_min_usage=0.01  # Legacy argument; no longer gates corrections
 ```
 
-**Behavior:** Dynamically adjust per-expert router bias to keep minimum usage above threshold.
+**Behavior:** Increase selection bias for underloaded experts and decrease it for overloaded experts, using the assignment-count EMA relative to uniform usage. Bias does not affect combine weights or receive optimizer gradients. Without a step callback, warmup counts training forwards.
 
 **Related router parameters:**
 - `router_expert_bias_init`: Initial per-expert logit bias
@@ -334,7 +334,7 @@ moe_capacity_max=2.0         # Max capacity ceiling
 
 ### Grouped Load Balancing
 
-Support for grouped expert load balancing:
+Group-wise balancing normalizes assignment frequencies and mean gate probabilities within each group, then averages the per-group losses. It does not constrain which groups a token can select.
 ```python
 moe_num_groups=1             # Number of expert groups
 ```

@@ -108,7 +108,7 @@ This path also tracks per-token `k` statistics and supports a REINFORCE-style ad
 
 ### Grouped expert kernel path
 
-The implementation can use grouped expert kernels and fused top-k routing in favorable runtime conditions.
+The implementation uses grouped expert kernels when available. Packed expert weights are read directly on every forward, including evaluation; no step callback or inference cache refresh is required. Top-k routing uses PyTorch (optionally compiled); a separate fused top-k kernel is not currently shipped.
 
 You usually do not need to tune these first. They are lower-level performance details rather than primary modeling controls.
 
@@ -124,3 +124,11 @@ This is an advanced decoder-side path and should be treated as research function
 ## Integration with `ForecastingModel`
 
 See the [Custom Blocks Guide](custom_blocks) for wiring models into `ForecastingModel`.
+
+### Routing correctness and checkpoint compatibility
+
+Top-1 uses the selected probability from the full expert softmax so task loss can train the router. Top-k with k > 1 normalizes over selected experts. Adaptive routing uses the same rule for tokens assigned one expert.
+
+Load-balancing biases are selection-only buffers rather than trainable parameters. Model checkpoint keys remain compatible, but optimizer checkpoints created when these biases were parameters require rebuilding the optimizer. `moe_router_bias_min_usage` remains accepted for compatibility and no longer limits which imbalances are corrected.
+
+Adaptive-K policy losses minimize negative advantage times log probability, so positive rewards increase the probability of the sampled choice.

@@ -20,6 +20,7 @@ __all__ = [
     "MixedOp",
     "TimeSeriesDARTS",
     "derive_final_architecture",
+    "select_architecture",
 ]
 
 
@@ -34,6 +35,7 @@ def __getattr__(name):
         "MixedEncoder": (".darts.mixed_encoder_decoder", "MixedEncoder"),
         "MixedOp": (".darts.mixed_op", "MixedOp"),
         "TimeSeriesDARTS": (".darts.time_series_darts", "TimeSeriesDARTS"),
+        "select_architecture": (".darts.finalization", "select_architecture"),
     }
     if name in lazy_exports:
         module_name, attr_name = lazy_exports[name]

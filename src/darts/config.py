@@ -270,6 +270,12 @@ class DARTSTrainConfig:
     hessian_fd_eps: float = 1e-2
     hessian_update_freq: int = 1
 
+    # Optional perturbation and concentration schedules.
+    use_darts_pt: bool = False
+    darts_pt_xi: float = 0.01
+    initial_drnas_concentration: float = 10.0
+    final_drnas_concentration: float = 2.0
+
     # ── GDAS / DrNAS ──────────────────────────────────────────────────────
     # ``None`` lets the selected engine variant choose its sampling strategy;
     # an explicit bool remains a low-level override.

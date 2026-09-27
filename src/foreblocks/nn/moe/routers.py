@@ -151,9 +151,9 @@ class NoisyTopKRouter(Router):
     ):
         super().__init__(num_experts=num_experts)
         self.router = nn.Linear(d_model, num_experts, bias=use_bias)
-        # Learnable per-expert logit bias (aux-loss-free load balancing control).
-        self.expert_bias = nn.Parameter(
-            torch.full((num_experts,), float(expert_bias_init))
+        # Selection-only load-balancing bias; updated outside autograd.
+        self.register_buffer(
+            "expert_bias", torch.full((num_experts,), float(expert_bias_init))
         )
         self.input_dropout = nn.Dropout(input_dropout) if input_dropout > 0 else None
         self.jitter = float(jitter)
@@ -172,7 +172,7 @@ class NoisyTopKRouter(Router):
         if self.training and self.input_dropout is not None:
             x = self.input_dropout(x)
 
-        raw = self.router(x) + self.expert_bias
+        raw = self.router(x)
         if self.training and self.jitter > 0:
             logits = (raw + torch.randn_like(raw) * self.jitter).clamp_(
                 self.clamp_min, self.clamp_max
@@ -328,7 +328,9 @@ class StraightThroughTopKRouter(NoisyTopKRouter):
         temp = max(float(self.temperature if tau is None else tau), 1e-3)
         soft = F.softmax(logits / temp, dim=-1)
         k_eff = int(min(max(self.top_k, 1), logits.size(-1)))
-        top_i = torch.topk(logits, k_eff, dim=-1, sorted=False).indices
+        top_i = torch.topk(
+            logits + self.expert_bias, k_eff, dim=-1, sorted=False
+        ).indices
 
         mask = torch.zeros_like(soft).scatter(1, top_i, 1.0)
         hard_sparse = mask * soft
@@ -397,8 +399,12 @@ class ContinuousTopKRouter(NoisyTopKRouter):
 
         soft_probs = F.softmax(relaxed_logits / temp, dim=-1)
         k_eff = int(min(max(self.top_k, 1), soft_probs.size(-1)))
-        top_p, top_i = torch.topk(soft_probs, k_eff, dim=-1, sorted=False)
-        top_p = top_p / (top_p.sum(dim=-1, keepdim=True) + 1e-12)
+        top_i = torch.topk(
+            relaxed_logits / temp + self.expert_bias, k_eff, dim=-1, sorted=False
+        ).indices
+        top_p = soft_probs.gather(-1, top_i)
+        if k_eff > 1:
+            top_p = top_p / top_p.sum(dim=-1, keepdim=True).clamp_min(1e-12)
 
         entropy = _compute_router_entropy(logits) if self.training else 0.0
         return RouterOutput(
@@ -505,14 +511,16 @@ class HashTopKRouter(NoisyTopKRouter):
 
         raw, logits = self._compute_logits(x)
         candidates = self._hash_candidates(x)
-        cand_scores = logits.gather(1, candidates)
+        cand_scores = (logits + self.expert_bias).gather(1, candidates)
 
         k_eff = int(min(max(self.top_k, 1), cand_scores.size(-1)))
         top_v, top_pos = torch.topk(cand_scores, k_eff, dim=-1, sorted=False)
         top_i = candidates.gather(1, top_pos)
-        m = top_v.max(dim=-1, keepdim=True).values
-        expv = torch.exp(top_v - m)
-        top_p = expv / (expv.sum(dim=-1, keepdim=True) + 1e-12)
+        if k_eff == 1:
+            top_p = F.softmax(logits.float(), dim=-1).gather(1, top_i)
+        else:
+            top_p = F.softmax(logits.float().gather(1, top_i), dim=-1)
+        top_p = top_p.to(logits.dtype)
 
         entropy = _compute_router_entropy(logits) if self.training else 0.0
         return RouterOutput(
@@ -541,8 +549,8 @@ class SoftDenseRouter(Router):
     ):
         super().__init__(num_experts=num_experts)
         self.router = nn.Linear(d_model, num_experts, bias=use_bias)
-        self.expert_bias = nn.Parameter(
-            torch.full((num_experts,), float(expert_bias_init))
+        self.register_buffer(
+            "expert_bias", torch.full((num_experts,), float(expert_bias_init))
         )
         self.input_dropout = nn.Dropout(input_dropout) if input_dropout > 0 else None
         self.temperature = float(temperature)
@@ -560,9 +568,7 @@ class SoftDenseRouter(Router):
     def _compute_logits(self, x: torch.Tensor) -> torch.Tensor:
         if self.training and self.input_dropout is not None:
             x = self.input_dropout(x)
-        return (self.router(x) + self.expert_bias).clamp_(
-            self.clamp_min, self.clamp_max
-        )
+        return self.router(x).clamp_(self.clamp_min, self.clamp_max)
 
     def forward(
         self,
@@ -618,7 +624,7 @@ class AuxiliaryTokenRouter(Router):
             nn.init.zeros_(self.aux_to_expert.bias)
 
         # Per-expert bias for balancing
-        self.expert_bias = nn.Parameter(torch.full((num_experts,), 0.0))
+        self.register_buffer("expert_bias", torch.zeros(num_experts))
 
     def _compute_logits(self, x: torch.Tensor) -> torch.Tensor:
         if self.training and self.input_dropout is not None:
@@ -639,7 +645,7 @@ class AuxiliaryTokenRouter(Router):
             logits = (token_proj + aux_logits.mean(0)).clamp_(
                 self.clamp_min, self.clamp_max
             )
-        return logits + self.expert_bias
+        return logits
 
     def forward(
         self,
