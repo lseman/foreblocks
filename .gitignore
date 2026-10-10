@@ -117,3 +117,12 @@ datasets/
 
 # Local graph database (large, generated)
 graphician.db
+
+# Scheduling project: large data and results
+/new_dataset.zip
+projects/scheduling/research/results/
+projects/scheduling/paper2/*.aux
+projects/scheduling/paper2/*.log
+projects/scheduling/paper2/*.out
+projects/scheduling/paper2/*.blg
+projects/scheduling/paper2/*.bbl

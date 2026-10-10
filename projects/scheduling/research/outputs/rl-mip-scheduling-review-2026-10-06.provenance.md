@@ -1,0 +1,13 @@
+# Review provenance
+
+Date: 2026-10-06. Targeted web search of primary conference proceedings, publisher records, author arXiv manuscripts and author repositories. Searches covered RL/learning for MIP destruction, diving, branching and cutting; 2024–2026 scheduling construction/improvement; memory, acceptance and search/adaptation. Older foundational sources were retained when they define the closest comparator. No exhaustive-search or complete-SOTA-coverage claim.
+
+The literature-review skill's researcher/verifier/reviewer roles were used. Independent research covered MIP, scheduling and search-process critique. The installed skill named `/lit`, but that slash workflow was not callable through the available tools; its primary-source review and provenance requirements were carried out with web browsing and these roles.
+
+Primary full-text checks: RL-LNS paper/supplement; CL-LNS proceedings; BTBS-LNS full paper; MIStar full paper; ReSched author HTML and official repository; ICLR2024 JSSP improvement paper; DR-ALNS proceedings/full paper; LRBS primary text; MIRACLE 25-page proceedings PDF; PlanB&B arXiv revisions; Constraint Matters author HTML. Metadata/abstract-level screening: Neural Diving, HGT-Scheduler, ReviBranch, CP2026 NeSyLNS; additional source checks by researchers: CL-TLNS publisher/full manuscript and DynaSchedBench PMLR. Evidence levels differ; no paper/code replication was performed.
+
+Publication safeguards: MIRACLE/ReSched/MIStar/BTBS/SORREL/LRBS/DR-ALNS have verified conference records. PlanB&B, ReviBranch, Neural Diving and Neural LNS retain manuscript status where venue was not resolved. Constraint Matters acceptance is author-record-supported. HEM mechanism comes from its primary 2024 manuscript; author lab confirms TPAMI acceptance, but journal bibliographic fields are not invented. DANIEL's published journal identity was independently checked.
+
+MIRACLE scrutiny: its reported memory/speed claims depend on SCIP configuration, memory/time limits and benchmark selection. Main baseline comparisons do not establish universal learned-cut dominance. Avoid headline numerical gains in our conclusions. Mathematical/action descriptions require code inspection before reproduction. PlanB&B detailed mechanism was checked across available versions; latest v4 metadata does not itself establish acceptance.
+
+Recommendations are our inferences, not ONTS experimental outcomes. No new training was run. Existing RL-sequence results remain frozen and were used solely to motivate headroom/transition diagnostics. Bibliographic additions and related-work text are distinct from claimed implemented contributions. The report links primary sources adjacent to every source-derived claim.

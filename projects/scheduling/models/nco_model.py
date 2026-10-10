@@ -284,6 +284,11 @@ class NCOModel(nn.Module):
             task_emb, ctx = self.encoder.encode(obs)
             return self._decode_autoregressive(task_emb, ctx, obs, temperature)
 
+    def _initial_decoder_context(self, context: torch.Tensor) -> torch.Tensor:
+        if hasattr(self.decoder, "initialize_context"):
+            return self.decoder.initialize_context(context)
+        return context.clone()
+
     def _decode_replay(
         self,
         task_emb: torch.Tensor,
@@ -343,7 +348,7 @@ class NCOModel(nn.Module):
         stops = torch.zeros(B, device=dev)
 
         # Get initial context from encoder output (same as autoregressive)
-        decoder_ctx = ctx.clone()
+        decoder_ctx = self._initial_decoder_context(ctx)
 
         for step in range(max_steps):
             # Replay action for this step
@@ -379,7 +384,9 @@ class NCOModel(nn.Module):
             full_logits = torch.cat([masked_logits_n, all_logits_n[:, -1:]], dim=-1)
 
             # Log-prob of replayed action (over joint dist: tasks + stop, same as autoregressive)
-            all_probs = torch.softmax(full_logits / temperature, dim=-1)
+            all_probs = torch.softmax(
+                full_logits / (temperature if temperature > 0 else 1.0), dim=-1
+            )
             action_logp = (
                 torch.gather(all_probs, -1, a.unsqueeze(-1))
                 .squeeze(-1)
@@ -402,7 +409,7 @@ class NCOModel(nn.Module):
                     torch.arange(N, device=dev).unsqueeze(0) == a[valid].unsqueeze(1)
                 )
                 picked_emb = torch.gather(
-                    task_emb,
+                    task_emb[valid],
                     1,
                     a[valid]
                     .unsqueeze(1)
@@ -444,7 +451,7 @@ class NCOModel(nn.Module):
         stops = torch.zeros(B, device=dev)
 
         # Initial decoder context from encoder output
-        decoder_ctx = ctx.clone()
+        decoder_ctx = self._initial_decoder_context(ctx)
 
         for step in range(N):
             # Compute logits
@@ -466,7 +473,9 @@ class NCOModel(nn.Module):
             masked_logits_n = all_logits_n[:, :N].masked_fill(~mask, -1e9)
             # Reconstruct full logits with masked tasks + unmasked stop
             full_logits = torch.cat([masked_logits_n, all_logits_n[:, -1:]], dim=-1)
-            all_probs = torch.softmax(full_logits / temperature, dim=-1)
+            all_probs = torch.softmax(
+                full_logits / (temperature if temperature > 0 else 1.0), dim=-1
+            )
 
             # Sample (temperature > 0) or greedy (temperature <= 0)
             if temperature <= 0:
@@ -503,7 +512,7 @@ class NCOModel(nn.Module):
                 )
                 # Gather node embeddings for picked indices
                 picked_emb = torch.gather(
-                    task_emb,
+                    task_emb[valid],
                     1,
                     best_node[valid]
                     .unsqueeze(1)
@@ -560,7 +569,7 @@ class NCOModel(nn.Module):
             # Decode with sampling
             taken = torch.zeros(B, N, dtype=torch.bool, device=dev)
             actions = []
-            decoder_ctx = self.decoder.create_context()
+            decoder_ctx = self._initial_decoder_context(ctx)
 
             for step in range(N):
                 attn_logits, stop_logits = self.decoder.attention_logits(

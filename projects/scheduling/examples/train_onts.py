@@ -17,17 +17,21 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 import warnings
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
-
 from environments.onts_env import ONTSEnv, ONTSInstancePoolEnv
 from models.nco_model import build_model, register_builtin_models
 from train import PPO
+
+from projects.scheduling.hybrid import rollout_proposal, solve_hybrid
+from projects.scheduling.validation import validate_schedule
 
 
 @torch.no_grad()
@@ -61,11 +65,23 @@ def evaluate(model, env, *, plot_path: Path | None = None) -> dict:
     soc_stack = torch.stack(soc_trace, dim=1)[0]  # [T]
     soc_violation = (soc_stack < env.limite_inferior - 1e-6).any().item()
 
-    feasible = bool((unmet == 0).all() and (over == 0).all() and not soc_violation)
+    validation = validate_schedule(
+        env.instance,
+        env.x[0],
+        soc_inicial=env.soc_inicial,
+        limite_inferior=env.limite_inferior,
+        ef=env.ef,
+        v_bat=env.v_bat,
+        q=env.q,
+        bat_usage=env.bat_usage,
+    )
+    feasible = validation.feasible
 
     report = {
         "return": total_r[0].item(),
         "feasible": feasible,
+        "objective": validation.objective,
+        "violations": list(validation.violations),
         "unmet_min_startups": unmet.tolist(),
         "over_max_startups": over.tolist(),
         "soc_violation": soc_violation,
@@ -239,7 +255,15 @@ def main():
         default=1,
         help="Gradient accumulation steps (accumulate grads over N steps before optimizer step)",
     )
+    parser.add_argument(
+        "--hybrid-time-limit",
+        type=float,
+        default=0,
+        help="Post-training neural proposal + MILP repair/LNS budget in seconds",
+    )
     args = parser.parse_args()
+    if args.hybrid_time_limit < 0:
+        parser.error("--hybrid-time-limit must be nonnegative")
 
     warnings.filterwarnings("ignore", category=UserWarning)
     torch.manual_seed(0)
@@ -381,6 +405,20 @@ def main():
             )
 
         evaluate(model, eval_env, plot_path=plot_path)
+        if args.hybrid_time_limit > 0:
+            result = solve_hybrid(
+                eval_env.instance,
+                time_limit=args.hybrid_time_limit,
+                proposal_fn=rollout_proposal(
+                    model, device=dev, graph_observation=args.encoder == "bipartite"
+                ),
+            )
+            (args.outdir / "hybrid.json").write_text(
+                json.dumps(result.to_dict(), indent=2, allow_nan=False) + "\n"
+            )
+            print(
+                f"Hybrid: {result.status}, objective={result.objective}, gap={result.relative_gap}"
+            )
 
 
 if __name__ == "__main__":

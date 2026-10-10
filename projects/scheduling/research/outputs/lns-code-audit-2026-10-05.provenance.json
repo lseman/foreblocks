@@ -1,0 +1,181 @@
+{
+  "audit_date": "2026-10-05",
+  "method": "GitHub connector static reads at pinned revisions; no third-party execution",
+  "repositories": [
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af"
+    },
+    {
+      "repository": "NetSysOpt/TLNS",
+      "revision": "2998677d23c40591586cb05a0a3beea770235572"
+    },
+    {
+      "repository": "Liwow/Constraint_Matters",
+      "revision": "2adbadc6df748b109561db1ffc3307b2e90668f1"
+    }
+  ],
+  "files": [
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af",
+      "path": "balans/base_instance.py",
+      "git_blob_sha": "557c34c7ba65f873d51b4fde6c611d606dca82f8",
+      "lines": 157
+    },
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af",
+      "path": "balans/base_state.py",
+      "git_blob_sha": "c18495f37167aaccf92b2e47a307127c8cf03a62",
+      "lines": 95
+    },
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af",
+      "path": "balans/configs/default.json",
+      "git_blob_sha": "ffce43da91e41938865a00050d4bb3e6f5f0656f",
+      "lines": 46
+    },
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af",
+      "path": "balans/destroy/local_branching.py",
+      "git_blob_sha": "7569edcadde85850b79821152f8a84b5463924c6",
+      "lines": 102
+    },
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af",
+      "path": "balans/destroy/rins.py",
+      "git_blob_sha": "cbe25ec83ff4e9ac72bb36fcae2590f6526a5e32",
+      "lines": 108
+    },
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af",
+      "path": "balans/repair/repair.py",
+      "git_blob_sha": "2df406a3870037f3412689cfebbf048445d807ce",
+      "lines": 14
+    },
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af",
+      "path": "balans/solver.py",
+      "git_blob_sha": "462712cebe1db8b3e33f6b3919ae241345f7d764",
+      "lines": 1090
+    },
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af",
+      "path": "balans/solver_scip.py",
+      "git_blob_sha": "0b340fb85630ec3f1be59f2bba10ede9b2316d71",
+      "lines": 344
+    },
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af",
+      "path": "balans/utils.py",
+      "git_blob_sha": "a3fd670f0405db591fa33191f2562778395f1828",
+      "lines": 302
+    },
+    {
+      "repository": "coin-or/balans",
+      "revision": "9dbf48fb8d14711ce3bc6dc2f60e39b2adbe55af",
+      "path": "pyproject.toml",
+      "git_blob_sha": "035b032c4cbafb97311953e8a8780482d779108c",
+      "lines": 45
+    },
+    {
+      "repository": "NetSysOpt/TLNS",
+      "revision": "2998677d23c40591586cb05a0a3beea770235572",
+      "path": "GCN.py",
+      "git_blob_sha": "418cb5d209840dbff5fd549ce8e0fb84d1219a72",
+      "lines": 811
+    },
+    {
+      "repository": "NetSysOpt/TLNS",
+      "revision": "2998677d23c40591586cb05a0a3beea770235572",
+      "path": "Inference.py",
+      "git_blob_sha": "ebc15796541c95a9cbf5f36a3171b34b154a35d8",
+      "lines": 516
+    },
+    {
+      "repository": "NetSysOpt/TLNS",
+      "revision": "2998677d23c40591586cb05a0a3beea770235572",
+      "path": "data_collection.py",
+      "git_blob_sha": "749e0741193b9836bf9c9d9aac7034551da09f35",
+      "lines": 192
+    },
+    {
+      "repository": "NetSysOpt/TLNS",
+      "revision": "2998677d23c40591586cb05a0a3beea770235572",
+      "path": "helper.py",
+      "git_blob_sha": "9ec0fcaeccefe1412b7832097c9d4e879e6809a6",
+      "lines": 226
+    },
+    {
+      "repository": "NetSysOpt/TLNS",
+      "revision": "2998677d23c40591586cb05a0a3beea770235572",
+      "path": "run.sh",
+      "git_blob_sha": "dfa500625eac1c0326245608b37f079b8ddabc41",
+      "lines": 31
+    },
+    {
+      "repository": "NetSysOpt/TLNS",
+      "revision": "2998677d23c40591586cb05a0a3beea770235572",
+      "path": "train.py",
+      "git_blob_sha": "b282c48abe2d6811b90f5e0b653967172543fbf5",
+      "lines": 202
+    },
+    {
+      "repository": "Liwow/Constraint_Matters",
+      "revision": "2adbadc6df748b109561db1ffc3307b2e90668f1",
+      "path": "LICENSE",
+      "git_blob_sha": "bd770a80e65c79e8bcff39da0e012edc317fa501",
+      "lines": 22
+    },
+    {
+      "repository": "Liwow/Constraint_Matters",
+      "revision": "2adbadc6df748b109561db1ffc3307b2e90668f1",
+      "path": "README.md",
+      "git_blob_sha": "8fdeb74983b4a7fb857192be313909b386c41ef0",
+      "lines": 117
+    },
+    {
+      "repository": "Liwow/Constraint_Matters",
+      "revision": "2adbadc6df748b109561db1ffc3307b2e90668f1",
+      "path": "config.py",
+      "git_blob_sha": "16915567bb2cebfe1ff4c44f680b7445cab634aa",
+      "lines": 25
+    },
+    {
+      "repository": "Liwow/Constraint_Matters",
+      "revision": "2adbadc6df748b109561db1ffc3307b2e90668f1",
+      "path": "gp_tools.py",
+      "git_blob_sha": "6967da775233b2196b86be84ef2b24defed33f85",
+      "lines": 202
+    },
+    {
+      "repository": "Liwow/Constraint_Matters",
+      "revision": "2adbadc6df748b109561db1ffc3307b2e90668f1",
+      "path": "model.py",
+      "git_blob_sha": "bae151cb1bf50c35fe529fa9f95a31fc4a7b1c09",
+      "lines": 735
+    },
+    {
+      "repository": "Liwow/Constraint_Matters",
+      "revision": "2adbadc6df748b109561db1ffc3307b2e90668f1",
+      "path": "model_test.py",
+      "git_blob_sha": "9ec67ffc6ad6c4fb6aa45d7d56e8e4e2bfc8698b",
+      "lines": 614
+    },
+    {
+      "repository": "Liwow/Constraint_Matters",
+      "revision": "2adbadc6df748b109561db1ffc3307b2e90668f1",
+      "path": "model_test_SCIP.py",
+      "git_blob_sha": "9bf5d8910dfa994df4d62d512e3a114efe98d2a8",
+      "lines": 426
+    }
+  ]
+}

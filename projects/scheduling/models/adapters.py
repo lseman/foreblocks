@@ -131,8 +131,16 @@ class BipartiteDecoderAdapter(nn.Module):
     def attention_logits(
         self, ctx: torch.Tensor, nodes: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Delegate to inner BipartiteDecoder.attention_logits()."""
+        """Expand a pooled graph context for the AM-style inner decoder."""
+        if ctx.shape[-1] == self.d_model:
+            zeros = torch.zeros_like(ctx)
+            ctx = torch.cat([ctx, zeros, zeros], dim=-1)
         return self._inner.attention_logits(ctx, nodes)
+
+    def initialize_context(self, graph_context: torch.Tensor) -> torch.Tensor:
+        """Initialize every batch row with its pooled graph embedding."""
+        zeros = torch.zeros_like(graph_context)
+        return torch.cat([graph_context, zeros, zeros], dim=-1)
 
     def create_context(self) -> torch.Tensor:
         """Create initial context: [graph_emb; first_picked; last_picked].
@@ -148,7 +156,12 @@ class BipartiteDecoderAdapter(nn.Module):
 
         Keeps first_picked (from step 0) and updates last_picked.
         """
-        return ctx  # Placeholder
+        if ctx.shape[-1] == self.d_model:
+            return torch.cat([ctx, picked_tok, picked_tok], dim=-1)
+        graph, first, _ = ctx.split(self.d_model, dim=-1)
+        empty_first = (first == 0).all(dim=-1, keepdim=True)
+        first = torch.where(empty_first, picked_tok, first)
+        return torch.cat([graph, first, picked_tok], dim=-1)
 
 
 class BipartiteGNNAdapter(nn.Module):

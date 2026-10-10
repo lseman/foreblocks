@@ -1,7 +1,7 @@
 """Generate feasible ONTS training instances.
 
 The generator samples the parameter ranges used in the original ONTS scripts,
-checks feasibility with SciPy's MILP solver, and writes JSON instances that can
+checks feasibility with the shared ONTS MILP, and writes JSON instances that can
 be loaded by ``ONTSEnv``.
 
 Usage:
@@ -21,6 +21,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT.parents[1]))
+
+from projects.scheduling.environments.onts_env import (  # noqa: E402
+    onts_json_data_to_instance,
+)
+from projects.scheduling.milp import ONTSConfig, ONTSMilp  # noqa: E402
 
 INSTANCE_FORMAT = "onts-instance-v1"
 INSTANCE_FIELDS = (
@@ -46,17 +52,15 @@ class FeasibilityResult:
     solver: str = ""
 
 
-def generate_candidate(*, J: int, T: int, rng: random.Random, name: str) -> dict[str, Any]:
+def generate_candidate(
+    *, J: int, T: int, rng: random.Random, name: str
+) -> dict[str, Any]:
     """Generate one random ONTS candidate using the requested ranges."""
     min_statup = [rng.randint(1, math.ceil(T / 45)) for _ in range(J)]
     max_statup = [rng.randint(min_statup[j], math.ceil(T / 15)) for j in range(J)]
     min_cpu_time = [rng.randint(1, math.ceil(T / 10)) for _ in range(J)]
-    max_cpu_time = [
-        rng.randint(min_cpu_time[j], math.ceil(T / 4)) for j in range(J)
-    ]
-    min_periodo_job = [
-        rng.randint(min_cpu_time[j], math.ceil(T / 4)) for j in range(J)
-    ]
+    max_cpu_time = [rng.randint(min_cpu_time[j], math.ceil(T / 4)) for j in range(J)]
+    min_periodo_job = [rng.randint(min_cpu_time[j], math.ceil(T / 4)) for j in range(J)]
     max_periodo_job = [rng.randint(min_periodo_job[j], T) for j in range(J)]
     win_min = [rng.randint(0, math.ceil(T / 5)) for _ in range(J)]
     win_max = [rng.randint(T - math.ceil(T / 5), T) for _ in range(J)]
@@ -93,6 +97,57 @@ def _feasibility_milp(
     include_valid_inequalities: bool,
     time_limit: float,
 ) -> FeasibilityResult:
+    """Default to the same curtailment model used by hybrid solving."""
+    if include_valid_inequalities:
+        return _legacy_feasibility_milp(
+            data,
+            soc_inicial=soc_inicial,
+            limite_inferior=limite_inferior,
+            ef=ef,
+            v_bat=v_bat,
+            q=q,
+            bat_usage=bat_usage,
+            include_valid_inequalities=True,
+            time_limit=time_limit,
+        )
+    try:
+        instance = onts_json_data_to_instance(data)
+        config = ONTSConfig(
+            soc_inicial=soc_inicial,
+            limite_inferior=limite_inferior,
+            ef=ef,
+            v_bat=v_bat,
+            q=q,
+            bat_usage=bat_usage,
+        )
+        problem = ONTSMilp(instance, config)
+    except ValueError as exc:
+        return FeasibilityResult(False, -2, str(exc), "scipy.optimize.milp")
+    # Feasibility initialization minimizes activity, rather than spending the
+    # entire budget proving optimality of the priority objective.
+    import torch
+
+    result = problem.solve(
+        proposal=torch.zeros(instance.J, instance.T), time_limit=time_limit
+    )
+    status = {"optimal": 0, "limit": 1, "infeasible": 2}.get(result.status, 4)
+    return FeasibilityResult(
+        result.schedule is not None, status, result.message, "scipy.optimize.milp"
+    )
+
+
+def _legacy_feasibility_milp(
+    data: dict[str, Any],
+    *,
+    soc_inicial: float,
+    limite_inferior: float,
+    ef: float,
+    v_bat: float,
+    q: float,
+    bat_usage: float,
+    include_valid_inequalities: bool,
+    time_limit: float,
+) -> FeasibilityResult:
     J = int(data["jobs"])
     T = int(data["tamanho"])
     uso_p = data["uso_p"]
@@ -106,7 +161,10 @@ def _feasibility_milp(
     win_max = data["win_max"]
     recurso_p = data["recurso_p"]
 
-    if any(len(data[field]) != (T if field == "recurso_p" else J) for field in INSTANCE_FIELDS):
+    if any(
+        len(data[field]) != (T if field == "recurso_p" else J)
+        for field in INSTANCE_FIELDS
+    ):
         return FeasibilityResult(False, -2, "invalid instance dimensions")
 
     n_x = J * T
@@ -202,7 +260,9 @@ def _feasibility_milp(
                 )
             if max_cpu_time[j] < (max_periodo_job[j] - min_cpu_time[j]):
                 for t in range(0, T - max_cpu_time[j]):
-                    add({phi(j, t): 1.0, x(j, t + max_cpu_time[j]): 1.0}, -math.inf, 1.0)
+                    add(
+                        {phi(j, t): 1.0, x(j, t + max_cpu_time[j]): 1.0}, -math.inf, 1.0
+                    )
 
     for t in range(T):
         add(
@@ -217,10 +277,9 @@ def _feasibility_milp(
     for t in range(T):
         cumulative_solar += float(recurso_p[t])
         for j in range(J):
-            cumulative_usage_coeffs[x(j, t)] = (
-                cumulative_usage_coeffs.get(x(j, t), 0.0)
-                - soc_coef * float(uso_p[j])
-            )
+            cumulative_usage_coeffs[x(j, t)] = cumulative_usage_coeffs.get(
+                x(j, t), 0.0
+            ) - soc_coef * float(uso_p[j])
         base = soc_inicial + soc_coef * cumulative_solar
         add(dict(cumulative_usage_coeffs), limite_inferior - base, 1.0 - base)
 
@@ -329,6 +388,9 @@ def generate_feasible_instances(
             "status": result.status,
             "message": result.message,
             "valid_inequalities": include_valid_inequalities,
+            "model": "legacy-battery-equality"
+            if include_valid_inequalities
+            else "onts-base-curtailment-v1",
         }
         path = out_dir / f"{name}.json"
         path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
@@ -346,10 +408,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-attempts", type=int, default=1000)
     parser.add_argument("--time-limit", type=float, default=5.0)
-    parser.add_argument(
+    cuts = parser.add_mutually_exclusive_group()
+    cuts.add_argument(
+        "--valid-inequalities",
+        action="store_true",
+        help="Legacy generator with unaudited reference cuts and battery equality",
+    )
+    cuts.add_argument(
         "--no-valid-inequalities",
         action="store_true",
-        help="Check feasibility without the valid inequalities from original.py",
+        help="Use shared base formulation (the default; retained for compatibility)",
     )
     args = parser.parse_args()
     written, attempts = generate_feasible_instances(
@@ -360,7 +428,7 @@ def main() -> None:
         seed=args.seed,
         max_attempts=args.max_attempts,
         time_limit=args.time_limit,
-        include_valid_inequalities=not args.no_valid_inequalities,
+        include_valid_inequalities=args.valid_inequalities,
     )
     print(f"generated={written} attempts={attempts} out={args.out}")
     if written < args.count:
