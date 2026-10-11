@@ -23,7 +23,8 @@ import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import coo_matrix
 
-from .job_profile import JobRules, _range_max, best_profile
+from . import profile_kernels
+from .job_profile import JobRules, _range_max, _rule_ints, best_profile
 
 
 @dataclass
@@ -188,12 +189,64 @@ def _starts(row):
     return row & ~prev
 
 
-def validate_constellation(inst, X, *, tol=1e-6):
-    """Independent check of constraints (2)-(13), curtailing battery."""
+def validate_constellation(inst, X, *, tol=1e-6, compiled=None):
+    """Independent check of constraints (2)-(13), curtailing battery.
+
+    compiled runs the row checks in the Numba kernel (same messages, same order).
+    """
     X = np.asarray(X, dtype=bool)
     S, R, T = inst.S, inst.R, inst.T
     if X.shape != (S, R, T):
         raise ValueError(f"Expected schedule shape {(S, R, T)}")
+    if profile_kernels.use(compiled):
+        bad = _row_violations_compiled(inst, X)
+    else:
+        bad = _row_violations(inst, X)
+    draw = inst.draw()
+    usage = np.einsum("sr,srt->st", draw, X.astype(float))
+    if (usage > inst.solar + inst.bat_usage * inst.v_bat + tol).any():
+        bad.append("power")
+    if (battery(inst, usage) < inst.soc_min - tol).any():
+        bad.append("battery")
+    objective = float((inst.utility()[:, :, None] * X).sum())
+    return objective, bad
+
+
+def _row_violations_compiled(inst, X):
+    S, R, Js = inst.S, inst.R, inst.Js
+    field = lambda name: np.concatenate(  # noqa: E731
+        [inst.sat[name], np.broadcast_to(inst.con[name], (S, inst.Jc))], axis=1
+    ).astype(np.int64)
+    w_min, w_max, f_min, f_max = (field(n) for n in ("w_min", "w_max", "f_min", "f_max"))
+    if (w_min < 0).any() or (w_max < 0).any():
+        return _row_violations(inst, X)
+    sat_period = np.stack(
+        [inst.sat[n] for n in ("y_min", "y_max", "p_min", "p_max")], axis=-1
+    ).astype(np.int64).reshape(S, Js, 4)
+    con_period = np.stack(
+        [inst.con[n] for n in ("g_min", "g_max", "p_min", "p_max")], axis=-1
+    ).astype(np.int64).reshape(inst.Jc, 4)
+    codes = profile_kernels.row_violations(
+        np.ascontiguousarray(X), Js, w_min, w_max, f_min, f_max, sat_period, con_period
+    )
+    kinds = ("count", "min period", "max period")
+    bad = []
+    for kind, a, r, t in codes.tolist():
+        if kind == 0:
+            bad.append(f"window s={a} r={r}")
+        elif kind == 1:
+            bad.append(f"run s={a} r={r} t={t}")
+        elif kind <= 4:
+            bad.append(f"{kinds[kind - 2]} s={a} r={r}")
+        elif kind == 5:
+            bad.append(f"exclusive c={a}")
+        else:
+            bad.append(f"{kinds[kind - 6]} c={a}")
+    return bad
+
+
+def _row_violations(inst, X):
+    S, R, T = inst.S, inst.R, inst.T
     bad = []
     phi = np.zeros_like(X)
     for s in range(S):
@@ -232,14 +285,7 @@ def validate_constellation(inst, X, *, tol=1e-6):
             int(inst.con["p_max"][c]),
             f"c={c}",
         )
-    draw = inst.draw()
-    usage = np.einsum("sr,srt->st", draw, X.astype(float))
-    if (usage > inst.solar + inst.bat_usage * inst.v_bat + tol).any():
-        bad.append("power")
-    if (battery(inst, usage) < inst.soc_min - tol).any():
-        bad.append("battery")
-    objective = float((inst.utility()[:, :, None] * X).sum())
-    return objective, bad
+    return bad
 
 
 def _count_period(phi, lo, hi, pmin, pmax, label):
@@ -460,20 +506,175 @@ class ConstellationMilp:
         return raw.round().astype(bool).reshape(self.shape), status, bound
 
 
-def best_profile_multi(rewards, rules, *, truncated_final_run=True):
+def best_profile_multi(rewards, rules, *, truncated_final_run=True, adjacent_switch=True,
+                       compiled=None):
     """Per-job DP where each run chooses its satellite (constellation tasks).
 
-    rewards [S, T]. Same recursion as best_profile with run value
-    max_s R_s(u, u+l); constraints of a constellation task are satellite
-    independent, so the choice is exact over profiles whose consecutive runs are
-    separated by an idle slot. Returns (row [T] bool, satellite [T] int, value).
+    rewards [S, T]. Run-based recursion over states (k, s, u): the k-th run
+    starts at slot u on satellite s. A run is followed either by an idle gap or,
+    as in the pricing DP of Antunes et al. (Sec. 4), directly by a run on a
+    different satellite, which counts as a new start. This is exact over all
+    feasible rows of a constellation task. Ties prefer the shorter run, then
+    stopping, then the earlier next start, then the lower satellite index.
+
+    adjacent_switch=False reproduces the earlier recursion restricted to
+    idle-separated runs. compiled selects the Numba kernel (same rows). Returns
+    (row [T] bool, satellite [T] int, value).
     """
+    rewards = np.asarray(rewards, float)
+    if not adjacent_switch or rewards.shape[0] < 2:
+        return _best_profile_multi_separated(
+            rewards, rules, truncated_final_run=truncated_final_run, compiled=compiled
+        )
+    S, T = rewards.shape
+    allowed_s = np.isfinite(rewards)
+    window = np.zeros(T, bool)
+    window[max(0, rules.win_min) : min(T, rules.win_max)] = True
+    allowed_s &= window[None, :]
+    if profile_kernels.use(compiled):
+        return _found(profile_kernels.best_profile_multi(
+            rewards, allowed_s, *_rule_ints(rules), truncated_final_run
+        ))
+    prefix = np.concatenate(
+        [np.zeros((S, 1)), np.cumsum(np.where(allowed_s, rewards, 0.0), axis=1)], axis=1
+    )
+    nxt = np.full((S, T + 1), T)
+    for s in range(S):
+        blocked = np.flatnonzero(~allowed_s[s])
+        pos = np.searchsorted(blocked, np.arange(T + 1))
+        has = pos < len(blocked)
+        nxt[s, has] = blocked[pos[has]]
+    periodic = rules.max_gap <= T
+    # A switch lets the next start follow a run of min_run slots directly.
+    spacing = max(1, rules.min_gap, rules.min_run)
+    K = min(rules.max_starts, 1 + (T - 1) // spacing)
+    if rules.min_starts > K:
+        return None, None, -math.inf
+    starts = np.arange(T)
+    sats = np.arange(S)[:, None]
+    shortest = (
+        np.minimum(rules.min_run, T - starts)
+        if truncated_final_run
+        else np.full(T, rules.min_run)
+    )
+    log2 = np.zeros(T + 2, dtype=int)
+    log2[2:] = np.floor(np.log2(np.arange(2, T + 2))).astype(int)
+    last_ok = (starts >= T - rules.max_gap) if periodic else np.ones(T, bool)
+    value = np.full((K + 2, S, T), -math.inf)
+    run_length = np.zeros((K + 2, S, T), dtype=int)
+    max_length = int(min(rules.max_run, T))
+
+    def successors(k):
+        """Best value of a (k+1)-th run per start: overall, and excluding one satellite."""
+        nxt_val = value[k + 1]
+        arg1 = np.argmax(nxt_val, axis=0)
+        best1 = nxt_val[arg1, starts]
+        rest = nxt_val.copy()
+        rest[arg1, starts] = -math.inf
+        return best1, arg1, rest.max(axis=0)
+
+    for k in range(K, 0, -1):
+        terminal = np.where(last_ok & (k >= rules.min_starts), 0.0, -math.inf)
+        if k < K:
+            best1, arg1, best2 = successors(k)
+            table = _range_max(best1)
+        for length in range(1, max_length + 1):
+            end = np.minimum(starts + length, T)
+            fits = (
+                (length <= np.minimum(rules.max_run, T - starts)[None, :])
+                & (length <= nxt[:, :T] - starts[None, :])
+                & allowed_s
+            )
+            ok_s = fits & (length >= shortest)[None, :]
+            if not ok_s.any():
+                continue
+            run_s = np.where(ok_s, prefix[:, end] - prefix[:, starts], -math.inf)
+            cont = np.broadcast_to(terminal, (S, T)).copy()
+            if k < K:
+                lo = np.maximum(end + 1, starts + rules.min_gap)
+                hi = np.minimum(starts + rules.max_gap, T - 1) if periodic else np.full(T, T - 1)
+                valid = ok_s.any(axis=0) & (lo <= hi)
+                if valid.any():
+                    a, b = lo[valid], hi[valid]
+                    level = log2[b - a + 1]
+                    idle = np.maximum(table[level, a], table[level, b - (1 << level) + 1])
+                    cont[:, valid] = np.maximum(cont[:, valid], idle[None, :])
+                # Switch: next run starts at u + length on another satellite.
+                if length >= rules.min_gap and (not periodic or length <= rules.max_gap):
+                    sw = starts + length <= T - 1
+                    if sw.any():
+                        nxt_u = starts[sw] + length
+                        other = np.where(sats == arg1[nxt_u][None, :], best2[nxt_u][None, :],
+                                         best1[nxt_u][None, :])
+                        cont[:, sw] = np.maximum(cont[:, sw], other)
+            total = np.where(ok_s, run_s + cont, -math.inf)
+            better = total > value[k]
+            value[k][better] = total[better]
+            run_length[k][better] = length
+
+    best, first, first_sat = -math.inf, -1, -1
+    if rules.min_starts == 0 and not periodic:
+        best = 0.0
+    last_first = min(T - 1, rules.max_gap - 1) if periodic else T - 1
+    cand = value[1, :, : last_first + 1]
+    if cand.size and cand.max() > best:
+        u_best = cand.max(axis=0)
+        first = int(np.argmax(u_best))
+        first_sat = int(np.argmax(cand[:, first]))
+        best = float(u_best[first])
+    if not math.isfinite(best):
+        return None, None, -math.inf
+    row = np.zeros(T, bool)
+    owner = np.full(T, -1)
+    k, s, u = 1, first_sat, first
+    while u >= 0:
+        length = int(run_length[k, s, u])
+        row[u : u + length] = True
+        owner[u : u + length] = s
+        end = u + length
+        stop = 0.0 if (last_ok[u] and k >= rules.min_starts) else -math.inf
+        nxt_u, nxt_s = -1, -1
+        if k < K:
+            later = value[k + 1].max(axis=0)
+            switch = -math.inf
+            if (end <= T - 1 and length >= rules.min_gap
+                    and (not periodic or length <= rules.max_gap)):
+                others = np.delete(value[k + 1][:, end], s)
+                if others.size:
+                    switch = float(others.max())
+            lo = max(end + 1, u + rules.min_gap)
+            hi = min(u + rules.max_gap, T - 1) if periodic else T - 1
+            idle = float(later[lo : hi + 1].max()) if lo <= hi else -math.inf
+            if max(switch, idle) > stop:
+                if switch >= idle:
+                    col = value[k + 1][:, end].copy()
+                    col[s] = -math.inf
+                    nxt_u, nxt_s = end, int(np.argmax(col))
+                else:
+                    nxt_u = lo + int(np.argmax(later[lo : hi + 1]))
+                    nxt_s = int(np.argmax(value[k + 1][:, nxt_u]))
+        k, s, u = k + 1, nxt_s, nxt_u
+    return row, owner, best
+
+
+def _found(result):
+    found, row, owner, value = result
+    return (row, owner, float(value)) if found else (None, None, -math.inf)
+
+
+def _best_profile_multi_separated(rewards, rules, *, truncated_final_run=True, compiled=None):
+    """Earlier recursion: run value max_s R_s(u, u+l), consecutive runs separated
+    by an idle slot. Kept to reproduce the frozen constellation study."""
     rewards = np.asarray(rewards, float)
     S, T = rewards.shape
     allowed_s = np.isfinite(rewards)
     window = np.zeros(T, bool)
     window[max(0, rules.win_min) : min(T, rules.win_max)] = True
     allowed_s &= window[None, :]
+    if profile_kernels.use(compiled):
+        return _found(profile_kernels.best_profile_multi_separated(
+            rewards, allowed_s, *_rule_ints(rules), truncated_final_run
+        ))
     prefix = np.concatenate(
         [np.zeros((S, 1)), np.cumsum(np.where(allowed_s, rewards, 0.0), axis=1)], axis=1
     )
@@ -571,6 +772,114 @@ def best_profile_multi(rewards, rules, *, truncated_final_run=True):
     return row, owner, best
 
 
+def antunes_profile_multi(rewards, rules, *, truncated_final_run=True, max_states=50_000_000,
+                          compiled=None):
+    """State-based pricing DP of Antunes et al. (Sec. 4.2, Eq. 29).
+
+    rewards [S, T]. One backward recursion over slots t with state
+    (z, w, phi, p): consecutive slots of the current run, starts so far, satellite
+    of the current run, and slots since the last start (a virtual start at t = -1
+    encodes the first maximum period). Each slot either idles, continues the run
+    on phi, or starts a run on some satellite, directly after a run of at least
+    min_run slots when switching satellite. Exact over all feasible rows of a
+    constellation task, as is best_profile_multi(adjacent_switch=True), but with
+    O(T S max_run max_starts max_gap) states; raises ValueError when the value
+    table would exceed max_states entries. Returns (row [T] bool, satellite [T]
+    int, value).
+    """
+    rewards = np.asarray(rewards, float)
+    S, T = rewards.shape
+    allowed = np.isfinite(rewards)
+    window = np.zeros(T, bool)
+    window[max(0, rules.win_min) : min(T, rules.win_max)] = True
+    allowed &= window[None, :]
+    gain = np.where(allowed, rewards, -math.inf)
+    periodic = rules.max_gap <= T
+    Z, W = int(min(rules.max_run, T)), int(min(rules.max_starts, T))
+    P = int(rules.max_gap) if periodic else max(1, int(rules.min_gap))
+    if W < rules.min_starts or Z < 1:
+        return None, None, -math.inf
+    shape = (Z + 1, W + 1, S, P + 1)
+    if (T + 1) * math.prod(shape) > max_states:
+        raise ValueError("State space too large; use best_profile_multi")
+    if profile_kernels.use(compiled):
+        return _found(profile_kernels.antunes_profile_multi(
+            np.ascontiguousarray(gain), Z, W, P, int(rules.min_starts), int(rules.min_run),
+            int(rules.min_gap), periodic, truncated_final_run,
+        ))
+    z, w, p = np.arange(Z + 1), np.arange(W + 1), np.arange(P + 1)
+    may_stop = (z == 0) | (z >= rules.min_run)
+    # Slots since the last start after a slot without a start (-1: infeasible).
+    passed = np.where(p + 1 <= P, p + 1, -1) if periodic else np.minimum(p + 1, P)
+    may_start = (w[:, None] == 0) | (p[None, :] >= rules.min_gap)  # [W+1, P+1]
+    V = np.full((T + 1, *shape), -math.inf)
+    ends = may_stop if not truncated_final_run else np.ones(Z + 1, bool)
+    V[T][np.ix_(ends, (w >= rules.min_starts), np.ones(S, bool), p >= 1)] = 0.0
+
+    def actions(t):
+        """Values [Z+1, W+1, S, P+1] of idle, continue and start at slot t."""
+        nxt = V[t + 1]
+        keep = passed >= 0
+        idle = np.full(shape, -math.inf)
+        idle[:, :, :, keep] = np.where(
+            may_stop[:, None, None, None], nxt[0][None, :, :, passed[keep]], -math.inf
+        )
+        cont = np.full(shape, -math.inf)
+        if Z > 1:
+            cont[1:Z, :, :, keep] = (
+                nxt[2 : Z + 1][:, :, :, passed[keep]] + gain[None, None, :, t, None]
+            )
+        fresh = np.full((W + 1, S), -math.inf)
+        fresh[:W] = gain[None, :, t] + nxt[1, 1:, :, 1]  # start from w -> w + 1
+        best1, arg1 = fresh.max(axis=1), fresh.argmax(axis=1)
+        rest = fresh.copy()
+        rest[np.arange(W + 1), arg1] = -math.inf
+        best2 = rest.max(axis=1)
+        other = np.where(np.arange(S)[None, :] == arg1[:, None], best2[:, None], best1[:, None])
+        start = np.full(shape, -math.inf)
+        start[0] = np.where(may_start[:, None, :], best1[:, None, None], -math.inf)
+        switch = np.where(may_start[:, None, :], other[:, :, None], -math.inf)
+        start[1:] = np.where((z[1:] >= rules.min_run)[:, None, None, None], switch[None], -math.inf)
+        return idle, cont, start, fresh
+
+    for t in range(T - 1, -1, -1):
+        idle, cont, start, _ = actions(t)
+        V[t] = np.maximum(np.maximum(idle, cont), start)
+    best = float(V[0][0, 0, 0, 1])
+    if not math.isfinite(best):
+        return None, None, -math.inf
+    row = np.zeros(T, bool)
+    owner = np.full(T, -1)
+    zi, wi, si, pi = 0, 0, 0, 1
+    for t in range(T):
+        idle, cont, start, fresh = actions(t)
+        here = (zi, wi, si, pi)
+        if idle[here] >= max(cont[here], start[here]):
+            zi, pi = 0, int(passed[pi])
+        elif cont[here] >= start[here]:
+            row[t], owner[t] = True, si
+            zi, pi = zi + 1, int(passed[pi])
+        else:
+            col = fresh[wi].copy()
+            if zi:
+                col[si] = -math.inf
+            si = int(np.argmax(col))
+            row[t], owner[t] = True, si
+            zi, wi, pi = 1, wi + 1, 1
+    return row, owner, best
+
+
+def _constellation_dp(kind):
+    """Per-task constellation DP selected by solve_constellation(constellation_dp=...)."""
+    if kind == "switch":
+        return best_profile_multi
+    if kind == "separated":
+        return lambda rewards, rules: best_profile_multi(rewards, rules, adjacent_switch=False)
+    if kind == "state":
+        return antunes_profile_multi
+    raise ValueError("constellation_dp must be 'switch', 'separated' or 'state'")
+
+
 def _windows(inst, soc):
     """Deficit windows per satellite: slots since the battery was last full."""
     out = []
@@ -585,14 +894,19 @@ def _windows(inst, soc):
 
 
 def reprofile_constellation(
-    inst, X, items, rng, *, iterations=8, deadline=None, surplus_weight=0.05
+    inst, X, items, rng, *, iterations=8, deadline=None, surplus_weight=0.05,
+    constellation_dp="switch",
 ):
     """Remove items (('sat', s, r) or ('con', c)) and reinsert by priced DP.
+
+    constellation_dp selects the per-task DP for constellation tasks (see
+    solve_constellation).
 
     Returns (schedule, objective, gain). The input schedule is returned when no
     validated improvement is found; X may be infeasible (construction), in which
     case any validated schedule is an improvement.
     """
+    profile_multi = _constellation_dp(constellation_dp)
     u, draw = inst.utility(), inst.draw()
     cap = inst.solar + inst.bat_usage * inst.v_bat
     rho = float(np.median(u / np.maximum(draw, 1e-6)))
@@ -645,7 +959,7 @@ def reprofile_constellation(
                     )
                 )
                 rew[draw[:, r][:, None] > cap - usage + 1e-9] = -math.inf
-                row, owner, _ = best_profile_multi(rew, inst.rules(0, r))
+                row, owner, _ = profile_multi(rew, inst.rules(0, r))
                 if row is None:
                     complete = False
                     break
@@ -687,6 +1001,7 @@ def solve_constellation(
     fraction=0.2,
     observe_incumbents=False,
     on_incumbent=None,
+    constellation_dp="switch",
 ):
     """Profile portfolio for constellations, or the exact MILP (mode="exact").
 
@@ -694,9 +1009,16 @@ def solve_constellation(
     on 1-3 items; after `patience` failures, one per-satellite MILP repair of a
     random fraction of that satellite's satellite-task cells (constellation rows
     and other satellites fixed). Returns dict with schedule, objective, history.
+
+    constellation_dp: per-task DP that inserts constellation tasks. "switch"
+    (default) is the run-based recursion with satellite switches between
+    adjacent runs; "state" is the state-based pricing DP of Antunes et al.
+    (same profiles, slower, small instances only); "separated" is the
+    idle-separated recursion of the 8 October study.
     """
     if mode not in ("portfolio", "exact") or not math.isfinite(time_limit) or time_limit <= 0:
         raise ValueError("Require portfolio/exact mode and a positive finite allowance")
+    _constellation_dp(constellation_dp)
     started = perf_counter()
     deadline = started + time_limit - min(0.25, 0.05 * time_limit)
     history = []
@@ -754,7 +1076,8 @@ def solve_constellation(
         key=lambda it: -u[it[1], it[2]] / draw[it[1], it[2]],
     )
     X, obj = reprofile_constellation(
-        inst, X, order, rng, iterations=12, deadline=deadline
+        inst, X, order, rng, iterations=12, deadline=deadline,
+        constellation_dp=constellation_dp,
     )
     if not math.isfinite(obj):
         history.append(("construction_failed", perf_counter() - started))
@@ -775,7 +1098,8 @@ def solve_constellation(
                 len(items_all), size=min(count, len(items_all)), replace=False
             )
             Y, value = reprofile_constellation(
-                inst, X, [items_all[i] for i in idx], rng, deadline=deadline
+                inst, X, [items_all[i] for i in idx], rng, deadline=deadline,
+                constellation_dp=constellation_dp,
             )
         else:
             s = int(rng.integers(inst.S))

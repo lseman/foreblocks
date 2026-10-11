@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from scipy.optimize import linprog
 
+from . import profile_kernels
 from .hybrid import HybridResult
 from .milp import ONTSMilp
 
@@ -52,6 +53,17 @@ def job_rules(problem: ONTSMilp, j: int) -> JobRules:
     )
 
 
+def _rule_ints(rules: JobRules):
+    return (
+        int(rules.min_starts),
+        int(rules.max_starts),
+        int(rules.min_run),
+        int(rules.max_run),
+        int(rules.min_gap),
+        int(rules.max_gap),
+    )
+
+
 def _range_max(values: np.ndarray):
     """Sparse table for O(1) vectorized range-maximum queries over values."""
     T = len(values)
@@ -69,7 +81,11 @@ def _range_max(values: np.ndarray):
 
 
 def best_profile(
-    reward: np.ndarray, rules: JobRules, *, truncated_final_run: bool = True
+    reward: np.ndarray,
+    rules: JobRules,
+    *,
+    truncated_final_run: bool = True,
+    compiled: bool | None = None,
 ) -> tuple[np.ndarray | None, float]:
     """Maximize sum(reward * row) over rows satisfying one job's constraints.
 
@@ -78,13 +94,19 @@ def best_profile(
     P apart and last start >= T-P, which is equivalent to every full window of
     length P containing a start. Consecutive runs need an idle slot between them.
     Vectorized over start times; ties prefer shorter runs, then stopping, then
-    the earliest next start.
+    the earliest next start. compiled selects the Numba kernel (default: unless
+    ONTS_NUMBA=0), which returns the same row.
     """
     reward = np.asarray(reward, dtype=float)
     T = len(reward)
     allowed = np.isfinite(reward)
     allowed[: max(0, rules.win_min)] = False
     allowed[min(T, rules.win_max) :] = False
+    if profile_kernels.use(compiled):
+        found, row, value = profile_kernels.best_profile(
+            reward, allowed, *_rule_ints(rules), truncated_final_run
+        )
+        return (row, float(value)) if found else (None, -math.inf)
     # nxt[t]: first forbidden slot at or after t.
     blocked = np.flatnonzero(~allowed)
     nxt = np.full(T + 1, T)

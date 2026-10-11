@@ -101,7 +101,7 @@ def test_analysis_retains_unsolved_and_averages_seeds_before_inference():
         analyze(rows, plan)
 
 
-def test_adjacent_cross_satellite_runs_can_escape_idle_separated_neighborhood():
+def test_dp_switches_satellite_between_adjacent_runs():
     rules = JobRules(2, 2, 1, 1, 1, 5, 0, 4)
     instance = single_constellation_task(rules, 2, 4)
     rewards = np.zeros((2, 4))
@@ -109,6 +109,8 @@ def test_adjacent_cross_satellite_runs_can_escape_idle_separated_neighborhood():
     adjacent = np.zeros((2, 1, 4), bool)
     adjacent[0, 0, 1] = adjacent[1, 0, 2] = True
     assert not replay(instance_data(instance), adjacent)[1]
-    _, _, restricted = best_profile_multi(rewards, rules)
+    _, _, restricted = best_profile_multi(rewards, rules, adjacent_switch=False)
     assert restricted == 10.
-    assert float((adjacent[:, 0] * rewards).sum()) == 20.
+    row, owner, value = best_profile_multi(rewards, rules)
+    assert value == float((adjacent[:, 0] * rewards).sum()) == 20.
+    assert np.array_equal(np.stack([row & (owner == s) for s in range(2)]), adjacent[:, 0])

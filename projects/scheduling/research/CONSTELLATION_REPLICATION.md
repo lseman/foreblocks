@@ -95,3 +95,28 @@ Normalized incumbent AUC, first observation times, dual-bound gaps, late returns
 design-factor summaries and 10,000-resample within-cell bootstrap sensitivity
 (seed 981009) are descriptive. Keep missing bounds distinct from zero gaps, and
 never interpret best-observed normalized scores as optimality certificates.
+
+## Amendment, 10 October 2026: re-run with the satellite-switch recursion
+
+The profile move for constellation tasks now allows a run to be followed in the
+next slot by a run on another satellite (`best_profile_multi`,
+`adjacent_switch=True`), which makes the per-task recursion exact over all
+feasible rows. The study is repeated unchanged otherwise (same generator seeds,
+search seeds, budget, workers, observation and analysis rules) into
+`results/constellation-replication-20261010-switch`. The 8 October results stay
+archived as the record of the idle-separated recursion.
+
+## Amendment, 11 October 2026: re-run with compiled profile DPs
+
+The per-task profile DPs and the validator's row checks now run as Numba
+kernels (`profile_kernels.py`). The kernels return the same rows, values and
+violations as the numpy implementation, including tie-breaking, so the search
+makes the same decision at every step; only its speed changes, and with it the
+number of moves that fit in the 60-second allowance. Each worker loads the
+compiled kernels before the allowance starts, and the plan records the backend
+(`dp_backend`). The portfolio runs are repeated unchanged otherwise (same
+generator seeds, search seeds, budget, workers, observation and analysis rules)
+into `results/constellation-replication-20261011-numba`. HiGHS does not use the
+profile DPs, so its 108 runs are imported unchanged from the 10 October study;
+the plan records that study and the hash of the imported records. The 10 October results
+stay archived as the record of the numpy implementation.

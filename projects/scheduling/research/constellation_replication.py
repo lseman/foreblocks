@@ -14,6 +14,7 @@ import numpy as np
 import torch
 from scipy import stats
 
+from .. import profile_kernels
 from ..constellation import generate_constellation, solve_constellation
 from .constellation_oracle import data_hash, from_data, instance_data, replay
 from .datasets import source_hashes
@@ -27,7 +28,7 @@ DESIGN = list(itertools.product((96, 144, 192), (5, 10, 15), (8, 12), (4, 8)))
 
 
 def make_plan(output, *, replicates=3, seeds=(1301, 1409), budget=60., workers=12,
-              base=73_000_000, design=None):
+              base=73_000_000, design=None, reuse_exact=None):
     design = DESIGN if design is None else design
     if (replicates < 2 or not seeds or len(set(seeds)) != len(seeds)
             or not math.isfinite(budget) or budget <= 0 or workers < 1 or not design):
@@ -57,8 +58,46 @@ def make_plan(output, *, replicates=3, seeds=(1301, 1409), budget=60., workers=1
                 entries=entries, count=len(entries), base=base, order_seed=981109,
                 source_hashes=source_hashes(), bundled_input_hashes=input_hashes(),
                 protocol_sha256=hashlib.sha256(PROTOCOL.read_bytes()).hexdigest(),
-                primary=["feasibility_pp", "score_pp"], solver_seed=0,
-                scope="replication within constellation generator; curtailing battery; strict observed credit")
+                primary=["feasibility_pp", "score_pp"], solver_seed=0, dp_backend=backend(),
+                scope="replication within constellation generator; curtailing battery; strict observed credit",
+                **({} if reuse_exact is None else dict(exact_source=exact_source(reuse_exact, entries, budget))))
+
+
+def backend():
+    """Profile DP implementation; Numba kernels are warmed up outside the budget."""
+    if not profile_kernels.ENABLED:
+        return "numpy"
+    import numba
+    return f"numba-{numba.__version__}"
+
+
+def exact_source(previous, entries, budget):
+    """Identity of a completed study whose HiGHS runs are reused unchanged."""
+    plan = json.loads((previous / "plan.json").read_text())
+    if ([e["hash"] for e in plan["entries"]] != [e["hash"] for e in entries]
+            or plan["budget"] != budget or plan["solver_seed"] != 0):
+        raise ValueError("Reused exact runs need identical instances, budget and solver seed")
+    rows = [r for r in read_jsonl(previous / "runs.jsonl") if r["method"] == "exact"]
+    if len(rows) != len(entries) or any(r["error"] or not r["validation_passed"] for r in rows):
+        raise ValueError("Reused study must hold one valid exact run per instance")
+    return dict(study=previous.name, plan_sha256=hashlib.sha256((previous / "plan.json").read_bytes()).hexdigest(),
+                exact_runs_sha256=hashlib.sha256(json.dumps(sorted(rows, key=lambda r: r["instance"]),
+                                                           sort_keys=True).encode()).hexdigest())
+
+
+def import_exact(output, previous, plan):
+    """Copy the reused exact rows and their schedule files into this study."""
+    rows = sorted((r for r in read_jsonl(previous / "runs.jsonl") if r["method"] == "exact"),
+                  key=lambda r: r["instance"])
+    digest = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+    if digest != plan["exact_source"]["exact_runs_sha256"]:
+        raise ValueError("Reused exact runs differ from the frozen plan")
+    (output / "schedules").mkdir(exist_ok=True)
+    for row in rows:
+        source = previous / row["schedule_file"]
+        assert hashlib.sha256(source.read_bytes()).hexdigest() == row["schedule_sha256"]
+        (output / row["schedule_file"]).write_bytes(source.read_bytes())
+        append_record(output / "runs.jsonl", row)
 
 
 def expected_runs(plan):
@@ -72,6 +111,9 @@ def run(task):
     os.environ["ONTS_SOLVER_THREADS"] = "1"
     if source_hashes() != plan["source_hashes"] or input_hashes() != plan["bundled_input_hashes"]:
         raise RuntimeError("Sources or inputs changed after freeze")
+    if backend() != plan.get("dp_backend", "numpy"):
+        raise RuntimeError("DP backend differs from the frozen plan")
+    profile_kernels.warm_up()
     output = Path(output_string)
     data = json.loads((output / "instances" / f"{i}.json").read_text())
     assert data_hash(data) == plan["entries"][i]["hash"]
@@ -211,17 +253,23 @@ def main():
     parser.add_argument("--base", type=int, default=73_000_000)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--plan-only", action="store_true")
+    parser.add_argument("--reuse-exact", type=Path,
+                        help="completed study whose HiGHS runs are reused unchanged")
     args = parser.parse_args()
     torch.set_num_threads(1)
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "ONTS_SOLVER_THREADS"):
         os.environ[name] = "1"
     plan = make_plan(args.output, replicates=args.replicates, seeds=args.seeds, budget=args.budget,
                      workers=args.workers, base=args.base,
-                     design=[(24, 2, 2, 1)] if args.smoke else None)
+                     design=[(24, 2, 2, 1)] if args.smoke else None,
+                     reuse_exact=args.reuse_exact)
     plan = frozen_plan(args.output, plan)
     (args.output / "protocol.md").write_bytes(PROTOCOL.read_bytes())
     if args.plan_only:
         return
+    if "exact_source" in plan and not any(
+            r["method"] == "exact" for r in read_jsonl(args.output / "runs.jsonl")):
+        import_exact(args.output, args.reuse_exact, plan)
     previous = read_jsonl(args.output / "runs.jsonl")
     done = {r["run_id"] for r in previous}
     if len(done) != len(previous):
@@ -229,7 +277,8 @@ def main():
     tasks = [(i, method, seed, plan, str(args.output.resolve())) for i, method, seed in expected_runs(plan)
              if f"{i}|{method}|{seed}" not in done]
     order = np.random.default_rng(plan["order_seed"]).permutation(len(tasks))
-    print(f"Frozen {len(tasks)} runs, {args.workers} workers", flush=True)
+    profile_kernels.warm_up()  # populate the kernel cache before workers start
+    print(f"Frozen {len(tasks)} runs, {args.workers} workers, {plan.get('dp_backend', 'numpy')}", flush=True)
     with ProcessPoolExecutor(args.workers, max_tasks_per_child=1) as pool:
         futures = {pool.submit(run, tasks[int(k)]): tasks[int(k)][:3] for k in order}
         for number, future in enumerate(as_completed(futures), 1):

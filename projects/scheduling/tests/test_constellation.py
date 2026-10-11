@@ -9,6 +9,8 @@ import pytest
 from projects.scheduling.constellation import (
     ConstellationInstance,
     ConstellationMilp,
+    _constellation_dp,
+    antunes_profile_multi,
     best_profile_multi,
     generate_constellation,
     solve_constellation,
@@ -50,7 +52,9 @@ def single_constellation_task(rules, S, T):
     )
 
 
-def test_multi_satellite_dp_matches_brute_force_on_idle_separated_profiles():
+@pytest.mark.parametrize("kind", ["switch", "separated", "state"])
+def test_multi_satellite_dp_matches_brute_force(kind):
+    adjacent_switch = kind != "separated"
     rng = np.random.default_rng(0)
     S = 2
     for _ in range(40):
@@ -76,8 +80,10 @@ def test_multi_satellite_dp_matches_brute_force_on_idle_separated_profiles():
         best = -math.inf
         for assign in itertools.product(range(S + 1), repeat=T):
             a = np.array(assign)
-            # Idle-separated subset: no switch between adjacent active slots.
-            if any(a[t] and a[t + 1] and a[t] != a[t + 1] for t in range(T - 1)):
+            # The restricted recursion excludes switches between adjacent slots.
+            if not adjacent_switch and any(
+                a[t] and a[t + 1] and a[t] != a[t + 1] for t in range(T - 1)
+            ):
                 continue
             X = np.zeros((S, 1, T), bool)
             for s in range(S):
@@ -89,7 +95,7 @@ def test_multi_satellite_dp_matches_brute_force_on_idle_separated_profiles():
             _, bad = validate_constellation(inst, X)
             if not bad:
                 best = max(best, float(np.where(X[:, 0], rewards, 0).sum()))
-        row, owner, value = best_profile_multi(rewards, rules)
+        row, owner, value = _constellation_dp(kind)(rewards, rules)
         if row is None:
             assert best == -math.inf
             continue
@@ -98,6 +104,44 @@ def test_multi_satellite_dp_matches_brute_force_on_idle_separated_profiles():
         for s in range(S):
             X[s, 0] = row & (owner == s)
         assert not validate_constellation(inst, X)[1]
+
+
+def test_state_dp_agrees_with_run_dp():
+    rng = np.random.default_rng(3)
+    for _ in range(60):
+        S, T = int(rng.integers(2, 5)), int(rng.integers(8, 25))
+        smin, rmin, gmin = int(rng.integers(0, 4)), int(rng.integers(1, 4)), int(rng.integers(1, 5))
+        rules = JobRules(
+            smin,
+            smin + int(rng.integers(0, 4)),
+            rmin,
+            rmin + int(rng.integers(0, 5)),
+            gmin,
+            gmin + int(rng.integers(0, T)) if rng.random() < 0.6 else T + 1,
+            int(rng.integers(0, 3)),
+            T - int(rng.integers(0, 3)),
+        )
+        rewards = rng.normal(size=(S, T))
+        rewards[rng.random((S, T)) < 0.15] = -math.inf
+        inst = single_constellation_task(rules, S, T)
+        _, _, expected = best_profile_multi(rewards, rules)
+        row, owner, value = antunes_profile_multi(rewards, rules)
+        if row is None:
+            assert expected == -math.inf
+            continue
+        assert value == pytest.approx(expected)
+        X = np.stack([row & (owner == s) for s in range(S)])[:, None]
+        assert not validate_constellation(inst, X)[1]
+        assert float(np.where(X[:, 0], rewards, 0).sum()) == pytest.approx(value)
+
+
+def test_state_dp_option_in_search():
+    inst = generate_constellation(S=2, Js=2, Jc=2, T=24, seed=5)
+    result = solve_constellation(inst, time_limit=2, patience=3, constellation_dp="state")
+    assert result["schedule"] is not None
+    assert not validate_constellation(inst, result["schedule"])[1]
+    with pytest.raises(ValueError):
+        solve_constellation(inst, time_limit=1, constellation_dp="pricing")
 
 
 @pytest.fixture(scope="module")
