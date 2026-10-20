@@ -18,6 +18,32 @@ bash projects/scheduling/paper2/build.sh
 The compiled manuscript is `main.pdf`. Tables and `numbers.tex` come from saved
 experiment records; the bibliography uses primary papers and proceedings.
 
+The feasibility-first cold-start pilot is documented in
+[RL_CONSTRUCTION.md](../research/RL_CONSTRUCTION.md) and `construction.tex`.
+Its frozen records are `../research/results/rl-construct-20261011`.
+Policy inference starts with no witness or incumbent. RL succeeds on 17/18
+attempts, versus 18/18 for uniform and imitation; no RL-specific feasibility
+gain or optimality is established. Replay saved evidence from the repository root:
+
+```bash
+.venv/bin/python -m projects.scheduling.research.audit_rl_construct \
+  --output projects/scheduling/research/results/rl-construct-20261011
+```
+
+The matched MLP/task--time graph follow-up is documented in
+[RL_CONSTRUCTION_GRAPH.md](../research/RL_CONSTRUCTION_GRAPH.md).
+Its frozen output is `../research/results/rl-construct-graph-20261011-fresh`.
+Graph RL reaches 11/18 larger-case successes versus MLP RL's 18/18; the primary
+graph-RL/replay utility comparison is inconclusive. The graph stays experimental.
+Independent frozen-source replay validates all 2016 constructions and 18 checkpoints.
+
+[Completion-aware recovery](../research/RL_RECOVERY.md) adds necessary
+single-task/energy checks, backtracking, state memoization and best-output
+preservation. The memoized fresh follow-up succeeds on 19/27 uniform and 16/27
+RL attempts, versus 0/27 one-pass uniform; no RL/replay advantage is established.
+All nine reference instances have certified optima. Two overruns count as
+on-time failures. Its records are `../research/results/rl-recovery-memo-20261011`.
+
 A new portfolio study must use a new output directory:
 
 ```bash
@@ -168,3 +194,33 @@ include zero. One original imitation control overruns by 0.149091 seconds; all
 continuation PPO/replay evaluations stay within budget. The complete suite
 passes 220 tests. Tables, training diagnostics and limitations are in
 `continuation.tex` and the rebuilt manuscript.
+
+The controlled cold-start architecture comparison is documented in
+[RL_ARCHITECTURES.md](../research/RL_ARCHITECTURES.md). It compares a pooled MLP,
+a recurrent pointer adaptation, task--time bipartite attention, and a Transformer
+under identical completion/recovery actions, with separate RL/replay controls
+for every network. Full-instance MILP receives the same total inference allowance.
+Sources, instances and final checkpoints are frozen in
+`../research/results/rl-architectures-20261011`; the manuscript section is
+`architecture_comparison.tex`. Parameter counts and training time are recorded
+but not matched. These are exploratory ONTS adaptations, not SOTA replications.
+
+Completed architecture pilot: MILP reaches 9/9 certified optima in mean total
+runtime 0.067 seconds. MLP imitation has the best neural feasibility (22/27);
+MLP/pointer/GNN/Transformer RL reach 20/14/18/17 of 27 attempts. None establishes
+a pooled RL-versus-replay benefit. The audit checks 1,146 constructions, 7,394
+completions, 73,477 prefixes, 99 teacher snapshots, 36 checkpoints and nine
+solver baselines; rejection replay is bounded to 512 distinct states. One
+Transformer-imitation overrun counts as a failure. The report and plots are
+archived with the frozen run; the manuscript is rebuilt with these results.
+
+The completion/value critic and imitation-protected PPO experiment is described
+in [RL_COMPLETION_CRITIC.md](../research/RL_COMPLETION_CRITIC.md) and
+`completion_critic.tex`. Frozen results are in
+`../research/results/rl-completion-critic-20261011`. PPO and its protected replay
+control each reach 13/27 feasible held-out outputs, versus 18/27 for plain teacher
+replay; no RL advantage is established. All 68 focused tests and the frozen
+schedule/evidence audit pass. A separate one-seed, training-only diagnostic
+finds 1/9 feasible with a 128-decision cap versus 5/9 with cap 512 under the same
+time budget; disabling completion guidance reaches 6/9 at cap 4096. This points
+to search exposure and guidance quality as unresolved training issues.

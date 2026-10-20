@@ -1,0 +1,4 @@
+# Documentation build only; Python 3.10+. No Node.js or VitePress required.
+markdown-it-py==4.0.0
+mdurl==0.1.2
+Pygments==2.19.2

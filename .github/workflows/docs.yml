@@ -6,10 +6,8 @@ on:
       - "docs/**"
       - "site/landing/**"
       - "apps/studio/**"
-      - "apps/webui/**"
-      - "package.json"
-      - "package-lock.json"
-      - "scripts/build_studio_web.sh"
+      - ".github/scripts/compile_docs.py"
+      - ".github/scripts/docs-requirements.txt"
       - ".github/workflows/docs.yml"
   push:
     branches:
@@ -18,10 +16,8 @@ on:
       - "docs/**"
       - "site/landing/**"
       - "apps/studio/**"
-      - "apps/webui/**"
-      - "package.json"
-      - "package-lock.json"
-      - "scripts/build_studio_web.sh"
+      - ".github/scripts/compile_docs.py"
+      - ".github/scripts/docs-requirements.txt"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -29,9 +25,6 @@ permissions:
   contents: write
   pages: write
   id-token: write
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
   group: docs-${{ github.ref }}
@@ -48,34 +41,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.12"
 
-      - name: Sync web version from pyproject.toml
-        run: python scripts/update_web_version.py
+      - name: Install documentation dependencies
+        run: pip install -r .github/scripts/docs-requirements.txt
 
-      - name: Validate version sync on pull requests
-        if: github.event_name == 'pull_request'
-        run: |
-          if ! git diff --quiet -- site/landing/version.js; then
-            echo "site/landing/version.js is out of sync with pyproject.toml"
-            git --no-pager diff -- site/landing/version.js
-            exit 1
-          fi
-
-      - name: Commit synced site/landing/version.js on push
-        if: github.event_name == 'push'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet -- site/landing/version.js; then
-            git add site/landing/version.js
-            git commit -m "chore: sync site/landing/version.js with pyproject.toml"
-            git push
-          fi
-
-      - name: Set up GitHub Pages
-        if: github.event_name != 'pull_request'
-        uses: actions/configure-pages@v5
+      - name: Build docs and landing page (pure Python, no VitePress)
+        run: python .github/scripts/compile_docs.py
 
       - name: Set up Node
         uses: actions/setup-node@v5
@@ -83,30 +55,14 @@ jobs:
           node-version: "24"
           cache: "npm"
 
-      - name: Install docs dependencies
+      - name: Build Studio frontend
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-
-      - name: Build VitePress docs under /docs
-        run: npm run docs:build
-
-      - name: Build Studio playground
-        run: scripts/build_studio_web.sh
-
-      - name: Assemble root landing page
-        run: |
-          mkdir -p site
-          cp site/landing/index.html site/index.html
-          cp site/landing/logo.svg site/logo.svg
-          cp site/landing/logo_dark.svg site/logo_dark.svg
-          cp site/landing/logo_light.svg site/logo_light.svg
-          cp -R site/landing/imgs site/imgs
-          if [ -f site/landing/CNAME ]; then cp site/landing/CNAME site/CNAME; fi
-          touch site/.nojekyll
+          cd apps/studio/src
+          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+          npx vite build --base /studio/ --outDir ../dist --emptyOutDir
+          rm -rf ../../site/studio
+          mkdir -p ../../site/studio
+          cp -a ../../dist/. ../../site/studio/
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
