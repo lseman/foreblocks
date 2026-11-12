@@ -197,4 +197,10 @@ from foreblocks.ops.mamba import (
 - NumPy, Pandas, SciPy
 - Optuna (for auto-filter tuning)
 - Matplotlib (for visualization)
-- Statsmodels (for statistical tests)
+- Numba (optional LOWESS acceleration; NumPy fallback available)
+- Statsmodels (for ADF, STL, and EWT ARIMA selection)
+
+LOWESS smoothing, ACF, Yule–Walker PACF, and Ljung–Box scoring use native
+NumPy/SciPy implementations. These preprocessing functions do not require
+Statsmodels. LOWESS preserves missing positions and supports robust iterations
+and `delta` interpolation in both array and pandas filter APIs.

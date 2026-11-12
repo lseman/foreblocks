@@ -11,9 +11,8 @@ from typing import Any
 import numpy as np
 from scipy.signal import find_peaks, welch
 from scipy.stats import entropy
-from statsmodels.stats.diagnostic import acorr_ljungbox
-from statsmodels.tsa.stattools import acf, adfuller, pacf
 
+from foreblocks.processing._statistics import acf, ljung_box, pacf
 from foreblocks.processing.utils import _prepare_series_for_diagnostics
 
 
@@ -25,6 +24,8 @@ def detect_stationarity(data: np.ndarray, D: int) -> list[float]:
             pvals.append(1.0)
             continue
         try:
+            from statsmodels.tsa.stattools import adfuller
+
             pvals.append(float(adfuller(clean, autolag="AIC")[1]))
         except Exception:
             pvals.append(1.0)
@@ -112,8 +113,8 @@ def score_ljung_box(data: np.ndarray, D: int) -> list[float]:
             continue
         try:
             # Test up to 10 lags, take the minimum p-value indicating any structure
-            res = acorr_ljungbox(clean, lags=[min(10, len(clean) // 3)], return_df=True)
-            pvals.append(float(res["lb_pvalue"].min()))
+            _, probabilities = ljung_box(clean, lags=[min(10, len(clean) // 3)])
+            pvals.append(float(probabilities.min()))
         except Exception:
             pvals.append(1.0)
     return pvals

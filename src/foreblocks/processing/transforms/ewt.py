@@ -59,7 +59,9 @@ def _select_best_imf_by_aic(signal: np.ndarray, imfs: np.ndarray) -> int:
                 order = arma_order_select_ic(residual, ic="aic", max_ar=2, max_ma=2)[
                     "aic_min_order"
                 ]
-                model = sm.tsa.ARIMA(residual, order=order).fit()
+                # ARMA selection returns (p, q); ARIMA also requires d=0.
+                p, q = order
+                model = sm.tsa.ARIMA(residual, order=(p, 0, q)).fit()
                 aic = model.aic
 
                 if np.isfinite(aic) and aic < best_score:

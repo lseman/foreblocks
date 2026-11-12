@@ -461,3 +461,28 @@ def test_tune_filter_band_penalty_dominates_raw_metric_scale(monkeypatch) -> Non
 
     assert result.name == "good"
     assert result.band_penalty == 0.0
+
+
+def test_native_ljung_box_is_shared_by_scoring_and_tuning():
+    from foreblocks.processing._statistics import ljung_box
+    from foreblocks.processing.auto_filter.metrics import _ljung_box_stat as metric
+    from foreblocks.processing.auto_filter.tuning import _ljung_box_stat as tuning
+
+    values = np.random.default_rng(23).normal(size=96)
+    expected = ljung_box(values, 10)[0][-1]
+    assert metric(values, 10) == expected
+    assert tuning(values, 10) == expected
+    assert metric(values[:5], 10) == tuning(values[:5], 10) == 0
+
+
+def test_native_preprocessing_diagnostics():
+    from foreblocks.processing._statistics import ljung_box, pacf
+    from foreblocks.processing.tools.diagnostics import score_ljung_box, score_pacf
+
+    values = np.random.default_rng(19).normal(size=(100, 2))
+    expected_pvalues = [ljung_box(values[:, i], [10])[1][0] for i in range(2)]
+    expected_scores = [
+        int(np.sum(np.abs(pacf(values[:, i], 20)[1:]) > 0.2)) for i in range(2)
+    ]
+    np.testing.assert_allclose(score_ljung_box(values, 2), expected_pvalues)
+    assert score_pacf(values, 2) == expected_scores

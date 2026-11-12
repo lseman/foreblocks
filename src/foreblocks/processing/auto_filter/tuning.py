@@ -405,17 +405,10 @@ def _unsupervised_proxy(
 def _ljung_box_stat(residual: np.ndarray, lags: int) -> float:
     if len(residual) < lags + 2:
         return 0.0
-    try:
-        from statsmodels.stats.diagnostic import acorr_ljungbox
+    from foreblocks.processing._statistics import ljung_box
 
-        lb = acorr_ljungbox(residual, lags=lags, return_df=True)
-        return float(lb["lb_stat"].iloc[-1])
-    except Exception:
-        from foreblocks.processing.auto_filter.metrics import _autocorr
-
-        return float(
-            np.mean([abs(_autocorr(residual, lag)) for lag in range(1, lags + 1)])
-        )
+    statistics, _ = ljung_box(residual, lags=lags)
+    return float(statistics[-1])
 
 
 def _oversmoothing_penalty(
