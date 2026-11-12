@@ -10,22 +10,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.nn.embeddings.patching import PatchInfo, PatchTokenizer
-from foreblocks.nn.transformer.base import BaseTransformer, StackTrace
+from foreblocks.nn.transformer.base import BaseTransformer
 from foreblocks.nn.transformer.config import Role, TransformerConfig
 from foreblocks.nn.transformer.layers.encoder import TransformerEncoderLayer
 from foreblocks.nn.transformer.layers.mixing import MixingTransformer
+from foreblocks.nn.transformer.runtime.checkpointing import ModelLayerInvokeStrategy
 from foreblocks.nn.transformer.runtime.contiguous import (
     contiguous_quantile_loss,
     prepare_contiguous_forecast,
     project_contiguous_quantiles,
 )
-from foreblocks.nn.transformer.runtime.execution import ModelLayerInvokeStrategy
 from foreblocks.nn.transformer.runtime.forward import (
     LayerResult,
+    StackTrace,
     execute_encoder_layer,
-    prepare_encoder_input,
 )
 from foreblocks.nn.transformer.runtime.outputs import TransformerEncoderOutput
+from foreblocks.nn.transformer.runtime.preparation import prepare_encoder_input
 from foreblocks.nn.transformer.runtime.routing import (
     gateskip_active_mask_from_padding,
     gather_padding_mask,

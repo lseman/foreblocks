@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import partial
+from importlib import import_module
 
 from foreblocks.nn.attention.variants.base import AttentionImpl, AttentionOwner
 
@@ -43,28 +45,33 @@ def register_attention_variant(*names: str):
     return ATTENTION_VARIANTS.register(*names)
 
 
-def _register_builtin_variants() -> None:
-    from foreblocks.nn.attention.variants import (
-        DilatedSlidingWindowAttentionImpl,
-        MoBAAttentionImpl,
-        NSAAttentionImpl,
-        ProbSparseAttentionImpl,
-        SlidingWindowAttentionImpl,
-        SoftpickAttentionImpl,
-        SpectralAttentionImpl,
-        StandardAttentionImpl,
+def _build_builtin(
+    module: str, class_name: str, context: AttentionOwner
+) -> AttentionImpl:
+    implementation = getattr(
+        import_module(f"foreblocks.nn.attention.variants.{module}"), class_name
     )
+    return implementation(context)
 
-    ATTENTION_VARIANTS.register("standard", "sype")(StandardAttentionImpl)
-    ATTENTION_VARIANTS.register("prob_sparse")(ProbSparseAttentionImpl)
-    ATTENTION_VARIANTS.register("nsa")(NSAAttentionImpl)
-    ATTENTION_VARIANTS.register("moba")(MoBAAttentionImpl)
-    ATTENTION_VARIANTS.register("sliding_window")(SlidingWindowAttentionImpl)
-    ATTENTION_VARIANTS.register("dilated_sliding_window", "dilated_window")(
-        DilatedSlidingWindowAttentionImpl
+
+def _register_builtin_variants() -> None:
+    # Register factories, not imports: unused variants stay unloaded.
+    builtins = (
+        (("standard", "sype"), "standard", "StandardAttentionImpl"),
+        (("prob_sparse",), "prob_sparse", "ProbSparseAttentionImpl"),
+        (("nsa",), "nsa", "NSAAttentionImpl"),
+        (("moba",), "moba", "MoBAAttentionImpl"),
+        (("sliding_window",), "sliding_window", "SlidingWindowAttentionImpl"),
+        (
+            ("dilated_sliding_window", "dilated_window"),
+            "dilated_sliding_window",
+            "DilatedSlidingWindowAttentionImpl",
+        ),
+        (("softpick",), "softpick", "SoftpickAttentionImpl"),
+        (("frequency", "dwt", "autocor"), "spectral", "SpectralAttentionImpl"),
     )
-    ATTENTION_VARIANTS.register("softpick")(SoftpickAttentionImpl)
-    ATTENTION_VARIANTS.register("frequency", "dwt", "autocor")(SpectralAttentionImpl)
+    for names, module, class_name in builtins:
+        ATTENTION_VARIANTS.register(*names)(partial(_build_builtin, module, class_name))
 
 
 _register_builtin_variants()

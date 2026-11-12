@@ -1,34 +1,31 @@
-"""Encoder and decoder forward-execution preparation."""
+"""Stack-level layer execution and collection of runtime diagnostics.
+
+Preparation and output helpers are re-exported for existing callers; their
+implementations live in preparation.py and outputs.py.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import torch
-import torch.nn as nn
 
-from foreblocks.nn.attention.cache.kv import StaticKVCache
-from foreblocks.nn.embeddings.patching import (
-    PatchInfo,
-    PatchTokenizer,
-    patchify_padding_mask,
+from foreblocks.nn.transformer.runtime.checkpointing import ModelLayerInvokeStrategy
+from foreblocks.nn.transformer.runtime.outputs import (
+    build_decoder_output as build_decoder_output,
 )
-from foreblocks.nn.transformer.config import TransformerConfig
-from foreblocks.nn.transformer.runtime.execution import ModelLayerInvokeStrategy
-from foreblocks.nn.transformer.runtime.outputs import TransformerDecoderOutput
+from foreblocks.nn.transformer.runtime.preparation import (
+    EncoderPreparationOwner as EncoderPreparationOwner,
+    PreparedDecoderState as PreparedDecoderState,
+    PreparedEncoderInput as PreparedEncoderInput,
+    positions_from_offset as positions_from_offset,
+    prepare_decoder_state as prepare_decoder_state,
+    prepare_encoder_input as prepare_encoder_input,
+    validate_memory_padding_mask as validate_memory_padding_mask,
+)
 from foreblocks.nn.transformer.runtime.residual_state import AttentionResidualState
-from foreblocks.nn.transformer.runtime.routing import patchify_gateskip_active_mask
-from foreblocks.nn.transformer.runtime.state import DecoderLayerState, DecoderState
-
-
-@dataclass(frozen=True)
-class PreparedDecoderState:
-    state: DecoderState | None
-    layer_states: list[DecoderLayerState | None]
-    cache_position: torch.Tensor | None
-    cache_update_mask: torch.Tensor | None
-    position_offset: torch.Tensor | int | None
+from foreblocks.nn.transformer.runtime.state import DecoderLayerState
 
 
 class StackOwner(Protocol):
@@ -45,6 +42,32 @@ class LayerResult:
     router_state: object | None = None
     self_attention: torch.Tensor | None = None
     cross_attention: torch.Tensor | None = None
+
+
+@dataclass
+class StackTrace:
+    """Diagnostics collected while one forward pass runs the layer stack."""
+
+    hidden_states: list[torch.Tensor] | None
+    used_indices: list[int] = field(default_factory=list)
+    router_states: list[object] = field(default_factory=list)
+    attentions: list[torch.Tensor] = field(default_factory=list)
+    cross_attentions: list[torch.Tensor] = field(default_factory=list)
+
+    @classmethod
+    def start(cls, x: torch.Tensor, output_hidden_states: bool) -> StackTrace:
+        return cls(hidden_states=[x] if output_hidden_states else None)
+
+    def record(self, index: int, result: LayerResult) -> None:
+        self.used_indices.append(index)
+        if self.hidden_states is not None:
+            self.hidden_states.append(result.hidden_states)
+        if result.router_state is not None:
+            self.router_states.append(result.router_state)
+        if result.self_attention is not None:
+            self.attentions.append(result.self_attention)
+        if result.cross_attention is not None:
+            self.cross_attentions.append(result.cross_attention)
 
 
 def _router_state(layer: Any) -> object | None:
@@ -142,267 +165,8 @@ def execute_decoder_layer(
     )
 
 
-def prepare_decoder_state(
-    state: dict[str, Any] | DecoderState | None,
-    *,
-    num_layers: int,
-    batch_size: int,
-    sequence_length: int,
-    device: torch.device,
-    cache_position: torch.Tensor | None,
-    cache_update_mask: torch.Tensor | None,
-    position_offset: torch.Tensor | int | None,
-) -> PreparedDecoderState:
-    """Normalize incremental state and attach per-call cache coordinates."""
-    state = DecoderState.coerce(state, num_layers=num_layers)
-    if cache_position is None and state is not None and state.layers:
-        cache = state.layers[0].self_attention.cache
-        if isinstance(cache, StaticKVCache):
-            cache_position = cache.lengths[:, None] + torch.arange(
-                sequence_length, device=device, dtype=torch.long
-            )
-
-    if cache_position is not None:
-        cache_position = cache_position.to(device=device, dtype=torch.long)
-        if cache_position.ndim == 1:
-            cache_position = cache_position.unsqueeze(0).expand(batch_size, -1)
-        if cache_position.shape != (batch_size, sequence_length):
-            raise ValueError(
-                "cache_position must be [T] or [B,T], got "
-                f"{tuple(cache_position.shape)}"
-            )
-        if position_offset is None:
-            position_offset = cache_position[:, 0]
-
-    if cache_update_mask is not None:
-        cache_update_mask = cache_update_mask.to(device=device, dtype=torch.bool)
-        if cache_update_mask.shape != (batch_size,):
-            raise ValueError("cache_update_mask must have shape [B]")
-
-    layer_states: list[DecoderLayerState | None] = (
-        list(state.layers) if state is not None else [None] * num_layers
-    )
-    if cache_position is not None:
-        for layer_state in layer_states:
-            if layer_state is None:
-                continue
-            self_state = layer_state.self_attention
-            self_state.cache_position = cache_position
-            self_state.cache_update_mask = cache_update_mask
-
-    return PreparedDecoderState(
-        state=state,
-        layer_states=layer_states,
-        cache_position=cache_position,
-        cache_update_mask=cache_update_mask,
-        position_offset=position_offset,
-    )
-
-
-def positions_from_offset(
-    offset: torch.Tensor | int,
-    *,
-    batch_size: int,
-    length: int,
-    device: torch.device,
-) -> torch.Tensor:
-    """Absolute ``[B, T]`` positions for a chunk starting at ``offset``."""
-    steps = torch.arange(length, device=device, dtype=torch.long)
-    if isinstance(offset, int):
-        return (steps + offset).unsqueeze(0).expand(batch_size, -1)
-    start = offset.to(device=device, dtype=torch.long)
-    if start.dim() == 0:
-        start = start.view(1).expand(batch_size)
-    if start.dim() != 1 or start.shape[0] != batch_size:
-        raise ValueError(
-            f"position_offset tensor must be scalar or [B], got {tuple(start.shape)}"
-        )
-    return start.unsqueeze(1) + steps.unsqueeze(0)
-
-
-def validate_memory_padding_mask(
-    memory: torch.Tensor, mask: torch.Tensor | None
-) -> None:
-    if mask is not None and mask.shape[:2] != memory.shape[:2]:
-        raise ValueError(
-            f"memory_key_padding_mask shape {tuple(mask.shape)} must match "
-            f"memory [B,Tm]=[{memory.shape[0]},{memory.shape[1]}]"
-        )
-
-
-def build_decoder_output(
-    last_hidden_state: torch.Tensor,
-    *,
-    hidden_states: list[torch.Tensor] | None,
-    state: DecoderState | None,
-    aux_loss: torch.Tensor,
-    router_states: list[object],
-    attentions: list[torch.Tensor],
-    cross_attentions: list[torch.Tensor],
-) -> TransformerDecoderOutput:
-    return TransformerDecoderOutput(
-        last_hidden_state=last_hidden_state,
-        hidden_states=tuple(hidden_states) if hidden_states is not None else None,
-        past_key_values=state,
-        aux_loss=aux_loss,
-        router_states=tuple(router_states) if router_states else None,
-        attentions=tuple(attentions) if attentions else None,
-        cross_attentions=tuple(cross_attentions) if cross_attentions else None,
-    )
-
-
-class EncoderPreparationOwner(Protocol):
-    config: TransformerConfig
-    input_adapter: nn.Module
-    patcher: PatchTokenizer
-    missing_token: torch.Tensor | None
-
-    def _channel_patchify(
-        self, src: torch.Tensor
-    ) -> tuple[torch.Tensor, PatchInfo]: ...
-
-
-@dataclass(frozen=True)
-class PreparedEncoderInput:
-    hidden_states: torch.Tensor
-    padding_mask: torch.Tensor | None
-    active_mask: torch.Tensor | None
-    patch_info: PatchInfo | None
-
-
-def prepare_encoder_input(
-    owner: EncoderPreparationOwner,
-    src: torch.Tensor,
-    padding_mask: torch.Tensor | None,
-    active_mask: torch.Tensor | None,
-    value_mask: torch.Tensor | None = None,
-) -> PreparedEncoderInput:
-    """Project or patch encoder input and transform its token-aligned masks."""
-    if src.ndim != 3:
-        raise ValueError(f"encoder expects src [B,T,C], got {tuple(src.shape)}")
-    _, sequence_length, input_size = src.shape
-    config = owner.config
-    if config.input_size != input_size:
-        raise ValueError(f"Expected input size {config.input_size}, got {input_size}")
-    if sequence_length > config.max_seq_len and config.patching == "none":
-        raise ValueError(
-            f"Sequence length {sequence_length} exceeds max {config.max_seq_len}"
-        )
-
-    if config.variate_attention:
-        batch_size, _, num_variates = src.shape
-        value_mask_bvt = None
-        if value_mask is not None:
-            if value_mask.shape == (batch_size, sequence_length):
-                value_mask_bvt = value_mask[:, None, :].expand(-1, num_variates, -1)
-            elif value_mask.shape == (batch_size, num_variates, sequence_length):
-                value_mask_bvt = value_mask
-            elif value_mask.shape == (batch_size, sequence_length, num_variates):
-                value_mask_bvt = value_mask.transpose(1, 2)
-            else:
-                raise ValueError(
-                    "value_mask must be [B,T], [B,V,T], or [B,T,V], got "
-                    f"{tuple(value_mask.shape)}"
-                )
-            value_mask_bvt = value_mask_bvt.to(device=src.device, dtype=torch.bool)
-            src = src.masked_fill(value_mask_bvt.transpose(1, 2), 0.0)
-
-        hidden_states = src.transpose(1, 2).reshape(
-            batch_size * num_variates, sequence_length, 1
-        )
-        hidden_states = owner.input_adapter(hidden_states)
-        if value_mask_bvt is not None:
-            if owner.missing_token is None:
-                raise RuntimeError("variate value masking requires a missing token")
-            flat_value_mask = value_mask_bvt.reshape(
-                batch_size * num_variates, sequence_length, 1
-            )
-            hidden_states = (
-                hidden_states
-                + flat_value_mask.to(dtype=hidden_states.dtype) * owner.missing_token
-            )
-
-        def expand_variate_mask(mask: torch.Tensor | None, name: str):
-            if mask is None:
-                return None
-            if mask.shape == (batch_size, sequence_length):
-                mask = mask[:, None, :].expand(-1, num_variates, -1)
-            elif mask.shape == (batch_size, sequence_length, num_variates):
-                mask = mask.transpose(1, 2)
-            elif mask.shape != (batch_size, num_variates, sequence_length):
-                raise ValueError(
-                    f"{name} must be [B,T], [B,V,T], or [B,T,V], "
-                    f"got {tuple(mask.shape)}"
-                )
-            return mask.reshape(batch_size * num_variates, sequence_length)
-
-        padding_mask = expand_variate_mask(padding_mask, "src_key_padding_mask")
-        active_mask = expand_variate_mask(active_mask, "gateskip_active_mask")
-        patch_info = None
-        if config.patching == "shared":
-            hidden_states, patch_info = owner.patcher(hidden_states)
-            padding_mask, active_mask = _patchify_masks(
-                config, padding_mask, active_mask, sequence_length
-            )
-
-        token_length = hidden_states.shape[1]
-        if token_length > config.max_seq_len:
-            raise ValueError(
-                f"Encoder token length {token_length} exceeds "
-                f"max_seq_len={config.max_seq_len}"
-            )
-        hidden_states = hidden_states.reshape(
-            batch_size, num_variates, token_length, -1
-        )
-        if padding_mask is not None:
-            padding_mask = padding_mask.reshape(batch_size, num_variates, token_length)
-        if active_mask is not None:
-            active_mask = active_mask.reshape(batch_size, num_variates, token_length)
-        return PreparedEncoderInput(
-            hidden_states, padding_mask, active_mask, patch_info
-        )
-
-    if value_mask is not None:
-        raise ValueError("value_mask requires variate_attention=True")
-    if config.patching == "channel":
-        hidden_states, patch_info = owner._channel_patchify(src)
-    else:
-        hidden_states = owner.input_adapter(src)
-        if config.patching == "none":
-            return PreparedEncoderInput(hidden_states, padding_mask, active_mask, None)
-        hidden_states, patch_info = owner.patcher(hidden_states)
-
-    if hidden_states.shape[1] > config.max_seq_len:
-        raise ValueError(
-            f"Encoder patch token length {hidden_states.shape[1]} exceeds "
-            f"max_seq_len={config.max_seq_len}. Increase max_seq_len or adjust "
-            "patch_len/patch_stride."
-        )
-    padding_mask, active_mask = _patchify_masks(
-        config, padding_mask, active_mask, sequence_length
-    )
-    return PreparedEncoderInput(hidden_states, padding_mask, active_mask, patch_info)
-
-
-def _patchify_masks(
-    config: TransformerConfig,
-    padding_mask: torch.Tensor | None,
-    active_mask: torch.Tensor | None,
-    sequence_length: int,
-) -> tuple[torch.Tensor | None, torch.Tensor | None]:
-    geometry = dict(
-        T=sequence_length,
-        patch_len=config.patch_len,
-        stride=config.patch_stride,
-        pad_end=config.patch_pad_end,
-    )
-    return (
-        patchify_padding_mask(padding_mask, **geometry),
-        patchify_gateskip_active_mask(active_mask, **geometry),
-    )
-
-
 __all__ = [
+    "StackTrace",
     "LayerResult",
     "StackOwner",
     "EncoderPreparationOwner",

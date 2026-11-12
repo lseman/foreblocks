@@ -4,22 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from importlib import import_module
 from typing import TYPE_CHECKING, Protocol, cast
 
 import torch.nn as nn
 
-from foreblocks.nn.attention.algorithms import (
-    GatedDeltaNetBackend,
-    KimiAttentionBackend,
-    ModernLinearAttention,
-)
 from foreblocks.nn.attention.config import AttentionConfig
-from foreblocks.nn.attention.multihead import MultiAttention
 
 if TYPE_CHECKING:
     from foreblocks.nn.transformer.config import TransformerConfig
 
 AttentionKwargsFactory = Callable[[AttentionConfig], dict[str, object]]
+_MULTI_ATTENTION_PATH = "foreblocks.nn.attention.multihead.MultiAttention"
 
 
 class LazyAttentionOwner(Protocol):
@@ -33,19 +29,30 @@ class LazyAttentionOwner(Protocol):
 
 @dataclass(frozen=True)
 class LayerAttentionBackendSpec:
+    """Construct a backend from a concrete class or deferred absolute class path."""
+
     name: str
-    module_cls: type[nn.Module]
+    module_cls: type[nn.Module] | str
     extra_kwargs: AttentionKwargsFactory = field(default=lambda config: {})
 
     def build(self, config: AttentionConfig) -> nn.Module:
+        module_cls = self.module_cls
+        if isinstance(module_cls, str):
+            grouped_config = module_cls == _MULTI_ATTENTION_PATH
+            module_name, class_name = module_cls.rsplit(".", 1)
+            module_cls = getattr(import_module(module_name), class_name)
+        else:
+            from foreblocks.nn.attention.multihead import MultiAttention
+
+            grouped_config = module_cls is MultiAttention
         shape = config.shape
-        if self.module_cls is MultiAttention:
+        if grouped_config:
             configured = replace(
                 config,
                 variant=replace(config.variant, name=self.name),
             )
-            return MultiAttention(configured)
-        return self.module_cls(
+            return module_cls(configured)
+        return module_cls(
             d_model=shape.d_model,
             n_heads=shape.n_heads,
             dropout=shape.dropout,
@@ -72,20 +79,35 @@ def _gdn_modern_kwargs(config: AttentionConfig) -> dict[str, object]:
 
 
 LAYER_ATTENTION_BACKENDS: dict[str, LayerAttentionBackendSpec] = {
-    "standard": LayerAttentionBackendSpec("standard", MultiAttention),
-    "sype": LayerAttentionBackendSpec("sype", MultiAttention),
+    "standard": LayerAttentionBackendSpec("standard", _MULTI_ATTENTION_PATH),
+    "sype": LayerAttentionBackendSpec("sype", _MULTI_ATTENTION_PATH),
     "linear": LayerAttentionBackendSpec(
-        "linear", ModernLinearAttention, _linear_kwargs
+        "linear",
+        "foreblocks.nn.attention.algorithms.linear.wrapper.ModernLinearAttention",
+        _linear_kwargs,
     ),
-    "gla": LayerAttentionBackendSpec("gla", ModernLinearAttention, _gla_kwargs),
+    "gla": LayerAttentionBackendSpec(
+        "gla",
+        "foreblocks.nn.attention.algorithms.linear.wrapper.ModernLinearAttention",
+        _gla_kwargs,
+    ),
     "deltanet": LayerAttentionBackendSpec(
-        "deltanet", ModernLinearAttention, _deltanet_kwargs
+        "deltanet",
+        "foreblocks.nn.attention.algorithms.linear.wrapper.ModernLinearAttention",
+        _deltanet_kwargs,
     ),
     "gated_deltanet": LayerAttentionBackendSpec(
-        "gated_deltanet", GatedDeltaNetBackend, _gdn_modern_kwargs
+        "gated_deltanet",
+        "foreblocks.nn.attention.algorithms.linear.gated_delta.GatedDeltaNetBackend",
+        _gdn_modern_kwargs,
     ),
-    "kimi": LayerAttentionBackendSpec("kimi", KimiAttentionBackend),
-    "gated_delta": LayerAttentionBackendSpec("gated_delta", GatedDeltaNetBackend),
+    "kimi": LayerAttentionBackendSpec(
+        "kimi", "foreblocks.nn.attention.algorithms.linear.kimi.KimiAttentionBackend"
+    ),
+    "gated_delta": LayerAttentionBackendSpec(
+        "gated_delta",
+        "foreblocks.nn.attention.algorithms.linear.gated_delta.GatedDeltaNetBackend",
+    ),
 }
 
 
@@ -94,7 +116,7 @@ def build_layer_attention_backend(name: str, config: AttentionConfig) -> nn.Modu
     if spec is not None:
         return spec.build(config)
     # MultiAttention validates registered variants; never silently fall back.
-    return LayerAttentionBackendSpec(name, MultiAttention).build(config)
+    return LayerAttentionBackendSpec(name, _MULTI_ATTENTION_PATH).build(config)
 
 
 class LazyAttentionBackendMixin:

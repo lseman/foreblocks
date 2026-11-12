@@ -90,12 +90,19 @@ class SyPERotator(nn.Module):
         return S11, S12, S21, S22
 
     def rotate_qk(self, q: torch.Tensor, k: torch.Tensor, tau: torch.Tensor):
-        B, H, N, Dh = q.shape
-        assert Dh == self.head_dim
+        if q.ndim != 4 or k.ndim != 4:
+            raise ValueError("SyPE query and key must have shape [B,H,T,D]")
+        if q.shape[0] != k.shape[0] or q.shape[2:] != k.shape[2:]:
+            raise ValueError(
+                "SyPE query and key must share batch size, sequence length, and head_dim"
+            )
+        if q.shape[-1] != self.head_dim:
+            raise ValueError(f"SyPE requires head_dim={self.head_dim}")
 
-        # reshape into 2D pairs: (B,H,N,P,2)
-        q2 = q.view(B, H, N, self.n_pairs, 2)
-        k2 = k.view(B, H, N, self.n_pairs, 2)
+        # The flow is shared across heads. Preserve independent Q/K head
+        # counts so grouped keys remain compact in the cache.
+        q2 = q.reshape(*q.shape[:-1], self.n_pairs, 2)
+        k2 = k.reshape(*k.shape[:-1], self.n_pairs, 2)
 
         S11, S12, S21, S22 = self._flow(tau)  # (B,N,P) each
 
@@ -114,7 +121,7 @@ class SyPERotator(nn.Module):
         # Then J u = [u2, -u1]
         k_tilde2 = torch.stack([u2[..., 1], -u2[..., 0]], dim=-1)
 
-        # back to (B,H,N,Dh)
-        q_tilde = q_tilde2.reshape(B, H, N, Dh)
-        k_tilde = k_tilde2.reshape(B, H, N, Dh)
+        # Restore each tensor's original head count.
+        q_tilde = q_tilde2.reshape_as(q)
+        k_tilde = k_tilde2.reshape_as(k)
         return q_tilde, k_tilde

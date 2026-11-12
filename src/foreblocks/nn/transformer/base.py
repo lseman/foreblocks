@@ -11,7 +11,6 @@ import functools
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 import torch
@@ -39,8 +38,9 @@ from foreblocks.nn.routing.mod import (
 from foreblocks.nn.transformer.config import Role, TransformerConfig
 from foreblocks.nn.transformer.runtime.forward import (
     LayerResult,
-    positions_from_offset,
+    StackTrace as StackTrace,
 )
+from foreblocks.nn.transformer.runtime.preparation import positions_from_offset
 from foreblocks.nn.transformer.runtime.residual_state import (
     AttentionResidualState,
     attention_residual_values,
@@ -65,32 +65,6 @@ def _build_positional_encoder(config: TransformerConfig) -> nn.Module | None:
             config.d_model, max_len=config.max_seq_len, scale=config.position_scale
         )
     return None
-
-
-@dataclass
-class StackTrace:
-    """Diagnostics collected while one forward pass runs the layer stack."""
-
-    hidden_states: list[torch.Tensor] | None
-    used_indices: list[int] = field(default_factory=list)
-    router_states: list[object] = field(default_factory=list)
-    attentions: list[torch.Tensor] = field(default_factory=list)
-    cross_attentions: list[torch.Tensor] = field(default_factory=list)
-
-    @classmethod
-    def start(cls, x: torch.Tensor, output_hidden_states: bool) -> StackTrace:
-        return cls(hidden_states=[x] if output_hidden_states else None)
-
-    def record(self, index: int, result: LayerResult) -> None:
-        self.used_indices.append(index)
-        if self.hidden_states is not None:
-            self.hidden_states.append(result.hidden_states)
-        if result.router_state is not None:
-            self.router_states.append(result.router_state)
-        if result.self_attention is not None:
-            self.attentions.append(result.self_attention)
-        if result.cross_attention is not None:
-            self.cross_attentions.append(result.cross_attention)
 
 
 class BaseTransformer(nn.Module, ABC):

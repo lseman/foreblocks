@@ -62,7 +62,29 @@ class TransformerGenerationOutput(TransformerOutput):
     past_key_values: DecoderState | None = None
 
 
+def build_decoder_output(
+    last_hidden_state: torch.Tensor,
+    *,
+    hidden_states: list[torch.Tensor] | None,
+    state: DecoderState | None,
+    aux_loss: torch.Tensor,
+    router_states: list[object],
+    attentions: list[torch.Tensor],
+    cross_attentions: list[torch.Tensor],
+) -> TransformerDecoderOutput:
+    return TransformerDecoderOutput(
+        last_hidden_state=last_hidden_state,
+        hidden_states=tuple(hidden_states) if hidden_states is not None else None,
+        past_key_values=state,
+        aux_loss=aux_loss,
+        router_states=tuple(router_states) if router_states else None,
+        attentions=tuple(attentions) if attentions else None,
+        cross_attentions=tuple(cross_attentions) if cross_attentions else None,
+    )
+
+
 __all__ = [
+    "build_decoder_output",
     "TransformerDecoderOutput",
     "TransformerEncoderOutput",
     "TransformerGenerationOutput",

@@ -1,18 +1,118 @@
 """Private score and output transforms for MultiAttention.
 
-The mixin owns no parameters: initialization and parameter registration stay on
-MultiAttention. It groups optional temperature, softcap, multi-scale masking,
-gating, normalization, and head-importance behavior used by kernel dispatch.
+Initialization helpers register parameters directly on MultiAttention; the
+mixin introduces no nested modules or checkpoint prefixes. It groups optional
+temperature, softcap, multi-scale masking, gating, normalization, and
+head-importance behavior used by kernel dispatch.
 """
 
 from __future__ import annotations
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+
+from foreblocks.nn.attention.config import AttentionFeatureConfig
 
 
 class _AttentionFeatures:
     """Feature transforms using the owning attention module's registered state."""
+
+    def _init_attention_features(self, features: AttentionFeatureConfig) -> None:
+        # ── QK Normalization ───────────────────────────────────────────────
+        self.qk_norm = bool(features.qk_norm)
+        if features.qk_norm_type not in {"rms", "l2"}:
+            raise ValueError(
+                f"qk_norm_type must be 'rms' or 'l2', got {features.qk_norm_type}"
+            )
+        self.qk_norm_type = features.qk_norm_type
+        if self.qk_norm and self.qk_norm_type == "rms":
+            self.q_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
+            self.k_norm = nn.RMSNorm(self.head_dim, eps=1e-5)
+        else:
+            self.q_norm = None
+            self.k_norm = None
+
+        # ── Logit softcapping (Gemini-style) ───────────────────────────────
+        self.logit_softcap = (
+            float(features.logit_softcap)
+            if features.logit_softcap is not None
+            else None
+        )
+        self.use_learned_temp = bool(features.learned_temperature)
+        if self.use_learned_temp:
+            # Per-head learnable temperature
+            self.temperature = nn.Parameter(
+                torch.ones(self.n_heads) * float(features.temperature_init)
+            )
+        else:
+            self.temperature = None
+
+        # ── Subquery normalization (DeepSeek-style) ────────────────────────
+        self.use_subquery_norm = bool(features.subquery_norm)
+        self.subquery_norm_mode = str(features.subquery_norm_mode)
+        if self.use_subquery_norm:
+            if self.subquery_norm_mode == "learned":
+                # Per-head learnable gate (applied to attention output)
+                self.subquery_gate = nn.Linear(self.head_dim, self.head_dim, bias=True)
+            else:
+                self.subquery_gate = None
+        else:
+            self.subquery_gate = None
+
+        # ── Multi-scale masking (hierarchical attention) ───────────────────
+        self.use_multiscale_mask = bool(features.multiscale_mask)
+        self.multiscale_window_ratio = float(features.multiscale_window_ratio)
+        self.multiscale_topk = int(features.multiscale_topk)
+        if self.use_multiscale_mask:
+            if not (0.0 < self.multiscale_window_ratio < 1.0):
+                raise ValueError("multiscale_window_ratio must be in (0, 1)")
+            if self.multiscale_topk <= 0:
+                raise ValueError("multiscale_topk must be > 0")
+
+        # ── Normalized attention output (LeLA-style) ──────────────────────
+        self.use_normalized_attn_out = bool(features.normalized_output)
+        self.norm_attn_type = str(features.normalized_output_type)
+        if self.use_normalized_attn_out:
+            if features.normalized_output_type == "rms":
+                self.attn_out_norm = nn.RMSNorm(self.d_model, eps=1e-5)
+            elif features.normalized_output_type == "layer":
+                self.attn_out_norm = nn.LayerNorm(self.d_model, eps=1e-5)
+            else:
+                raise ValueError(
+                    f"norm_attn_type must be 'rms' or 'layer', got {features.normalized_output_type}"
+                )
+        else:
+            self.attn_out_norm = None
+
+        # ── Head importance pruning (Lottery Ticket style) ──────────────────
+        self.use_head_importance = bool(features.head_importance)
+        self.head_importance_sparsity = float(features.head_importance_sparsity)
+        if self.use_head_importance:
+            if not (0.0 <= self.head_importance_sparsity < 1.0):
+                raise ValueError("head_importance_sparsity must be in [0, 1)")
+            # Learnable head importance scores (per head)
+            self.head_importance_scores = nn.Parameter(torch.ones(self.n_heads))
+        else:
+            self.head_importance_scores = None
+
+    def _init_gated_attention(self, features: AttentionFeatureConfig) -> None:
+        # ── Gated Attention (G1) ─────────────────────────────────────────────
+        self.use_gated_attention = features.gated_attention
+        self.gated_attn_mode = features.gated_attention_mode
+
+        if self.use_gated_attention:
+            if features.gated_attention_mode not in {"per_head", "shared"}:
+                raise ValueError(
+                    f"gated_attn_mode must be 'per_head' or 'shared', got {features.gated_attention_mode}"
+                )
+
+            # Both modes project channels; shared mode averages heads at execution.
+            self.gate_proj = nn.Linear(
+                self.head_dim, self.head_dim, bias=features.gated_attention_bias
+            )
+        else:
+            self.gate_proj = None
 
     def _apply_logit_softcap(self, scores: torch.Tensor) -> torch.Tensor:
         if self.logit_softcap is None:

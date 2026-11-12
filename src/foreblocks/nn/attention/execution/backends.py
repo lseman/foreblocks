@@ -222,3 +222,38 @@ __all__ = [
     "AttentionBackendSpec",
     "register_attention_backend",
 ]
+
+
+def _get_available_backends() -> dict[str, bool]:
+    backends = {"flash": False, "xformers": False, "sdp": False, "softpick": False}
+
+    # FlashAttention
+    try:
+        from flash_attn import flash_attn_func  # noqa: F401
+
+        backends["flash"] = True
+    except ImportError:
+        pass
+
+    # xFormers
+    try:
+        import xformers.ops  # noqa: F401
+
+        backends["xformers"] = True
+    except ImportError:
+        pass
+
+    # PyTorch scaled_dot_product_attention
+    backends["sdp"] = hasattr(F, "scaled_dot_product_attention")
+
+    # Optional third_party SoftPick
+    try:
+        from foreblocks.third_party.flash_softpick_attn import (  # noqa: F401
+            parallel_softpick_attn,
+        )
+
+        backends["softpick"] = True
+    except ImportError:
+        pass
+
+    return backends

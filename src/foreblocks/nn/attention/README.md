@@ -15,22 +15,33 @@ attention/
 ├── compat.py               # Legacy configuration conversion
 ├── layer.py                # AttentionLayer composition interface
 ├── multihead.py            # MultiAttention initialization and orchestration
-├── features.py             # Private score/output transforms and feature masks
+├── features.py             # Feature initialization, score/output transforms, masks
 ├── cache/                  # KV providers, storage, selection, decode, compaction
+│   └── runtime.py          # Private cache lifecycle and compaction coordination
 ├── execution/              # Backend capabilities and kernel dispatch
 ├── preparation/            # QKV projections, positions, masks, shared pipeline
+│   └── position.py         # RoPE/SyPE transforms and the position extension point
 ├── variants/               # Dense, sparse, windowed, and spectral strategies
 └── algorithms/
     ├── linear/             # Linear-attention backends and common execution
     └── spectral/           # Autocorrelation, Fourier, and wavelet algorithms
 ```
 
-`multihead.py` owns initialization, parameter registration, and the public
-forward interface. The private feature mixin registers no additional modules,
-so moving its methods does not alter parameter names or checkpoint paths.
+`multihead.py` owns construction and the public forward interface. Private
+feature, position, and cache mixins group behavior by responsibility. Feature
+initialization registers parameters directly on the owning `MultiAttention`,
+without adding nested modules, so parameter names and checkpoint paths stay
+unchanged. The constructor reads the grouped config directly rather than
+copying its fields into an intermediate flat configuration.
 `variants/` chooses an attention algorithm; `execution/` chooses its kernel;
 `preparation/` handles tensor and mask preparation; `cache/` handles KV state.
 Optional external adapters belong under `foreblocks.integrations`.
+
+Package exports, built-in variant factories, and linear backend selection import
+implementations on demand. Importing configs does not load `MultiAttention`,
+and constructing standard attention does not load linear or spectral algorithms.
+The same public import paths still resolve to the concrete implementation classes.
+Backend capability discovery lives in `execution/backends.py`.
 
 Transformer layers build these modules through
 `foreblocks.nn.transformer.attention_backends`. Keep transformer stack and
@@ -47,6 +58,18 @@ rules. Cross-attention does not acquire a causal mask from this fast path.
 Run `benchmarks/attention/bench_causal_sdpa.py` to compare eager and SDPA full
 attention latency and peak temporary CUDA memory on the same model weights.
 This measures attention forwards, not a full transformer training workload.
+
+## Grouped KV heads and local windows
+
+SyPE rotates queries and keys with their own head counts. KV projections and
+caches retain `n_kv_heads`; head repetition happens only for attention execution.
+Sliding-window attention supports both grouped-query and multi-query layouts.
+
+Window masks mark blocked positions internally and are inverted for SDPA's
+allowed-position convention. Manual query chunks cover the union of their local
+windows, honor each sequence's absolute cache offset, and return full attention
+weights when requested. Fully masked rows produce zero attention updates and
+finite gradients in both execution paths.
 
 ## Naming convention
 
@@ -122,3 +145,13 @@ values as keyword arguments directly; `MultiAttention` passes its already-
 unpacked `self.attention_matching_*` attributes straight through. If you
 add a new compaction knob, add it to `AttentionCacheConfig.matching_*` and
 thread it the same way — don't reintroduce a parallel config object.
+
+## Scope of the two attention interfaces
+
+`MultiAttention` is the configured attention engine used by transformer layers.
+`AttentionLayer` in `layer.py` is the separate public interface used by block
+compositions and the root package. Its projection layout, method names, and
+mask behavior differ; it is not an alias for `MultiAttention`. Keep its public
+constructor and checkpoint structure separate until an explicit migration is
+provided. Algorithm implementations remain grouped by mathematical family;
+cache storage stays independent of transformer stack state and generation.

@@ -15,21 +15,28 @@ Core API (re-exports):
 """
 
 # triton_backend.py - backward-compatibility shim
-# Triton norm kernels have been moved to foreblocks/transformer/kernels/.
+# Triton norm kernels live in the normalization operation family.
 # Import from the canonical locations directly:
 #   from foreblocks.kernels.normalization.layer_norm import LayerNormTritonFunction
 #   from foreblocks.kernels.normalization.rms_norm import RMSNormTritonFunction, ...
 from foreblocks.kernels.normalization.layer_norm import (  # noqa: F401
     TRITON_AVAILABLE,
     LayerNormTritonFunction,
-    layernorm_fwd_kernel,
 )
 from foreblocks.kernels.normalization.rms_norm import (  # noqa: F401
     FusedAddRMSNormFunction,
     RMSNormTritonFunction,
     _should_use_triton,
     fused_add_rmsnorm,
-    fused_add_rmsnorm_fwd_kernel,
     triton_fused_rmsnorm_scale_bias,
     triton_scale_bias,
 )
+
+# Kernel objects only exist when Triton imports successfully. Keep the Python
+# wrappers available on CPU-only installations as well.
+if TRITON_AVAILABLE:
+    from foreblocks.kernels.normalization.layer_norm import layernorm_fwd_kernel
+    from foreblocks.kernels.normalization.rms_norm import fused_add_rmsnorm_fwd_kernel
+else:
+    layernorm_fwd_kernel = None
+    fused_add_rmsnorm_fwd_kernel = None

@@ -8,20 +8,23 @@ import torch
 import torch.nn as nn
 
 from foreblocks.nn.attention.cache.kv import StaticKVCache
-from foreblocks.nn.transformer.base import BaseTransformer, StackTrace
+from foreblocks.nn.transformer.base import BaseTransformer
 from foreblocks.nn.transformer.config import GenerationConfig, Role, TransformerConfig
 from foreblocks.nn.transformer.layers.decoder import TransformerDecoderLayer
 from foreblocks.nn.transformer.runtime.cache import DecoderCacheManager
+from foreblocks.nn.transformer.runtime.checkpointing import ModelLayerInvokeStrategy
 from foreblocks.nn.transformer.runtime.decoding import GenerationEngine
-from foreblocks.nn.transformer.runtime.execution import ModelLayerInvokeStrategy
 from foreblocks.nn.transformer.runtime.forward import (
     LayerResult,
-    build_decoder_output,
+    StackTrace,
     execute_decoder_layer,
+)
+from foreblocks.nn.transformer.runtime.mtp import build_decoder_mtp_targets
+from foreblocks.nn.transformer.runtime.outputs import build_decoder_output
+from foreblocks.nn.transformer.runtime.preparation import (
     prepare_decoder_state,
     validate_memory_padding_mask,
 )
-from foreblocks.nn.transformer.runtime.mtp import build_decoder_mtp_targets
 from foreblocks.nn.transformer.runtime.routing import (
     gateskip_active_mask_from_padding,
     gather_padding_mask,

@@ -13,8 +13,8 @@ Core API:
 
 """
 
-import torch.nn as nn
 import torch
+import torch.nn as nn
 from torch import Tensor
 
 from foreblocks.nn.attention.cache.storage import (
@@ -612,6 +612,7 @@ class PagedKVCache:
             else:
                 parts.append(self.storage_latent[b, global_blk, :, :])
         return torch.cat(parts, dim=0)
+
     def upproject_latent_stream(
         self,
         k_up_proj: nn.Module,
@@ -656,12 +657,8 @@ class PagedKVCache:
                 else:
                     latent_blk = self.storage_latent[b, global_blk, :, :]
                 # Up-project: [T_block, L] -> [T_block, Hkv, D]
-                k_blk = k_up_proj(latent_blk).view(
-                    latent_blk.size(0), self.Hkv, self.D
-                )
-                v_blk = v_up_proj(latent_blk).view(
-                    latent_blk.size(0), self.Hkv, self.D
-                )
+                k_blk = k_up_proj(latent_blk).view(latent_blk.size(0), self.Hkv, self.D)
+                v_blk = v_up_proj(latent_blk).view(latent_blk.size(0), self.Hkv, self.D)
                 # Transpose to [Hkv, T_block, D]
                 parts_k.append(k_blk.transpose(0, 1))
                 parts_v.append(v_blk.transpose(0, 1))
@@ -713,25 +710,6 @@ class PagedKVCache:
 
     def get_max_cache_shape(self) -> int:
         return self.max_blocks * self.block_size
-
-    def reorder_cache(self, beam_idx: Tensor) -> None:
-        indices = beam_idx.to(device=self.seq_len.device, dtype=torch.long)
-        if indices.numel() != self.B:
-            raise ValueError("beam_idx length must equal the cache batch size")
-        if self.storage_k is not None:
-            self.storage_k.copy_(self.storage_k.index_select(0, indices))
-            self.storage_v.copy_(self.storage_v.index_select(0, indices))
-            self.storage_beta.copy_(self.storage_beta.index_select(0, indices))
-        if self.storage_latent is not None:
-            self.storage_latent.copy_(self.storage_latent.index_select(0, indices))
-        self.storage_pos.copy_(self.storage_pos.index_select(0, indices))
-        old_tables = self.block_table
-        old_write_pos = self.write_pos
-        order = indices.cpu().tolist()
-        self.block_table = [list(old_tables[i]) for i in order]
-        self.write_pos = [old_write_pos[i] for i in order]
-        self.seq_len.copy_(self.seq_len.index_select(0, indices))
-        self.logical_seq_len.copy_(self.logical_seq_len.index_select(0, indices))
 
     def crop(self, max_length: int) -> None:
         if max_length < 0:
@@ -850,8 +828,12 @@ class PagedKVCache:
         new_batch = int(beam_idx.numel())
         order = beam_idx.cpu().tolist()
         new_cache = type(self)(
-            new_batch, self.Hkv, self.D, self.latent_dim,
-            block_size=self.block_size, max_blocks=self.max_blocks,
+            new_batch,
+            self.Hkv,
+            self.D,
+            self.latent_dim,
+            block_size=self.block_size,
+            max_blocks=self.max_blocks,
             device=self.storage_pos.device,
         )
 
@@ -862,12 +844,16 @@ class PagedKVCache:
                 latent = self.gather_latent_for_seq(src_b)
                 if positions.numel() == 0:
                     new_cache.rewrite_seq_latent(
-                        out_b, latent[:0], positions[:0],
+                        out_b,
+                        latent[:0],
+                        positions[:0],
                         int(self.get_seq_length(src_b)),
                     )
                 else:
                     new_cache.rewrite_seq_latent(
-                        out_b, latent, positions,
+                        out_b,
+                        latent,
+                        positions,
                         int(self.get_seq_length(src_b)),
                     )
             else:
@@ -875,13 +861,21 @@ class PagedKVCache:
                 beta = self.gather_beta_for_seq(src_b)
                 if k.numel() == 0:
                     new_cache.rewrite_seq_dense(
-                        out_b, k[:0], v[:0], positions[:0],
-                        beta_ht=None, logical_seq_len=int(self.get_seq_length(src_b)),
+                        out_b,
+                        k[:0],
+                        v[:0],
+                        positions[:0],
+                        beta_ht=None,
+                        logical_seq_len=int(self.get_seq_length(src_b)),
                     )
                 else:
                     new_cache.rewrite_seq_dense(
-                        out_b, k, v, positions,
-                        beta_ht=beta, logical_seq_len=int(self.get_seq_length(src_b)),
+                        out_b,
+                        k,
+                        v,
+                        positions,
+                        beta_ht=beta,
+                        logical_seq_len=int(self.get_seq_length(src_b)),
                     )
 
         return new_cache

@@ -32,8 +32,10 @@ transformer/
 │   └── axis_attention.py        # Sequence/variate attention reshaping and masks
 ├── attention_backends.py        # Lazy attention backend selection and materialization
 └── runtime/                     # Execution helpers without concrete stack imports
-    ├── execution.py             # Layer and sublayer execution strategies/mixins
-    ├── forward.py               # Input/state preparation and per-layer execution
+    ├── execution.py             # Sublayer normalization and residual execution
+    ├── checkpointing.py         # Stack layer invocation and checkpoint replay
+    ├── forward.py               # Per-layer execution, LayerResult, and StackTrace
+    ├── preparation.py           # Encoder inputs, patch masks, decoder call state
     ├── contiguous.py            # Masked-horizon preparation, projection, and quantile loss
     ├── decoding.py              # GenerationEngine, beam search, speculative decoding
     ├── routing.py               # Mixture-of-Depths gather/scatter helpers
@@ -42,13 +44,18 @@ transformer/
     ├── contracts.py             # DecoderOwner protocol
     ├── state.py                 # Typed incremental decoder state
     ├── residual_state.py        # Attention-residual accumulation state
-    └── outputs.py               # Structured encoder, decoder, and generation outputs
+    └── outputs.py               # Structured outputs and decoder output assembly
 ```
 
 The stack modules (`base.py`, `encoder.py`, `decoder.py`) compose individual
 `layers/` and call `runtime/` helpers. Layers depend on the config, attention
 backends, and runtime execution, without importing the concrete model stacks.
-Runtime helpers use protocols when they need a stack collaborator. Reusable
+Runtime helpers use protocols when they need a stack collaborator. Layer-level
+residual execution does not import stack-level checkpoint replay. Preparation
+functions normalize inputs and cache coordinates without executing layers;
+`forward.py` collects results, and `outputs.py` assembles public outputs. Former
+helper imports from `runtime.forward` and checkpointing imports from
+`runtime.execution` remain available for compatibility. Reusable
 neural modules live in sibling packages such as `foreblocks.nn.attention`,
 `foreblocks.nn.embeddings`, `foreblocks.nn.residual`, and `foreblocks.nn.routing`.
 
@@ -56,7 +63,9 @@ Keep per-layer construction and forward behavior in `layers/`; keep layer-stack
 orchestration, input/output adaptation, and public model methods in the stack
 modules. Tensor preparation, cache handling, and generation algorithms belong in
 `runtime/`. The package and `layers/` expose classes lazily, so importing a
-layer does not load an encoder or decoder stack.
+layer does not load an encoder or decoder stack. Backend specifications store
+implementation paths and resolve classes only when building the selected
+backend; configuration validation does not import those implementations.
 
 ## Configuration
 

@@ -15,35 +15,21 @@ Core API:
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import Literal
 
 import torch
 import torch.nn as nn
 
-from foreblocks.nn.attention.algorithms.linear.deltanet import (
-    DeltaNetBackend,
-)
-from foreblocks.nn.attention.algorithms.linear.gated_delta import (
-    GatedDeltaNetBackend,
-)
-from foreblocks.nn.attention.algorithms.linear.gated_deltanet2 import (
-    GatedDeltaNet2Backend,
-)
-from foreblocks.nn.attention.algorithms.linear.gla import GLABackend
-from foreblocks.nn.attention.algorithms.linear.kimi import (
-    KimiAttentionBackend,
-)
-from foreblocks.nn.attention.algorithms.linear.rda import RDABackend
-
 _BACKEND_MAP = {
-    "rda": RDABackend,
-    "gla": GLABackend,
-    "deltanet": DeltaNetBackend,
-    "gated_delta": GatedDeltaNetBackend,
-    "gated_deltanet": GatedDeltaNetBackend,
-    "gated_deltanet2": GatedDeltaNet2Backend,
-    "gdn2": GatedDeltaNet2Backend,
-    "kimi": KimiAttentionBackend,
+    "rda": "foreblocks.nn.attention.algorithms.linear.rda.RDABackend",
+    "gla": "foreblocks.nn.attention.algorithms.linear.gla.GLABackend",
+    "deltanet": "foreblocks.nn.attention.algorithms.linear.deltanet.DeltaNetBackend",
+    "gated_delta": "foreblocks.nn.attention.algorithms.linear.gated_delta.GatedDeltaNetBackend",
+    "gated_deltanet": "foreblocks.nn.attention.algorithms.linear.gated_delta.GatedDeltaNetBackend",
+    "gated_deltanet2": "foreblocks.nn.attention.algorithms.linear.gated_deltanet2.GatedDeltaNet2Backend",
+    "gdn2": "foreblocks.nn.attention.algorithms.linear.gated_deltanet2.GatedDeltaNet2Backend",
+    "kimi": "foreblocks.nn.attention.algorithms.linear.kimi.KimiAttentionBackend",
 }
 
 
@@ -174,7 +160,9 @@ class ModernLinearAttention(nn.Module):
                 if name in backend_kwargs:
                     kwargs[name] = backend_kwargs[name]
 
-        self.impl = _BACKEND_MAP[backend](**kwargs)
+        module_name, class_name = _BACKEND_MAP[backend].rsplit(".", 1)
+        backend_class = getattr(import_module(module_name), class_name)
+        self.impl = backend_class(**kwargs)
 
     @property
     def state_key(self) -> str:

@@ -38,6 +38,8 @@ class SlidingWindowAttentionImpl:
         q, k, v, q_start_pos = self.context._prepare_qkv_attention(
             query, key, value, layer_state
         )
+        k = self.context._repeat_kv(k)
+        v = self.context._repeat_kv(v)
 
         if (
             self.context.use_flash_sliding
@@ -52,7 +54,9 @@ class SlidingWindowAttentionImpl:
                     is_causal,
                     q_start_pos=q_start_pos,
                 )
-                combined = window_mask.view(1, 1, q.size(2), k.size(2))
+                combined = (
+                    window_mask if window_mask.ndim == 4 else window_mask[None, None]
+                )
                 if attn_mask is not None:
                     combined = combined | self.context._normalize_attn_mask(
                         attn_mask, B, self.context.n_heads, q.size(2), k.size(2)
@@ -67,7 +71,8 @@ class SlidingWindowAttentionImpl:
                     q,
                     k,
                     v,
-                    attn_mask=combined,
+                    # Package masks mark blocked entries; SDPA marks allowed ones.
+                    attn_mask=~combined,
                     dropout_p=self.context.dropout_p if self.context.training else 0.0,
                     is_causal=False,
                 )
@@ -91,7 +96,11 @@ class SlidingWindowAttentionImpl:
             apply_gate=True,
             q_start_pos=q_start_pos,
         )
-        return self.context._finalize_projected_output(out, B, T_q), weights, layer_state
+        return (
+            self.context._finalize_projected_output(out, B, T_q),
+            weights,
+            layer_state,
+        )
 
     def manual(
         self,
@@ -107,85 +116,76 @@ class SlidingWindowAttentionImpl:
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         B, H, T_q, D = q.shape
         T_k = k.size(2)
-        q_start_pos = q_start_pos
-        if T_q <= self.context.chunk_size:
-            scores = torch.matmul(q, k.transpose(-2, -1)) * self.context.scale
-            window_mask = self.context._create_sliding_window_mask(
-                T_q,
-                T_k,
-                q.device,
-                is_causal,
-            )
-            scores = scores.masked_fill(window_mask.view(1, 1, T_q, T_k), float("-inf"))
-            scores = self.context._apply_masks(scores, attn_mask, key_padding_mask)
-
-            weights = F.softmax(scores, dim=-1)
-            weights = self.context._dropout_weights(weights)
-
-            out = torch.matmul(weights, v)
-            if apply_gate:
-                out = self.context._apply_gated_attention(out)
-            return out, (weights if need_weights else None)
+        # NSA also calls this method directly with compact KV heads.
+        if k.size(1) != H:
+            k = self.context._repeat_kv(k)
+            v = self.context._repeat_kv(v)
+        if q_start_pos is None:
+            starts = torch.zeros(B, device=q.device, dtype=torch.long)
+            first_start = last_start = 0
+        else:
+            starts = q_start_pos.to(device=q.device, dtype=torch.long).reshape(-1)
+            first_start = int(starts.min().item())
+            last_start = int(starts.max().item())
 
         output = torch.zeros_like(q)
-        for i in range(0, T_q, self.context.chunk_size):
-            end_i = min(i + self.context.chunk_size, T_q)
-
-            if is_causal:
-                start_k = max(0, i - self.context.window_size + 1)
-                end_k = end_i
-            else:
-                center = (i + end_i) // 2
-                half = self.context.window_size // 2
-                start_k = max(0, center - half)
-                end_k = min(T_k, center + half + 1)
-
-            q_chunk = q[:, :, i:end_i]
-            k_chunk = k[:, :, start_k:end_k]
-            v_chunk = v[:, :, start_k:end_k]
+        full_weights = q.new_zeros(B, H, T_q, T_k) if need_weights else None
+        half_window = self.context.window_size // 2
+        for start in range(0, T_q, self.context.chunk_size):
+            stop = min(start + self.context.chunk_size, T_q)
+            # Gather the union of all query windows in this chunk and batch.
+            # Centering one window on the chunk would omit boundary neighbors.
+            left = self.context.window_size - 1 if is_causal else half_window
+            right = 0 if is_causal else half_window
+            key_start = max(0, first_start + start - left)
+            key_stop = min(T_k, last_start + stop + right)
+            if key_start >= key_stop:
+                continue
 
             scores = (
-                torch.matmul(q_chunk, k_chunk.transpose(-2, -1)) * self.context.scale
-            )
-            q_pos = torch.arange(i, end_i, device=q.device).unsqueeze(1)
-            if q_start_pos is not None:
-                q_pos = q_pos + q_start_pos
-            k_pos = torch.arange(start_k, end_k, device=q.device).unsqueeze(0)
-            if is_causal:
-                local_mask = (k_pos > q_pos) | (
-                    k_pos < (q_pos - self.context.window_size + 1)
+                torch.matmul(
+                    q[:, :, start:stop], k[:, :, key_start:key_stop].transpose(-2, -1)
                 )
-            else:
-                half = self.context.window_size // 2
-                local_mask = (k_pos < (q_pos - half)) | (k_pos > (q_pos + half))
-
-            scores = scores.masked_fill(
-                local_mask.view(1, 1, end_i - i, end_k - start_k),
-                float("-inf"),
+                * self.context.scale
             )
-
-            if key_padding_mask is not None:
-                chunk_pad = key_padding_mask[:, start_k:end_k]
-                scores = scores.masked_fill(chunk_pad.view(B, 1, 1, -1), float("-inf"))
-
+            local_mask = self.context._create_sliding_window_mask(
+                stop - start,
+                key_stop - key_start,
+                q.device,
+                is_causal,
+                q_start_pos=starts + start - key_start,
+            )
+            scores = scores.masked_fill(local_mask, float("-inf"))
             chunk_attn = self.context._slice_attn_mask(
                 attn_mask=attn_mask,
                 B=B,
                 H=H,
-                q_start=i,
-                q_end=end_i,
-                k_start=start_k,
-                k_end=end_k,
+                q_start=start,
+                q_end=stop,
+                k_start=key_start,
+                k_end=key_stop,
                 T_q_full=T_q,
                 T_k_full=T_k,
             )
-            if chunk_attn is not None:
-                scores = scores.masked_fill(chunk_attn, float("-inf"))
-
-            weights = F.softmax(scores, dim=-1)
+            chunk_padding = (
+                key_padding_mask[:, key_start:key_stop]
+                if key_padding_mask is not None
+                else None
+            )
+            scores = self.context._apply_masks(scores, chunk_attn, chunk_padding)
+            # Avoid NaN softmax intermediates as well as NaN outputs: masking
+            # them after softmax would still poison gradients for empty rows.
+            empty = torch.isneginf(scores).all(dim=-1, keepdim=True)
+            weights = F.softmax(scores.masked_fill(empty, 0.0), dim=-1).masked_fill(
+                empty, 0.0
+            )
             weights = self.context._dropout_weights(weights)
-            output[:, :, i:end_i] = torch.matmul(weights, v_chunk)
+            output[:, :, start:stop] = torch.matmul(
+                weights, v[:, :, key_start:key_stop]
+            )
+            if full_weights is not None:
+                full_weights[:, :, start:stop, key_start:key_stop] = weights
 
         if apply_gate:
             output = self.context._apply_gated_attention(output)
-        return output, None
+        return output, full_weights

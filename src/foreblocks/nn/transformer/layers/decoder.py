@@ -16,7 +16,7 @@ from foreblocks.nn.transformer.runtime.execution import (
     MHCExecutionMixin,
     ResidualBlockMixin,
 )
-from foreblocks.nn.transformer.runtime.forward import validate_memory_padding_mask
+from foreblocks.nn.transformer.runtime.preparation import validate_memory_padding_mask
 from foreblocks.nn.transformer.runtime.residual_state import AttentionResidualState
 from foreblocks.nn.transformer.runtime.state import (
     AttentionCacheState,
