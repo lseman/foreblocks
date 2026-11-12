@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build docs/*.md into the static website. Requires docs-requirements.txt.
 
-Replaces VitePress with a pure-Python pipeline (markdown-it-py + Pygments).
+Builds the documentation with a pure-Python pipeline (markdown-it-py + Pygments).
 No Node.js, no npm, no JavaScript bundler required at build time.
 """
 from __future__ import annotations
@@ -133,7 +133,7 @@ class LandingDarkStyle(Style):
     }
 
 
-# ── Sidebar config (mirrors docs/.vitepress/config.js) ───────────────────────
+# ── Sidebar navigation ───────────────────────
 
 SIDEBAR = [
     {
@@ -299,7 +299,7 @@ def read_pages(source: Path, md: markdown_it.MarkdownIt, version: str) -> list[P
         raw = path.read_text(encoding="utf-8")
         fm, body = parse_frontmatter(raw)
 
-        # Replace VitePress template variables
+        # Replace documentation version template variables
         body = re.sub(r"\{\{\s*\$frontmatter\.foreBlocksVersion\s*\}\}", version, body)
 
         # Replace [[toc]] markers with generated TOC HTML
@@ -404,7 +404,7 @@ def rewrite_link(url: str, page: Page, pages: dict[Path, Page], root: Path,
     # Strip trailing slash so "getting-started/" resolves to the file, not a directory
     clean_path = unquote(parts.path).rstrip("/") if parts.path else ""
     raw_target = (page.source.parent / clean_path).resolve() if clean_path else page.source
-    # VitePress-style links may omit .md extension — try adding it
+    # Documentation links may omit the .md extension — try adding it
     target = raw_target
     if not target.exists():
         md_target = raw_target.with_suffix(raw_target.suffix + ".md") if raw_target.suffix else raw_target.with_name(raw_target.name + ".md")
@@ -619,13 +619,10 @@ def build(source: Path, output: Path, root: Path = ROOT,
             encoding="utf-8",
         )
 
-        # Copy docs CSS and JS from VitePress theme area
-        vs = ROOT / "docs" / ".vitepress"
-        if (vs / "config.js").exists():
-            # Copy the extra.css as site.css
-            css_src = ROOT / "docs" / "stylesheets" / "extra.css"
-            if css_src.exists():
-                shutil.copy2(css_src, static / "site.css")
+        # Copy shared documentation styles independently of frontend tooling.
+        css_src = ROOT / "docs" / "stylesheets" / "extra.css"
+        if css_src.exists():
+            shutil.copy2(css_src, static / "site.css")
 
         # Write generated CSS for docs layout (minimal, matching landing palette)
         (static / "docs.css").write_text(_DOCS_CSS, encoding="utf-8")
@@ -663,7 +660,7 @@ def build(source: Path, output: Path, root: Path = ROOT,
 
 # ── Inline static assets ─────────────────────────────────────────────────────
 
-_DOCS_CSS = r"""/* foreBlocks docs — layout + palette (no VitePress dependency) */
+_DOCS_CSS = r"""/* foreBlocks docs — layout + palette (Python-generated site) */
 :root {
   --fb-purple: #a78bfa;
   --fb-accent-rgb: 167, 139, 250;

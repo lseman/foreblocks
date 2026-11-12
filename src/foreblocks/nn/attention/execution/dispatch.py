@@ -156,8 +156,20 @@ class AttentionKernelDispatcher:
             need_weights=need_weights,
             q_start_pos=q_start_pos,
         ):
-            sdpa_mask = self._sdpa_attention_mask(
-                q, k, attn_mask, key_padding_mask, is_causal
+            # Native causality avoids a dense [B,H,Tq,Tk] additive mask.
+            # Offset decoding and custom score features are excluded above.
+            native_causal = (
+                is_causal
+                and not context.cross_attention
+                and attn_mask is None
+                and key_padding_mask is None
+            )
+            sdpa_mask = (
+                None
+                if native_causal
+                else self._sdpa_attention_mask(
+                    q, k, attn_mask, key_padding_mask, is_causal
+                )
             )
             try:
                 out = F.scaled_dot_product_attention(
@@ -166,7 +178,7 @@ class AttentionKernelDispatcher:
                     v,
                     attn_mask=sdpa_mask,
                     dropout_p=context.dropout_p if context.training else 0.0,
-                    is_causal=False,
+                    is_causal=native_causal,
                     enable_gqa=q.size(1) != k.size(1),
                     scale=context.scale,
                 )
@@ -177,7 +189,6 @@ class AttentionKernelDispatcher:
                     ) from exc
             else:
                 return self._finalize(out), None
-
 
         # GQA: repeat KV heads to match query heads
         k, v = context._repeat_kv(k), context._repeat_kv(v)
@@ -208,9 +219,9 @@ class AttentionKernelDispatcher:
                     )
                 q_pos = q_start_pos.to(device=q.device, dtype=torch.long).view(
                     batch, 1, 1, 1
-                ) + torch.arange(
-                    query_length, device=q.device, dtype=torch.long
-                ).view(1, 1, query_length, 1)
+                ) + torch.arange(query_length, device=q.device, dtype=torch.long).view(
+                    1, 1, query_length, 1
+                )
                 k_pos = torch.arange(
                     key_length, device=q.device, dtype=torch.long
                 ).view(1, 1, 1, key_length)
@@ -230,9 +241,7 @@ class AttentionKernelDispatcher:
             )
             if multiscale_mask is not None:
                 scores = scores.masked_fill(
-                    (~multiscale_mask).view(
-                        1, 1, query_length, key_length
-                    ),
+                    (~multiscale_mask).view(1, 1, query_length, key_length),
                     float("-inf"),
                 )
 

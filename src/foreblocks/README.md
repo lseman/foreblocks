@@ -106,6 +106,24 @@ foreblocks/
 └── README.md                      # This file
 ```
 
+## Filter organization
+
+`processing/filters/` owns numerical filtering algorithms. Private modules
+`_ssa.py`, `_lowess.py`, and `_kalman.py` hold reconstruction and smoothing;
+the public filter modules handle NumPy arrays, per-column filtering, and NaNs.
+`processing/auto_filter/filters/` adapts these algorithms to pandas Series and
+the automatic filter registry. Defaults and failure policies belong to the
+adapters so their existing interfaces remain stable.
+
+Kalman retains two distinct models: the array filter uses a scalar local-level
+model with iterative noise estimation; the automatic filter uses a two-state
+local-linear-trend model with RTS smoothing. They share a numerical home, not
+interchangeable equations or defaults.
+
+Basic outlier processing does not load TranAD. Its detector is imported when
+`method="tranad"` is selected; legacy `outlier.TranAD` and
+`outlier.TranADDetector` attributes remain available through lazy imports.
+
 ## Core API
 
 ### Time-Series Handler

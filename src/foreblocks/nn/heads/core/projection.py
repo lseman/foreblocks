@@ -28,7 +28,16 @@ class ProjectionRegistry(nn.Module):
 
     @staticmethod
     def _safe_token(val: Any) -> str:
-        return str(val).replace("|", "_").replace(":", "_").replace(" ", "_")
+        # Dots separate state_dict paths and are forbidden in ModuleDict names.
+        # Escape percent first so literal "%2E" cannot collide with a dot.
+        return (
+            str(val)
+            .replace("%", "%25")
+            .replace(".", "%2E")
+            .replace("|", "_")
+            .replace(":", "_")
+            .replace(" ", "_")
+        )
 
     def _make_key(
         self,
@@ -100,12 +109,15 @@ class ProjectionRegistry(nn.Module):
             kwargs=kwargs,
         )
         if key not in self.registry:
-            self.registry[key] = self._build_module(
+            module = self._build_module(
                 in_dim=in_dim,
                 out_dim=out_dim,
                 proj_type=proj_type,
                 **kwargs,
             )
+            # Lazy children must honor eval() called before their creation.
+            module.train(self.training)
+            self.registry[key] = module
         mod = self.registry[key]
         if device is not None or dtype is not None:
             mod = mod.to(device=device, dtype=dtype)

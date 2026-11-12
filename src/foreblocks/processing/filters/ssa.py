@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from foreblocks.processing.filters._ssa import _ssa_reconstruct
 from foreblocks.processing.filters.utils import _as_2d, _nan_interp_1d
 
 
@@ -45,29 +46,8 @@ def ssa_filter(
         if fill_nans_for_filter and np.isnan(col_work).any():
             col_work = _nan_interp_1d(col_work)
 
-        # 1. Embedding
-        X = np.column_stack([col_work[j : j + L] for j in range(K)])
-
-        # 2. SVD
         try:
-            U, s, Vh = np.linalg.svd(X, full_matrices=False)
-
-            # 3. Grouping (select top components)
-            d = min(n_components, len(s))
-            X_elem = np.zeros_like(X)
-            for j in range(d):
-                X_elem += s[j] * np.outer(U[:, j], Vh[j, :])
-
-            # 4. Diagonal Averaging (Reconstruction)
-            rec = np.zeros(T)
-            counts = np.zeros(T)
-
-            for c in range(K):
-                for r in range(L):
-                    rec[r + c] += X_elem[r, c]
-                    counts[r + c] += 1
-
-            rec = rec / np.maximum(counts, 1)
+            rec = _ssa_reconstruct(col_work, window=L, n_components=n_components)
 
             out[mask, i] = rec[mask]
         except Exception:

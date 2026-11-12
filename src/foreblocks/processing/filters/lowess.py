@@ -7,8 +7,8 @@ LOWESS (locally weighted scatterplot smoothing) filter.
 from __future__ import annotations
 
 import numpy as np
-from statsmodels.nonparametric.smoothers_lowess import lowess
 
+from foreblocks.processing.filters._lowess import _lowess_smooth
 from foreblocks.processing.filters.utils import _as_2d
 
 
@@ -31,13 +31,12 @@ def lowess_filter(
         if mask.sum() < min_points:
             continue
         try:
-            sm = lowess(
+            sm = _lowess_smooth(
                 col[mask],
                 t[mask],
                 frac=frac,
                 it=it,
                 delta=delta,
-                return_sorted=False,
             )
             out[mask, i] = sm
         except Exception:

@@ -30,7 +30,9 @@ class QKVPipeline:
             force_paged=force_paged,
         )
         start_positions = None
-        if not attn.cross_attention:
+        # Uncached attention starts at zero; a tensor offset would needlessly
+        # disable SDPA and add position allocations on every full forward.
+        if not attn.cross_attention and layer_state is not None:
             start_positions = provider.get_start_positions(batch_size, q.device)
 
         if attn.qk_norm:

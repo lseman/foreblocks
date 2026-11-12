@@ -8,17 +8,17 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from statsmodels.nonparametric.smoothers_lowess import lowess as sm_lowess
 
 from foreblocks.processing.auto_filter.filters.utils import _as_series
 from foreblocks.processing.auto_filter.registry import register_filter
+from foreblocks.processing.filters._lowess import _lowess_smooth
 
 
 @register_filter("LOWESS")
 def lowess_filter(ts: pd.Series, frac: float = 0.08, it: int = 2) -> pd.Series:
     x = np.arange(len(ts), dtype=float)
     y = ts.values.astype(float)
-    smoothed = sm_lowess(y, x, frac=frac, it=it, return_sorted=False)
+    smoothed = _lowess_smooth(y, x, frac=frac, it=it)
     return _as_series(smoothed, ts.index, name="lowess")
 
 
@@ -26,5 +26,5 @@ def lowess_filter(ts: pd.Series, frac: float = 0.08, it: int = 2) -> pd.Series:
 def robust_loess_filter(ts: pd.Series, frac: float = 0.10, it: int = 4) -> pd.Series:
     x = np.arange(len(ts), dtype=float)
     y = ts.values.astype(float)
-    smoothed = sm_lowess(y, x, frac=frac, it=max(3, int(it)), return_sorted=False)
+    smoothed = _lowess_smooth(y, x, frac=frac, it=max(3, int(it)))
     return _as_series(smoothed, ts.index, name="robust_loess")

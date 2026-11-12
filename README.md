@@ -97,7 +97,7 @@ Full documentation: [https://foreblocks.laioseman.com/docs/](https://foreblocks.
 ### Documentation site structure
 
 ```
-docs/           - VitePress source for the documentation site
+docs/           - Markdown source for the documentation site
 site/landing/   - Static landing page assets for the published site root
 examples/       - Runnable demos and notebooks
 ```
@@ -284,7 +284,7 @@ See [Public API](docs/reference/public-api.md) for the full resolution table.
 | `apps/` | frontends: `webui/` (Studio node editor), `mltracker-dashboard/` |
 | `examples/` | runnable demos and notebooks |
 | `site/landing/` | hand-authored source for the published site root |
-| `docs/` | VitePress source for the documentation site |
+| `docs/` | Markdown source for the documentation site |
 
 See [Repository Map](docs/reference/repository-map.md) for the full subpackage-level breakdown.
 
@@ -328,7 +328,7 @@ Examples and notebooks:
 - `examples/foretools_tsaug_example.py` — adaptive data augmentation
 - `examples/adaptive_mrmr_demo.py` — MRMR feature selection
 
-There is a repository-local docs navigation file at [`docs/.vitepress/config.js`](docs/.vitepress/config.js).
+Documentation navigation and HTML generation live in [`.github/scripts/compile_docs.py`](.github/scripts/compile_docs.py).
 
 ## Current project status
 

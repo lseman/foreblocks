@@ -20,15 +20,21 @@ import warnings
 
 # Scientific Computing and Visualization
 import numpy as np
-import torch
 from numba import njit, prange
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 
-from foreblocks.models.anomaly.tranad_detector import (
-    TranAD as TranAD,
-    TranADDetector,
-)
+
+def __getattr__(name):
+    """Load legacy TranAD exports only when explicitly requested."""
+    if name not in {"TranAD", "TranADDetector"}:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from foreblocks.models.anomaly import tranad_detector
+
+    value = getattr(tranad_detector, name)
+    globals()[name] = value
+    return value
+
 
 # Optional imports
 try:
@@ -218,6 +224,10 @@ def _remove_outliers(
                 raise ValueError("ECOD fallback does not support multivariate input.")
 
     elif method == "tranad":
+        import torch
+
+        from foreblocks.processing.core.outlier import TranADDetector
+
         seq_len = kwargs.get("seq_len", 24)
         epochs = kwargs.get("epochs", 10)
         device = kwargs.get("device", "cuda" if torch.cuda.is_available() else "cpu")

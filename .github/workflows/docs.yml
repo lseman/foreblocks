@@ -46,7 +46,7 @@ jobs:
       - name: Install documentation dependencies
         run: pip install -r .github/scripts/docs-requirements.txt
 
-      - name: Build docs and landing page (pure Python, no VitePress)
+      - name: Build docs and landing page (Python)
         run: python .github/scripts/compile_docs.py
 
       - name: Set up Node

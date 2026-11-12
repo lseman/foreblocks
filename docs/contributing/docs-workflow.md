@@ -25,7 +25,7 @@ The documentation system is organized as:
 - `docs/reference/`: API and repository reference
 - root-level guide pages in `docs/`: subsystem-focused guides
 - [`site/landing/index.html`](https://github.com/lseman/foreblocks/blob/main/site/landing/index.html): static landing page source for the site root
-- [`docs/.vitepress/config.js`](https://github.com/lseman/foreblocks/blob/main/docs/.vitepress/config.js): navigation and site structure for the `/docs/` site
+- [`.github/scripts/compile_docs.py`](https://github.com/lseman/foreblocks/blob/main/.github/scripts/compile_docs.py): Python compiler and navigation for the `/docs/` site
 
 ## When to update docs
 
@@ -56,14 +56,19 @@ For any meaningful user-facing change, update:
 
 ## Local preview
 
-This repository now uses VitePress for the versioned documentation site. Install the Node dependencies first:
+Build the documentation from the repository root using Python:
 
 ```bash
-npm install
+python -m pip install -r .github/scripts/docs-requirements.txt
+python .github/scripts/compile_docs.py
 ```
 
-Or build a static site:
+Preview the generated site locally:
 
 ```bash
-npm run docs:build
+python -m http.server 8080 --directory site
 ```
+
+Open `http://localhost:8080/docs/`. Re-run the compiler after editing Markdown.
+The documentation build does not require Node.js. The separately built frontend
+playground under `apps/studio/` has its own dependencies.

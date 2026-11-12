@@ -11,29 +11,7 @@ import pandas as pd
 
 from foreblocks.processing.auto_filter.filters.utils import _as_series
 from foreblocks.processing.auto_filter.registry import register_filter
-
-
-def _ssa_reconstruct(x: np.ndarray, window: int, n_components: int) -> np.ndarray:
-    N = len(x)
-    L = window
-    K = N - L + 1
-
-    # Trajectory (Hankel) matrix  (L × K)
-    X_emb = np.stack([x[i : i + L] for i in range(K)], axis=1)
-
-    U, s, Vt = np.linalg.svd(X_emb, full_matrices=False)
-
-    n = min(n_components, len(s))
-    X_rec = sum(s[i] * np.outer(U[:, i], Vt[i]) for i in range(n))
-
-    # Anti-diagonal averaging (Hankelization → 1-D)
-    result = np.zeros(N)
-    counts = np.zeros(N)
-    for i in range(L):
-        for j in range(K):
-            result[i + j] += X_rec[i, j]
-            counts[i + j] += 1
-    return result / np.maximum(counts, 1)
+from foreblocks.processing.filters._ssa import _ssa_reconstruct
 
 
 @register_filter("SSA")

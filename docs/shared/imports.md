@@ -1,13 +1,13 @@
 # Shared Imports Reference
 
 Common import patterns used throughout the foreBlocks documentation.
-Each block uses VitePress `::: code-group` tabbed syntax.
+Examples are grouped by task.
 
 ## Core foreblocks
 
-::: code-group
+### Baseline
 
-```python [Baseline]
+```python
 from foreblocks import (
     ForecastingModel,
     Trainer,
@@ -20,35 +20,42 @@ from foreblocks import (
 )
 ```
 
-```python [Transformers]
+### Transformers
+
+```python
 from foreblocks import TransformerEncoder, TransformerDecoder
 ```
 
-```python [Config only]
+### Config only
+
+```python
 from foreblocks.training.config import TrainingConfig
 from foreblocks.models.config import ModelConfig
 ```
 
-:::
 
 See [Public API](../reference/public-api) for the full import surface.
 
 ## Transformer internals
 
-::: code-group
+### Schedules
 
-```python [Schedules]
+```python
 from foreblocks.nn.routing.mod import (
     LayerDropoutSchedule,
     MoDBudgetScheduler,
 )
 ```
 
-```python [MoE feedforward]
+### MoE feedforward
+
+```python
 from foreblocks.nn.moe.feedforward import FeedForwardBlock
 ```
 
-```python [Attention config]
+### Attention config
+
+```python
 from foreblocks.nn.transformer.config import TransformerConfig
 from foreblocks.nn.attention.config import (
     AttentionConfig,
@@ -58,7 +65,6 @@ from foreblocks.nn.attention.config import (
 )
 ```
 
-:::
 
 ## Uncertainty / Conformal
 
@@ -84,69 +90,82 @@ enc = TransformerEncoder(input_size=8, d_model=64, num_layers=2, attention="freq
 
 DARTS is imported as a standalone package, not under `foreblocks`:
 
-::: code-group
+### Search
 
-```python [Search]
+```python
 from darts import DARTSTrainer
 ```
 
-```python [Config]
+### Config
+
+```python
 from darts import DARTSTrainConfig
 ```
 
-:::
 
 ## foretools
 
-::: code-group
+### BOHB search
 
-```python [BOHB search]
+```python
 from foretools.bohb import BOHB, PruningConfig, TPEConf
 from foretools.bohb.plotter import OptimizationPlotter
 from foretools.bohb.trial import TrialPruned
 ```
 
-```python [Time series generator]
+### Time series generator
+
+```python
 from foretools.tsgen import TimeSeriesGenerator
 ```
 
-```python [VMD decomposition]
+### VMD decomposition
+
+```python
 import numpy as np
 from foretools.decomposition.emd import FastVMD
 ```
 
-```python [AutoDA augmentation]
+### AutoDA augmentation
+
+```python
 import torch
 from foretools.tsaug import AutoDATimeseries, AutoDATrainer
 ```
 
-```python [Feature engineering]
+### Feature engineering
+
+```python
 from foretools.fengineer import FeatureEngineer
 from foretools.fengineer.transformers import FeatureConfig
 ```
 
-:::
 
 ## Install extras quick ref
 
-::: code-group
+### Core
 
-```bash [Core]
+```bash
 pip install foreblocks
 ```
 
-```bash [DARTS search]
+### DARTS search
+
+```bash
 pip install "foreblocks[darts]"
 ```
 
-```bash [VMD decomposition]
+### VMD decomposition
+
+```bash
 pip install "foreblocks[vmd]"
 ```
 
-```bash [All extras]
+### All extras
+
+```bash
 pip install "foreblocks[all]"
 ```
 
-:::
 
 See [Getting Started](../getting-started) for the full install map and extras table.

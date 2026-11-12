@@ -13,9 +13,9 @@ This page gives a quick path through the repository for contributors and power u
 | Path | Purpose |
 | --- | --- |
 | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README) | GitHub landing page |
-| [`docs/.vitepress/config.js`](https://github.com/lseman/foreblocks/blob/main/docs/.vitepress/config.js) | Navigation and site structure for the `/docs/` site |
+| [`.github/scripts/compile_docs.py`](https://github.com/lseman/foreblocks/blob/main/.github/scripts/compile_docs.py) | Python compiler and navigation for the `/docs/` site |
 | `site/landing/` | Hand-authored source for the published site root (`site/` itself is otherwise CI-generated build output, gitignored) |
-| `docs/` | VitePress source for the versioned documentation site |
+| `docs/` | Markdown source for the versioned documentation site |
 | `examples/` | Notebooks and runnable examples |
 | `apps/` | Frontends: `apps/webui/` (Studio node editor), `apps/mltracker-dashboard/` (MLTracker dashboard v2) |
 | `src/foreblocks/` | Main forecasting library |

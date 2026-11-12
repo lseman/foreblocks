@@ -8,61 +8,45 @@ attention-matching compaction.
 
 ## Directory structure
 
-```
+```text
 attention/
-├── __init__.py           # Stable public facade — deliberately small, see its own docstring
-├── config.py               # AttentionConfig + 5 grouped sub-configs (shape/cache/position/variant/features)
-├── enums.py                  # Closed StrEnum choice sets (PositionEncoding, QKNorm, ...)
-├── compat.py                   # Legacy flat-kwargs -> AttentionConfig shim
-├── multi_att.py                  # MultiAttention: the top-level nn.Module wiring everything below together
-├── cache/                  # KV storage and retrieval
-│   ├── base.py                # KVCacheProtocol + state-dict (de)serialization helpers
-│   ├── kv.py                    # KVProvider ABC + Dense/Static/Paged implementations
-│   ├── paged.py                   # PagedKVCache — vLLM-style block-pool cache
-│   ├── storage.py                   # Dense/Latent block allocation strategies
-│   ├── selection.py                   # AttentionCacheSelector: picks a KVProvider from config
-│   ├── decode_stream.py                 # Streaming online-softmax decode over a PagedKVCache
-│   └── compaction.py                      # AttentionMatchingCompactor: KV compaction policy
-├── execution/               # Kernel selection and dispatch
-│   ├── backends.py             # AttentionBackendRegistry: sdpa/flash/flex/eager capability specs
-│   └── dispatch.py               # AttentionKernelDispatcher: runtime kernel choice
-├── preparation/              # Input-side transforms, shared by all variants
-│   ├── projections.py           # QKVProjector: model-space -> per-head Q/K/V
-│   ├── position.py                # PositionEncodingApplier: named RoPE/ALiBi/SyPE transform pipeline
-│   ├── masking.py                   # AttentionMaskProcessor + mask-building functions
-│   └── pipeline.py                    # QKVPipeline: composes the three steps above
-├── variants/                 # Pluggable AttentionImpl strategies (the "how do we score/weight" layer)
-│   ├── base.py                  # AttentionImpl / AttentionOwner Protocols + MultiAttentionOwner adapter
-│   ├── registry.py                # AttentionVariantRegistry: name -> AttentionImpl factory
-│   ├── standard.py                  # Dense SDPA + GQA + production KV-cache paths
-│   ├── sliding_window.py, dilated_sliding_window.py
-│   ├── prob_sparse.py, moba.py, nsa.py, softpick.py
-│   └── spectral.py                  # Dispatches into implementations/ (Fourier/DWT/autocorrelation)
-└── implementations/          # Concrete algorithms too heavy/optional to import eagerly
-    ├── autocor_att.py, dwt_att.py, frequency_att.py    # Spectral attention (Autoformer/DWT/FEDformer)
-    └── linear_att/                # O(L·d²) recurrent-state backends, unified by ModernLinearAttention
-        ├── base.py                  # RoPEMixin, FeatureMapRegistry — shared across backends
-        ├── gated_common.py             # CausalDepthwiseConv, HeadRMSNorm, GatedDeltaExecutionMixin
-        │                                — shared by GatedDeltaNetBackend and GatedDeltaNet2Backend
-        ├── deltanet.py, gla.py, rda.py     # DeltaNetBackend, GLABackend, RDABackend
-        ├── gated_delta.py, gated_deltanet2.py  # GatedDeltaNetBackend, GatedDeltaNet2Backend
-        ├── kimi.py                          # KimiAttentionBackend (KDA) — intentionally NOT built on
-        │                                      gated_common.py, see "Known exceptions" below
-        └── wrapper.py                          # ModernLinearAttention: string-dispatch over all 6
+├── __init__.py             # Lazy public exports
+├── config.py, enums.py     # Grouped configuration and typed choices
+├── compat.py               # Legacy configuration conversion
+├── layer.py                # AttentionLayer composition interface
+├── multihead.py            # MultiAttention initialization and orchestration
+├── features.py             # Private score/output transforms and feature masks
+├── cache/                  # KV providers, storage, selection, decode, compaction
+├── execution/              # Backend capabilities and kernel dispatch
+├── preparation/            # QKV projections, positions, masks, shared pipeline
+├── variants/               # Dense, sparse, windowed, and spectral strategies
+└── algorithms/
+    ├── linear/             # Linear-attention backends and common execution
+    └── spectral/           # Autocorrelation, Fourier, and wavelet algorithms
 ```
 
-`cache/`, `execution/`, `preparation/`, and `variants/` depend on nothing
-above them in this tree except each other and `config.py`/`enums.py`.
-`implementations/` depends on nothing else in this package (each backend
-file is self-contained). `multi_att.py` is the only file that imports across
-all five subpackages — it is the composition root, not a shared dependency.
-There is no PEP 562 lazy-facade cycle inside `attention/` itself (unlike
-`transformer/`, which needs one internally); the only cross-package cycle is
-`attention/variants/softpick.py`'s deferred import reaching into
-`foreblocks.nn.transformer.third_party`, and `transformer/`'s own lazy
-facades handle the transformer↔attention side of that cycle. Don't add a
-new eager import from `attention/` back into `transformer/` — follow
-`softpick.py`'s function-local deferred-import pattern if you need one.
+`multihead.py` owns initialization, parameter registration, and the public
+forward interface. The private feature mixin registers no additional modules,
+so moving its methods does not alter parameter names or checkpoint paths.
+`variants/` chooses an attention algorithm; `execution/` chooses its kernel;
+`preparation/` handles tensor and mask preparation; `cache/` handles KV state.
+Optional external adapters belong under `foreblocks.integrations`.
+
+Transformer layers build these modules through
+`foreblocks.nn.transformer.attention_backends`. Keep transformer stack and
+layer orchestration in `transformer/`, and shared attention behavior here.
+
+## Causal execution
+
+Uncached forwards use a scalar zero position offset instead of creating cache
+position tensors. Eligible causal SDPA calls use `is_causal=True` without a
+dense additive mask. Explicit attention/padding masks retain their composition
+path; cached offsets and custom score transforms retain the existing dispatch
+rules. Cross-attention does not acquire a causal mask from this fast path.
+
+Run `benchmarks/attention/bench_causal_sdpa.py` to compare eager and SDPA full
+attention latency and peak temporary CUDA memory on the same model weights.
+This measures attention forwards, not a full transformer training workload.
 
 ## Naming convention
 
