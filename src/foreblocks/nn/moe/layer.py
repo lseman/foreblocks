@@ -22,7 +22,7 @@ Core API:
 #  - Router: softmax over Top-K only
 #  - Routing mode: token_choice (default) or expert_choice
 #  - Dispatcher: vectorized capacity prune
-#  - bf16 autocast for experts + router (CUDA only)
+#  - Caller-controlled precision for experts + router
 #  - Optional pre-stacked expert weights reuse per step
 #  - Safe aux handling | optional MoELogger integration
 # -----------------------------------------------------------------------------
@@ -63,7 +63,6 @@ from foreblocks.nn.moe.routers import (
     StraightThroughTopKRouter,
 )
 from foreblocks.nn.moe.utils import (
-    autocast_bf16_enabled as _autocast_bf16_enabled,
     eager_topk_routing,
     maybe_compile,
     optimized_topk_routing,
@@ -890,9 +889,7 @@ class MoEFeedForwardDMoE(nn.Module):
         return_router_state: bool = False,
         meta: dict[str, Any] | None = None,
     ):
-        # Pre-norm
-        x_norm = self.input_norm(x)
-        all_x_flat = x_norm.reshape(-1, self.d_model)
+        # Clear masked values before normalization so NaNs cannot poison gradients.
         valid_indices: torch.Tensor | None = None
         if padding_mask is not None:
             expected_shape = x.shape[:-1]
@@ -901,346 +898,348 @@ class MoEFeedForwardDMoE(nn.Module):
                     f"padding_mask shape {tuple(padding_mask.shape)} must match "
                     f"input token shape {tuple(expected_shape)}"
                 )
-            valid = ~padding_mask.to(device=x.device, dtype=torch.bool).reshape(-1)
-            valid_indices = valid.nonzero(as_tuple=True)[0]
-            x_flat = all_x_flat.index_select(0, valid_indices)
-        else:
-            x_flat = all_x_flat
+            padding_mask = padding_mask.to(device=x.device, dtype=torch.bool)
+            x = x.masked_fill(padding_mask.unsqueeze(-1), 0.0)
+            valid_indices = (~padding_mask.reshape(-1)).nonzero(as_tuple=True)[0]
+        x_norm = self.input_norm(x)
+        all_x_flat = x_norm.reshape(-1, self.d_model)
+        x_flat = (
+            all_x_flat.index_select(0, valid_indices)
+            if valid_indices is not None
+            else all_x_flat
+        )
         if self.moe_use_latent:
             routed_x = self.latent_down_proj(x_flat)
         else:
             routed_x = x_flat
         Toks = x_flat.size(0)
 
-        device_type = routed_x.device.type
-        use_amp = _autocast_bf16_enabled(device_type)
-
         t0 = self._maybe_start_timer()
-        with torch.autocast(
-            device_type=device_type, dtype=torch.bfloat16, enabled=use_amp
-        ):
-            # Shared experts (always-on), computed for all tokens
-            if self.num_shared > 0:
-                shared_gates = (
-                    torch.sigmoid(self.shared_gate(x_flat))
-                    if self.shared_gate is not None
+        # Shared experts (always-on), computed for all tokens
+        if self.num_shared > 0:
+            shared_gates = (
+                torch.sigmoid(self.shared_gate(x_flat))
+                if self.shared_gate is not None
+                else None
+            )
+            # Batched path: pack all-tokens repeated num_shared times into
+            # a single grouped_mlp_swiglu call, avoiding sequential launches.
+            # Requires SwiGLU experts, add-combine, and the grouped kernel.
+            _can_batch_shared = (
+                self.num_shared > 1
+                and self.use_swiglu
+                and self.use_grouped_kernel
+                and grouped_mlp_swiglu is not None
+                and x_flat.is_cuda
+                and self.shared_combine == "add"
+            )
+            if _can_batch_shared:
+                T_flat = x_flat.size(0)
+                packed_sh = x_flat.repeat(self.num_shared, 1)  # [num_shared*T, D]
+                offsets_sh = (
+                    torch.arange(
+                        self.num_shared + 1,
+                        device=x_flat.device,
+                        dtype=torch.int32,
+                    )
+                    * T_flat
+                )
+                # Unwrap torch.compile wrappers so weight extraction works
+                sh_experts = [getattr(e, "_orig_mod", e) for e in self.shared_experts]
+                sh_dp = getattr(sh_experts[0], "dropout_p", 0.0)
+                packed_sh_y = grouped_mlp_swiglu(
+                    packed_sh,
+                    offsets_sh,
+                    sh_experts,
+                    dropout_p=sh_dp,
+                    training=self.training,
+                    out_dtype=x_flat.dtype,
+                    use_fp16_acc=self.triton_use_fp16_acc,
+                    use_shared_b=self.triton_use_shared_b,
+                    allow_triton_training=True,
+                )
+                if self.training and sh_experts[0].expert_dropout_p > 0:
+                    packed_sh_y = F.dropout(
+                        packed_sh_y, p=sh_experts[0].expert_dropout_p, training=True
+                    )
+                shared_chunks = packed_sh_y.view(
+                    self.num_shared, T_flat, self.d_model
+                )  # [num_shared, T, D]
+                shared_out = (
+                    shared_chunks
+                    * self.shared_scale.view(self.num_shared, 1, 1)
+                    * (
+                        shared_gates.t().unsqueeze(-1)
+                        if shared_gates is not None
+                        else 1.0
+                    )
+                ).sum(0)  # [T, D]
+                shared_cat = None
+            else:
+                shared_out = torch.zeros_like(x_flat)
+                shared_list = []
+                for s_idx, s_exp in enumerate(self.shared_experts):
+                    y = s_exp(x_flat)
+                    scale = self.shared_scale[s_idx]
+                    y = y * scale
+                    if shared_gates is not None:
+                        y = y * shared_gates[:, s_idx : s_idx + 1]
+                    shared_out.add_(y)
+                    if self.shared_combine == "concat":
+                        shared_list.append(y)
+                shared_cat = (
+                    torch.cat(shared_list, dim=-1)
+                    if self.shared_combine == "concat"
                     else None
                 )
-                # Batched path: pack all-tokens repeated num_shared times into
-                # a single grouped_mlp_swiglu call, avoiding sequential launches.
-                # Requires SwiGLU experts, add-combine, and the grouped kernel.
-                _can_batch_shared = (
-                    self.num_shared > 1
-                    and self.use_swiglu
-                    and self.use_grouped_kernel
-                    and grouped_mlp_swiglu is not None
-                    and x_flat.is_cuda
-                    and self.shared_combine == "add"
-                )
-                if _can_batch_shared:
-                    T_flat = x_flat.size(0)
-                    packed_sh = x_flat.repeat(self.num_shared, 1)  # [num_shared*T, D]
-                    offsets_sh = (
-                        torch.arange(
-                            self.num_shared + 1,
-                            device=x_flat.device,
-                            dtype=torch.int32,
-                        )
-                        * T_flat
-                    )
-                    # Unwrap torch.compile wrappers so weight extraction works
-                    sh_experts = [
-                        getattr(e, "_orig_mod", e) for e in self.shared_experts
-                    ]
-                    sh_dp = getattr(sh_experts[0], "dropout_p", 0.0)
-                    packed_sh_y = grouped_mlp_swiglu(
-                        packed_sh,
-                        offsets_sh,
-                        sh_experts,
-                        dropout_p=sh_dp,
-                        training=self.training,
-                        out_dtype=x_flat.dtype,
-                        use_fp16_acc=self.triton_use_fp16_acc,
-                        use_shared_b=self.triton_use_shared_b,
-                        allow_triton_training=True,
-                    )
-                    if self.training and sh_experts[0].expert_dropout_p > 0:
-                        packed_sh_y = F.dropout(
-                            packed_sh_y, p=sh_experts[0].expert_dropout_p, training=True
-                        )
-                    shared_chunks = packed_sh_y.view(
-                        self.num_shared, T_flat, self.d_model
-                    )  # [num_shared, T, D]
-                    shared_out = (
-                        shared_chunks
-                        * self.shared_scale.view(self.num_shared, 1, 1)
-                        * (
-                            shared_gates.t().unsqueeze(-1)
-                            if shared_gates is not None
-                            else 1.0
-                        )
-                    ).sum(0)  # [T, D]
-                    shared_cat = None
-                else:
-                    shared_out = torch.zeros_like(x_flat)
-                    shared_list = []
-                    for s_idx, s_exp in enumerate(self.shared_experts):
-                        y = s_exp(x_flat)
-                        scale = self.shared_scale[s_idx]
-                        y = y * scale
-                        if shared_gates is not None:
-                            y = y * shared_gates[:, s_idx : s_idx + 1]
-                        shared_out.add_(y)
-                        if self.shared_combine == "concat":
-                            shared_list.append(y)
-                    shared_cat = (
-                        torch.cat(shared_list, dim=-1)
-                        if self.shared_combine == "concat"
-                        else None
-                    )
-            else:
-                shared_out = None
-                shared_cat = None
+        else:
+            shared_out = None
+            shared_cat = None
 
-            (
+        (
+            logits,
+            per_token_k,
+            _k_logits,
+            _k_probs,
+            _router_top_p,
+            _router_top_i,
+            router_entropy,
+        ) = self._compute_router_outputs(routed_x, tau=tau)  # [T, E]
+        if self.routing_mode == "expert_choice":
+            self.last_per_token_k = None
+            self.last_log_prob_k = None
+            top_i = torch.topk(
                 logits,
-                per_token_k,
-                _k_logits,
-                _k_probs,
-                _router_top_p,
-                _router_top_i,
-                router_entropy,
-            ) = self._compute_router_outputs(routed_x, tau=tau)  # [T, E]
-            if self.routing_mode == "expert_choice":
+                k=min(self.top_k, self.num_routed_experts),
+                dim=-1,
+                sorted=False,
+            ).indices
+            packed_x, packed_w, experts_seq, tokens_seq, offsets, dropped = (
+                self.expert_choice_dispatcher.pack(routed_x, logits)
+            )
+            if self.training:
+                self._update_expert_usage_ema_from_assignments(experts_seq)
+                self._maybe_update_router_bias()
+        else:
+            if self.router_type == "soft_dense":
+                if _router_top_p is None:
+                    raise RuntimeError("soft_dense router must return dense weights")
+                top_p = _router_top_p
+                top_i = torch.arange(
+                    self.num_routed_experts, device=logits.device
+                ).expand(Toks, -1)
                 self.last_per_token_k = None
                 self.last_log_prob_k = None
-                top_i = torch.topk(
-                    logits,
-                    k=min(self.top_k, self.num_routed_experts),
-                    dim=-1,
-                    sorted=False,
-                ).indices
-                packed_x, packed_w, experts_seq, tokens_seq, offsets, dropped = (
-                    self.expert_choice_dispatcher.pack(routed_x, logits)
+            elif _router_top_p is not None and _router_top_i is not None:
+                top_p, top_i = _router_top_p, _router_top_i
+                self.last_per_token_k = None
+                self.last_log_prob_k = None
+            elif per_token_k is None:
+                bias = self._get_router_expert_bias()
+                selection_logits = logits if bias is None else logits + bias
+                can_use_fused_topk = (
+                    (fused_router_topk is not None)
+                    and self.use_fused_router_topk
+                    and (not self._force_eager_router_topk)
+                    and (not self.training)
+                    and logits.is_cuda
+                    and (self.top_k == 2)
+                    and bias is None
                 )
-                if self.training:
-                    self._update_expert_usage_ema_from_assignments(experts_seq)
-                    self._maybe_update_router_bias()
-            else:
-                if _router_top_p is not None and _router_top_i is not None:
-                    top_p, top_i = _router_top_p, _router_top_i
-                    self.last_per_token_k = None
-                    self.last_log_prob_k = None
-                elif per_token_k is None:
-                    bias = self._get_router_expert_bias()
-                    selection_logits = logits if bias is None else logits + bias
-                    can_use_fused_topk = (
-                        (fused_router_topk is not None)
-                        and self.use_fused_router_topk
-                        and (not self._force_eager_router_topk)
-                        and (not self.training)
-                        and logits.is_cuda
-                        and (self.top_k == 2)
-                        and bias is None
-                    )
-                    if can_use_fused_topk:
-                        try:
-                            top_p, top_i = fused_router_topk(logits, self.top_k)
-                        except RuntimeError as exc:
-                            if not _should_fallback_router_topk(exc):
-                                raise
-                            self._force_eager_router_topk = True
-                            self.use_fused_router_topk = False
-                            top_p, top_i = eager_topk_routing(
-                                logits, self.top_k, selection_logits
-                            )
-                    elif self._force_eager_router_topk:
+                if can_use_fused_topk:
+                    try:
+                        top_p, top_i = fused_router_topk(logits, self.top_k)
+                    except RuntimeError as exc:
+                        if not _should_fallback_router_topk(exc):
+                            raise
+                        self._force_eager_router_topk = True
+                        self.use_fused_router_topk = False
                         top_p, top_i = eager_topk_routing(
                             logits, self.top_k, selection_logits
                         )
-                    else:
-                        try:
-                            top_p, top_i = optimized_topk_routing(
-                                logits, self.top_k, selection_logits
-                            )
-                        except RuntimeError as exc:
-                            if not _should_fallback_router_topk(exc):
-                                raise
-                            self._force_eager_router_topk = True
-                            self.use_fused_router_topk = False
-                            top_p, top_i = eager_topk_routing(
-                                logits, self.top_k, selection_logits
-                            )
-                    self.last_per_token_k = None
-                    self.last_log_prob_k = None
+                elif self._force_eager_router_topk:
+                    top_p, top_i = eager_topk_routing(
+                        logits, self.top_k, selection_logits
+                    )
                 else:
-                    if _k_logits is None:
-                        raise RuntimeError(
-                            "router returned per_token_k without k_logits"
+                    try:
+                        top_p, top_i = optimized_topk_routing(
+                            logits, self.top_k, selection_logits
                         )
-                    top_p, top_i = self._adaptive_topk_routing(logits, per_token_k)
-                    # Cache K stats for REINFORCE-style loss
-                    log_probs = F.log_softmax(_k_logits, dim=-1)
-                    log_prob_k = log_probs.gather(
-                        -1, (per_token_k - 1).unsqueeze(-1)
-                    ).squeeze(-1)
-                    self.last_per_token_k = per_token_k.detach()
-                    self.last_log_prob_k = log_prob_k
-
-                if self.training:
-                    self._update_expert_usage_ema(top_p, top_i)
-                    self._maybe_update_router_bias()
-
-                # Pack (vectorized capacity prune)
-                packed_x, packed_w, experts_seq, tokens_seq, offsets, dropped = (
-                    self.dispatcher.pack(
-                        routed_x,
-                        top_p,
-                        top_i,
-                        capacity_factor=self.moe_capacity_factor,
-                        soft_capacity=self.moe_soft_capacity,
-                        expert_usage=self.expert_usage,
-                        soft_capacity_min=self.moe_capacity_min,
-                        soft_capacity_max=self.moe_capacity_max,
-                        filter_zero_weights=per_token_k is not None,
-                    )
-                )
-            self._last_num_assignments = int(experts_seq.numel())
-
-            if packed_x.numel() == 0:
-                out_flat = x_flat.new_zeros((Toks, self.d_model))
-                if self.shared_combine == "concat" and shared_cat is not None:
-                    out_flat = self.shared_proj(
-                        torch.cat([out_flat, shared_cat], dim=-1)
-                    )
-                elif shared_out is not None:
-                    out_flat = out_flat + shared_out
-                if valid_indices is not None:
-                    all_out = all_x_flat.new_zeros(all_x_flat.shape)
-                    all_out.index_copy_(0, valid_indices, out_flat)
-                    out = all_out.reshape_as(x_norm)
-                else:
-                    out = out_flat.reshape_as(x_norm)
-                aux = x.new_zeros(())
-                self.aux_loss = aux.detach()
-                self.last_mtp_loss = aux.detach()
-                latency_ms = self._maybe_stop_timer(t0)
-                self._populate_router_last(
-                    logits,
-                    top_i,
-                    dropped,
-                    aux,
-                    latency_ms,
-                    meta,
-                    per_token_k=per_token_k,
-                    router_entropy=router_entropy,
-                )
-                self._maybe_log_router(
-                    logits,
-                    top_i,
-                    dropped,
-                    aux,
-                    latency_ms,
-                    meta,
-                    per_token_k=per_token_k,
-                    router_entropy=router_entropy,
-                )
-                state = self._make_routing_state(
-                    logits=logits,
-                    indices=top_i,
-                    weights=(top_p if self.routing_mode == "token_choice" else None),
-                    aux=aux,
-                    dropped=dropped,
-                    valid_indices=valid_indices,
-                    per_token_k=per_token_k,
-                    entropy=router_entropy,
-                )
-                return self._format_forward_result(
-                    out,
-                    aux,
-                    state,
-                    return_aux_loss=return_aux_loss,
-                    return_router_state=return_router_state,
-                )
-
-            # Expert compute
-            if (
-                self.use_swiglu
-                and self.use_grouped_kernel
-                and grouped_mlp_swiglu is not None
-                and not (self.training and self.use_gradient_checkpointing)
-            ):
-                # Canonical packed parameters need no inference cache.
-                use_prepacked = self._grouped_kernel_prepacked
-                if use_prepacked:
-                    B12_cat, B3_cat = self.get_packed_expert_weights()
-                    packed_y = grouped_mlp_swiglu(
-                        packed_x,
-                        offsets,
-                        self.experts,
-                        dropout_p=self.experts.dropout_p,
-                        training=self.training,
-                        out_dtype=packed_x.dtype,
-                        use_fp16_acc=self.triton_use_fp16_acc,
-                        use_shared_b=self.triton_use_shared_b,
-                        allow_triton_training=True,
-                        B12_cat_prepacked=B12_cat,
-                        B3_cat_prepacked=B3_cat,
-                    )
-                else:
-                    # Backward-compatible grouped kernel wrapper (no prepacked weights)
-                    packed_y = grouped_mlp_swiglu(
-                        packed_x,
-                        offsets,
-                        self.experts,
-                        dropout_p=self.experts.dropout_p,
-                        training=self.training,
-                        out_dtype=packed_x.dtype,
-                        use_fp16_acc=self.triton_use_fp16_acc,
-                        use_shared_b=self.triton_use_shared_b,
-                        allow_triton_training=True,
-                    )
-                if self.training and self.experts.expert_dropout_p > 0:
-                    packed_y = F.dropout(
-                        packed_y, p=self.experts.expert_dropout_p, training=True
-                    )
-            else:
-                # Fallback: loop (optionally checkpoint)
-                packed_y = torch.empty_like(packed_x)
-                for e_idx in range(self.num_routed_experts):
-                    s = int(offsets[e_idx].item())
-                    t = int(offsets[e_idx + 1].item())
-                    if t <= s:
-                        continue
-                    seg = packed_x[s:t]
-                    if self.use_gradient_checkpointing and self.training:
-                        y = torch.utils.checkpoint.checkpoint(
-                            self.experts.forward_expert, e_idx, seg, use_reentrant=False
+                    except RuntimeError as exc:
+                        if not _should_fallback_router_topk(exc):
+                            raise
+                        self._force_eager_router_topk = True
+                        self.use_fused_router_topk = False
+                        top_p, top_i = eager_topk_routing(
+                            logits, self.top_k, selection_logits
                         )
-                    else:
-                        y = self.experts.forward_expert(e_idx, seg)
-                    packed_y[s:t] = y
-
-            # Weight by gate prob and scatter back
-            packed_y.mul_(packed_w)
-            routed_out = routed_x.new_zeros((Toks, self.routed_d_model))
-            self.dispatcher.scatter_back(routed_out, packed_y, tokens_seq)
-            if self.moe_use_latent:
-                out_flat = self.latent_up_proj(routed_out)
+                self.last_per_token_k = None
+                self.last_log_prob_k = None
             else:
-                out_flat = routed_out
+                if _k_logits is None:
+                    raise RuntimeError("router returned per_token_k without k_logits")
+                top_p, top_i = self._adaptive_topk_routing(logits, per_token_k)
+                # Cache K stats for REINFORCE-style loss
+                log_probs = F.log_softmax(_k_logits, dim=-1)
+                log_prob_k = log_probs.gather(
+                    -1, (per_token_k - 1).unsqueeze(-1)
+                ).squeeze(-1)
+                self.last_per_token_k = per_token_k.detach()
+                self.last_log_prob_k = log_prob_k
+
+            if self.training:
+                self._update_expert_usage_ema(top_p, top_i)
+                self._maybe_update_router_bias()
+
+            # Pack (vectorized capacity prune)
+            packed_x, packed_w, experts_seq, tokens_seq, offsets, dropped = (
+                self.dispatcher.pack(
+                    routed_x,
+                    top_p,
+                    top_i,
+                    capacity_factor=self.moe_capacity_factor,
+                    soft_capacity=self.moe_soft_capacity,
+                    expert_usage=self.expert_usage,
+                    soft_capacity_min=self.moe_capacity_min,
+                    soft_capacity_max=self.moe_capacity_max,
+                    filter_zero_weights=per_token_k is not None,
+                )
+            )
+        self._last_num_assignments = int(experts_seq.numel())
+
+        if packed_x.numel() == 0:
+            out_flat = x_flat * 0.0
             if self.shared_combine == "concat" and shared_cat is not None:
                 out_flat = self.shared_proj(torch.cat([out_flat, shared_cat], dim=-1))
             elif shared_out is not None:
                 out_flat = out_flat + shared_out
             if valid_indices is not None:
-                all_out = all_x_flat.new_zeros(all_x_flat.shape)
+                all_out = out_flat.new_zeros(all_x_flat.shape)
                 all_out.index_copy_(0, valid_indices, out_flat)
                 out = all_out.reshape_as(x_norm)
             else:
                 out = out_flat.reshape_as(x_norm)
+            aux = x.new_zeros(())
+            self.aux_loss = aux.detach()
+            self.last_mtp_loss = aux.detach()
+            latency_ms = self._maybe_stop_timer(t0)
+            self._populate_router_last(
+                logits,
+                top_i,
+                dropped,
+                aux,
+                latency_ms,
+                meta,
+                per_token_k=per_token_k,
+                router_entropy=router_entropy,
+            )
+            self._maybe_log_router(
+                logits,
+                top_i,
+                dropped,
+                aux,
+                latency_ms,
+                meta,
+                per_token_k=per_token_k,
+                router_entropy=router_entropy,
+            )
+            state = self._make_routing_state(
+                logits=logits,
+                indices=top_i,
+                weights=(top_p if self.routing_mode == "token_choice" else None),
+                aux=aux,
+                dropped=dropped,
+                valid_indices=valid_indices,
+                per_token_k=per_token_k,
+                entropy=router_entropy,
+            )
+            return self._format_forward_result(
+                out,
+                aux,
+                state,
+                return_aux_loss=return_aux_loss,
+                return_router_state=return_router_state,
+            )
 
-        # Aux (compute possibly outside autocast for numerical stability)
+        # Expert compute
+        if (
+            self.use_swiglu
+            and self.use_grouped_kernel
+            and grouped_mlp_swiglu is not None
+            and not (self.training and self.use_gradient_checkpointing)
+        ):
+            # Canonical packed parameters need no inference cache.
+            use_prepacked = self._grouped_kernel_prepacked
+            if use_prepacked:
+                B12_cat, B3_cat = self.get_packed_expert_weights()
+                packed_y = grouped_mlp_swiglu(
+                    packed_x,
+                    offsets,
+                    self.experts,
+                    dropout_p=self.experts.dropout_p,
+                    training=self.training,
+                    out_dtype=packed_x.dtype,
+                    use_fp16_acc=self.triton_use_fp16_acc,
+                    use_shared_b=self.triton_use_shared_b,
+                    allow_triton_training=True,
+                    B12_cat_prepacked=B12_cat,
+                    B3_cat_prepacked=B3_cat,
+                )
+            else:
+                # Backward-compatible grouped kernel wrapper (no prepacked weights)
+                packed_y = grouped_mlp_swiglu(
+                    packed_x,
+                    offsets,
+                    self.experts,
+                    dropout_p=self.experts.dropout_p,
+                    training=self.training,
+                    out_dtype=packed_x.dtype,
+                    use_fp16_acc=self.triton_use_fp16_acc,
+                    use_shared_b=self.triton_use_shared_b,
+                    allow_triton_training=True,
+                )
+            if self.training and self.experts.expert_dropout_p > 0:
+                packed_y = F.dropout(
+                    packed_y, p=self.experts.expert_dropout_p, training=True
+                )
+        else:
+            # Fallback: loop (optionally checkpoint)
+            packed_y = torch.empty_like(packed_x)
+            for e_idx in range(self.num_routed_experts):
+                s = int(offsets[e_idx].item())
+                t = int(offsets[e_idx + 1].item())
+                if t <= s:
+                    continue
+                seg = packed_x[s:t]
+                if self.use_gradient_checkpointing and self.training:
+                    y = torch.utils.checkpoint.checkpoint(
+                        self.experts.forward_expert, e_idx, seg, use_reentrant=False
+                    )
+                else:
+                    y = self.experts.forward_expert(e_idx, seg)
+                packed_y[s:t] = y
+
+        # Weight by gate prob and scatter back
+        packed_y.mul_(packed_w)
+        routed_out = routed_x.new_zeros((Toks, self.routed_d_model))
+        self.dispatcher.scatter_back(routed_out, packed_y, tokens_seq)
+        if self.moe_use_latent:
+            out_flat = self.latent_up_proj(routed_out)
+        else:
+            out_flat = routed_out
+        if self.shared_combine == "concat" and shared_cat is not None:
+            out_flat = self.shared_proj(torch.cat([out_flat, shared_cat], dim=-1))
+        elif shared_out is not None:
+            out_flat = out_flat + shared_out
+        if valid_indices is not None:
+            all_out = out_flat.new_zeros(all_x_flat.shape)
+            all_out.index_copy_(0, valid_indices, out_flat)
+            out = all_out.reshape_as(x_norm)
+        else:
+            out = out_flat.reshape_as(x_norm)
+
+        # Auxiliary losses follow the caller's precision context.
         if return_aux_loss:
             aux = self._compute_aux_loss(
                 logits,

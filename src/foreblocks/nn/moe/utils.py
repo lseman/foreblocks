@@ -10,7 +10,7 @@ Core API:
 - maybe_compile: safe torch.compile wrapper with graceful fallback
 - optimized_topk_routing: TorchScript-compiled top-K routing
 - eager_topk_routing: non-scripted fallback routing
-- autocast_bf16_enabled: bf16 autocast availability check
+- autocast_bf16_enabled: active bf16 autocast check
 - supports_grouped_prepacked: grouped kernel prepacked-args detection
 
 """
@@ -42,9 +42,10 @@ def maybe_compile(
 
 
 def autocast_bf16_enabled(device_type: str) -> bool:
-    if device_type != "cuda":
-        return False
-    return torch.cuda.is_available()
+    """Report the caller's active BF16 policy without enabling autocast."""
+    return torch.is_autocast_enabled(device_type) and (
+        torch.get_autocast_dtype(device_type) == torch.bfloat16
+    )
 
 
 def supports_grouped_prepacked() -> bool:
