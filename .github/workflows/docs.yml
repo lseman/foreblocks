@@ -6,6 +6,7 @@ on:
       - "docs/**"
       - "site/landing/**"
       - "apps/studio/**"
+      - "scripts/build_studio_web.sh"
       - ".github/scripts/compile_docs.py"
       - ".github/scripts/docs-requirements.txt"
       - ".github/workflows/docs.yml"
@@ -16,6 +17,7 @@ on:
       - "docs/**"
       - "site/landing/**"
       - "apps/studio/**"
+      - "scripts/build_studio_web.sh"
       - ".github/scripts/compile_docs.py"
       - ".github/scripts/docs-requirements.txt"
       - ".github/workflows/docs.yml"
@@ -54,15 +56,10 @@ jobs:
         with:
           node-version: "24"
           cache: "npm"
+          cache-dependency-path: apps/studio/src/package-lock.json
 
       - name: Build Studio frontend
-        run: |
-          cd apps/studio/src
-          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
-          npx vite build --base /studio/ --outDir ../dist --emptyOutDir
-          rm -rf ../../site/studio
-          mkdir -p ../../site/studio
-          cp -a ../../dist/. ../../site/studio/
+        run: bash scripts/build_studio_web.sh
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
