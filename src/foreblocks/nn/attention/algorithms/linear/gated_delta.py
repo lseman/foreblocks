@@ -24,6 +24,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from foreblocks.nn.attention.algorithms.linear.base import (
+    mask_padded_tokens,
+    validate_key_padding_mask,
     validate_linear_attention_mask,
 )
 from foreblocks.nn.attention.algorithms.linear.gated_common import (
@@ -288,8 +290,11 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
         skip_proj: bool = False,  # skip internal Q/K/V projection (Oryx)
         skip_gate_norm: bool = False,  # skip internal gate+norm (Oryx)
         conv_cache: dict | None = None,
+        padding_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         B, T, _ = x.shape
+        validate_key_padding_mask(padding_mask, B, T, x.device)
+        x = mask_padded_tokens(x, padding_mask)
         device, dtype = x.device, x.dtype
         BH = B * self.h
 
@@ -301,7 +306,12 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
             k_raw = k  # pre-projected + pre-convolved K: [B, T, H*Dk]
             v_raw = v  # pre-projected + pre-convolved V: [B, T, H*Dv]
         else:
-            q_raw, k_raw, v_raw = self._project(x, conv_cache)
+            q_raw, k_raw, v_raw = self._project(x, conv_cache, padding_mask)
+
+        if padding_mask is not None:
+            q_raw, k_raw, v_raw = (
+                mask_padded_tokens(t, padding_mask) for t in (q_raw, k_raw, v_raw)
+            )
 
         # Reshape to [BH, T, D*]
         Q = self._l2_norm(
@@ -321,6 +331,11 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
         )
 
         alpha, beta, g_log = self._gate_params(x, BH, T)  # [BH, T, 1]
+        if padding_mask is not None:
+            pad = padding_mask[:, None, :].expand(B, self.h, T).reshape(BH, T, 1)
+            alpha = alpha.masked_fill(pad, 1)
+            beta = beta.masked_fill(pad, 0)
+            g_log = g_log.masked_fill(pad, 0)
 
         # Initialise / reshape state
         S = (
@@ -395,7 +410,7 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
                 out_h = out_h * torch.sigmoid(g)
 
         y = out_h.permute(0, 2, 1, 3).contiguous().reshape(B, T, self.h * self.dv)
-        y = self.drop(self.o_proj(y))
+        y = mask_padded_tokens(self.drop(self.o_proj(y)), padding_mask)
 
         next_state = S.reshape(B, self.h, self.dk, self.dv)
         return y, next_state
@@ -435,15 +450,13 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
         # ── Oryx: use pre-projected K/V in recurrent self-attention mode ──
         if skip_cross_attention and key is not None and value is not None:
             x = query
-            if key_padding_mask is not None:
-                pad = key_padding_mask.unsqueeze(-1).to(dtype=x.dtype)
-                x = x * (1.0 - pad)
             y, next_s = self._forward_recurrent(
                 x,
-                state=None,
+                state=layer_state.get("gdn_state") if layer_state is not None else None,
                 k=key,
                 v=value,
                 skip_proj=True,
+                padding_mask=key_padding_mask,
                 skip_gate_norm=skip_gate_norm,
             )
             if layer_state is not None:
@@ -462,14 +475,7 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
             y = self._cross_attention_approx(query, key, value, key_padding_mask)
             return y, None, None
 
-        # ── Apply padding mask to query input (zero out padded tokens) ────
-        x = query  # self-attention: query == key == value
-        if key_padding_mask is not None:
-            # key_padding_mask: [B, T], True = ignore
-            pad = key_padding_mask.unsqueeze(-1).to(dtype=x.dtype)  # [B, T, 1]
-            x = x * (1.0 - pad)
-
-        # ── Apply RoPE to Q/K before recurrence ────────────────────────────
+        x = query
         if self.pos_encoding_type == "rope":
             x = self._apply_rope_to_x(x, Tq)
 
@@ -481,12 +487,15 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
                 prev_s,
                 skip_gate_norm=skip_gate_norm,
                 conv_cache=layer_state.setdefault("gdn_conv", {}),
+                padding_mask=key_padding_mask,
             )
             layer_state["gdn_state"] = next_s
             return y, None, None
 
         # ── Standard full-sequence forward ────────────────────────────────
-        y, _ = self._forward_recurrent(x, state=None, skip_gate_norm=skip_gate_norm)
+        y, _ = self._forward_recurrent(
+            x, state=None, skip_gate_norm=skip_gate_norm, padding_mask=key_padding_mask
+        )
         return y, None, None
 
     # ── Cross-attention approximation ────────────────────────────────────────
@@ -500,6 +509,8 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
     ) -> torch.Tensor:
         B, Tq, D = query.shape
         _, Tm, _ = key.shape
+        validate_key_padding_mask(key_padding_mask, B, Tm, query.device)
+        key, value = (mask_padded_tokens(t, key_padding_mask) for t in (key, value))
         device, dtype = query.device, query.dtype
         BH = B * self.h
 

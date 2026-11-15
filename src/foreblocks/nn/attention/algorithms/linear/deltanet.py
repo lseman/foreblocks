@@ -22,7 +22,9 @@ import torch.nn.functional as F
 
 from foreblocks.nn.attention.algorithms.linear.base import (
     _causal_conv1d,
+    mask_padded_tokens,
     streaming_causal_conv1d,
+    validate_key_padding_mask,
     validate_linear_attention_mask,
 )
 from foreblocks.ops.attention import (
@@ -99,8 +101,10 @@ class DeltaNetBackend(nn.Module):
     ) -> tuple[torch.Tensor, None, dict | None]:
         B, L, _ = query.shape
         validate_linear_attention_mask(attn_mask, query, key, True)
-        if key_padding_mask is not None:
-            raise ValueError("DeltaNet key_padding_mask is unsupported")
+        validate_key_padding_mask(key_padding_mask, B, L, query.device)
+        query, key, value = (
+            mask_padded_tokens(x, key_padding_mask) for x in (query, key, value)
+        )
         next_state = layer_state if layer_state is not None else {}
         conv_cache = next_state.setdefault("deltanet_conv", {})
 
@@ -108,28 +112,58 @@ class DeltaNetBackend(nn.Module):
 
         # Causal conv pre-processing
         k = (
-            streaming_causal_conv1d(k, self.k_conv, conv_cache, "k", activation="silu")
+            streaming_causal_conv1d(
+                k,
+                self.k_conv,
+                conv_cache,
+                "k",
+                activation="silu",
+                padding_mask=key_padding_mask,
+            )
             .reshape(B, L, self.n_heads, self.d_head)
             .transpose(1, 2)
         )
         q = (
-            streaming_causal_conv1d(q, self.q_conv, conv_cache, "q", activation="silu")
+            streaming_causal_conv1d(
+                q,
+                self.q_conv,
+                conv_cache,
+                "q",
+                activation="silu",
+                padding_mask=key_padding_mask,
+            )
             .reshape(B, L, self.n_heads, self.d_head)
             .transpose(1, 2)
         )
         v = (
-            streaming_causal_conv1d(v, self.v_conv, conv_cache, "v", activation="silu")
+            streaming_causal_conv1d(
+                v,
+                self.v_conv,
+                conv_cache,
+                "v",
+                activation="silu",
+                padding_mask=key_padding_mask,
+            )
             .reshape(B, L, self.n_heads, self.d_head)
             .transpose(1, 2)
         )
 
         # L2 normalise
-        k = F.normalize(k, p=2, dim=-1)
-        q = F.normalize(q, p=2, dim=-1)
+        # Zero padded vectors need an fp32 denominator: the default epsilon
+        # underflows in fp16 and would turn a skipped update into NaNs.
+        norm_dtype = (
+            torch.promote_types(q.dtype, torch.float32)
+            if key_padding_mask is not None
+            else q.dtype
+        )
+        k = F.normalize(k.to(norm_dtype), p=2, dim=-1).to(k.dtype)
+        q = F.normalize(q.to(norm_dtype), p=2, dim=-1).to(q.dtype)
 
         # β gate
         beta = self.b_proj(query).sigmoid().unsqueeze(-1)  # [B, L, H, 1]
         beta = beta.transpose(1, 2)  # [B, H, L, 1]
+        if key_padding_mask is not None:
+            beta = beta.masked_fill(key_padding_mask[:, None, :, None], 0)
 
         # Recurrent state
         S = None
@@ -160,6 +194,7 @@ class DeltaNetBackend(nn.Module):
         o = self.norm(o)
         out = o.transpose(1, 2).contiguous().view(B, L, self.d_model)
         out = self.dropout(self.out_proj(out))
+        out = mask_padded_tokens(out, key_padding_mask)
 
         next_state["deltanet_S"] = S_next
         return out, None, next_state

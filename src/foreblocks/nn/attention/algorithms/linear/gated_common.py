@@ -29,6 +29,8 @@ class _GatedDeltaOwner(Protocol):
         self,
         x: torch.Tensor,
         state: torch.Tensor | None = None,
+        *,
+        padding_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]: ...
 
 
@@ -44,9 +46,15 @@ class CausalDepthwiseConv(nn.Module):
         )
 
     def forward(
-        self, x: torch.Tensor, cache: dict | None = None, key: str = "history"
+        self,
+        x: torch.Tensor,
+        cache: dict | None = None,
+        key: str = "history",
+        padding_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return streaming_causal_conv1d(x, self.conv, cache, key, activation="silu")
+        return streaming_causal_conv1d(
+            x, self.conv, cache, key, activation="silu", padding_mask=padding_mask
+        )
 
 
 class HeadRMSNorm(nn.Module):
@@ -68,16 +76,19 @@ class GatedDeltaExecutionMixin:
     """Shared projection, output-gating, state, and standalone execution."""
 
     def _project(
-        self, x: torch.Tensor, conv_cache: dict | None = None
+        self,
+        x: torch.Tensor,
+        conv_cache: dict | None = None,
+        padding_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         owner = cast(_GatedDeltaOwner, cast(object, self))
         q_raw = owner.q_proj(x)
         k_raw = owner.k_proj(x)
         v_raw = owner.v_proj(x)
         if owner.use_short_conv:
-            q_raw = owner.q_conv(q_raw, conv_cache, "q")
-            k_raw = owner.k_conv(k_raw, conv_cache, "k")
-            v_raw = owner.v_conv(v_raw, conv_cache, "v")
+            q_raw = owner.q_conv(q_raw, conv_cache, "q", padding_mask)
+            k_raw = owner.k_conv(k_raw, conv_cache, "k", padding_mask)
+            v_raw = owner.v_conv(v_raw, conv_cache, "v", padding_mask)
         return q_raw, k_raw, v_raw
 
     def _output_gate(self, x: torch.Tensor) -> torch.Tensor:
@@ -104,9 +115,10 @@ class GatedDeltaExecutionMixin:
         self,
         x: torch.Tensor,
         state: torch.Tensor | None = None,
+        key_padding_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         owner = cast(_GatedDeltaOwner, cast(object, self))
-        return owner._forward_recurrent(x, state)
+        return owner._forward_recurrent(x, state, padding_mask=key_padding_mask)
 
 
 __all__ = ["CausalDepthwiseConv", "GatedDeltaExecutionMixin", "HeadRMSNorm"]

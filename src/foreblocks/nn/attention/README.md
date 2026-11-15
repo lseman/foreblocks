@@ -72,8 +72,22 @@ autograd history; detach its tensors explicitly when truncating backpropagation.
 Linear backends accept empty masks and redundant causal masks (boolean blocked
 entries, or additive zero/negative-infinity entries). Arbitrary pairwise masks
 raise `ValueError`, since the recurrent algorithms cannot represent them.
-DeltaNet and Kimi also reject `key_padding_mask` rather than ignoring it.
 RDA supports noncausal execution; the gated/delta backends remain causal scans.
+
+All linear backends accept boolean `key_padding_mask` tensors shaped `[B,T]`
+on the input device. In causal self-attention, `True` denotes an absent step:
+it produces zero output and does not write, erase, decay, or advance recurrent
+memory, short-convolution history, or RoPE positions. Left padding, right
+padding, interior gaps, and entirely padded sequences follow the same rule.
+Masked inputs are cleared before projections so padded NaNs cannot contaminate
+valid outputs or gradients. After masked calls, RDA/GLA position counters can
+be per-sequence tensors because each batch member may have consumed a different
+number of valid tokens. Unmasked execution retains its existing fast paths;
+masked short convolutions compact valid tokens per sequence before dispatch.
+
+For noncausal RDA and the gated-delta cross-attention approximation, the mask
+applies to encoder keys/values only; query positions are independent of that
+memory mask.
 
 RFF projections are registered buffers and move with the module's device and
 dtype. Their random basis is saved in checkpoints. Kimi short convolution uses

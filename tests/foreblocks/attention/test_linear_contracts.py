@@ -99,11 +99,11 @@ def test_arbitrary_mask_is_rejected_and_causal_mask_is_supported(backend):
 
 
 @pytest.mark.parametrize("backend", ["deltanet", "kimi"])
-def test_unsupported_padding_is_explicit(backend):
+def test_padding_mask_shape_is_validated(backend):
     module = ModernLinearAttention(32, 4, backend=backend)
     x = torch.randn(2, 7, 32)
     with pytest.raises(ValueError, match="key_padding_mask"):
-        module(x, x, x, key_padding_mask=torch.zeros(2, 7, dtype=torch.bool))
+        module(x, x, x, key_padding_mask=torch.zeros(2, 8, dtype=torch.bool))
 
 
 def test_gla_padding_excludes_masked_keys():

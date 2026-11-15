@@ -23,6 +23,8 @@ import torch.nn.functional as F
 
 from foreblocks.nn.attention.algorithms.linear.base import (
     RoPEMixin,
+    mask_padded_tokens,
+    validate_key_padding_mask,
     validate_linear_attention_mask,
 )
 from foreblocks.ops.attention import can_use_fla_gla, fla_gla_forward
@@ -182,6 +184,10 @@ class GLABackend(RoPEMixin, nn.Module):
     ) -> tuple[torch.Tensor, None, dict | None]:
         B, L, _ = query.shape
         validate_linear_attention_mask(attn_mask, query, key, True)
+        validate_key_padding_mask(key_padding_mask, B, L, query.device)
+        query, key, value = (
+            mask_padded_tokens(x, key_padding_mask) for x in (query, key, value)
+        )
 
         q = self.q_proj(query).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
         k = self.k_proj(key).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
@@ -189,12 +195,17 @@ class GLABackend(RoPEMixin, nn.Module):
         gk = self.gk_proj(query).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
 
         # L2 normalise (matches DeltaNet/Kimi/GatedDeltaNet Q/K-norm convention)
-        q = F.normalize(q, p=2, dim=-1)
-        k = F.normalize(k, p=2, dim=-1)
+        norm_dtype = (
+            torch.promote_types(q.dtype, torch.float32)
+            if key_padding_mask is not None
+            else q.dtype
+        )
+        q = F.normalize(q.to(norm_dtype), p=2, dim=-1).to(q.dtype)
+        k = F.normalize(k.to(norm_dtype), p=2, dim=-1).to(k.dtype)
 
         # RoPE on Q/K after projection (no-op unless pos_encoding_type="rope")
         offset = layer_state.get("gla_position", 0) if layer_state is not None else 0
-        q, k = self._apply_rope(q, k, offset)
+        q, k = self._apply_rope(q, k, offset, key_padding_mask)
 
         # Decay gate: g = log-sigmoid(low_rank) / τ, clamped
         gk = F.logsigmoid(gk) / self.gate_logit_normalizer
@@ -206,6 +217,7 @@ class GLABackend(RoPEMixin, nn.Module):
             pad_mask = key_padding_mask.unsqueeze(1).unsqueeze(-1)
             k = k.masked_fill(pad_mask, 0.0)
             v = v.masked_fill(pad_mask, 0.0)
+            gk = gk.masked_fill(pad_mask, 0.0)
 
         # Recurrent state
         S = None
@@ -239,7 +251,12 @@ class GLABackend(RoPEMixin, nn.Module):
 
         out = o.transpose(1, 2).contiguous().view(B, L, self.d_model)
         out = self.dropout(self.out_proj(out))
+        out = mask_padded_tokens(out, key_padding_mask)
 
         next_state = layer_state if layer_state is not None else {}
-        next_state.update(gla_S=S_next, gla_position=offset + L)
+        next_state.update(
+            gla_S=S_next,
+            gla_position=offset
+            + (L if key_padding_mask is None else (~key_padding_mask).sum(-1)),
+        )
         return out, None, next_state

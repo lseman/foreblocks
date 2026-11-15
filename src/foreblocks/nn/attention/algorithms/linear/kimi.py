@@ -28,7 +28,9 @@ from foreblocks.kernels.normalization.gated import (
     fused_rmsnorm_sigmoid_gate,
 )
 from foreblocks.nn.attention.algorithms.linear.base import (
+    mask_padded_tokens,
     streaming_causal_conv1d,
+    validate_key_padding_mask,
     validate_linear_attention_mask,
 )
 from foreblocks.ops.attention import can_use_fla_kda, fla_kda_forward
@@ -72,12 +74,17 @@ class _ShortConv1d(nn.Module):
         cache: torch.Tensor | None = None,
         output_final_state: bool = False,
         cu_seqlens: torch.Tensor | None = None,
+        padding_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         if cu_seqlens is not None:
             raise ValueError("packed short convolution is unsupported")
         history = {"history": cache} if cache is not None else {}
         out = streaming_causal_conv1d(
-            x.transpose(1, 2), self.conv, history, activation="silu"
+            x.transpose(1, 2),
+            self.conv,
+            history,
+            activation="silu",
+            padding_mask=padding_mask,
         )
         final_cache = history["history"] if output_final_state else None
         return out.transpose(1, 2), final_cache
@@ -291,7 +298,10 @@ class _KDA_Fast(nn.Module):
         return torch.zeros(BH, self.dk, self.dv, device=device, dtype=dtype)
 
     def _project_qkv(
-        self, x: torch.Tensor, conv_cache: dict | None = None
+        self,
+        x: torch.Tensor,
+        conv_cache: dict | None = None,
+        padding_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, T, _ = x.shape
 
@@ -302,13 +312,22 @@ class _KDA_Fast(nn.Module):
 
             cache = conv_cache if conv_cache is not None else {}
             q, cache["q"] = self.q_conv1d(
-                q_raw, cache.get("q"), output_final_state=True
+                q_raw,
+                cache.get("q"),
+                output_final_state=True,
+                padding_mask=padding_mask,
             )
             k, cache["k"] = self.k_conv1d(
-                k_raw, cache.get("k"), output_final_state=True
+                k_raw,
+                cache.get("k"),
+                output_final_state=True,
+                padding_mask=padding_mask,
             )
             v, cache["v"] = self.v_conv1d(
-                v_raw, cache.get("v"), output_final_state=True
+                v_raw,
+                cache.get("v"),
+                output_final_state=True,
+                padding_mask=padding_mask,
             )
 
             q = q.transpose(1, 2)  # [B, T, H*dk]
@@ -384,11 +403,14 @@ class _KDA_Fast(nn.Module):
         x: torch.Tensor,  # [B, T, D]
         state: torch.Tensor | None = None,  # [B, H, Dk, Dv]
         conv_cache: dict | None = None,
+        padding_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         B, T, D = x.shape
+        validate_key_padding_mask(padding_mask, B, T, x.device)
+        x = mask_padded_tokens(x, padding_mask)
         device, dtype = x.device, x.dtype
 
-        Q, K, V = self._project_qkv(x, conv_cache)  # each [B, H, T, D*]
+        Q, K, V = self._project_qkv(x, conv_cache, padding_mask)  # each [B, H, T, D*]
 
         # L2 normalize Q and K (matches official kernel)
         BH = B * self.h
@@ -403,6 +425,11 @@ class _KDA_Fast(nn.Module):
         alpha_step, g_flat, beta = self._compute_gate_params(
             x, BH, T, A_log_cast, dt_bias_cast
         )
+        if padding_mask is not None:
+            pad = padding_mask[:, None, :].expand(B, self.h, T).reshape(BH, T, 1)
+            alpha_step = alpha_step.masked_fill(pad, 1)
+            g_flat = g_flat.masked_fill(pad, 0)
+            beta = beta.masked_fill(pad, 0)
         # alpha_step  [BH, T, Dk]  per-step decay in (0, 1]
         # g_flat      [BH, T, Dk]  per-step log-decay (for chunk WY)
         # beta        [BH, T, 1]
@@ -500,7 +527,7 @@ class _KDA_Fast(nn.Module):
             .contiguous()
             .reshape(B, T, self.h * self.dv)
         )
-        y = self.drop(self.o_proj(y))
+        y = mask_padded_tokens(self.drop(self.o_proj(y)), padding_mask)
 
         next_state = S_final.reshape(B, self.h, self.dk, self.dv)
         return y, next_state
@@ -562,8 +589,9 @@ class KimiAttentionBackend(nn.Module):
         layer_state: dict | None = None,
     ) -> tuple[torch.Tensor, None, dict | None]:
         validate_linear_attention_mask(attn_mask, query, key, True)
-        if key_padding_mask is not None:
-            raise ValueError("Kimi key_padding_mask is unsupported")
+        validate_key_padding_mask(
+            key_padding_mask, query.size(0), query.size(1), query.device
+        )
         S = None
         if layer_state is not None:
             S_raw = layer_state.get("S", None)
@@ -587,7 +615,10 @@ class KimiAttentionBackend(nn.Module):
         # Self-attention: pass x as query (key/value unused, passed for compat)
         next_state = layer_state if layer_state is not None else {}
         out, S_next = self.kda(
-            query, state=S, conv_cache=next_state.setdefault("kimi_conv", {})
+            query,
+            state=S,
+            conv_cache=next_state.setdefault("kimi_conv", {}),
+            padding_mask=key_padding_mask,
         )
         next_state["S"] = S_next
         if not self.kda.use_short_conv:

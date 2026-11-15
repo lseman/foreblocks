@@ -23,6 +23,8 @@ from foreblocks.kernels.attention.linear import (
 from foreblocks.nn.attention.algorithms.linear.base import (
     FeatureMapRegistry,
     RoPEMixin,
+    mask_padded_tokens,
+    validate_key_padding_mask,
     validate_linear_attention_mask,
 )
 
@@ -86,6 +88,10 @@ class RDABackend(RoPEMixin, nn.Module):
         validate_linear_attention_mask(attn_mask, query, key, is_causal)
         if is_causal and Lq != Lk:
             raise ValueError("causal RDA requires matching query and key lengths")
+        validate_key_padding_mask(key_padding_mask, B, Lk, query.device)
+        key, value = (mask_padded_tokens(x, key_padding_mask) for x in (key, value))
+        if is_causal:
+            query = mask_padded_tokens(query, key_padding_mask)
 
         q = (
             self.q_proj(query).view(B, Lq, self.n_heads, self.d_head).transpose(1, 2)
@@ -106,7 +112,7 @@ class RDABackend(RoPEMixin, nn.Module):
             if layer_state is not None and is_causal
             else 0
         )
-        q, k = self._apply_rope(q, k, offset)
+        q, k = self._apply_rope(q, k, offset, key_padding_mask if is_causal else None)
 
         q_prime = self.feature_fn(q)
         k_prime = self.feature_fn(k)
@@ -120,8 +126,10 @@ class RDABackend(RoPEMixin, nn.Module):
         # ── Incremental recurrent decode ────────────────────────────────
         if layer_state is not None and is_causal:
             result = self._incremental(q_prime, k_prime, v, layer_state)
-            layer_state["rda_position"] = offset + Lq
-            return result
+            layer_state["rda_position"] = offset + (
+                Lq if key_padding_mask is None else (~key_padding_mask).sum(-1)
+            )
+            return mask_padded_tokens(result[0], key_padding_mask), result[1], result[2]
 
         # ── Causal global ───────────────────────────────────────────────
         if is_causal:
@@ -158,6 +166,8 @@ class RDABackend(RoPEMixin, nn.Module):
 
         out = out_heads.transpose(1, 2).contiguous().view(B, Lq, self.d_model)
         out = self.dropout(self.out_proj(out))
+        if is_causal:
+            out = mask_padded_tokens(out, key_padding_mask)
         return out, None, None
 
     def _incremental(
