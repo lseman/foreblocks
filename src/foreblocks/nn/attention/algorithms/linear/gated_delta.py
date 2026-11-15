@@ -23,6 +23,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from foreblocks.nn.attention.algorithms.linear.base import (
+    validate_linear_attention_mask,
+)
 from foreblocks.nn.attention.algorithms.linear.gated_common import (
     CausalDepthwiseConv,
     GatedDeltaExecutionMixin,
@@ -144,7 +147,6 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-
     def _gate_params(
         self, x: torch.Tensor, BH: int, T: int
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -177,7 +179,6 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
         )
         g_log = g_log.transpose(1, 2).contiguous().reshape(BH, T, 1)
         return alpha, beta, g_log
-
 
     # ── Single recurrent step ─────────────────────────────────────────────────
 
@@ -286,6 +287,7 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
         v: torch.Tensor | None = None,  # pre-projected V (Oryx)
         skip_proj: bool = False,  # skip internal Q/K/V projection (Oryx)
         skip_gate_norm: bool = False,  # skip internal gate+norm (Oryx)
+        conv_cache: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         B, T, _ = x.shape
         device, dtype = x.device, x.dtype
@@ -299,7 +301,7 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
             k_raw = k  # pre-projected + pre-convolved K: [B, T, H*Dk]
             v_raw = v  # pre-projected + pre-convolved V: [B, T, H*Dv]
         else:
-            q_raw, k_raw, v_raw = self._project(x)
+            q_raw, k_raw, v_raw = self._project(x, conv_cache)
 
         # Reshape to [BH, T, D*]
         Q = self._l2_norm(
@@ -365,14 +367,12 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
                 out = out_h.reshape(BH, T, self.dv).to(dtype=dtype)
                 S = S_h.reshape(BH, self.dk, self.dv).to(dtype=dtype)
             else:
-                S = S.detach()
                 for t in range(T):
                     out[:, t], S = self._delta_step(
                         S, K[:, t], V[:, t], Q[:, t], alpha[:, t], beta[:, t]
                     )
         else:
             # ── Exact sequential mode ─────────────────────────────────────
-            S = S.detach()
             for t in range(T):
                 out[:, t], S = self._delta_step(
                     S, K[:, t], V[:, t], Q[:, t], alpha[:, t], beta[:, t]
@@ -382,11 +382,13 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
         out_h = out.reshape(B, self.h, T, self.dv)  # [B, H, T, Dv]
         if not skip_gate_norm:
             g = self._output_gate(x)  # [B, H, T, Dv]
-            if not torch.is_grad_enabled() and can_use_fused_rmsnorm_sigmoid_gate(
-                out_h, g, self.h_rms.weight
-            ):
+            if can_use_fused_rmsnorm_sigmoid_gate(out_h, g, self.h_rms.weight):
                 out_h = fused_rmsnorm_sigmoid_gate(
-                    out_h, torch.sigmoid(g), self.h_rms.weight, self.h_rms.eps
+                    out_h,
+                    g,
+                    self.h_rms.weight,
+                    self.h_rms.eps,
+                    gate_activation="sigmoid",
                 )
             else:
                 out_h = self.h_rms(out_h)
@@ -406,61 +408,7 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
         state: torch.Tensor | None,  # [B, H, Dk, Dv]
         skip_gate_norm: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        B, _, _ = x_t.shape
-        device, dtype = x_t.device, x_t.dtype
-        BH = B * self.h
-
-        q_raw = self.q_proj(x_t)  # [B, 1, H*Dk] - no short conv during step
-        k_raw = self.k_proj(x_t)
-        v_raw = self.v_proj(x_t)
-
-        Q = self._l2_norm(
-            q_raw.view(B, 1, self.h, self.dk)
-            .permute(0, 2, 1, 3)
-            .reshape(BH, 1, self.dk)
-        )
-        K = self._l2_norm(
-            k_raw.view(B, 1, self.h, self.dk)
-            .permute(0, 2, 1, 3)
-            .reshape(BH, 1, self.dk)
-        )
-        V = (
-            v_raw.view(B, 1, self.h, self.dv)
-            .permute(0, 2, 1, 3)
-            .reshape(BH, 1, self.dv)
-        )
-
-        alpha, beta, _ = self._gate_params(x_t, BH, 1)  # [BH, 1, 1]
-
-        S = (
-            state.reshape(BH, self.dk, self.dv).contiguous().to(dtype=dtype)
-            if state is not None
-            else self._init_state(BH, device, dtype)
-        )
-
-        o_t, S_new = self._delta_step(
-            S, K[:, 0], V[:, 0], Q[:, 0], alpha[:, 0], beta[:, 0]
-        )  # o_t: [BH, Dv]
-
-        # gate & norm (skip for Oryx: external GatedRMSNorm applied)
-        out_h = o_t.reshape(B, self.h, 1, self.dv)  # [B, H, 1, Dv]
-        if not skip_gate_norm:
-            g = self._output_gate(x_t)  # [B, H, 1, Dv]
-            if not torch.is_grad_enabled() and can_use_fused_rmsnorm_sigmoid_gate(
-                out_h, g, self.h_rms.weight
-            ):
-                out_h = fused_rmsnorm_sigmoid_gate(
-                    out_h, torch.sigmoid(g), self.h_rms.weight, self.h_rms.eps
-                )
-            else:
-                out_h = self.h_rms(out_h)
-                out_h = out_h * torch.sigmoid(g)
-
-        y = out_h.permute(0, 2, 1, 3).contiguous().reshape(B, 1, self.h * self.dv)
-        y = self.drop(self.o_proj(y))
-
-        next_state = S_new.reshape(B, self.h, self.dk, self.dv)
-        return y, next_state
+        return self._forward_recurrent(x_t, state, skip_gate_norm=skip_gate_norm)
 
     # ── Public forward - matches MultiAttention / LinearAttention API ──────────
 
@@ -477,7 +425,12 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
         skip_gate_norm: bool = False,
     ) -> tuple[torch.Tensor, None, None]:
         B, Tq, D = query.shape
-        is_cross = key is not query and key.data_ptr() != query.data_ptr()
+        validate_linear_attention_mask(
+            attn_mask, query, key if key is not None else query, True
+        )
+        is_cross = (
+            key is not None and key is not query and key.data_ptr() != query.data_ptr()
+        )
 
         # ── Oryx: use pre-projected K/V in recurrent self-attention mode ──
         if skip_cross_attention and key is not None and value is not None:
@@ -495,13 +448,6 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
             )
             if layer_state is not None:
                 layer_state["gdn_state"] = next_s
-            return y, None, None
-
-        # ── Incremental single-step (decoder KV-cache path) ───────────────
-        if layer_state is not None and Tq == 1 and not self.training:
-            prev_s = layer_state.get("gdn_state", None)
-            y, next_s = self._step(query, prev_s, skip_gate_norm=skip_gate_norm)
-            layer_state["gdn_state"] = next_s
             return y, None, None
 
         # ── Cross-attention: use query stream but project from KV tensors ──
@@ -531,7 +477,10 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
         if layer_state is not None:
             prev_s = layer_state.get("gdn_state", None)
             y, next_s = self._forward_recurrent(
-                x, prev_s, skip_gate_norm=skip_gate_norm
+                x,
+                prev_s,
+                skip_gate_norm=skip_gate_norm,
+                conv_cache=layer_state.setdefault("gdn_conv", {}),
             )
             layer_state["gdn_state"] = next_s
             return y, None, None
@@ -613,7 +562,6 @@ class GatedDeltaNetBackend(GatedDeltaExecutionMixin, nn.Module):
         return self.drop(self.o_proj(y))
 
     # ── Standalone x-in interface (matches KimiAttentionBackend style) ──────────────
-
 
     def extra_repr(self) -> str:
         return (

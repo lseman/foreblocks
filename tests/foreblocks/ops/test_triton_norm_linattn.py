@@ -9,13 +9,10 @@ by covering, against autograd/eager references:
 
 Skipped when CUDA/Triton is unavailable.
 """
+
 import pytest
 import torch
 
-from foreblocks.ops.attention.chunked_causal_linear_attention import (
-    chunked_causal_linear_attn,
-    fused_recurrent_causal_linear_attn,
-)
 from foreblocks.integrations.fla.backend import (
     fla_path,
     has_fla_checkout,
@@ -49,6 +46,10 @@ from foreblocks.kernels.normalization.rms_norm import (
     RMSNormTritonFunction,
     fused_add_rmsnorm,
 )
+from foreblocks.ops.attention.chunked_causal_linear_attention import (
+    chunked_causal_linear_attn,
+    fused_recurrent_causal_linear_attn,
+)
 
 triton = pytest.importorskip("triton")
 pytestmark = pytest.mark.skipif(
@@ -65,6 +66,8 @@ def _rms_ref(x, w, eps):
 
 
 def test_fla_submodule_adapter_discovers_checkout():
+    if not has_fla_checkout():
+        pytest.skip("optional flash-linear-attention checkout is not present")
     path = fla_path()
     assert path.name == "flash-linear-attention"
     assert has_fla_checkout()
@@ -225,7 +228,7 @@ def test_fla_recurrent_delta_rule_matches_reference_when_available():
     state = torch.randn(B, H, D, D, device=DEV, dtype=DT) * 0.01
 
     assert can_use_fla_recurrent_delta_rule(q, k, v, beta, state)
-    out, final_state = fla_recurrent_delta_rule(q, k, v, beta, state, D ** -0.5)
+    out, final_state = fla_recurrent_delta_rule(q, k, v, beta, state, D**-0.5)
 
     ref_state = state.clone()
     ref_out = torch.empty_like(v)
@@ -234,7 +237,7 @@ def test_fla_recurrent_delta_rule_matches_reference_when_available():
         delta = beta[:, :, t] * (v[:, :, t] - pred)
         ref_state = ref_state + torch.einsum("bhv,bhk->bhvk", delta, k[:, :, t])
         ref_out[:, :, t] = torch.einsum(
-            "bhvk,bhk->bhv", ref_state, q[:, :, t] * (D ** -0.5)
+            "bhvk,bhk->bhv", ref_state, q[:, :, t] * (D**-0.5)
         )
 
     torch.testing.assert_close(out, ref_out, atol=1e-4, rtol=0)
@@ -250,11 +253,12 @@ def test_fla_gla_forward_matches_reference_when_available():
     q = torch.randn(B, H, T, D, device=DEV, dtype=DT)
     k = torch.randn(B, H, T, D, device=DEV, dtype=DT)
     v = torch.randn(B, H, T, D, device=DEV, dtype=DT)
-    g = torch.nn.functional.logsigmoid(
-        torch.randn(B, H, T, D, device=DEV, dtype=DT)
-    ) / 16.0
+    g = (
+        torch.nn.functional.logsigmoid(torch.randn(B, H, T, D, device=DEV, dtype=DT))
+        / 16.0
+    )
     state = torch.randn(B, H, D, D, device=DEV, dtype=DT) * 0.01
-    scale = D ** -0.5
+    scale = D**-0.5
 
     out, final_state = fla_gla_forward(q, k, v, g, state, scale, mode="recurrent")
 
@@ -263,9 +267,7 @@ def test_fla_gla_forward_matches_reference_when_available():
     for t in range(T):
         ref_state = torch.exp(g[:, :, t]).unsqueeze(-1) * ref_state
         ref_state = ref_state + torch.einsum("bhk,bhv->bhkv", k[:, :, t], v[:, :, t])
-        ref_out[:, :, t] = torch.einsum(
-            "bhk,bhkv->bhv", q[:, :, t] * scale, ref_state
-        )
+        ref_out[:, :, t] = torch.einsum("bhk,bhkv->bhv", q[:, :, t] * scale, ref_state)
 
     torch.testing.assert_close(out, ref_out, atol=1e-4, rtol=0)
     torch.testing.assert_close(final_state, ref_state, atol=2e-4, rtol=0)
@@ -304,16 +306,12 @@ def test_fla_gated_delta_rule_matches_reference_when_available():
     q = torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
     k = torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
     v = torch.randn(B, H, T, Dv, device=DEV, dtype=DT)
-    g = torch.nn.functional.logsigmoid(
-        torch.randn(B, H, T, device=DEV, dtype=DT)
-    )
+    g = torch.nn.functional.logsigmoid(torch.randn(B, H, T, device=DEV, dtype=DT))
     beta = torch.sigmoid(torch.randn(B, H, T, device=DEV, dtype=DT))
     state = torch.randn(B, H, Dk, Dv, device=DEV, dtype=DT) * 0.01
 
     assert can_use_fla_gated_delta_rule(q, k, v, g, beta, state)
-    out, final_state = fla_gated_delta_rule_forward(
-        q, k, v, g, beta, state, scale=1.0
-    )
+    out, final_state = fla_gated_delta_rule_forward(q, k, v, g, beta, state, scale=1.0)
 
     ref_state = state.clone()
     ref_out = torch.empty_like(v)
@@ -338,9 +336,7 @@ def test_fla_gdn2_chunk_matches_reference_when_available():
     q = torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
     k = torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
     v = torch.randn(B, H, T, Dv, device=DEV, dtype=DT)
-    g = torch.nn.functional.logsigmoid(
-        torch.randn(B, H, T, Dk, device=DEV, dtype=DT)
-    )
+    g = torch.nn.functional.logsigmoid(torch.randn(B, H, T, Dk, device=DEV, dtype=DT))
     b = torch.sigmoid(torch.randn(B, H, T, Dk, device=DEV, dtype=DT))
     w = torch.sigmoid(torch.randn(B, H, T, Dv, device=DEV, dtype=DT))
     state = torch.randn(B, H, Dk, Dv, device=DEV, dtype=torch.float32) * 0.01

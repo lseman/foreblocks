@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache
 
 import torch
 import torch.nn.functional as F
@@ -145,29 +146,57 @@ def _flash_attention_runner(
     ).transpose(1, 2)
 
 
-def _flex_attention_runner(
-    q, k, v, *, attention_mask=None, scale=None, causal=False, **_
-):
+@cache
+def _compiled_flex_attention():
     from torch.nn.attention.flex_attention import flex_attention
 
-    score_mod = None
+    return torch.compile(flex_attention)
+
+
+def _flex_attention_runner(
+    q, k, v, *, attention_mask=None, scale=None, causal=False, dropout_p=0.0, **_
+):
+    # FlexAttention has no attention-dropout argument. Preserve training
+    # semantics through SDPA rather than silently discarding dropout. Triton's
+    # FlexAttention lowering also requires head dimensions of at least 16.
+    if dropout_p or min(q.size(-1), v.size(-1)) < 16:
+        return F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=~attention_mask if attention_mask is not None else None,
+            dropout_p=dropout_p,
+            is_causal=causal and attention_mask is None,
+            scale=scale,
+            enable_gqa=q.size(1) != k.size(1),
+        )
+    from torch.nn.attention.flex_attention import create_block_mask
+
+    block_mask = None
     if attention_mask is not None:
 
-        def score_mod(score, b, h, q_idx, kv_idx):
-            return torch.where(
-                attention_mask[b, h, q_idx, kv_idx],
-                torch.full_like(score, float("-inf")),
-                score,
-            )
+        def mask_mod(b, h, q_idx, kv_idx):
+            return ~attention_mask[b, h, q_idx, kv_idx]
 
-    return flex_attention(
+        block_mask = create_block_mask(
+            mask_mod, q.size(0), q.size(1), q.size(2), k.size(2), device=q.device
+        )
+    elif causal:
+
+        def causal_mask(b, h, q_idx, kv_idx):
+            return q_idx >= kv_idx
+
+        block_mask = create_block_mask(
+            causal_mask, None, None, q.size(2), k.size(2), device=q.device
+        )
+
+    return _compiled_flex_attention()(
         q,
         k,
         v,
-        score_mod=score_mod,
+        block_mask=block_mask,
         scale=scale,
         enable_gqa=q.size(1) != k.size(1),
-        enable_causal=causal,
     )
 
 

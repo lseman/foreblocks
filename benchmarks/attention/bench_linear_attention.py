@@ -1,49 +1,24 @@
 #!/usr/bin/env python3
-"""Benchmark Foreblocks linear-attention implementations against FLA kernels.
+"""Benchmark module execution separately from equivalent attention kernels.
 
-Benchmark harness comparing custom PyTorch linear attention backends against FLA (flash-linear-attn) kernels.
+Kernel rows use identical Q/K/V, gates, initial state, output gradients, and
+precision for the eager reference and FLA. Correctness checks include values,
+final state, and Q/K/V gradients when --backward is selected. Module timings
+include projections, convolutions, normalization, and output gating; they are
+reported separately and are never used to calculate kernel speedups.
 
-Runs forward and backward timing passes for all backends (RDA, GLA, DeltaNet,
-GatedDeltaNetBackend, GatedDeltaNet2Backend, KimiAttentionBackend) against their corresponding FLA
-Triton/TileLang kernels, with optional shape correctness checks. CLI-driven;
-runs as a script, not importable as a library.
-
-Core API (benchmark harness):
-- bench_case: run one benchmark case for one backend
-- main: CLI entry point for running all benchmarks
-
+Run with PYTHONPATH=src from the repository root.
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
 import time
-from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 
-from foreblocks.nn.attention.algorithms.linear.deltanet import (
-    DeltaNetBackend,
-)
-from foreblocks.nn.attention.algorithms.linear.gated_delta import (
-    GatedDeltaNetBackend,
-)
-from foreblocks.nn.attention.algorithms.linear.gated_deltanet2 import (
-    GatedDeltaNet2Backend,
-)
-from foreblocks.nn.attention.algorithms.linear.gla import GLABackend
-from foreblocks.nn.attention.algorithms.linear.kimi import KimiAttentionBackend
-
-# ── Custom backends ──────────────────────────────────────────────────────────
-from foreblocks.nn.attention.algorithms.linear.rda import RDABackend
-
 # ── FLA availability ─────────────────────────────────────────────────────────
-from foreblocks.integrations.fla.backend import (
-    fla_path,
-    has_fla_checkout,
-)
 from foreblocks.integrations.fla.delta_rule import (
     can_use_fla_delta_rule,
     can_use_fla_recurrent_delta_rule,
@@ -65,15 +40,25 @@ from foreblocks.integrations.fla.linear import (
     can_use_fla_linear_attn,
     fla_recurrent_linear_attn_forward,
 )
+from foreblocks.nn.attention.algorithms.linear.deltanet import (
+    DeltaNetBackend,
+)
+from foreblocks.nn.attention.algorithms.linear.gated_delta import (
+    GatedDeltaNetBackend,
+)
+from foreblocks.nn.attention.algorithms.linear.gated_deltanet2 import (
+    GatedDeltaNet2Backend,
+)
+from foreblocks.nn.attention.algorithms.linear.gla import GLABackend
+from foreblocks.nn.attention.algorithms.linear.kimi import KimiAttentionBackend
 
-# ── Ensure repo root is on path ──────────────────────────────────────────────
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-
-_HAS_FLA = has_fla_checkout()
-
+# ── Custom backends ──────────────────────────────────────────────────────────
+from foreblocks.nn.attention.algorithms.linear.rda import RDABackend
+from foreblocks.ops.attention.chunked_causal_linear_attention import (
+    can_use_fused_recurrent_linear_attn,
+    chunked_causal_linear_attn,
+    fused_recurrent_causal_linear_attn,
+)
 
 # ── Timing helper ────────────────────────────────────────────────────────────
 
@@ -163,7 +148,7 @@ def _make_custom_fwd(model, backend_name, x, inputs):
         # rda / gla / deltanet / kimi: forward(query, key, value) -> (out, _, state)
         def fn():
             with torch.no_grad():
-                model(**inputs)
+                model(**inputs, is_causal=True)
 
     return fn
 
@@ -172,17 +157,19 @@ def _make_custom_bwd(model, backend_name, x, inputs):
     if backend_name in _STANDALONE:
 
         def fn():
+            model.zero_grad(set_to_none=True)
             x2 = x.detach().clone().requires_grad_(True)
             y, _ = model.forward_standalone(x2)
-            y.backward(torch.randn_like(y), retain_graph=True)
+            y.backward(torch.randn_like(y))
             x2.grad = None
 
     else:
 
         def fn():
+            model.zero_grad(set_to_none=True)
             x2 = x.detach().clone().requires_grad_(True)
-            out = model(query=x2, key=x2, value=x2)[0]
-            out.backward(torch.randn_like(out), retain_graph=True)
+            out = model(query=x2, key=x2, value=x2, is_causal=True)[0]
+            out.backward(torch.randn_like(out))
             x2.grad = None
 
     return fn
@@ -191,8 +178,7 @@ def _make_custom_bwd(model, backend_name, x, inputs):
 # ── FLA input extractors ─────────────────────────────────────────────────────
 # Every FLA wrapper expects Foreblocks layout [B, H, T, *] and transposes to
 # FLA's [B, T, H, *] internally.  Extractors below build random tensors directly
-# in [B, H, T, *] — the bench measures kernel throughput, not parity with the
-# custom path, so independent random inputs are fine.
+# in [B, H, T, *]. These same tensors feed both the reference and FLA paths.
 
 
 def _extract_gla_fla(x, H, dk, dv):
@@ -210,8 +196,8 @@ def _extract_gla_fla(x, H, dk, dv):
 def _extract_delta_fla(x, H, dk, dv):
     B, T = x.shape[0], x.shape[1]
     dev, dt = x.device, x.dtype
-    q = torch.randn(B, H, T, dk, device=dev, dtype=dt)
-    k = torch.randn(B, H, T, dk, device=dev, dtype=dt)
+    q = F.normalize(torch.randn(B, H, T, dk, device=dev, dtype=dt), dim=-1)
+    k = F.normalize(torch.randn(B, H, T, dk, device=dev, dtype=dt), dim=-1)
     v = torch.randn(B, H, T, dk, device=dev, dtype=dt)
     beta = torch.sigmoid(torch.randn(B, H, T, 1, device=dev, dtype=dt))
     S0 = torch.zeros(B, H, dk, dk, device=dev, dtype=torch.float32)
@@ -221,8 +207,8 @@ def _extract_delta_fla(x, H, dk, dv):
 def _extract_gated_delta_fla(x, H, dk, dv):
     B, T = x.shape[0], x.shape[1]
     dev, dt = x.device, x.dtype
-    q = torch.randn(B, H, T, dk, device=dev, dtype=dt)
-    k = torch.randn(B, H, T, dk, device=dev, dtype=dt)
+    q = F.normalize(torch.randn(B, H, T, dk, device=dev, dtype=dt), dim=-1)
+    k = F.normalize(torch.randn(B, H, T, dk, device=dev, dtype=dt), dim=-1)
     v = torch.randn(B, H, T, dv, device=dev, dtype=dt)
     # g and beta are per-head scalars: [B, H, T]
     g = F.logsigmoid(torch.randn(B, H, T, device=dev, dtype=dt))
@@ -234,8 +220,8 @@ def _extract_gated_delta_fla(x, H, dk, dv):
 def _extract_gdn2_fla(x, H, dk, dv):
     B, T = x.shape[0], x.shape[1]
     dev, dt = x.device, x.dtype
-    q = torch.randn(B, H, T, dk, device=dev, dtype=dt)
-    k = torch.randn(B, H, T, dk, device=dev, dtype=dt)
+    q = F.normalize(torch.randn(B, H, T, dk, device=dev, dtype=dt), dim=-1)
+    k = F.normalize(torch.randn(B, H, T, dk, device=dev, dtype=dt), dim=-1)
     v = torch.randn(B, H, T, dv, device=dev, dtype=dt)
     g = F.logsigmoid(torch.randn(B, H, T, dk, device=dev, dtype=dt))  # == q.shape
     b = torch.sigmoid(torch.randn(B, H, T, dk, device=dev, dtype=dt))  # == q.shape
@@ -247,8 +233,8 @@ def _extract_gdn2_fla(x, H, dk, dv):
 def _extract_kda_fla(x, H, dk, dv):
     B, T = x.shape[0], x.shape[1]
     dev, dt = x.device, x.dtype
-    q = torch.randn(B, H, T, dk, device=dev, dtype=dt)
-    k = torch.randn(B, H, T, dk, device=dev, dtype=dt)
+    q = F.normalize(torch.randn(B, H, T, dk, device=dev, dtype=dt), dim=-1)
+    k = F.normalize(torch.randn(B, H, T, dk, device=dev, dtype=dt), dim=-1)
     v = torch.randn(B, H, T, dv, device=dev, dtype=dt)
     g = F.logsigmoid(torch.randn(B, H, T, dk, device=dev, dtype=dt))  # == q.shape
     beta = torch.sigmoid(torch.randn(B, H, T, device=dev, dtype=dt))  # per-head scalar
@@ -370,139 +356,6 @@ def _avail_rda(tensors):
     return can_use_fla_linear_attn(*tensors)
 
 
-# ── Benchmark case ───────────────────────────────────────────────────────────
-
-
-def bench_case(
-    bname,
-    build_fn,
-    extract_fn,
-    custom_fwd_fn,
-    custom_bwd_fn,
-    fla_fwd_fn,
-    fla_avail_fn,
-    fla_rccr_fn,
-    fla_rccr_avail_fn,
-    B,
-    T,
-    dk,
-    dv,
-    dtype,
-    chunk_size,
-    backward,
-    warmup,
-    iters,
-    check,
-    no_fla,
-):
-    H = 8  # default; overridden from config
-    device = "cuda"
-
-    torch.manual_seed(42)
-
-    # ── Build model ──────────────────────────────────────────────────────
-    model = build_fn(B, T, 8, dk, dv, dtype, chunk_size)
-    model.eval()
-
-    # ── Generate inputs ──────────────────────────────────────────────────
-    D = 8 * dk
-    if bname == "rda" or bname == "gla" or bname == "deltanet":
-        x = torch.randn(B, T, D, device=device, dtype=dtype)
-        inputs = {"query": x, "key": x, "value": x}
-    else:  # gated_delta, gated_deltanet2, kimi
-        x = torch.randn(B, T, D, device=device, dtype=dtype)
-        inputs = {"x": x}
-
-    # ── FLA tensors ──────────────────────────────────────────────────────
-    fla_tensors = None
-    fla_avail = fla_avail_rccr = False
-    if not no_fla and _HAS_FLA:
-        fla_tensors = extract_fn(x, 8, dk, dv)
-        if fla_avail_fn:
-            fla_avail = fla_avail_fn(fla_tensors)
-        if fla_rccr_avail_fn:
-            fla_avail_rccr = fla_rccr_avail_fn(fla_tensors)
-
-    # ── Time custom ──────────────────────────────────────────────────────
-    if backward:
-        custom_ms = _time_ms(custom_bwd_fn, warmup, iters)
-    else:
-        custom_ms = _time_ms(custom_fwd_fn, warmup, iters)
-
-    # ── Time FLA chunk ───────────────────────────────────────────────────
-    fla_chunk_ms = fla_rccr_ms = None
-    if not no_fla and _HAS_FLA:
-        if fla_avail and fla_tensors and fla_fwd_fn:
-
-            def call_chunk():
-                fla_fwd_fn(fla_tensors, chunk_size)
-
-            if backward:
-
-                def call_chunk_bwd():
-                    out, _ = fla_fwd_fn(fla_tensors, chunk_size)
-                    out.backward(torch.randn_like(out), retain_graph=True)
-                    out.grad = None
-
-                fla_chunk_ms = _time_ms(call_chunk_bwd, warmup, iters)
-            else:
-                fla_chunk_ms = _time_ms(call_chunk, warmup, iters)
-
-        if fla_avail_rccr and fla_tensors and fla_rccr_fn:
-
-            def call_rccr():
-                fla_rccr_fn(fla_tensors)
-
-            if backward:
-
-                def call_rccr_bwd():
-                    out, _ = fla_rccr_fn(fla_tensors)
-                    out.backward(torch.randn_like(out), retain_graph=True)
-                    out.grad = None
-
-                fla_rccr_ms = _time_ms(call_rccr_bwd, warmup, iters)
-            else:
-                fla_rccr_ms = _time_ms(call_rccr, warmup, iters)
-
-    # ── Shape check ──────────────────────────────────────────────────────
-    status = ""
-    if check and not no_fla and fla_tensors:
-        try:
-            Bf, Hf, Tf, Df = fla_tensors[0].shape
-            if fla_avail and fla_fwd_fn:
-                y_f, _ = fla_fwd_fn(fla_tensors, chunk_size)
-                ok = y_f.shape == (Bf, Hf, Tf, Df)
-                status += f"chunk={'ok' if ok else 'FAIL'}"
-            if fla_avail_rccr and fla_rccr_fn:
-                y_f2, _ = fla_rccr_fn(fla_tensors)
-                ok = y_f2.shape == (Bf, Hf, Tf, Df)
-                sep = " | " if fla_avail else ""
-                status += f"{sep}rccr={'ok' if ok else 'FAIL'}"
-        except Exception as e:
-            status += f"err={e}"
-
-    # ── Print ────────────────────────────────────────────────────────────
-    mode = "fwd+bwd" if backward else "fwd"
-    tokens = B * T
-    custom_tps = tokens / (custom_ms * 1e-3) if custom_ms > 0 else 0
-
-    def _fmt(ms, label):
-        if ms is None:
-            return f"{label:12s} {'N/A':>8s}"
-        return f"{label:12s} {ms:7.3f}ms"
-
-    line = (
-        f"{mode:7s} {bname:16s} "
-        f"B={B} H=8 T={T:5d} dk={dk:3d} dv={dv:3d} {str(dtype).split('.')[-1]:5s}  "
-        f"{custom_ms:7.3f}ms ({custom_tps:8.0f} tok/s)  "
-        f"{_fmt(fla_chunk_ms, 'fla_chunk=')[-11:]:>11s}  "
-        f"{_fmt(fla_rccr_ms, 'fla_rccr=')[-11:]:>11s}"
-    )
-    if status:
-        line += f"  [{status}]"
-    print(line)
-
-
 # ── Backend registry ─────────────────────────────────────────────────────────
 
 _BACKENDS = {
@@ -559,36 +412,94 @@ _BACKENDS = {
 }
 
 
-# ── Default configs ──────────────────────────────────────────────────────────
+def _reference_kernel(name, tensors):
+    """Independent fp32 recurrent equations, with public adapter state layouts."""
+    q, k, v = (t.float() for t in tensors[:3])
+    batch, heads, length, features = q.shape
+    if name == "rda":
+        state = q.new_zeros(batch, heads, features, v.size(-1))
+        normalizer = q.new_zeros(batch, heads, features)
+    else:
+        state = tensors[-1].float()
+        if name == "deltanet":
+            state = state.transpose(-1, -2)
+    outputs = []
+    for t in range(length):
+        kt, vt, qt = k[:, :, t], v[:, :, t], q[:, :, t]
+        if name in {"rda", "gla"}:
+            if name == "gla":
+                state = tensors[3][:, :, t].float().exp().unsqueeze(-1) * state
+            state = state + kt.unsqueeze(-1) * vt.unsqueeze(-2)
+        else:
+            if name in {"gated_delta", "gated_deltanet2", "kimi"}:
+                decay = tensors[3][:, :, t].float().exp()
+                if name == "gated_delta":
+                    decay = decay.unsqueeze(-1)
+                state = decay.unsqueeze(-1) * state
+            if name == "gated_deltanet2":
+                erase = tensors[4][:, :, t].float() * kt
+                target = tensors[5][:, :, t].float() * vt
+                delta = target - (erase.unsqueeze(-1) * state).sum(-2)
+            else:
+                beta = tensors[3 if name == "deltanet" else 4][:, :, t].float()
+                if beta.ndim == 2:
+                    beta = beta.unsqueeze(-1)
+                delta = beta * (vt - (kt.unsqueeze(-1) * state).sum(-2))
+            state = state + kt.unsqueeze(-1) * delta.unsqueeze(-2)
+        output = (qt.unsqueeze(-1) * state).sum(-2)
+        if name == "rda":
+            normalizer = normalizer + kt
+            output = output / ((qt * normalizer).sum(-1, keepdim=True) + 1e-6)
+        outputs.append(output)
+    final = None if name == "rda" else state
+    if name == "deltanet":
+        final = final.transpose(-1, -2)
+    return torch.stack(outputs, dim=2).to(tensors[0].dtype), final
 
 
-def _default_configs():
-    configs = []
-    for B in [1, 4]:
-        for T in [128, 512, 2048]:
-            for dk in [64, 128]:
-                configs.append(
-                    dict(B=B, T=T, dk=dk, dv=dk, dtype=torch.bfloat16, chunk_size=64)
-                )
-    return configs
+def _kernel_runner(fn, tensors, backward, gradient):
+    if not backward:
+
+        def forward():
+            with torch.no_grad():
+                return fn(tensors)
+
+        return forward
+    inputs = _grad_tensors(tensors)
+
+    def forward_backward():
+        output, _ = fn(inputs)
+        return torch.autograd.grad(output, inputs[:3], gradient)
+
+    return forward_backward
 
 
-# ── CLI ──────────────────────────────────────────────────────────────────────
+def _check_kernel(reference, candidate, tensors, backward, gradient):
+    with torch.no_grad():
+        expected, expected_state = reference(tensors)
+        actual, actual_state = candidate(tensors)
+    tolerance = 3e-2 if tensors[0].dtype in (torch.float16, torch.bfloat16) else 2e-4
+    torch.testing.assert_close(actual, expected, atol=tolerance, rtol=tolerance)
+    if expected_state is not None:
+        torch.testing.assert_close(
+            actual_state.float(), expected_state, atol=tolerance, rtol=tolerance
+        )
+    if backward:
+        actual_grad = _kernel_runner(candidate, tensors, True, gradient)()
+        expected_grad = _kernel_runner(reference, tensors, True, gradient)()
+        for actual, expected in zip(actual_grad, expected_grad):
+            torch.testing.assert_close(actual, expected, atol=tolerance, rtol=tolerance)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Benchmark all linear attention backends vs FLA kernels"
-    )
-    parser.add_argument(
-        "--backend", type=str, default=None, help="Backend name (default: all)"
-    )
-    parser.add_argument("--batch", type=int, default=None)
-    parser.add_argument("--heads", type=int, default=None)
-    parser.add_argument("--seq", type=int, default=None)
-    parser.add_argument("--dk", type=int, default=None)
-    parser.add_argument("--dv", type=int, default=None)
-    parser.add_argument("--dtype", choices=["fp16", "bf16", "fp32"], default=None)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backend", choices=sorted(_BACKENDS))
+    parser.add_argument("--batch", type=int, default=4)
+    parser.add_argument("--heads", type=int, default=8)
+    parser.add_argument("--seq", type=int, default=512)
+    parser.add_argument("--dk", type=int, default=128)
+    parser.add_argument("--dv", type=int)
+    parser.add_argument("--dtype", choices=["fp16", "bf16", "fp32"], default="bf16")
     parser.add_argument("--chunk-size", type=int, default=64)
     parser.add_argument("--backward", action="store_true")
     parser.add_argument("--warmup", type=int, default=10)
@@ -597,194 +508,133 @@ def main():
     parser.add_argument("--no-fla", action="store_true")
     parser.add_argument("--sweep", action="store_true")
     parser.add_argument("--cases", type=int, default=32)
-
     args = parser.parse_args()
-
     if not torch.cuda.is_available():
-        print("ERROR: CUDA not available")
-        sys.exit(1)
-
-    # Determine backends
-    backend_names = [args.backend] if args.backend else sorted(_BACKENDS.keys())
-
-    dtype_map = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
-    dt = dtype_map.get(args.dtype, torch.bfloat16)
-
-    # Determine configs
-    if args.sweep:
-        all_configs = _default_configs()[: args.cases]
-    else:
-        H = args.heads or 8
-        dk = args.dk or 128
-        all_configs = [
-            {
-                "B": args.batch or 4,
-                "T": args.seq or 512,
-                "dk": dk,
-                "dv": args.dv or dk,
-                "dtype": dt,
-                "chunk_size": args.chunk_size,
-                "H": H,
-            }
-        ]
-
-    print("=" * 100)
-    print("Linear Attention Benchmark: Custom vs FLA Kernels")
-    print("=" * 100)
-    print(f"CUDA: {torch.cuda.get_device_name(0)}")
-    print(f"FLA available: {_HAS_FLA} ({fla_path() if _HAS_FLA else 'N/A'})")
-    print(f"Backends: {', '.join(backend_names)}")
-    print(
-        f"Backward: {args.backward} | Check: {not args.no_check} | Iters: {args.iters}"
-    )
-    print("-" * 100)
-
-    total = len(backend_names) * len(all_configs)
-    idx = 0
-
-    for bname in backend_names:
-        bi = _BACKENDS[bname]
-        print(f"\n{'=' * 100}\n  Backend: {bname}\n{'=' * 100}")
-        print(
-            f"{'mode':7s} {'backend':16s} {'B':>3s} {'H':>2s} {'T':>5s} {'dk':>3s} {'dv':>3s} {'dtype':>5s}  "
-            f"{'custom':>10s} {'tok/s':>7s} {'fla_chunk':>11s} {'fla_rccr':>11s}"
+        parser.error("CUDA is required")
+    if (
+        min(args.batch, args.heads, args.seq, args.dk, args.iters, args.cases) <= 0
+        or args.warmup < 0
+        or args.chunk_size < 0
+    ):
+        parser.error(
+            "sizes/iterations must be positive; warmup/chunk-size must be nonnegative"
         )
-        print("-" * 100)
-
-        for c in all_configs:
-            idx += 1
-            H = c.get("H", 8)
-            dk, dv = c["dk"], c.get("dv", c["dk"])
-            dtype = c["dtype"]
-            cs = c["chunk_size"]
-
+    dv = args.dv if args.dv is not None else args.dk
+    if dv <= 0:
+        parser.error("dv must be positive")
+    dtype = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}[
+        args.dtype
+    ]
+    configs = [(args.batch, args.seq, args.dk, dv)]
+    if args.sweep:
+        configs = [
+            (b, t, d, d)
+            for b in (1, 4)
+            for t in (32, 64, 128, 512, 2048)
+            for d in (64, 128)
+        ][: args.cases]
+    print(f"GPU: {torch.cuda.get_device_name(0)} | torch={torch.__version__}")
+    print(
+        "Module auto-dispatch timings include projections and gates. Kernel rows compare identical inputs."
+    )
+    print(
+        "Reference kernel is an eager sequential baseline, not an optimized performance target."
+    )
+    failures = []
+    for name in [args.backend] if args.backend else sorted(_BACKENDS):
+        backend = _BACKENDS[name]
+        for batch, length, dk, value_dim in configs:
+            if name in {"rda", "gla", "deltanet"} and dk != value_dim:
+                parser.error(f"{name} module requires dv == dk")
+            torch.manual_seed(42)
+            model = backend["build"](
+                batch, length, args.heads, dk, value_dim, dtype, args.chunk_size
+            ).eval()
+            x = torch.randn(batch, length, args.heads * dk, device="cuda", dtype=dtype)
+            inputs = {"query": x, "key": x, "value": x}
+            module_fn = (
+                _make_custom_bwd(model, name, x, inputs)
+                if args.backward
+                else _make_custom_fwd(model, name, x, inputs)
+            )
+            module_ms = _time_ms(module_fn, args.warmup, args.iters)
             print(
-                f"\n--- Case {idx}/{total}: B={c['B']} H={H} T={c['T']} dk={dk} dv={dv} {dtype} ---"
+                f"{name} B={batch} H={args.heads} T={length} dk={dk} dv={value_dim} {args.dtype}: module_auto={module_ms:.4f}ms"
             )
+            tensors = backend["extract"](x, args.heads, dk, value_dim)
+            gradient = torch.randn_like(tensors[2])
 
-            # Rebuild forward/bwd callables per case (model is rebuilt each time)
-            # We'll create them inside bench_case by rebuilding the model
-            # To avoid passing model around, we'll modify bench_case to accept build_fn directly
+            def reference(ts):
+                return _reference_kernel(name, ts)
 
-            model = bi["build"](c["B"], c["T"], H, dk, dv, dtype, cs)
-            model.eval()
+            ref_ms = _time_ms(
+                _kernel_runner(reference, tensors, args.backward, gradient),
+                args.warmup,
+                args.iters,
+            )
+            print(f"  kernel_reference={ref_ms:.4f}ms")
+            candidates = []
+            if name == "rda":
 
-            D = H * dk
-            x = torch.randn(c["B"], c["T"], D, device="cuda", dtype=dtype)
-            if bname in _STANDALONE:
-                inputs = {"x": x}
-            else:
-                # rda / gla / deltanet / kimi take query/key/value
-                inputs = {"query": x, "key": x, "value": x}
+                def local_chunked(ts):
+                    return chunked_causal_linear_attn(
+                        *ts, chunk_size=max(1, args.chunk_size)
+                    ), None
 
-            custom_fwd = _make_custom_fwd(model, bname, x, inputs)
-            custom_bwd = _make_custom_bwd(model, bname, x, inputs)
+                candidates.append(("local_chunked", local_chunked))
+                if not args.backward and can_use_fused_recurrent_linear_attn(*tensors):
 
-            # Extract FLA tensors
-            fla_tensors = None
-            fla_avail = fla_avail_rccr = False
-            if not args.no_fla and _HAS_FLA:
-                fla_tensors = bi["extract"](x, H, dk, dv)
-                if bi["avail"]:
-                    fla_avail = bi["avail"](fla_tensors)
-                if bi["rccr_avail"]:
-                    fla_avail_rccr = bi["rccr_avail"](fla_tensors)
+                    def local_recurrent(ts):
+                        return fused_recurrent_causal_linear_attn(*ts), None
 
-            # Time custom
-            if args.backward:
-                custom_ms = _time_ms(custom_bwd, args.warmup, args.iters)
-            else:
-                custom_ms = _time_ms(custom_fwd, args.warmup, args.iters)
+                    candidates.append(("local_triton_recurrent", local_recurrent))
+            fla_modes = (
+                (
+                    "recurrent" if name == "rda" else "chunk",
+                    backend["fwd"],
+                    backend["avail"],
+                ),
+            )
+            if name != "rda":
+                fla_modes += (("recurrent", backend["rccr_fn"], backend["rccr_avail"]),)
+            for label, operation, available in fla_modes:
+                if (
+                    args.no_fla
+                    or operation is None
+                    or available is None
+                    or not available(tensors)
+                ):
+                    print(f"  fla_{label}=N/A (disabled or unavailable)")
+                    continue
 
-            # Time FLA
-            fla_chunk_ms = fla_rccr_ms = None
-            fla_notes = []
+                def candidate(ts, operation=operation, label=label):
+                    return (
+                        operation(ts, args.chunk_size)
+                        if label == "chunk"
+                        else operation(ts)
+                    )
 
-            def _safe_time(fn, label):
-                # Some FLA kernels (e.g. fused_recurrent backward) fail to compile
-                # on this Triton/GPU. Report N/A instead of aborting the sweep.
+                candidates.append((f"fla_{label}", candidate))
+
+            for label, candidate in candidates:
                 try:
-                    return _time_ms(fn, args.warmup, args.iters)
-                except Exception as e:
-                    fla_notes.append(f"{label}: {type(e).__name__}")
-                    return None
-
-            if not args.no_fla and _HAS_FLA and fla_tensors:
-                if fla_avail and bi["fwd"]:
-
-                    def cfn(fla_tensors=fla_tensors, chunk_size=cs, fwd_fn=bi["fwd"]):
-                        fwd_fn(fla_tensors, chunk_size)
-
-                    if args.backward:
-
-                        def cfn_bwd(
-                            fla_tensors=fla_tensors, chunk_size=cs, fwd_fn=bi["fwd"]
-                        ):
-                            out, _ = fwd_fn(_grad_tensors(fla_tensors), chunk_size)
-                            out.backward(torch.randn_like(out))
-
-                        fla_chunk_ms = _safe_time(cfn_bwd, "chunk_bwd")
-                    else:
-                        fla_chunk_ms = _safe_time(cfn, "chunk")
-
-                if fla_avail_rccr and bi["rccr_fn"]:
-
-                    def rfn(fla_tensors=fla_tensors, fwd_fn=bi["rccr_fn"]):
-                        fwd_fn(fla_tensors)
-
-                    if args.backward:
-
-                        def rfn_bwd(fla_tensors=fla_tensors, fwd_fn=bi["rccr_fn"]):
-                            out, _ = fwd_fn(_grad_tensors(fla_tensors))
-                            out.backward(torch.randn_like(out))
-
-                        fla_rccr_ms = _safe_time(rfn_bwd, "rccr_bwd")
-                    else:
-                        fla_rccr_ms = _safe_time(rfn, "rccr")
-
-            # Shape check
-            status = ""
-            if args.no_check is False and not args.no_fla and fla_tensors:
-                try:
-                    Bf, Hf, Tf, _ = fla_tensors[0].shape
-                    Vf = fla_tensors[2].shape[-1]  # output last dim == v's head dim
-                    expected = (Bf, Hf, Tf, Vf)
-                    if fla_avail and bi["fwd"]:
-                        y_f, _ = bi["fwd"](fla_tensors, cs)
-                        status += f"chunk={'ok' if y_f.shape == expected else 'FAIL'}"
-                    if fla_avail_rccr and bi["rccr_fn"]:
-                        y_f2, _ = bi["rccr_fn"](fla_tensors)
-                        sep = " | " if fla_avail else ""
-                        status += (
-                            f"{sep}rccr={'ok' if y_f2.shape == expected else 'FAIL'}"
+                    if not args.no_check:
+                        _check_kernel(
+                            reference, candidate, tensors, args.backward, gradient
                         )
-                except Exception as e:
-                    status += f"err={e}"
-
-            if fla_notes:
-                status += (" | " if status else "") + "; ".join(fla_notes)
-
-            mode = "fwd+bwd" if args.backward else "fwd"
-            tokens = c["B"] * c["T"]
-            custom_tps = tokens / (custom_ms * 1e-3) if custom_ms > 0 else 0
-
-            def _fmt(ms, label):
-                if ms is None:
-                    return f"{label:12s} {'N/A':>8s}"
-                return f"{label:12s} {ms:7.3f}ms"
-
-            line = (
-                f"{mode:7s} {bname:16s} "
-                f"B={c['B']} H={H} T={c['T']:5d} dk={dk:3d} dv={dv:3d} {str(dtype).split('.')[-1]:5s}  "
-                f"{custom_ms:7.3f}ms ({custom_tps:8.0f} tok/s)  "
-                f"{_fmt(fla_chunk_ms, 'fla_chunk=')[-11:]:>11s}  "
-                f"{_fmt(fla_rccr_ms, 'fla_rccr=')[-11:]:>11s}"
-            )
-            if status:
-                line += f"  [{status}]"
-            print(line)
-
-    print(f"\n{'=' * 100}\nDone.")
+                    elapsed = _time_ms(
+                        _kernel_runner(candidate, tensors, args.backward, gradient),
+                        args.warmup,
+                        args.iters,
+                    )
+                    print(
+                        f"  {label}={elapsed:.4f}ms reference_speedup={ref_ms / elapsed:.2f}x check={'disabled' if args.no_check else 'passed'}"
+                    )
+                except Exception as exc:
+                    failures.append(f"{name}/{label}: {type(exc).__name__}: {exc}")
+                    print(f"  {label}=FAILED: {exc}")
+    if failures:
+        raise SystemExit("Failed kernel checks/runs:\n" + "\n".join(failures))
 
 
 if __name__ == "__main__":

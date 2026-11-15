@@ -3,8 +3,8 @@
 Grouped GEMM with variable M per expert — Triton-accelerated matrix multiply.
 
 Supports concatenated MoE expert segments where each expert processes a variable
-number of tokens. The Triton forward kernel is autotuned; the backward falls back
-to PyTorch per-expert matmuls. Use when building Mixture-of-Experts models or
+number of tokens. The Triton forward and backward kernels are autotuned, with a persistent
+scheduler for sparse expert loads and an eager PyTorch fallback. Use when building Mixture-of-Experts models or
 any architecture that needs per-group matrix multiplication with varying group sizes.
 
 Core API:
@@ -20,7 +20,7 @@ Core API:
 #
 # - Triton kernel is autotuned over BLOCK_M/BLOCK_N/BLOCK_K.
 # - DO NOT pass BLOCK_* at launch; autotune provides them.
-# - Triton path is inference-only; if grads are needed we use torch.mm.
+# - Forward and dA share a scheduler; dB reduces within each expert.
 # -----------------------------------------------------------------------------
 
 from collections.abc import Sequence
@@ -38,7 +38,7 @@ except Exception:  # pragma: no cover
 
 class _GroupedMMVarMFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, A_packed, offsets, B_cat, use_fp16_acc: bool):
+    def forward(ctx, A_packed, offsets, B_cat, use_fp16_acc: bool, backend="auto"):
         if not TRITON_AVAILABLE:
             raise RuntimeError("_GroupedMMVarMFunction requires Triton.")
         if not A_packed.is_cuda:
@@ -51,6 +51,7 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
         if not B_cat.is_contiguous():
             B_cat = B_cat.contiguous()
 
+        ctx.backend = backend
         E = offsets.numel() - 1
         K = B_cat.shape[1]
         N = B_cat.shape[2]
@@ -74,23 +75,28 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
             triton.cdiv(S_total, meta["BLOCK_M"]),
             triton.cdiv(N, meta["BLOCK_N"]),
         )
-        _grouped_gemm_varM_kernel[grid](
-            A_packed,
-            B_cat,
-            C_packed,
-            starts,
-            M_per,
-            K=K,
-            N=N,
-            stride_a_m=stride_a_m,
-            stride_a_k=stride_a_k,
-            stride_b_g=stride_b_g,
-            stride_b_k=stride_b_k,
-            stride_b_n=stride_b_n,
-            stride_c_m=stride_c_m,
-            stride_c_n=stride_c_n,
-            ACC_DTYPE=acc_dtype,
-        )
+        if _use_persistent(backend, E, S_total):
+            _launch_persistent_grouped_mm(
+                A_packed, B_cat, C_packed, starts, M_per, use_fp16_acc
+            )
+        else:
+            _grouped_gemm_varM_kernel[grid](
+                A_packed,
+                B_cat,
+                C_packed,
+                starts,
+                M_per,
+                K=K,
+                N=N,
+                stride_a_m=stride_a_m,
+                stride_a_k=stride_a_k,
+                stride_b_g=stride_b_g,
+                stride_b_k=stride_b_k,
+                stride_b_n=stride_b_n,
+                stride_c_m=stride_c_m,
+                stride_c_n=stride_c_n,
+                ACC_DTYPE=acc_dtype,
+            )
 
         ctx.save_for_backward(A_packed, B_cat, offsets)
         return C_packed
@@ -119,23 +125,28 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
                     triton.cdiv(S_total, meta["BLOCK_M"]),
                     triton.cdiv(K, meta["BLOCK_N"]),  # kernel-N == original K
                 )
-                _grouped_gemm_varM_kernel[dA_grid](
-                    grad_out,
-                    B_cat,
-                    grad_A,
-                    starts,
-                    M_per,
-                    K=N,
-                    N=K,
-                    stride_a_m=grad_out.stride(0),
-                    stride_a_k=grad_out.stride(1),
-                    stride_b_g=B_cat.stride(0),
-                    stride_b_k=B_cat.stride(2),
-                    stride_b_n=B_cat.stride(1),
-                    stride_c_m=grad_A.stride(0),
-                    stride_c_n=grad_A.stride(1),
-                    ACC_DTYPE=tl.float32,
-                )
+                if _use_persistent(ctx.backend, E, S_total):
+                    _launch_persistent_grouped_mm(
+                        grad_out, B_cat.transpose(-1, -2), grad_A, starts, M_per
+                    )
+                else:
+                    _grouped_gemm_varM_kernel[dA_grid](
+                        grad_out,
+                        B_cat,
+                        grad_A,
+                        starts,
+                        M_per,
+                        K=N,
+                        N=K,
+                        stride_a_m=grad_out.stride(0),
+                        stride_a_k=grad_out.stride(1),
+                        stride_b_g=B_cat.stride(0),
+                        stride_b_k=B_cat.stride(2),
+                        stride_b_n=B_cat.stride(1),
+                        stride_c_m=grad_A.stride(0),
+                        stride_c_n=grad_A.stride(1),
+                        ACC_DTYPE=tl.float32,
+                    )
 
             grad_B = torch.zeros_like(B_cat) if needs_B else None
             if needs_B:
@@ -177,11 +188,83 @@ class _GroupedMMVarMFunction(torch.autograd.Function):
                 if needs_B:
                     grad_B[e] = A_e.T @ dC_e
 
-        return grad_A, None, grad_B, None
+        return (grad_A, None, grad_B, None, None)[: len(ctx.needs_input_grad)]
 
 
 # =============================== Triton kernels ===============================
 if TRITON_AVAILABLE:
+
+    @triton.autotune(
+        configs=[
+            triton.Config({"BLOCK_M": 32, "BLOCK_N": 64, "BLOCK_K": 32}, num_warps=4),
+            triton.Config({"BLOCK_M": 64, "BLOCK_N": 64, "BLOCK_K": 32}, num_warps=4),
+            triton.Config({"BLOCK_M": 64, "BLOCK_N": 128, "BLOCK_K": 64}, num_warps=4),
+            triton.Config({"BLOCK_M": 128, "BLOCK_N": 64, "BLOCK_K": 64}, num_warps=4),
+            triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 64}, num_warps=8),
+        ],
+        key=["K", "N", "E", "TOTAL_M"],
+    )
+    @triton.jit
+    def _persistent_grouped_gemm_kernel(
+        A,
+        B,
+        C,
+        Starts,
+        Sizes,
+        K: tl.constexpr,
+        N: tl.constexpr,
+        E: tl.constexpr,
+        TOTAL_M: tl.constexpr,
+        SAM: tl.constexpr,
+        SAK: tl.constexpr,
+        SBG: tl.constexpr,
+        SBK: tl.constexpr,
+        SBN: tl.constexpr,
+        SCM: tl.constexpr,
+        SCN: tl.constexpr,
+        WORKERS: tl.constexpr,
+        FP16_ACC: tl.constexpr,
+        BLOCK_M: tl.constexpr,
+        BLOCK_N: tl.constexpr,
+        BLOCK_K: tl.constexpr,
+    ):
+        tile = tl.program_id(0)
+        prefix = 0
+        n_tiles = tl.cdiv(N, BLOCK_N)
+        for expert in range(E):
+            size = tl.load(Sizes + expert)
+            start = tl.load(Starts + expert)
+            tiles = tl.cdiv(size, BLOCK_M) * n_tiles
+            while tile < prefix + tiles:
+                local = tile - prefix
+                m = (local // n_tiles) * BLOCK_M + tl.arange(0, BLOCK_M)
+                n = (local % n_tiles) * BLOCK_N + tl.arange(0, BLOCK_N)
+                ks = tl.arange(0, BLOCK_K)
+                acc = tl.zeros(
+                    (BLOCK_M, BLOCK_N), tl.float16 if FP16_ACC else tl.float32
+                )
+                for k0 in range(tl.cdiv(K, BLOCK_K)):
+                    kk = k0 * BLOCK_K + ks
+                    a = tl.load(
+                        A + (start + m[:, None]) * SAM + kk[None, :] * SAK,
+                        (m[:, None] < size) & (kk[None, :] < K),
+                        other=0,
+                    )
+                    b = tl.load(
+                        B + expert * SBG + kk[:, None] * SBK + n[None, :] * SBN,
+                        (kk[:, None] < K) & (n[None, :] < N),
+                        other=0,
+                    )
+                    acc = (acc + tl.dot(a, b, input_precision="tf32x3")).to(
+                        tl.float16 if FP16_ACC else tl.float32
+                    )
+                tl.store(
+                    C + (start + m[:, None]) * SCM + n[None, :] * SCN,
+                    acc,
+                    (m[:, None] < size) & (n[None, :] < N),
+                )
+                tile += WORKERS
+            prefix += tiles
 
     @triton.autotune(
         configs=[
@@ -353,7 +436,7 @@ if TRITON_AVAILABLE:
             )
             dc = tl.load(dc_ptrs, mask=mask_m[:, None] & mask_n[None, :], other=0.0)
 
-            acc += tl.dot(a_T, dc)
+            acc += tl.dot(a_T, dc, input_precision="tf32x3")
             m0 += BLOCK_M
 
         db_ptrs = (
@@ -392,6 +475,40 @@ def _foreach_mm(
 __SHARED_B_WARNED = False
 
 
+def _use_persistent(backend, expert_count, total_rows):
+    # The 5090 benchmark favors persistent scheduling for many short groups;
+    # large dense groups retain the legacy launch. Either can be forced.
+    return backend == "persistent" or (
+        backend == "auto" and expert_count >= 16 and total_rows <= expert_count * 128
+    )
+
+
+def _launch_persistent_grouped_mm(A, B, C, starts, sizes, use_fp16_acc=False):
+    if A.size(0) == 0 or C.size(1) == 0:
+        return
+    workers = torch.cuda.get_device_properties(A.device).multi_processor_count
+    _persistent_grouped_gemm_kernel[(workers,)](
+        A,
+        B,
+        C,
+        starts,
+        sizes,
+        K=A.size(1),
+        N=C.size(1),
+        E=B.size(0),
+        TOTAL_M=A.size(0),
+        SAM=A.stride(0),
+        SAK=A.stride(1),
+        SBG=B.stride(0),
+        SBK=B.stride(1),
+        SBN=B.stride(2),
+        SCM=C.stride(0),
+        SCN=C.stride(1),
+        WORKERS=workers,
+        FP16_ACC=use_fp16_acc,
+    )
+
+
 def grouped_mm_varM(
     A_packed: torch.Tensor,
     offsets: torch.Tensor,
@@ -400,8 +517,11 @@ def grouped_mm_varM(
     use_fp16_acc: bool = False,
     use_shared_b: bool = False,
     allow_triton_training: bool = True,
+    backend: str = "auto",
 ) -> torch.Tensor:
     global __SHARED_B_WARNED
+    if backend not in {"auto", "persistent", "legacy"}:
+        raise ValueError("grouped GEMM backend must be auto, persistent, or legacy")
 
     device = A_packed.device
     dtype = A_packed.dtype
@@ -461,7 +581,9 @@ def grouped_mm_varM(
     N = B_cat.shape[2]
 
     if requires_grad and allow_triton_training:
-        C = _GroupedMMVarMFunction.apply(A_packed, offsets, B_cat, use_fp16_acc)
+        C = _GroupedMMVarMFunction.apply(
+            A_packed, offsets, B_cat, use_fp16_acc, backend
+        )
         return C.to(out_dtype) if C.dtype != out_dtype else C
 
     if requires_grad:
@@ -500,23 +622,28 @@ def grouped_mm_varM(
         triton.cdiv(S_total, meta["BLOCK_M"]),
         triton.cdiv(N, meta["BLOCK_N"]),
     )
-    _grouped_gemm_varM_kernel[grid](
-        A_packed,
-        B_cat,
-        C_packed,
-        starts,
-        M_per,
-        K=K,
-        N=N,
-        stride_a_m=stride_a_m,
-        stride_a_k=stride_a_k,
-        stride_b_g=stride_b_g,
-        stride_b_k=stride_b_k,
-        stride_b_n=stride_b_n,
-        stride_c_m=stride_c_m,
-        stride_c_n=stride_c_n,
-        ACC_DTYPE=acc_dtype,
-    )
+    if _use_persistent(backend, E, S_total):
+        _launch_persistent_grouped_mm(
+            A_packed, B_cat, C_packed, starts, M_per, use_fp16_acc
+        )
+    else:
+        _grouped_gemm_varM_kernel[grid](
+            A_packed,
+            B_cat,
+            C_packed,
+            starts,
+            M_per,
+            K=K,
+            N=N,
+            stride_a_m=stride_a_m,
+            stride_a_k=stride_a_k,
+            stride_b_g=stride_b_g,
+            stride_b_k=stride_b_k,
+            stride_b_n=stride_b_n,
+            stride_c_m=stride_c_m,
+            stride_c_n=stride_c_n,
+            ACC_DTYPE=acc_dtype,
+        )
     return C_packed
 
 

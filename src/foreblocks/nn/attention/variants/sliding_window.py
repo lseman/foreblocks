@@ -15,12 +15,14 @@ Core API:
 import torch
 import torch.nn.functional as F
 
+from foreblocks.nn.attention.execution.window import SparseWindowAttention
 from foreblocks.nn.attention.variants.base import AttentionOwner
 
 
 class SlidingWindowAttentionImpl:
     def __init__(self, context: AttentionOwner):
         self.context = context
+        self.sparse = SparseWindowAttention()
 
     def forward(
         self,
@@ -38,8 +40,24 @@ class SlidingWindowAttentionImpl:
         q, k, v, q_start_pos = self.context._prepare_qkv_attention(
             query, key, value, layer_state
         )
-        k = self.context._repeat_kv(k)
-        v = self.context._repeat_kv(v)
+        if self.sparse.supports(self.context, q, v, need_weights):
+            out = self.sparse(
+                q,
+                k,
+                v,
+                window=self.context.window_size,
+                causal=is_causal,
+                scale=self.context.scale,
+                q_start_pos=q_start_pos,
+                attention_mask=attn_mask,
+                padding_mask=key_padding_mask,
+            )
+            out = self.context._apply_gated_attention(out)
+            return (
+                self.context._finalize_projected_output(out, B, T_q),
+                None,
+                layer_state,
+            )
 
         if (
             self.context.use_flash_sliding
@@ -75,6 +93,7 @@ class SlidingWindowAttentionImpl:
                     attn_mask=~combined,
                     dropout_p=self.context.dropout_p if self.context.training else 0.0,
                     is_causal=False,
+                    enable_gqa=q.size(1) != k.size(1),
                 )
                 out = self.context._apply_gated_attention(out)
                 return (

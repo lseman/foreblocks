@@ -192,3 +192,13 @@ class ModernLinearAttention(nn.Module):
 
     def reset_state(self, layer_state: dict) -> None:
         layer_state.pop(self.state_key, None)
+        extra_keys = {
+            "rda_S": ("k_sum", "kv_sum", "rda_position"),
+            "gla_S": ("gla_position",),
+            "deltanet_S": ("deltanet_conv",),
+            "gdn_state": ("gdn_conv",),
+            "gdn2_state": ("gdn2_conv",),
+            "S": ("kimi_conv",),
+        }
+        for key in extra_keys.get(self.state_key, ()):
+            layer_state.pop(key, None)

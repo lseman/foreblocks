@@ -23,6 +23,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from foreblocks.kernels.normalization.gated import (
+    can_use_fused_rmsnorm_sigmoid_gate,
+    fused_rmsnorm_sigmoid_gate,
+)
+from foreblocks.nn.attention.algorithms.linear.base import (
+    streaming_causal_conv1d,
+    validate_linear_attention_mask,
+)
 from foreblocks.ops.attention import can_use_fla_kda, fla_kda_forward
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -65,28 +73,14 @@ class _ShortConv1d(nn.Module):
         output_final_state: bool = False,
         cu_seqlens: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        T0 = x.size(2)
-        # Shift register: prepend cache
-        if cache is not None:
-            x = torch.cat([cache, x], dim=2)[:, :, : T0 + self.kernel_size - 1]
-        else:
-            zero_pad = torch.zeros(
-                x.size(0),
-                x.size(1),
-                self.kernel_size - 1,
-                device=x.device,
-                dtype=x.dtype,
-            )
-            x = torch.cat([zero_pad, x], dim=2)
-
-        out = self.conv(x)[:, :, :T0]
-        out = F.silu(out)
-
-        final_cache = None
-        if output_final_state:
-            final_cache = x[:, :, T0:]  # last (kernel_size - 1) inputs
-
-        return out, final_cache
+        if cu_seqlens is not None:
+            raise ValueError("packed short convolution is unsupported")
+        history = {"history": cache} if cache is not None else {}
+        out = streaming_causal_conv1d(
+            x.transpose(1, 2), self.conv, history, activation="silu"
+        )
+        final_cache = history["history"] if output_final_state else None
+        return out.transpose(1, 2), final_cache
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -297,7 +291,7 @@ class _KDA_Fast(nn.Module):
         return torch.zeros(BH, self.dk, self.dv, device=device, dtype=dtype)
 
     def _project_qkv(
-        self, x: torch.Tensor
+        self, x: torch.Tensor, conv_cache: dict | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, T, _ = x.shape
 
@@ -306,14 +300,20 @@ class _KDA_Fast(nn.Module):
             k_raw = self.k_proj(x).transpose(1, 2)
             v_raw = self.v_proj(x).transpose(1, 2)
 
-            q, _ = self.q_conv1d(q_raw, output_final_state=False)
-            k, _ = self.k_conv1d(k_raw, output_final_state=False)
-            v, _ = self.v_conv1d(v_raw, output_final_state=False)
+            cache = conv_cache if conv_cache is not None else {}
+            q, cache["q"] = self.q_conv1d(
+                q_raw, cache.get("q"), output_final_state=True
+            )
+            k, cache["k"] = self.k_conv1d(
+                k_raw, cache.get("k"), output_final_state=True
+            )
+            v, cache["v"] = self.v_conv1d(
+                v_raw, cache.get("v"), output_final_state=True
+            )
 
-            # SiLU activation after conv (official applies SiLU to projections)
-            q = F.silu(q).transpose(1, 2)  # [B, T, H*dk]
-            k = F.silu(k).transpose(1, 2)
-            v = F.silu(v).transpose(1, 2)
+            q = q.transpose(1, 2)  # [B, T, H*dk]
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
         else:
             q = F.silu(self.q_proj(x))
             k = F.silu(self.k_proj(x))
@@ -383,11 +383,12 @@ class _KDA_Fast(nn.Module):
         self,
         x: torch.Tensor,  # [B, T, D]
         state: torch.Tensor | None = None,  # [B, H, Dk, Dv]
+        conv_cache: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         B, T, D = x.shape
         device, dtype = x.device, x.dtype
 
-        Q, K, V = self._project_qkv(x)  # each [B, H, T, D*]
+        Q, K, V = self._project_qkv(x, conv_cache)  # each [B, H, T, D*]
 
         # L2 normalize Q and K (matches official kernel)
         BH = B * self.h
@@ -462,7 +463,6 @@ class _KDA_Fast(nn.Module):
             S_final = S
         else:
             # Exact sequential mode: use per-step decay
-            S = S.detach()
             # Flatten Q, K, V from [B, H, T, D*] to [BH, T, D*]
             Q_flat = Q.reshape(BH, T, self.dk)
             K_flat = K.reshape(BH, T, self.dk)
@@ -485,9 +485,16 @@ class _KDA_Fast(nn.Module):
         # Output gate: RMSNorm × sigmoid(g_proj(x))
         g_out = self.g_proj(x)  # [B, T, H*Dv]
         g_out = g_out.view(B, T, self.h, self.dv).permute(0, 2, 1, 3)  # [B, H, T, Dv]
-        gate = torch.sigmoid(g_out)
-
-        output_heads = self.h_rms(output_heads) * gate
+        if can_use_fused_rmsnorm_sigmoid_gate(output_heads, g_out, self.h_rms.weight):
+            output_heads = fused_rmsnorm_sigmoid_gate(
+                output_heads,
+                g_out,
+                self.h_rms.weight,
+                self.h_rms.eps,
+                gate_activation="sigmoid",
+            )
+        else:
+            output_heads = self.h_rms(output_heads) * torch.sigmoid(g_out)
         y = (
             output_heads.permute(0, 2, 1, 3)
             .contiguous()
@@ -549,11 +556,14 @@ class KimiAttentionBackend(nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
         value: torch.Tensor,
-        attn_mask: torch.Tensor | None = None,  # ignored (recurrent)
-        key_padding_mask: torch.Tensor | None = None,  # ignored (recurrent)
+        attn_mask: torch.Tensor | None = None,
+        key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = True,  # always causal
         layer_state: dict | None = None,
     ) -> tuple[torch.Tensor, None, dict | None]:
+        validate_linear_attention_mask(attn_mask, query, key, True)
+        if key_padding_mask is not None:
+            raise ValueError("Kimi key_padding_mask is unsupported")
         S = None
         if layer_state is not None:
             S_raw = layer_state.get("S", None)
@@ -575,5 +585,11 @@ class KimiAttentionBackend(nn.Module):
             )
 
         # Self-attention: pass x as query (key/value unused, passed for compat)
-        out, S_next = self.kda(query, state=S)
-        return out, None, {"S": S_next}
+        next_state = layer_state if layer_state is not None else {}
+        out, S_next = self.kda(
+            query, state=S, conv_cache=next_state.setdefault("kimi_conv", {})
+        )
+        next_state["S"] = S_next
+        if not self.kda.use_short_conv:
+            next_state.pop("kimi_conv", None)
+        return out, None, next_state

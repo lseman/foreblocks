@@ -13,7 +13,7 @@ def _make_grouped_inputs(E, K, N, Ms, device="cuda", dtype=torch.float32):
         for _ in range(E)
     ]
     offsets = torch.tensor(
-        [0] + list(torch.cumsum(torch.tensor(Ms, dtype=torch.int64), 0).tolist()),
+        [0, *torch.cumsum(torch.tensor(Ms, dtype=torch.int64), 0).tolist()],
         device=device,
         dtype=torch.int64,
     )
@@ -92,3 +92,24 @@ def test_empty_expert_segment():
     assert B_list[0].grad is not None
     # Expert 1 has no tokens — its grad should be zero
     assert B_list[1].grad is None or B_list[1].grad.abs().max() == 0
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("sizes", [[0, 3, 0, 129], [1] * 32, [257] + [0] * 31, [0] * 8])
+def test_persistent_grouped_forward_and_backward(dtype, sizes):
+    from foreblocks.kernels.linear.grouped_gemm import grouped_mm_varM
+
+    torch.manual_seed(51)
+    a, weights, offsets = _make_grouped_inputs(len(sizes), 37, 61, sizes, dtype=dtype)
+    packed = torch.stack(weights).detach().requires_grad_()
+    a_ref = a.detach().clone().requires_grad_()
+    b_ref = packed.detach().clone().requires_grad_()
+    expected = _pytorch_forward(a_ref, offsets, list(b_ref.unbind()))
+    actual = grouped_mm_varM(a, offsets, packed, backend="persistent")
+    tolerance = 1e-1 if dtype == torch.bfloat16 else 2e-3
+    torch.testing.assert_close(actual, expected, atol=tolerance, rtol=tolerance)
+    gradient = torch.randn_like(actual)
+    actual.backward(gradient)
+    expected.backward(gradient)
+    torch.testing.assert_close(a.grad, a_ref.grad, atol=tolerance, rtol=tolerance)
+    torch.testing.assert_close(packed.grad, b_ref.grad, atol=tolerance, rtol=tolerance)

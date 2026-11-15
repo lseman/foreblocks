@@ -8,6 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from foreblocks.nn.attention.algorithms.linear.base import streaming_causal_conv1d
+
 
 class _GatedDeltaOwner(Protocol):
     h: int
@@ -41,10 +43,10 @@ class CausalDepthwiseConv(nn.Module):
             padding=kernel_size - 1,
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        length = x.size(1)
-        convolved = self.conv(x.transpose(1, 2))[:, :, :length]
-        return F.silu(convolved.transpose(1, 2).contiguous())
+    def forward(
+        self, x: torch.Tensor, cache: dict | None = None, key: str = "history"
+    ) -> torch.Tensor:
+        return streaming_causal_conv1d(x, self.conv, cache, key, activation="silu")
 
 
 class HeadRMSNorm(nn.Module):
@@ -66,16 +68,16 @@ class GatedDeltaExecutionMixin:
     """Shared projection, output-gating, state, and standalone execution."""
 
     def _project(
-        self, x: torch.Tensor
+        self, x: torch.Tensor, conv_cache: dict | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         owner = cast(_GatedDeltaOwner, cast(object, self))
         q_raw = owner.q_proj(x)
         k_raw = owner.k_proj(x)
         v_raw = owner.v_proj(x)
         if owner.use_short_conv:
-            q_raw = owner.q_conv(q_raw)
-            k_raw = owner.k_conv(k_raw)
-            v_raw = owner.v_conv(v_raw)
+            q_raw = owner.q_conv(q_raw, conv_cache, "q")
+            k_raw = owner.k_conv(k_raw, conv_cache, "k")
+            v_raw = owner.v_conv(v_raw, conv_cache, "v")
         return q_raw, k_raw, v_raw
 
     def _output_gate(self, x: torch.Tensor) -> torch.Tensor:
@@ -92,9 +94,7 @@ class GatedDeltaExecutionMixin:
         self, batch_heads: int, device: torch.device, dtype: torch.dtype
     ) -> torch.Tensor:
         owner = cast(_GatedDeltaOwner, cast(object, self))
-        return torch.zeros(
-            batch_heads, owner.dk, owner.dv, device=device, dtype=dtype
-        )
+        return torch.zeros(batch_heads, owner.dk, owner.dv, device=device, dtype=dtype)
 
     @staticmethod
     def _l2_norm(value: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:

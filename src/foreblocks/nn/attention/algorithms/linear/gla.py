@@ -21,7 +21,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.nn.attention.algorithms.linear.base import RoPEMixin
+from foreblocks.nn.attention.algorithms.linear.base import (
+    RoPEMixin,
+    validate_linear_attention_mask,
+)
 from foreblocks.ops.attention import can_use_fla_gla, fla_gla_forward
 
 
@@ -178,6 +181,7 @@ class GLABackend(RoPEMixin, nn.Module):
         layer_state: dict | None = None,
     ) -> tuple[torch.Tensor, None, dict | None]:
         B, L, _ = query.shape
+        validate_linear_attention_mask(attn_mask, query, key, True)
 
         q = self.q_proj(query).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
         k = self.k_proj(key).view(B, L, self.n_heads, self.d_head).transpose(1, 2)
@@ -189,7 +193,8 @@ class GLABackend(RoPEMixin, nn.Module):
         k = F.normalize(k, p=2, dim=-1)
 
         # RoPE on Q/K after projection (no-op unless pos_encoding_type="rope")
-        q, k = self._apply_rope(q, k)
+        offset = layer_state.get("gla_position", 0) if layer_state is not None else 0
+        q, k = self._apply_rope(q, k, offset)
 
         # Decay gate: g = log-sigmoid(low_rank) / τ, clamped
         gk = F.logsigmoid(gk) / self.gate_logit_normalizer
@@ -198,7 +203,7 @@ class GLABackend(RoPEMixin, nn.Module):
 
         # Key-padding mask (zero out k, v)
         if key_padding_mask is not None:
-            pad_mask = key_padding_mask.unsqueeze(2).unsqueeze(3)
+            pad_mask = key_padding_mask.unsqueeze(1).unsqueeze(-1)
             k = k.masked_fill(pad_mask, 0.0)
             v = v.masked_fill(pad_mask, 0.0)
 
@@ -235,4 +240,6 @@ class GLABackend(RoPEMixin, nn.Module):
         out = o.transpose(1, 2).contiguous().view(B, L, self.d_model)
         out = self.dropout(self.out_proj(out))
 
-        return out, None, {"gla_S": S_next}
+        next_state = layer_state if layer_state is not None else {}
+        next_state.update(gla_S=S_next, gla_position=offset + L)
+        return out, None, next_state

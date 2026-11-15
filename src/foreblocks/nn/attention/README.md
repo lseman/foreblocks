@@ -59,6 +59,70 @@ Run `benchmarks/attention/bench_causal_sdpa.py` to compare eager and SDPA full
 attention latency and peak temporary CUDA memory on the same model weights.
 This measures attention forwards, not a full transformer training workload.
 
+## Linear attention state and masks
+
+Pass a mutable `layer_state={}` on the first streaming call and reuse it across
+prefill chunks and decode steps. Preserve the complete returned dictionary when
+one is returned: it includes short-convolution history as well as recurrent
+memory. `ModernLinearAttention.reset_state(state)` clears the selected backend's
+memory, convolution history, and RoPE position while preserving unrelated entries.
+Cached RDA and GLA use absolute RoPE offsets across calls. State retains its
+autograd history; detach its tensors explicitly when truncating backpropagation.
+
+Linear backends accept empty masks and redundant causal masks (boolean blocked
+entries, or additive zero/negative-infinity entries). Arbitrary pairwise masks
+raise `ValueError`, since the recurrent algorithms cannot represent them.
+DeltaNet and Kimi also reject `key_padding_mask` rather than ignoring it.
+RDA supports noncausal execution; the gated/delta backends remain causal scans.
+
+RFF projections are registered buffers and move with the module's device and
+dtype. Their random basis is saved in checkpoints. Kimi short convolution uses
+one causal padding operation and one SiLU activation.
+
+`benchmarks/attention/bench_linear_attention.py` reports module auto-dispatch
+latency separately from kernel-only latency. Kernel comparisons use identical
+inputs, numerical output/state checks, and Q/K/V gradient checks with
+`--backward`. Its eager sequential reference is a correctness baseline, not an
+optimized performance target. FLA is optional; unavailable kernels are reported
+explicitly. The local recurrent Triton linear scan is dispatched automatically
+only for single-token calls; longer scans can be benchmarked through the explicit
+kernel API.
+
+The FlexAttention backend builds a `BlockMask` and compiles the attention call.
+It uses SDPA when training attention dropout is nonzero or head dimensions are
+below 16, preserving semantics for operations/shapes unsupported by FlexAttention.
+
+### Accelerated linear and MoE blocks
+
+The recurrent linear Triton API accepts `initial_state=(key_sum, kv_sum)` and
+`output_final_state=True`. It returns `(output, (next_key_sum, next_kv_sum))`;
+the new state uses fp32 and does not mutate or alias the input state. This is an
+inference API. RDA cached single-token calls select it automatically; training
+and longer cached chunks keep the differentiable torch scan.
+
+`fused_rmsnorm_sigmoid_gate` supports gradients for inputs, gates, and per-head
+weights. Pass `gate_activation="sigmoid"` or `"silu"` for raw gate logits;
+the default `"identity"` preserves the original preactivated-gate convention.
+Gated Delta, GDN2, and Kimi use fused sigmoid gating in training and inference.
+
+Linear-attention short convolutions share Mamba's differentiable Triton
+convolution during training. Their inference kernel combines convolution,
+SiLU, and raw-history updates without concatenating a history tensor. Q/K
+normalization remains a separate operation. Set
+`FOREBLOCKS_DISABLE_TRITON_SHORT_CONV=1` to force the torch reference.
+
+`grouped_mm_varM(..., backend="persistent")` uses a fixed worker pool over
+actual expert tiles, including for input gradients. `backend="legacy"` keeps
+the rectangular launch; `"auto"` uses persistent scheduling for at least 16
+experts and at most 128 packed rows per expert on average. Larger groups retain
+the legacy launch because the measured persistent advantage was limited to
+short groups. The explicit selection supports other hardware/workload tuning.
+
+Run `PYTHONPATH=src python benchmarks/attention/bench_acceleration.py --output
+results.json` for value-checked timings and peak temporary memory. It covers
+sparse windows, norm/gate forward and backward, stateful decode, grouped GEMM,
+and short-convolution updates. Compilation and autotuning are warmed first.
+
 ## Grouped KV heads and local windows
 
 SyPE rotates queries and keys with their own head counts. KV projections and
@@ -70,6 +134,15 @@ allowed-position convention. Manual query chunks cover the union of their local
 windows, honor each sequence's absolute cache offset, and return full attention
 weights when requested. Fully masked rows produce zero attention updates and
 finite gradients in both execution paths.
+
+On CUDA, the `auto` and `flex_attention` backends use direct block-sparse
+predicates for sliding and dilated windows when dropout is inactive, head
+dimensions are at least 16, and weights are not requested. This path does not
+construct a dense window mask or repeat KV heads. Static predicates cache up
+to eight block masks per implementation; offsets, user masks, and padding
+rebuild the mask so streaming calls cannot reuse stale positions. Dropout,
+small heads, CPU execution, and attention-weight requests retain the existing
+paths. Dilated windows honor absolute cached query positions in both paths.
 
 ## Naming convention
 
@@ -128,8 +201,8 @@ wrapping them in pointless pass-only subclasses — removed; they now use the
 shared classes directly). `KimiAttentionBackend` has its own
 `_ShortConv1d`/`_HeadwiseRMSNorm` instead. This is intentional, not
 leftover duplication: `_ShortConv1d` supports streaming-decode arguments
-(`cache`, `output_final_state`, `cu_seqlens`) that `CausalDepthwiseConv`
-doesn't, and `_HeadwiseRMSNorm`'s weight-broadcast shape assumption differs
+(`cache`, `output_final_state`) that `CausalDepthwiseConv` doesn't expose in
+that form; packed `cu_seqlens` inputs are rejected. `_HeadwiseRMSNorm`'s weight-broadcast shape assumption differs
 from `HeadRMSNorm`'s. Don't collapse these onto the shared classes without
 first giving `CausalDepthwiseConv`/`HeadRMSNorm` a superset interface and
 running a numerical-parity check against `kimi.py`'s current output — the

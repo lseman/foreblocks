@@ -16,18 +16,23 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from foreblocks.kernels.attention.linear import (
+    can_use_fused_recurrent_linear_attn,
+    fused_recurrent_causal_linear_attn,
+)
 from foreblocks.nn.attention.algorithms.linear.base import (
     FeatureMapRegistry,
     RoPEMixin,
+    validate_linear_attention_mask,
 )
 
 try:
-    from foreblocks.ops.attention.chunked_causal_linear_attention import (
-        chunked_causal_linear_attn,
-    )
     from foreblocks.integrations.fla.linear import (
         can_use_fla_linear_attn,
         fla_recurrent_linear_attn_forward,
+    )
+    from foreblocks.ops.attention.chunked_causal_linear_attention import (
+        chunked_causal_linear_attn,
     )
 except Exception:
     chunked_causal_linear_attn = None  # type: ignore[assignment]
@@ -78,6 +83,9 @@ class RDABackend(RoPEMixin, nn.Module):
     ) -> tuple[torch.Tensor, None, dict | None]:
         B, Lq, _ = query.shape
         Lk = key.shape[1]
+        validate_linear_attention_mask(attn_mask, query, key, is_causal)
+        if is_causal and Lq != Lk:
+            raise ValueError("causal RDA requires matching query and key lengths")
 
         q = (
             self.q_proj(query).view(B, Lq, self.n_heads, self.d_head).transpose(1, 2)
@@ -93,7 +101,12 @@ class RDABackend(RoPEMixin, nn.Module):
         k = k * self.scale
 
         # RoPE on Q/K before the feature map (no-op unless pos_encoding_type="rope")
-        q, k = self._apply_rope(q, k)
+        offset = (
+            layer_state.get("rda_position", 0)
+            if layer_state is not None and is_causal
+            else 0
+        )
+        q, k = self._apply_rope(q, k, offset)
 
         q_prime = self.feature_fn(q)
         k_prime = self.feature_fn(k)
@@ -106,7 +119,9 @@ class RDABackend(RoPEMixin, nn.Module):
 
         # ── Incremental recurrent decode ────────────────────────────────
         if layer_state is not None and is_causal:
-            return self._incremental(q_prime, k_prime, v, layer_state)
+            result = self._incremental(q_prime, k_prime, v, layer_state)
+            layer_state["rda_position"] = offset + Lq
+            return result
 
         # ── Causal global ───────────────────────────────────────────────
         if is_causal:
@@ -155,16 +170,35 @@ class RDABackend(RoPEMixin, nn.Module):
         prev_k = layer_state.get("k_sum")
         prev_kv = layer_state.get("kv_sum")
 
-        k_cum = torch.cumsum(k_prime, dim=2)
-        kv_cum = torch.cumsum(k_prime.unsqueeze(-1) * v.unsqueeze(-2), dim=2)
+        if (
+            q_prime.size(2) == 1
+            and not torch.is_grad_enabled()
+            and can_use_fused_recurrent_linear_attn(q_prime, k_prime, v)
+        ):
+            out_heads, (next_k, next_kv) = fused_recurrent_causal_linear_attn(
+                q_prime,
+                k_prime,
+                v,
+                initial_state=(prev_k, prev_kv) if prev_k is not None else None,
+                output_final_state=True,
+            )
+            layer_state.update(k_sum=next_k, kv_sum=next_kv)
+            B, _, Lq, _ = out_heads.shape
+            out = out_heads.transpose(1, 2).contiguous().view(B, Lq, self.d_model)
+            return self.dropout(self.out_proj(out)), None, layer_state
+
+        acc_dtype = torch.promote_types(q_prime.dtype, torch.float32)
+        q_acc, k_acc, v_acc = (t.to(acc_dtype) for t in (q_prime, k_prime, v))
+        k_cum = torch.cumsum(k_acc, dim=2)
+        kv_cum = torch.cumsum(k_acc.unsqueeze(-1) * v_acc.unsqueeze(-2), dim=2)
 
         if prev_k is not None:
             k_cum = k_cum + prev_k.unsqueeze(2)
             kv_cum = kv_cum + prev_kv.unsqueeze(2)
 
-        denom = torch.sum(q_prime * k_cum, dim=-1, keepdim=True)
-        numer = torch.einsum("bhlf,bhlfd->bhld", q_prime, kv_cum)
-        out_heads = numer / (denom + 1e-6)
+        denom = torch.sum(q_acc * k_cum, dim=-1, keepdim=True)
+        numer = torch.einsum("bhlf,bhlfd->bhld", q_acc, kv_cum)
+        out_heads = (numer / (denom + 1e-6)).to(v.dtype)
 
         layer_state["k_sum"] = k_cum[:, :, -1]
         layer_state["kv_sum"] = kv_cum[:, :, -1]

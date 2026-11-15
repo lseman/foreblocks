@@ -16,11 +16,11 @@ def chunked_causal_linear_attn(
     chunk_size: int = 128,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    # The fused kernel is recurrent (sequential over T), so it only wins for
-    # short sequences / decode; the chunk-parallel path wins for prefill.
-    # Crossover measured at T~64-128 (fused 2x slower by T=512).
+    # Only dispatch single-token work automatically. The sequential Triton
+    # scan can lose even at T=32-64; longer scans remain explicitly available
+    # for hardware/workload-specific benchmarking.
     if (
-        q.shape[2] <= 64
+        q.shape[2] == 1
         and not torch.is_grad_enabled()
         and can_use_fused_recurrent_linear_attn(q, k, v)
     ):

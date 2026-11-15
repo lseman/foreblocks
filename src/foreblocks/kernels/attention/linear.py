@@ -20,7 +20,14 @@ if HAS_TRITON:
         Q,
         K,
         V,
-        O,
+        Out,
+        InitialZ,
+        InitialS,
+        FinalZ,
+        FinalS,
+        H: tl.constexpr,
+        HAS_INITIAL: tl.constexpr,
+        SAVE_FINAL: tl.constexpr,
         T: tl.constexpr,
         F: tl.constexpr,
         DV: tl.constexpr,
@@ -47,10 +54,21 @@ if HAS_TRITON:
         q_base = Q + b * s_qb + h * s_qh
         k_base = K + b * s_qb + h * s_qh
         v_base = V + b * s_vb + h * s_vh
-        o_base = O + b * s_vb + h * s_vh
+        o_base = Out + b * s_vb + h * s_vh
 
-        state = tl.zeros((BF, BD), tl.float32)
-        z = tl.zeros((BF,), tl.float32)
+        state_base = (b * H + h) * F
+        if HAS_INITIAL:
+            state = tl.load(
+                InitialS + state_base * DV + offs_f[:, None] * DV + offs_d[None, :],
+                mask=mask_f[:, None] & mask_d[None, :],
+                other=0.0,
+            ).to(tl.float32)
+            z = tl.load(InitialZ + state_base + offs_f, mask=mask_f, other=0.0).to(
+                tl.float32
+            )
+        else:
+            state = tl.zeros((BF, BD), tl.float32)
+            z = tl.zeros((BF,), tl.float32)
 
         for t in range(0, T):
             q = tl.load(
@@ -80,6 +98,14 @@ if HAS_TRITON:
                 out,
                 mask=mask_d,
             )
+        if SAVE_FINAL:
+            tl.store(
+                FinalS + state_base * DV + offs_f[:, None] * DV + offs_d[None, :],
+                state,
+                mask=mask_f[:, None] & mask_d[None, :],
+            )
+            if i_d == 0:
+                tl.store(FinalZ + state_base + offs_f, z, mask=mask_f)
 
 
 def can_use_fused_recurrent_linear_attn(
@@ -103,7 +129,12 @@ def can_use_fused_recurrent_linear_attn(
         return False
     _, _, _, f = q.shape
     dv = v.shape[-1]
-    return f <= 128 and dv <= 128
+    return (
+        q.device == k.device == v.device
+        and 0 < f <= 128
+        and 0 < dv <= 128
+        and q.shape[2] > 0
+    )
 
 
 @torch.compiler.disable
@@ -112,7 +143,15 @@ def fused_recurrent_causal_linear_attn(
     k: torch.Tensor,
     v: torch.Tensor,
     eps: float = 1e-6,
-) -> torch.Tensor:
+    *,
+    initial_state: tuple[torch.Tensor, torch.Tensor] | None = None,
+    output_final_state: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    """Inference scan; state is (key sum [B,H,F], KV sum [B,H,F,Dv]).
+
+    Returned state accumulates in fp32, never aliases the initial state, and
+    can be passed to the next call. Training uses the differentiable torch scan.
+    """
     if not can_use_fused_recurrent_linear_attn(q, k, v):
         raise RuntimeError("fused_recurrent_causal_linear_attn is not available")
 
@@ -121,6 +160,34 @@ def fused_recurrent_causal_linear_attn(
     v = v.contiguous()
     B, H, T, F = q.shape
     DV = v.shape[-1]
+    z0 = s0 = None
+    if initial_state is not None:
+        z0, s0 = initial_state
+        if z0.shape != (B, H, F) or s0.shape != (B, H, F, DV):
+            raise ValueError("initial linear attention state has incompatible shape")
+        if any(
+            t.device != q.device or t.dtype not in (q.dtype, torch.float32)
+            for t in initial_state
+        ):
+            raise ValueError(
+                "initial state must share the input device and use input dtype or fp32"
+            )
+        z0, s0 = z0.contiguous(), s0.contiguous()
+    if torch.is_grad_enabled() and any(
+        t.requires_grad
+        for t in (q, k, v, *(() if initial_state is None else initial_state))
+    ):
+        raise RuntimeError("fused recurrent linear attention is inference-only")
+    z_final = (
+        torch.empty((B, H, F), device=q.device, dtype=torch.float32)
+        if output_final_state
+        else None
+    )
+    s_final = (
+        torch.empty((B, H, F, DV), device=q.device, dtype=torch.float32)
+        if output_final_state
+        else None
+    )
     BF = triton.next_power_of_2(F)
     BD = min(128, triton.next_power_of_2(DV))
     out = torch.empty_like(v)
@@ -130,6 +197,13 @@ def fused_recurrent_causal_linear_attn(
         k,
         v,
         out,
+        z0,
+        s0,
+        z_final,
+        s_final,
+        H,
+        initial_state is not None,
+        output_final_state,
         T,
         F,
         DV,
@@ -146,6 +220,4 @@ def fused_recurrent_causal_linear_attn(
         BD,
         num_warps=4,
     )
-    return out
-
-
+    return (out, (z_final, s_final)) if output_final_state else out

@@ -15,12 +15,14 @@ Core API:
 import torch
 import torch.nn.functional as F
 
+from foreblocks.nn.attention.execution.window import SparseWindowAttention
 from foreblocks.nn.attention.variants.base import AttentionOwner
 
 
 class DilatedSlidingWindowAttentionImpl:
     def __init__(self, context: AttentionOwner):
         self.context = context
+        self.sparse = SparseWindowAttention()
 
     def forward(
         self,
@@ -35,12 +37,38 @@ class DilatedSlidingWindowAttentionImpl:
         **_,
     ) -> tuple[torch.Tensor, torch.Tensor | None, dict | None]:
         B, T_q, _ = query.shape
-        q, k, v, _ = self.context._prepare_qkv_attention(query, key, value, layer_state)
-        mask = self._create_dilated_mask(T_q, k.size(2), q.device, is_causal)
+        q, k, v, q_start_pos = self.context._prepare_qkv_attention(
+            query, key, value, layer_state
+        )
+        causal = is_causal and not self.context.cross_attention
+        if self.sparse.supports(self.context, q, v, need_weights):
+            out = self.sparse(
+                q,
+                k,
+                v,
+                window=self.context.window_size,
+                causal=causal,
+                scale=self.context.scale,
+                q_start_pos=q_start_pos,
+                attention_mask=attn_mask,
+                padding_mask=key_padding_mask,
+                dilation=self.context.attention_dilation,
+                span=self.context.dilated_window_size,
+            )
+            out = self.context._apply_gated_attention(out)
+            return (
+                self.context._finalize_projected_output(out, B, T_q),
+                None,
+                layer_state,
+            )
+        mask = self._create_dilated_mask(
+            T_q, k.size(2), q.device, is_causal, q_start_pos
+        )
+        mask = mask if mask.ndim == 4 else mask[None, None]
 
         if self.context.backends.get("sdp") and not need_weights:
             try:
-                combined = mask.view(1, 1, T_q, k.size(2))
+                combined = mask
                 if attn_mask is not None:
                     combined = combined | self.context._normalize_attn_mask(
                         attn_mask,
@@ -73,6 +101,7 @@ class DilatedSlidingWindowAttentionImpl:
                     attn_mask=additive_mask,
                     dropout_p=self.context.dropout_p if self.context.training else 0.0,
                     is_causal=False,
+                    enable_gqa=q.size(1) != k.size(1),
                 )
                 out = self.context._apply_gated_attention(out)
                 return (
@@ -83,16 +112,13 @@ class DilatedSlidingWindowAttentionImpl:
             except Exception:
                 pass
 
+        k, v = self.context._repeat_kv(k), self.context._repeat_kv(v)
         scores = torch.matmul(q, k.transpose(-2, -1)) * self.context.scale
-        scores = scores.masked_fill(mask.view(1, 1, T_q, k.size(2)), float("-inf"))
+        scores = scores.masked_fill(mask, float("-inf"))
         scores = self.context._apply_masks(scores, attn_mask, key_padding_mask)
 
-        weights = F.softmax(scores, dim=-1)
-        weights = torch.where(
-            torch.isfinite(weights),
-            weights,
-            torch.zeros_like(weights),
-        )
+        empty = torch.isneginf(scores).all(-1, keepdim=True)
+        weights = F.softmax(scores.masked_fill(empty, 0), dim=-1).masked_fill(empty, 0)
         weights = self.context._dropout_weights(weights)
         out = torch.matmul(weights, v)
         out = self.context._apply_gated_attention(out)
@@ -108,9 +134,12 @@ class DilatedSlidingWindowAttentionImpl:
         T_k: int,
         device: torch.device,
         is_causal: bool,
+        q_start_pos: torch.Tensor | None = None,
     ) -> torch.Tensor:
         q_pos = torch.arange(T_q, device=device).view(T_q, 1)
         k_pos = torch.arange(T_k, device=device).view(1, T_k)
+        if q_start_pos is not None:
+            q_pos = q_pos[None, None] + q_start_pos.reshape(-1, 1, 1, 1)
         distance = q_pos - k_pos
 
         local = distance.abs() < self.context.window_size

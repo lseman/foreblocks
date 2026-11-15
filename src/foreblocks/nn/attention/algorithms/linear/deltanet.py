@@ -20,7 +20,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from foreblocks.nn.attention.algorithms.linear.base import _causal_conv1d
+from foreblocks.nn.attention.algorithms.linear.base import (
+    _causal_conv1d,
+    streaming_causal_conv1d,
+    validate_linear_attention_mask,
+)
 from foreblocks.ops.attention import (
     can_use_fla_delta_rule,
     can_use_fla_recurrent_delta_rule,
@@ -94,22 +98,27 @@ class DeltaNetBackend(nn.Module):
         layer_state: dict | None = None,
     ) -> tuple[torch.Tensor, None, dict | None]:
         B, L, _ = query.shape
+        validate_linear_attention_mask(attn_mask, query, key, True)
+        if key_padding_mask is not None:
+            raise ValueError("DeltaNet key_padding_mask is unsupported")
+        next_state = layer_state if layer_state is not None else {}
+        conv_cache = next_state.setdefault("deltanet_conv", {})
 
         q, k, v = self.q_proj(query), self.k_proj(key), self.v_proj(value)
 
         # Causal conv pre-processing
         k = (
-            self._causal_conv_forward(k, self.k_conv)
+            streaming_causal_conv1d(k, self.k_conv, conv_cache, "k", activation="silu")
             .reshape(B, L, self.n_heads, self.d_head)
             .transpose(1, 2)
         )
         q = (
-            self._causal_conv_forward(q, self.q_conv)
+            streaming_causal_conv1d(q, self.q_conv, conv_cache, "q", activation="silu")
             .reshape(B, L, self.n_heads, self.d_head)
             .transpose(1, 2)
         )
         v = (
-            self._causal_conv_forward(v, self.v_conv)
+            streaming_causal_conv1d(v, self.v_conv, conv_cache, "v", activation="silu")
             .reshape(B, L, self.n_heads, self.d_head)
             .transpose(1, 2)
         )
@@ -152,7 +161,8 @@ class DeltaNetBackend(nn.Module):
         out = o.transpose(1, 2).contiguous().view(B, L, self.d_model)
         out = self.dropout(self.out_proj(out))
 
-        return out, None, {"deltanet_S": S_next}
+        next_state["deltanet_S"] = S_next
+        return out, None, next_state
 
     def _recurrent_forward(self, q, k, v, S, beta):
         # State S is indexed [v, k] to match _chunk_forward's convention:
