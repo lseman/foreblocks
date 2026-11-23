@@ -52,6 +52,30 @@ void expect(bool ok, const std::string& method, const char* what) {
 }  // namespace
 
 int main() {
+    // Exercise both halves of the search window at exact and adjacent cuts
+    // for odd, even and power-of-two bin counts, in both storage widths.
+    for (int bins : {2, 3, 4, 15, 16, 17, 254, 255, 256, 257, 511}) {
+        std::vector<double> cuts;
+        std::vector<double> probes;
+        for (int i = 0; i <= bins; ++i) {
+            const double cut = static_cast<double>(i * i);
+            cuts.push_back(cut);
+            probes.push_back(std::nextafter(cut, -INFINITY));
+            probes.push_back(cut);
+            probes.push_back(std::nextafter(cut, INFINITY));
+        }
+        foretree::DataBinner binner(1);
+        foretree::EdgeSet edges;
+        edges.edges_per_feat = {cuts};
+        binner.register_edges("irregular", std::move(edges));
+        const auto dataset = binner.prebin_compact(probes.data(), static_cast<int>(probes.size()), 1, "irregular");
+        for (size_t i = 0; i < probes.size(); ++i) {
+            const auto first_cut = cuts.begin() + 1;
+            const auto expected = std::upper_bound(first_cut, cuts.end() - 1, probes[i]) - first_cut;
+            assert(dataset->code(static_cast<int>(i), 0) == expected);
+        }
+    }
+
     const std::vector<std::string> methods = {"quantile", "hist",      "kmeans",
                                               "two_stage", "adaptive", "grad_aware",
                                               "categorical_gradient"};

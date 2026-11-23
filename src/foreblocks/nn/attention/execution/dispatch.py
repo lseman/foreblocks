@@ -245,7 +245,14 @@ class AttentionKernelDispatcher:
                     float("-inf"),
                 )
 
-        weights = context._dropout_weights(F.softmax(scores, dim=-1))
+        # Softmax on an all-blocked row would poison both outputs and gradients.
+        blocked_rows = torch.isneginf(scores.amax(dim=-1, keepdim=True)) if key_length else None
+        if blocked_rows is not None:
+            scores = scores.masked_fill(blocked_rows, 0)
+        weights = F.softmax(scores, dim=-1)
+        if blocked_rows is not None:
+            weights = weights.masked_fill(blocked_rows, 0)
+        weights = context._dropout_weights(weights)
         out = torch.matmul(weights, v)
         return self._finalize(out), weights if need_weights else None
 

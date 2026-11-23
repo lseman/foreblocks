@@ -119,6 +119,19 @@ class UnifiedTree {
         fit_with_row_ids_impl_(Xb, Xb.rows(), Xb.features(), g, h, root_rows);
     }
 
+    // A scalar objective can estimate its leaf update from the routed rows.
+    using LeafEstimator = std::function<double(std::span<const int>)>;
+
+    void fit_with_row_ids(const QuantizedDataset& Xb,
+                          const std::vector<double>& g,
+                          const std::vector<double>& h,
+                          const std::vector<int>& root_rows,
+                          const LeafEstimator& estimate_leaf) {
+        if (estimate_leaf && cfg_.num_classes > 2)
+            throw std::invalid_argument("Custom leaf estimation requires scalar outputs");
+        fit_with_row_ids_impl_(Xb, Xb.rows(), Xb.features(), g, h, root_rows, estimate_leaf);
+    }
+
     void fit_with_row_ids(const std::vector<uint16_t>& Xb, int N, int P,
                           const std::vector<double>& g,
                           const std::vector<double>& h,
@@ -146,7 +159,8 @@ class UnifiedTree {
     void fit_with_row_ids_impl_(const QuantizedDataset& Xb, int N, int P,
                                 const std::vector<double>& g,
                                 const std::vector<double>& h,
-                                const std::vector<int>& root_rows) {
+                                const std::vector<int>& root_rows,
+                                const LeafEstimator& estimate_leaf = {}) {
         if (N <= 0 || P <= 0) {
             throw std::invalid_argument(
                 "UnifiedTree::fit_with_row_ids: N and P must be positive");
@@ -236,6 +250,14 @@ class UnifiedTree {
 
         for (auto& n : nodes_) {
             if (n.is_leaf) {
+                if (estimate_leaf && n.hi > n.lo) {
+                    const auto rows = std::span<const int>(index_pool_).subspan(n.lo, n.hi - n.lo);
+                    double step = estimate_leaf(rows);
+                    if (cfg_.max_delta_step > 0.0)
+                        step = std::clamp(step, -cfg_.max_delta_step, cfg_.max_delta_step);
+                    n.leaf_values = {std::clamp(step, n.min_constraint, n.max_constraint)};
+                    continue;
+                }
                 const auto [GG_vec, HH_vec] = node_totals_for_leaf_(n);
                 double GG = 0.0, HH = 0.0;
                 for (size_t i = 0; i < GG_vec.size(); ++i) {

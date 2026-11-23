@@ -274,3 +274,18 @@ class TestCausalMaskNonZeroQStartPos(unittest.TestCase):
                 torch.equal(actual, exp),
                 f"Step {i}: q_start_pos={actual}, expected={exp}"
             )
+
+
+def test_returned_attention_weights_handle_fully_padded_sample():
+    cfg = AttentionConfig.from_legacy_kwargs(d_model=8, n_heads=2, dropout=0.0)
+    model = MultiAttention(cfg).eval()
+    x = torch.randn(2, 3, 8, requires_grad=True)
+    padding = torch.tensor([[True] * 3, [False] * 3])
+    output, weights, _ = model(x, key_padding_mask=padding, need_weights=True)
+    assert weights[0].count_nonzero() == 0
+    reference = model(x[1:], need_weights=True)[0]
+    torch.testing.assert_close(output[1:], reference)
+    assert torch.isfinite(output).all()
+    output.sum().backward()
+    assert torch.isfinite(x.grad).all()
+    assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)

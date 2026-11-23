@@ -181,6 +181,11 @@ to mix learned auxiliary tokens according to each input and project the sum
 of the input and its mixture to expert logits. A single auxiliary token adds
 a learned offset to the linear router.
 
+For routers with bias balancing, `moe_router_bias_min_usage` is a fraction of
+assignments (default 0.01), capped at the uniform share per routed expert.
+Below that floor, the upward bias adjustment grows linearly to twice the
+usual step at zero usage. Setting the floor to zero disables the extra boost.
+
 Validation happens when the config is built: invalid values, unknown names,
 and incompatible combinations (for example `variate_attention` with a
 non-standard residual, or `gradient_checkpointing` with `residual="mhc"`) raise

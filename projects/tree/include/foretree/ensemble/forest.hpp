@@ -23,6 +23,7 @@
 
 #include "foretree/core/gradient_hist_system.hpp"
 #include "foretree/core/ordered_categorical.hpp"
+#include "foretree/ensemble/multiclass.hpp"
 #include "foretree/split/split_engine.hpp"
 #include "foretree/tree/unified_tree.hpp"
 #ifdef FORETREE_HAS_CUDA
@@ -256,6 +257,21 @@ public:
                 throw std::invalid_argument("ForeForest: validation P mismatch");
         }
 
+        if (cfg_.num_classes > 2) {
+            const auto valid_label = [this](double label) {
+                return label >= 0 && label < cfg_.num_classes && label == std::floor(label);
+            };
+            if (!std::all_of(y, y + N, valid_label) ||
+                (has_valid && !std::all_of(y_valid, y_valid + N_valid, valid_label)))
+                throw std::invalid_argument("Multiclass labels must be integer class indices in [0, num_classes)");
+        }
+        if (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) {
+            const auto binary_label = [](double value) { return value == 0.0 || value == 1.0; };
+            if (!std::all_of(y, y + N, binary_label) ||
+                (has_valid && !std::all_of(y_valid, y_valid + N_valid, binary_label)))
+                throw std::invalid_argument("BinaryFocalLoss requires targets in {0, 1}");
+        }
+
         N_ = N;
         original_P_ = P;
         size_executor_for_(N, P);
@@ -319,7 +335,7 @@ public:
         // Store raw matrix for neural leaves (training data)
         set_raw_for_neural(X, nullptr);
 
-        // Base score (raw margin for binary logloss, mean for squared error).
+        // Loss-specific starting margin.
         base_score_ = compute_base_score_(y, N);
 
         // Fit binning
@@ -617,6 +633,8 @@ public:
         return early_stopped_;
     }
     std::string eval_metric_name() const {
+        if (cfg_.num_classes > 2)
+            return "multiclass_logloss";
         if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss)
             return "logloss";
         if (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss)
@@ -687,6 +705,12 @@ private:
         cfg_.ordered_boosting_min_prefix = std::clamp(cfg_.ordered_boosting_min_prefix, 0.01, 1.0);
         bool is_binary = (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss ||
                           cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss);
+        if (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) {
+            if (!std::isfinite(cfg_.focal_gamma) || cfg_.focal_gamma < 0.0)
+                throw std::invalid_argument("focal_gamma must be finite and nonnegative");
+            if (cfg_.num_classes > 2)
+                throw std::invalid_argument("BinaryFocalLoss requires binary targets");
+        }
         if (is_binary && cfg_.mode != ForeForestConfig::Mode::GBDT) {
             throw std::invalid_argument("ForeForest: Binary objectives require GBDT mode");
         }
@@ -701,7 +725,9 @@ private:
         if (cfg_.objective == ForeForestConfig::Objective::QuantileError && cfg_.mode != ForeForestConfig::Mode::GBDT) {
             throw std::invalid_argument("ForeForest: QuantileError requires GBDT mode");
         }
-        if (cfg_.quantile_tau <= 0.0 || cfg_.quantile_tau >= 1.0)
+        if (cfg_.objective == ForeForestConfig::Objective::QuantileError && cfg_.num_classes > 2)
+            throw std::invalid_argument("ForeForest: QuantileError requires scalar targets");
+        if (!(cfg_.quantile_tau > 0.0 && cfg_.quantile_tau < 1.0))
             throw std::invalid_argument("ForeForest: quantile_tau must be in (0, 1)");
         if (cfg_.efb_enabled && cfg_.tree_cfg.split_mode != TreeConfig::SplitMode::Histogram) {
             throw std::invalid_argument("ForeForest: EFB currently supports histogram split mode only");
@@ -935,6 +961,25 @@ private:
         return z / (1.0 + z);
     }
 
+    bool uses_logloss_derivatives_() const {
+        return cfg_.objective == ForeForestConfig::Objective::BinaryLogloss ||
+               (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss && cfg_.focal_gamma == 0.0);
+    }
+
+    struct FocalTerms {
+        double sign, p, q, log_p, modulation;
+    };
+
+    static FocalTerms focal_terms_(double margin, double label, double gamma) {
+        const double sign = 2.0 * label - 1.0;
+        const double t = sign * margin;
+        const double e = std::exp(-std::abs(t));
+        const double small = e / (1.0 + e);
+        const double large = 1.0 / (1.0 + e);
+        const double q = t >= 0.0 ? small : large;
+        return {sign, t >= 0.0 ? large : small, q, std::min(t, 0.0) - std::log1p(e), std::pow(q, gamma)};
+    }
+
     // Compute per-sample weights based on class_weight setting
     std::vector<double> compute_sample_weights_(const double* y, int n) const {
         std::vector<double> w((size_t)n, 1.0);
@@ -971,21 +1016,11 @@ private:
                     }
                 }
             } else {
-                // Multiclass: inverse frequency
-                std::vector<int> class_counts((size_t)K_, 0);
-                for (int i = 0; i < n; ++i) {
-                    int c = static_cast<int>(y[i]);
-                    if (c >= 0 && c < K_)
-                        class_counts[static_cast<size_t>(c)]++;
-                }
-                for (int i = 0; i < n; ++i) {
-                    int c = static_cast<int>(y[i]);
-                    if (c >= 0 && c < K_ && class_counts[static_cast<size_t>(c)] > 0) {
-                        w[static_cast<size_t>(i)] =
-                            static_cast<double>(n) /
-                            (static_cast<double>(K_) * static_cast<double>(class_counts[static_cast<size_t>(c)]));
-                    }
-                }
+                std::vector<int> counts(cfg_.num_classes, 0);
+                for (int i = 0; i < n; ++i)
+                    ++counts[static_cast<int>(y[i])];
+                for (int i = 0; i < n; ++i)
+                    w[i] = static_cast<double>(n) / (static_cast<double>(cfg_.num_classes) * counts[static_cast<int>(y[i])]);
             }
         } else if (cfg_.class_weight == ClassWeight::Balanced && cfg_.scale_pos_weight != 1.0 && is_binary) {
             // Combine: use balanced weighting but scale_pos_weight overrides
@@ -1014,7 +1049,49 @@ private:
         return w;
     }
 
+    // Smallest value whose cumulative weight reaches tau (an empirical
+    // pinball-loss minimizer). Equal weights need only a selection pass.
+    double empirical_quantile_(std::vector<std::pair<double, double>>& samples) const {
+        if (samples.empty())
+            return 0.0;
+        const double weight = samples.front().second;
+        if (std::all_of(samples.begin(), samples.end(), [weight](auto s) { return s.second == weight; })) {
+            const size_t rank = static_cast<size_t>(std::ceil(cfg_.quantile_tau * samples.size())) - 1;
+            auto selected = samples.begin() + rank;
+            std::nth_element(samples.begin(), selected, samples.end());
+            return selected->first;
+        }
+        std::sort(samples.begin(), samples.end());
+        double total = 0.0;
+        for (const auto& sample : samples)
+            total += sample.second;
+        const double target = cfg_.quantile_tau * total;
+        double cumulative = 0.0;
+        for (const auto& [value, mass] : samples) {
+            cumulative += mass;
+            if (cumulative >= target)
+                return value;
+        }
+        return samples.back().first;
+    }
+
     double compute_base_score_(const double* y, int n) const {
+        // The reference class has margin zero. Equal starting margins give
+        // every class the same initial probability, regardless of label ID.
+        if (cfg_.mode == ForeForestConfig::Mode::GBDT && cfg_.num_classes > 2)
+            return 0.0;
+        if (cfg_.objective == ForeForestConfig::Objective::QuantileError) {
+            const auto weights = compute_sample_weights_(y, n);
+            std::vector<std::pair<double, double>> samples;
+            samples.reserve(n);
+            for (int i = 0; i < n; ++i) {
+                if (!std::isfinite(y[i]) || !std::isfinite(weights[i]) || weights[i] < 0.0)
+                    throw std::invalid_argument("Quantile regression requires finite targets and nonnegative finite weights");
+                if (weights[i] > 0.0)
+                    samples.emplace_back(y[i], weights[i]);
+            }
+            return empirical_quantile_(samples);
+        }
         if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss ||
             cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) {
             double p = std::accumulate(y, y + n, 0.0) / std::max(1, n);
@@ -1042,7 +1119,7 @@ private:
         // Check if any weighting is needed
         bool needs_weight = std::any_of(sw.begin(), sw.end(), [](double w) { return w != 1.0; });
 
-        if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
+        if (uses_logloss_derivatives_()) {
             execx::bulk_iota(ctx_, n, [&](int i) {
                 const double p = sigmoid_(F_ref[i]);
                 double gw = p - y[i];
@@ -1060,16 +1137,12 @@ private:
         if (cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss) {
             const double gamma = cfg_.focal_gamma;
             execx::bulk_iota(ctx_, n, [&](int i) {
-                const double yi = y[i];
-                const double p = sigmoid_(F_ref[i]);
-                const double p_t = yi * p + (1.0 - yi) * (1.0 - p); // Probability of true class
-                const double mod = std::pow(1.0 - p_t, gamma);      // Modulation factor
-
-                // Gradient of Focal Loss wrt log-odds F_ref
-                // This is a simplified derivation for standard focal loss.
-                double gw = mod * (p - yi) - gamma * std::pow(1.0 - p_t, gamma - 1.0) * p * (1.0 - p) *
-                                                 (yi * (1.0 - p) - (1.0 - yi) * p) * std::log(std::max(1e-12, p_t));
-                double hw = std::max(1e-5, mod * p * (1.0 - p));
+                const auto [sign, p, q, log_p, mod] = focal_terms_(F_ref[i], y[i], gamma);
+                double gw = sign * mod * (gamma * p * log_p - q);
+                // Focal loss can have negative curvature on hard examples.
+                // Tree split scoring requires a positive Hessian.
+                const double curvature = mod * p * ((1.0 + 2.0 * gamma) * q + gamma * (q - gamma * p) * log_p);
+                double hw = std::max(1e-5, curvature);
                 if (needs_weight) {
                     gw *= sw[static_cast<size_t>(i)];
                     hw *= sw[static_cast<size_t>(i)];
@@ -1106,8 +1179,8 @@ private:
             const double tau = cfg_.quantile_tau;
             execx::bulk_iota(ctx_, n, [&](int i) {
                 const double d = y[i] - F_ref[i];
-                double gw = (d >= 0.0) ? (tau - 1.0) : tau;
-                double hw = std::max(1e-5, tau * (1.0 - tau));
+                double gw = (d > 0.0) ? -tau : (1.0 - tau);
+                double hw = 1.0; // surrogate curvature for split scoring
                 if (needs_weight) {
                     gw *= sw[static_cast<size_t>(i)];
                     hw *= sw[static_cast<size_t>(i)];
@@ -1136,54 +1209,19 @@ private:
         compute_grad_hess_(y, n, F, g, h);
     }
 
-    // Multiclass: compute gradients for one class c (one-vs-rest)
-    void compute_grad_hess_multiclass_(const double* y, int n, const std::vector<double>& F_all, int class_c,
-                                       std::vector<double>& g, std::vector<double>& h,
-                                       std::vector<double>& prob_c_out) const {
-        int K_ = std::max(cfg_.num_classes - 1, 1);
-        if (K_ <= 1) {
-            compute_grad_hess_(y, n, F_all.empty() ? 0.0 : F_all[0], g, h);
-            return;
-        }
-        // Compute sample weights
-        std::vector<double> sw = compute_sample_weights_(y, n);
-        bool needs_weight = std::any_of(sw.begin(), sw.end(), [](double w) { return w != 1.0; });
-
-        // For multiclass: softmax over K-1 explicit classes + implicit Kth
-        // class
-        g.assign(static_cast<size_t>(n), 0.0);
-        h.assign(static_cast<size_t>(n), 0.0);
-        prob_c_out.assign(static_cast<size_t>(n), 0.0);
-
-        for (int i = 0; i < n; ++i) {
-            // Softmax over the K explicit margins plus the implicit last class
-            // (logit 0): p_c = exp(F_c) / (sum_j exp(F_j) + 1), computed stably.
-            double max_f = 0.0;  // includes the implicit class
-            for (int c = 0; c < K_; ++c) {
-                max_f =
-                    std::max(max_f, F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)]);
+    void compute_grad_hess_multiclass_(const double* labels, const std::vector<double>& margins, int class_index,
+                                       std::span<const double> weights, std::vector<double>& g,
+                                       std::vector<double>& h) const {
+        const int outputs = cfg_.num_classes - 1;
+        executor_->parallel_for(0, N_, 1024, [&](int begin, int end) {
+            for (int i = begin; i < end; ++i) {
+                const auto row = std::span(margins).subspan(static_cast<size_t>(i) * outputs, outputs);
+                const double p = std::exp(row[class_index] - multiclass::log_normalizer(row));
+                const double weight = weights.empty() ? 1.0 : weights[i];
+                g[i] = weight * (p - (labels[i] == class_index));
+                h[i] = weight * std::max(1e-12, p * (1.0 - p));
             }
-            double sum_exp = std::exp(-max_f);  // implicit class
-            for (int c = 0; c < K_; ++c) {
-                sum_exp +=
-                    std::exp(F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] - max_f);
-            }
-            double log_sum_exp = std::log(sum_exp) + max_f;
-            double p_c = std::exp(
-                F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(class_c)] - log_sum_exp);
-            prob_c_out[static_cast<size_t>(i)] = p_c;
-
-            // Target: 1 if y == class_c, 0 otherwise (for one-vs-rest)
-            double target = (static_cast<int>(y[i]) == class_c) ? 1.0 : 0.0;
-            double gw = p_c - target;
-            double hw = std::max(1e-12, p_c * (1.0 - p_c));
-            if (needs_weight) {
-                gw *= sw[static_cast<size_t>(i)];
-                hw *= sw[static_cast<size_t>(i)];
-            }
-            g[static_cast<size_t>(i)] = gw;
-            h[static_cast<size_t>(i)] = hw;
-        }
+        });
     }
 
     TreeConfig make_tree_cfg_() const {
@@ -1197,7 +1235,7 @@ private:
     }
 
     UnifiedTree build_tree_(const std::vector<double>& g, const std::vector<double>& h, const std::vector<int>& rows,
-                            uint64_t tree_seed) {
+                            uint64_t tree_seed, const UnifiedTree::LeafEstimator& estimate_leaf = {}) {
 #ifdef FORETREE_HAS_CUDA
         std::unique_lock<std::mutex> cuda_lock(cuda_training_mutex_, std::defer_lock);
         if (cuda_histogram_engine_)
@@ -1233,7 +1271,7 @@ private:
             T.set_quantized_gradients(quantize_gradients_(g, h, tree_seed));
         }
 
-        T.fit_with_row_ids(*compact_codes_, g, h, rows);
+        T.fit_with_row_ids(*compact_codes_, g, h, rows, estimate_leaf);
         return T;
     }
 
@@ -1565,7 +1603,18 @@ private:
 
                 std::vector<int> rows = sample_rows_for_gbdt_(m, M);
                 uint64_t seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * (m + 1);
-                UnifiedTree T = build_tree_(g, h, rows, seed);
+                UnifiedTree::LeafEstimator estimate_leaf;
+                std::vector<std::pair<double, double>> residuals;
+                if (cfg_.objective == ForeForestConfig::Objective::QuantileError) {
+                    estimate_leaf = [&](std::span<const int> leaf_rows) {
+                        residuals.clear();
+                        for (int i : leaf_rows)
+                            if (h[i] > 0.0)
+                                residuals.emplace_back(y[i] - F_ref[i], h[i]);
+                        return empirical_quantile_(residuals);
+                    };
+                }
+                UnifiedTree T = build_tree_(g, h, rows, seed, estimate_leaf);
 
                 double wt_new = cfg_.learning_rate;
                 if (cfg_.dart_enabled && cfg_.dart_normalize && !dropped.empty()) {
@@ -1618,7 +1667,8 @@ private:
         int rounds = K_ > 1 ? M / K_ : M;
         std::vector<double> F_all(static_cast<size_t>(N_) * static_cast<size_t>(K_), base_score_);
         std::vector<double> pred_buffer(N_);
-        std::vector<double> prob_c(N_);
+        const auto weights = cfg_.class_weight == ClassWeight::None && cfg_.scale_pos_weight == 1.0
+                                 ? std::vector<double>{} : compute_sample_weights_(y, N_);
         const bool has_valid = (Xb_valid && y_valid && N_valid > 0);
         std::vector<double> F_valid;
         std::vector<double> pred_valid_buffer;
@@ -1631,7 +1681,7 @@ private:
         for (int r = 0; r < rounds; ++r) {
             for (int c = 0; c < K_; ++c) {
                 // Compute gradients for class c (one-vs-all)
-                compute_grad_hess_multiclass_(y, N_, F_all, c, g, h, prob_c);
+                compute_grad_hess_multiclass_(y, F_all, c, weights, g, h);
 
                 std::vector<int> rows = sample_rows_for_gbdt_(r, rounds);
                 uint64_t seed = cfg_.rng_seed + 0x9E3779B97F4A7C15ULL * ((r * K_ + c) + 1);
@@ -1652,8 +1702,8 @@ private:
                 trees_.push_back(std::move(T));
                 tree_weights_.push_back(cfg_.learning_rate);
 
-                // Update F for this class
-                predict_tree_on_binned_(trees_.back(), *compact_codes_, N_, P_, Xraw_neural_, pred_buffer);
+                // Update F for this class and release its row routing state.
+                train_tree_predictions_(trees_.back(), pred_buffer);
                 for (int i = 0; i < N_; ++i) {
                     F_all[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] +=
                         cfg_.learning_rate * pred_buffer[i];
@@ -1950,7 +2000,7 @@ private:
             // Scalar: old path
             if (!y || n <= 0 || (int)margin.size() < n)
                 return std::numeric_limits<double>::infinity();
-            if (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
+            if (uses_logloss_derivatives_()) {
                 double loss = 0.0;
                 for (int i = 0; i < n; ++i) {
                     const double yi = y[i];
@@ -1963,10 +2013,8 @@ private:
                 double loss = 0.0;
                 const double gamma = cfg_.focal_gamma;
                 for (int i = 0; i < n; ++i) {
-                    const double yi = y[i];
-                    const double pi = std::clamp(sigmoid_(margin[(size_t)i]), 1e-12, 1.0 - 1e-12);
-                    const double p_t = yi * pi + (1.0 - yi) * (1.0 - pi);
-                    loss += -std::pow(1.0 - p_t, gamma) * std::log(p_t);
+                    const auto terms = focal_terms_(margin[i], y[i], gamma);
+                    loss -= terms.modulation * terms.log_p;
                 }
                 return loss / std::max(1, n);
             }
@@ -2010,31 +2058,8 @@ private:
 
         double loss = 0.0;
         for (int i = 0; i < n; ++i) {
-            // Softmax over the K explicit margins plus the implicit class (logit 0).
-            double max_f = 0.0;
-            for (int c = 0; c < K_; ++c) {
-                max_f =
-                    std::max(max_f, margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)]);
-            }
-            double sum_exp = std::exp(-max_f);  // implicit class
-            for (int c = 0; c < K_; ++c) {
-                sum_exp +=
-                    std::exp(margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(c)] - max_f);
-            }
-
-            double target = y[i];
-            // Cross-entropy loss for multiclass
-            // For class c, log prob = F_c - log(sum(exp(F_j)) + 1)
-            double log_sum_exp = std::log(sum_exp) + max_f;
-            double log_prob_target;
-            if (static_cast<int>(target) < K_) {
-                log_prob_target =
-                    margin[static_cast<size_t>(i) * static_cast<size_t>(K_) + static_cast<size_t>(target)] -
-                    log_sum_exp;
-            } else {
-                log_prob_target = 0.0 - log_sum_exp; // implicit Kth class
-            }
-            loss -= log_prob_target;
+            const auto row = std::span(margin).subspan(static_cast<size_t>(i) * K_, K_);
+            loss += multiclass::logloss(row, static_cast<int>(y[i]));
         }
         return loss / std::max(1, n);
     }
@@ -2079,7 +2104,8 @@ private:
             if (cfg_.mode == ForeForestConfig::Mode::GBDT || cfg_.mode == ForeForestConfig::Mode::FWBoost) {
                 for (double& v : out)
                     v += base_score_;
-                if (apply_link && cfg_.objective == ForeForestConfig::Objective::BinaryLogloss) {
+                if (apply_link && (cfg_.objective == ForeForestConfig::Objective::BinaryLogloss ||
+                                   cfg_.objective == ForeForestConfig::Objective::BinaryFocalLoss)) {
                     for (double& v : out)
                         v = sigmoid_(v);
                 }
@@ -2102,17 +2128,8 @@ private:
                 const size_t classes = static_cast<size_t>(K_) + 1;
                 std::vector<double> prob(rows * classes);
                 for (size_t i = 0; i < rows; ++i) {
-                    const double* m = out.data() + i * static_cast<size_t>(K_);
-                    double* p = prob.data() + i * classes;
-                    double max_val = 0.0;
-                    for (int c = 0; c < K_; ++c)
-                        max_val = std::max(max_val, m[c]);
-                    double sum = 0.0;
-                    for (int c = 0; c < K_; ++c)
-                        sum += (p[c] = std::exp(m[c] - max_val));
-                    sum += (p[K_] = std::exp(-max_val));
-                    for (size_t c = 0; c < classes; ++c)
-                        p[c] /= sum;
+                    multiclass::probabilities(std::span(out).subspan(i * K_, K_),
+                                              std::span(prob).subspan(i * classes, classes));
                 }
                 out = std::move(prob);
             }

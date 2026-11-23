@@ -243,3 +243,124 @@ def test_gpu_multiclass_and_subsampling_match_cpu():
     sampled.fit_complete(Xb, yb)
     assert sampled.training_backend() == "gpu" and sampled.gpu_fallback_reason() == ""
     assert ((sampled.predict(Xb) > 0.5) == yb).mean() > 0.85
+
+
+@pytest.mark.parametrize("tau", [0.1, 0.5, 0.9])
+def test_quantile_stump_fits_residual_quantiles(tau):
+    # One split and a full learning-rate step should recover each group's
+    # empirical quantile, even when the groups have very different scales.
+    X = np.repeat([0., 1.], 101).reshape(-1, 1)
+    y = np.r_[np.arange(101.), 200. + 3. * np.arange(101.)]
+    cfg = ff.ForeForestConfig()
+    cfg.device = ff.Device.CPU
+    cfg.mode = ff.Mode.GBDT
+    cfg.objective = ff.Objective.QuantileError
+    cfg.quantile_tau = tau
+    cfg.n_estimators = 1
+    cfg.learning_rate = 1.
+    cfg.tree_cfg.max_depth = 1
+    model = ff.ForeForest(cfg)
+    model.fit_complete(X, y, X, y)
+    pred = model.predict(X)
+    expected = np.quantile(y.reshape(2, 101), tau, axis=1, method="inverted_cdf")
+    np.testing.assert_allclose(pred, np.repeat(expected, 101))
+    residual = y - pred
+    loss = np.maximum(tau * residual, (tau - 1.) * residual).mean()
+    np.testing.assert_allclose(model.valid_metric_history(), [loss])
+
+
+def test_weighted_quantile_intercept():
+    X = np.zeros((100, 1))
+    y = np.r_[np.zeros(80), np.ones(20)]
+    cfg = ff.ForeForestConfig()
+    cfg.mode = ff.Mode.GBDT
+    cfg.device = ff.Device.CPU
+    cfg.objective = ff.Objective.QuantileError
+    cfg.quantile_tau = 0.5
+    cfg.scale_pos_weight = 5.
+    cfg.n_estimators = 1
+    model = ff.ForeForest(cfg)
+    model.fit_complete(X, y)
+    np.testing.assert_array_equal(model.predict(X), np.ones(100))
+
+
+@pytest.mark.parametrize("gamma", [0.5, 2.0])
+def test_focal_newton_step_matches_numerical_derivatives(gamma):
+    X = np.repeat([0., 1.], 100).reshape(-1, 1)
+    y = np.r_[np.zeros(90), np.ones(10), np.zeros(50), np.ones(50)]
+    cfg = _gbdt(n_estimators=1)
+    cfg.device = ff.Device.CPU
+    cfg.objective = ff.Objective.BinaryFocalLoss
+    cfg.focal_gamma = gamma
+    cfg.learning_rate = 1.
+    model = ff.ForeForest(cfg)
+    model.fit_complete(X, y, X, y)
+
+    def loss(margin):
+        signed = (2. * y - 1.) * margin
+        return np.exp(-gamma * np.logaddexp(0., signed)) * np.logaddexp(0., -signed)
+
+    base = np.log(y.mean() / (1. - y.mean()))
+    eps = 1e-4
+    gradient = (loss(base + eps) - loss(base - eps)) / (2. * eps)
+    curvature = (loss(base + eps) + loss(base - eps) - 2. * loss(base)) / eps**2
+    steps = -gradient.reshape(2, 100).sum(axis=1) / (
+        np.maximum(1e-5, curvature).reshape(2, 100).sum(axis=1) + cfg.tree_cfg.lambda_
+    )
+    margin = model.predict_margin(X)
+    np.testing.assert_allclose(margin, np.repeat(base + steps, 100), atol=1e-6)
+    np.testing.assert_allclose(model.predict(X), 1. / (1. + np.exp(-margin)))
+    np.testing.assert_allclose(model.valid_metric_history(), [loss(margin).mean()])
+
+
+def test_zero_gamma_focal_matches_binary_logloss():
+    X, y = _binary_data(n=800)
+    cfg = _gbdt(n_estimators=8)
+    cfg.device = ff.Device.CPU
+    logistic = ff.ForeForest(cfg)
+    logistic.fit_complete(X, y, X, y)
+    cfg.objective = ff.Objective.BinaryFocalLoss
+    cfg.focal_gamma = 0.
+    focal = ff.ForeForest(cfg)
+    focal.fit_complete(X, y, X, y)
+    np.testing.assert_array_equal(focal.predict_margin(X), logistic.predict_margin(X))
+    np.testing.assert_array_equal(focal.predict(X), logistic.predict(X))
+    np.testing.assert_array_equal(focal.valid_metric_history(), logistic.valid_metric_history())
+
+
+def test_multiclass_balances_reference_class_and_reports_logloss():
+    counts = [25, 10, 65]
+    y = np.repeat(np.arange(3, dtype=float), counts)
+    X = np.zeros((len(y), 1))
+    cfg = _multiclass(n_estimators=2, device=ff.Device.CPU)
+    cfg.class_weight = ff.ClassWeight.Balanced
+    model = ff.ForeForest(cfg)
+    model.fit_complete(X, y, X, y)
+
+    # With a constant feature and equal total weight per class, every
+    # class gradient sums to zero apart from floating-point roundoff.
+    np.testing.assert_allclose(model.predict_margin(X), 0., atol=1e-12)
+    probs = model.predict(X)
+    assert model.eval_metric_name() == "multiclass_logloss"
+    np.testing.assert_allclose(model.valid_metric_history(), [-np.log(probs[np.arange(len(y)), y.astype(int)]).mean()])
+
+
+@pytest.mark.parametrize("label", [-1., 0.5, 3., np.nan])
+def test_multiclass_rejects_invalid_train_and_validation_labels(label):
+    X, y = _multiclass_data(n=120)
+    invalid = y.copy()
+    invalid[-1] = label
+    model = ff.ForeForest(_multiclass(n_estimators=2, device=ff.Device.CPU))
+    with pytest.raises(ValueError, match="class indices"):
+        model.fit_complete(X, invalid)
+    with pytest.raises(ValueError, match="class indices"):
+        model.fit_complete(X, y, X, invalid)
+
+
+def test_multiclass_starts_with_equal_class_probabilities():
+    X, y = _multiclass_data(n=120)
+    cfg = _multiclass(n_estimators=0, device=ff.Device.CPU)
+    model = ff.ForeForest(cfg)
+    model.fit_complete(X, y)
+    np.testing.assert_array_equal(model.predict_margin(X), np.zeros((len(y), 2)))
+    np.testing.assert_allclose(model.predict(X), np.full((len(y), 3), 1. / 3.))

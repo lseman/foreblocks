@@ -132,7 +132,8 @@ if(TREE_BUILD_FORETREE)
         GIT_TAG v2.9.2
     )
 
-    nanobind_add_module(foretree "${TREE_SRC_DIR}/pybind/foretree.cpp")
+    # The header-only training kernels inherit the module compiler flags.
+    nanobind_add_module(foretree NOMINSIZE "${TREE_SRC_DIR}/pybind/foretree.cpp")
     # Third-party headers: keep their warnings out of ours (and out of -Werror).
     target_include_directories(foretree SYSTEM PRIVATE "${nanobind_SOURCE_DIR}/include")
 
@@ -164,7 +165,7 @@ if(TREE_BUILD_FOREFOREST)
         "NB_USE_BUILD_SUPPORT ON"
     )
 
-    nanobind_add_module(foreforest NB_DOMAIN foreforest "${TREE_SRC_DIR}/pybind/foreforest.cpp")
+    nanobind_add_module(foreforest NOMINSIZE NB_DOMAIN foreforest "${TREE_SRC_DIR}/pybind/foreforest.cpp")
     target_include_directories(foreforest SYSTEM PRIVATE "${nanobind_SOURCE_DIR}/include")
 
     target_include_directories(nanobind-static PRIVATE ${Python3_INCLUDE_DIRS})

@@ -371,6 +371,8 @@ class MoEFeedForwardDMoE(nn.Module):
         self.moe_router_bias_warmup_steps = int(moe_router_bias_warmup_steps)
         # Legacy compatibility only: all deviations from target are corrected.
         self.moe_router_bias_min_usage = float(moe_router_bias_min_usage)
+        if not 0 <= self.moe_router_bias_min_usage <= 1:
+            raise ValueError("moe_router_bias_min_usage must be a share in [0, 1]")
         self._current_step = 0
 
         self.moe_logger = moe_logger
@@ -814,7 +816,12 @@ class MoEFeedForwardDMoE(nn.Module):
             usage = usage / usage_sum.clamp_min(1e-12)
             target = torch.full_like(usage, 1.0 / self.num_routed_experts)
             # Correct every imbalance, including overloaded experts.
-            bias.add_(self.router_bias_update_rate * valid * (target - usage).sign())
+            correction = (target - usage).sign()
+            floor = min(self.moe_router_bias_min_usage, 1.0 / self.num_routed_experts)
+            if floor > 0:
+                # Add up to one extra upward step as usage falls from the floor to zero.
+                correction = correction + ((floor - usage) / floor).clamp(0, 1)
+            bias.add_(self.router_bias_update_rate * valid * correction)
             if self.router_bias_clip > 0:
                 bias.clamp_(-self.router_bias_clip, self.router_bias_clip)
 
@@ -1211,9 +1218,9 @@ class MoEFeedForwardDMoE(nn.Module):
         else:
             # Fallback: loop (optionally checkpoint)
             packed_y = torch.empty_like(packed_x)
-            for e_idx in range(self.num_routed_experts):
-                s = int(offsets[e_idx].item())
-                t = int(offsets[e_idx + 1].item())
+            # Copy all boundaries together before launching the per-expert work.
+            boundaries = offsets.tolist()
+            for e_idx, (s, t) in enumerate(zip(boundaries, boundaries[1:])):
                 if t <= s:
                     continue
                 seg = packed_x[s:t]

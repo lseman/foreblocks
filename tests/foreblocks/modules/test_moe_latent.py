@@ -536,3 +536,14 @@ def test_grouped_moe_cuda_training_and_eval(regression_moe):
 def test_grouped_expert_dropout_is_preserved(regression_moe):
     block = regression_moe(use_grouped_kernel=True, expert_dropout=1.0)
     assert torch.count_nonzero(block(torch.randn(2, 5, 8))[0]) == 0
+
+
+@pytest.mark.parametrize(
+    ("floor", "expected"),
+    [(0.0, [1, 1, 1, -1]), (0.125, [2, 1.5, 1, -1]), (1.0, [2, 1.75, 1.5, -1])],
+)
+def test_router_bias_usage_floor(regression_moe, floor, expected):
+    block = regression_moe(moe_router_bias_min_usage=floor, router_bias_update_rate=0.1)
+    block.expert_usage.copy_(torch.tensor([0, 0.0625, 0.125, 0.8125]))
+    block._maybe_update_router_bias()
+    torch.testing.assert_close(block.router.expert_bias, 0.1 * torch.tensor(expected))

@@ -278,6 +278,17 @@ See `tests/bench_sota_options.py` for full working examples including categorica
 - **Objectives**: squared error, binary logloss, focal loss, Huber, quantile
 - **Isolation Forest**: unsupervised anomaly scores; classic axis splits or Extended IF hyperplanes, NaN-aware
 
+For binary focal loss, set `cfg.mode = ff.Mode.GBDT` and
+`cfg.objective = ff.Objective.BinaryFocalLoss`. Use `predict(X)` for sigmoid
+scores in [0, 1] and `predict_margin(X)` for raw scores. Setting
+`cfg.focal_gamma = 0.0` recovers binary logloss on the CPU training path.
+
+For a conditional 90th-percentile forecast, set `cfg.mode = ff.Mode.GBDT`,
+`cfg.objective = ff.Objective.QuantileError`, and `cfg.quantile_tau = 0.9`.
+Training starts at the empirical target quantile and fits each scalar leaf to
+the same quantile of its in-sample residuals. Validation and early stopping use
+pinball loss. Fit a separate model for each desired percentile.
+
 ### 6. Memory-Efficient Representation
 - **QuantizedDataset**: uint8/uint16 feature codes with lazy column-major cache
 - **PackedTree**: Structure-of-arrays inference representation
