@@ -31,7 +31,18 @@ class TransformerDecoderLayer(
     BaseTransformerLayer,
 ):
     def __init__(self, config: TransformerConfig | None = None, **overrides: Any):
-        super().__init__(config, **overrides)
+        config = TransformerConfig.resolve(config, **overrides)
+        options = config.moe_options
+        expert_choice = str(options.get("routing_mode", "")).lower() == "expert_choice"
+        if config.use_moe and not config.informer and (
+            expert_choice or options.get("moe_capacity_pruning")
+        ):
+            # Competing across tokens for expert slots leaks future inputs.
+            options = {**options, "moe_capacity_pruning": False}
+            if expert_choice:
+                options["routing_mode"] = "token_choice"
+            config = replace(config, moe_options=options)
+        super().__init__(config)
         config = self.config
         self.layer_attention_type = config.attention
         self.is_causal = not config.informer

@@ -606,9 +606,15 @@ class AuxiliaryTokenRouter(Router):
         input_dropout: float = 0.0,
         clamp_range: tuple[float, float] = (-1e4, 1e4),
         use_bias: bool = False,
+        token_conditioned: bool = False,
     ):
         super().__init__(num_experts=num_experts)
+        self.token_conditioned = token_conditioned
         self.num_aux = int(num_aux)
+        if token_conditioned and self.num_aux < 1:
+            raise ValueError(
+                "token-conditioned routing requires at least one auxiliary token"
+            )
         self.temperature = float(temperature)
         self.clamp_min, self.clamp_max = clamp_range
         self.input_dropout = nn.Dropout(input_dropout) if input_dropout > 0 else None
@@ -631,9 +637,14 @@ class AuxiliaryTokenRouter(Router):
             x = self.input_dropout(x)
         T = x.size(0)
 
-        # [num_aux, d_model] -> [num_aux, num_experts]
-        aux_logits = self.aux_to_expert(self.aux_tokens)  # [num_aux, E]
+        if self.token_conditioned:
+            slot_scores = (x @ self.aux_tokens.T) * (x.size(-1) ** -0.5)
+            slot_context = slot_scores.softmax(dim=-1) @ self.aux_tokens
+            return self.aux_to_expert(x + slot_context).clamp(
+                self.clamp_min, self.clamp_max
+            )
 
+        aux_logits = self.aux_to_expert(self.aux_tokens)
         if self.num_aux == 1:
             # Single aux: broadcast dot-product to every token -> [T, E]
             logits = aux_logits[0].expand(T, -1)

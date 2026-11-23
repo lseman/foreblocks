@@ -169,6 +169,17 @@ Settings that only some backends use go through two validated mappings:
 `attention_options` (fields of `foreblocks.nn.attention.config`, e.g.
 `window_size`, `qk_norm`, `use_mla`) and `moe_options` (arguments of
 `FeedForwardBlock`, e.g. `num_shared`, `router_type`). Unknown names raise.
+Causal decoder layers always use dropless token-choice MoE routing so future
+tokens cannot displace earlier expert assignments. Encoders and noncausal
+Informer decoders honor the configured routing and capacity options.
+
+For standard attention, set `attention_options={"gated_attention": True,
+"gated_attention_mode": "query_head"}` to compute a sigmoid gate per query
+token and head before the output projection. For MoE, set
+`moe_options={"router_type": "token_conditioned_auxiliary", "router_aux_num_aux": 4}`
+to mix learned auxiliary tokens according to each input and project the sum
+of the input and its mixture to expert logits. A single auxiliary token adds
+a learned offset to the linear router.
 
 Validation happens when the config is built: invalid values, unknown names,
 and incompatible combinations (for example `variate_attention` with a

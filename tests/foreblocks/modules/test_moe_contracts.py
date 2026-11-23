@@ -122,3 +122,19 @@ def test_bf16_autocast_helper_reports_active_policy():
         assert autocast_bf16_enabled("cpu")
     with torch.autocast("cpu", dtype=torch.float16):
         assert not autocast_bf16_enabled("cpu")
+
+
+@pytest.mark.parametrize("slots", [1, 4])
+def test_token_conditioned_auxiliary_router_is_token_local(make_moe, slots):
+    torch.manual_seed(13)
+    model = make_moe(router_type="token_conditioned_auxiliary", router_aux_num_aux=slots)
+    router = model.router
+    x = torch.randn(5, 8)
+    altered = x.clone()
+    altered[2] = -x[2]
+    logits = router(x).logits
+    changed = router(altered).logits
+    assert not torch.allclose(logits[2], changed[2])
+    torch.testing.assert_close(logits[[0, 1, 3, 4]], changed[[0, 1, 3, 4]])
+    logits.square().sum().backward()
+    assert router.aux_tokens.grad.abs().sum() > 0

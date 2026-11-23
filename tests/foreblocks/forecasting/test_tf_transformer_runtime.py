@@ -21,6 +21,7 @@ from foreblocks.nn.transformer import (
     TransformerEncoderLayer,
 )
 from foreblocks.nn.transformer.decoder import TransformerDecoder
+from foreblocks.nn.transformer.layers.decoder import TransformerDecoderLayer
 from foreblocks.nn.transformer.runtime.outputs import (
     TransformerDecoderOutput,
     TransformerEncoderOutput,
@@ -257,6 +258,46 @@ def test_shared_hybrid_attention_materializes_configured_backends():
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     assert {id(p) for p in model.parameters()} <= _optimizer_param_ids(optimizer)
+
+    for backend in ("linear", "standard"):
+        layer.set_layer_attention_type(backend)
+        weight = next(p for p in layer._self_attn().parameters() if p.ndim == 2)
+        before = weight.detach().clone()
+        optimizer.zero_grad()
+        output, _ = layer(torch.randn(2, 6, 8))
+        output.square().mean().backward()
+        assert weight.grad is not None and weight.grad.abs().sum() > 0
+        optimizer.step()
+        assert not torch.equal(weight, before)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"routing_mode": "expert_choice", "expert_choice_tokens_per_expert": 1},
+        {"moe_capacity_pruning": True, "moe_capacity_factor": 0.25},
+    ],
+)
+def test_causal_moe_decoder_preserves_prefix(options):
+    torch.manual_seed(32)
+    layer = TransformerDecoderLayer(
+        d_model=16,
+        n_heads=2,
+        dropout=0.0,
+        moe_experts=2,
+        moe_top_k=1,
+        moe_options=options,
+    ).eval()
+    assert layer.feed_forward.block.routing_mode == "token_choice"
+    assert not layer.feed_forward.block.moe_capacity_pruning
+    x = torch.randn(2, 12, 16)
+    altered = x.clone()
+    altered[:, 6:] = torch.randn_like(altered[:, 6:]) * 5
+    memory = torch.randn_like(x)
+    with torch.no_grad():
+        expected = layer(x, memory)[0]
+        actual = layer(altered, memory)[0]
+    torch.testing.assert_close(actual[:, :6], expected[:, :6])
 
 
 def test_standalone_encoder_layer_materializes_selected_attention():

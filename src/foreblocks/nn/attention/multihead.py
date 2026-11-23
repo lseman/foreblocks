@@ -448,7 +448,13 @@ class MultiAttention(
         out_bhtd: torch.Tensor,
         B: int,
         T_q: int,
+        query: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        if self.use_gated_attention and self.gated_attn_mode == "query_head":
+            if query is None:
+                raise ValueError("query_head gate requires query hidden states")
+            gate = self.gate_proj(query).sigmoid().transpose(1, 2).unsqueeze(-1)
+            out_bhtd = out_bhtd * gate
         # Apply head importance mask (before merging heads)
         out_bhtd = self._apply_head_importance_mask(out_bhtd)
 

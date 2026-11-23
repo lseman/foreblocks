@@ -14,7 +14,7 @@ class TestMultiAttentionIncrementalDecode(unittest.TestCase):
     ignored q_start_pos and produced a wrong causal mask over cached history.
     """
 
-    def _decode_matches_full(self, *, paged, mla, rope, T=16, prefill=0):
+    def _decode_matches_full(self, *, paged, mla, rope, T=16, prefill=0, query_gate=False):
         torch.manual_seed(0)
         m = MultiAttention(AttentionConfig.from_legacy_kwargs(
             d_model=64,
@@ -23,6 +23,8 @@ class TestMultiAttentionIncrementalDecode(unittest.TestCase):
             use_mla=mla,
             pos_encoding_type="rope" if rope else "sinusoidal",
             use_paged_cache=paged,
+            use_gated_attention=query_gate,
+            gated_attn_mode="query_head" if query_gate else "per_head",
         )).eval()
         x = torch.randn(2, T, 64)
         with torch.no_grad():
@@ -43,6 +45,36 @@ class TestMultiAttentionIncrementalDecode(unittest.TestCase):
                 outs.append(o)
             inc = torch.cat(outs, dim=1)
         return (inc - full).abs().max().item()
+
+    def test_query_gate_cached_decode_matches_full(self):
+        for paged in (False, True):
+            err = self._decode_matches_full(
+                paged=paged, mla=False, rope=True, prefill=4, query_gate=True
+            )
+            self.assertLess(err, 1e-5)
+
+    def test_query_gate_scales_heads_before_projection(self):
+        torch.manual_seed(11)
+        cfg = AttentionConfig.from_legacy_kwargs(
+            d_model=16, n_heads=4, dropout=0.0,
+            use_gated_attention=True, gated_attn_mode="query_head",
+        )
+        model = MultiAttention(cfg).eval()
+        x = torch.randn(2, 5, 16)
+        before_projection = []
+        handle = model.out_proj.register_forward_pre_hook(
+            lambda module, args: before_projection.append(args[0])
+        )
+        model.use_gated_attention = False
+        model(x)
+        handle.remove()
+        model.use_gated_attention = True
+        actual = model(x)[0]
+        gates = model.gate_proj(x).sigmoid().repeat_interleave(4, dim=-1)
+        expected = model.out_proj(before_projection[0] * gates)
+        torch.testing.assert_close(actual, expected)
+        actual.sum().backward()
+        self.assertGreater(model.gate_proj.weight.grad.abs().sum().item(), 0)
 
     def test_paged_all_combos(self):
         for mla in (False, True):

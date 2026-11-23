@@ -161,21 +161,14 @@ class ConfidenceCapacityDispatcher(DroplessPackedDispatcher):
                 device=x_flat.device,
             )
 
-        kept_parts: list[torch.Tensor] = []
-        for expert_idx in range(self.num_experts):
-            start = int(offsets[expert_idx].item())
-            end = int(offsets[expert_idx + 1].item())
-            count = end - start
-            capacity = min(count, int(capacities[expert_idx].item()))
-            if capacity == 0:
-                continue
-            local_weights = packed_w[start:end, 0]
-            strongest = torch.topk(local_weights, k=capacity, sorted=False).indices.add(
-                start
-            )
-            kept_parts.append(strongest)
-
-        kept = torch.cat(kept_parts) if kept_parts else experts.new_empty((0,))
+        # Stable grouping preserves descending confidence within each expert.
+        by_weight = packed_w[:, 0].argsort(descending=True, stable=True)
+        grouped = experts[by_weight].argsort(stable=True)
+        ranked = by_weight[grouped]
+        rank_in_expert = (
+            torch.arange(assignment_count, device=experts.device) - offsets[experts]
+        )
+        kept = ranked[rank_in_expert < capacities[experts]]
         experts = experts.index_select(0, kept)
         tokens = tokens.index_select(0, kept)
         packed_x = packed_x.index_select(0, kept)

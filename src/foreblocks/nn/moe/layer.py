@@ -210,6 +210,7 @@ class MoEFeedForwardDMoE(nn.Module):
             "multi_hash_topk",
             "soft_dense",
             "auxiliary_token",
+            "token_conditioned_auxiliary",
         }
         if router_type not in allowed_router_types:
             raise ValueError(
@@ -481,11 +482,15 @@ class MoEFeedForwardDMoE(nn.Module):
                 use_bias=use_bias,
                 expert_bias_init=router_expert_bias_init,
             )
-        elif router_type == "auxiliary_token":
+        elif router_type in ("auxiliary_token", "token_conditioned_auxiliary"):
             router = AuxiliaryTokenRouter(
                 d_model=self.routed_d_model,
                 num_experts=num_routed,
                 num_aux=router_aux_num_aux,
+                token_conditioned=router_type == "token_conditioned_auxiliary",
+                use_bias=use_bias
+                if router_type == "token_conditioned_auxiliary"
+                else False,
                 temperature=router_temperature,
                 input_dropout=input_dropout,
             )

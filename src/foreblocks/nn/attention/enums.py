@@ -27,6 +27,7 @@ class QKNorm(StrEnum):
 
 
 class GatedAttentionMode(StrEnum):
+    QUERY_HEAD = "query_head"
     PER_HEAD = "per_head"
     SHARED = "shared"
 

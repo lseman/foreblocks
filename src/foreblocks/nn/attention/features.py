@@ -101,7 +101,13 @@ class _AttentionFeatures:
         self.use_gated_attention = features.gated_attention
         self.gated_attn_mode = features.gated_attention_mode
 
-        if self.use_gated_attention:
+        if self.use_gated_attention and self.gated_attn_mode == "query_head":
+            if self.attention_type != "standard":
+                raise ValueError("query_head gating requires standard attention")
+            self.gate_proj = nn.Linear(
+                self.d_model, self.n_heads, bias=features.gated_attention_bias
+            )
+        elif self.use_gated_attention:
             if features.gated_attention_mode not in {"per_head", "shared"}:
                 raise ValueError(
                     f"gated_attn_mode must be 'per_head' or 'shared', got {features.gated_attention_mode}"
@@ -211,7 +217,7 @@ class _AttentionFeatures:
         return self.attn_out_norm(out_btd)
 
     def _apply_gated_attention(self, out_bhtd: torch.Tensor) -> torch.Tensor:
-        if not self.use_gated_attention:
+        if not self.use_gated_attention or self.gated_attn_mode == "query_head":
             return out_bhtd
 
         # gate computed from attention output itself (G1)

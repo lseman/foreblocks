@@ -91,7 +91,11 @@ class StandardAttentionImpl:
             need_weights,
             q_start_pos=q_start_pos,
         )
-        return self.context._finalize_projected_output(out, B, T_q), weights, layer_state
+        return (
+            self.context._finalize_projected_output(out, B, T_q, query=query),
+            weights,
+            layer_state,
+        )
 
     def decode(
         self,
@@ -203,7 +207,7 @@ class StandardAttentionImpl:
                     q_start_pos=q_start_pos,
                 )
                 return (
-                    self.context._finalize_projected_output(out, B, T_q),
+                    self.context._finalize_projected_output(out, B, T_q, query=query),
                     weights,
                     layer_state,
                 )
@@ -298,7 +302,7 @@ class StandardAttentionImpl:
                 )
             out_bhqd = self.context._apply_gated_attention(out_bhqd)
             return (
-                self.context._finalize_projected_output(out_bhqd, B, T_q),
+                self.context._finalize_projected_output(out_bhqd, B, T_q, query=query),
                 None,
                 layer_state,
             )
@@ -332,4 +336,8 @@ class StandardAttentionImpl:
             need_weights,
             q_start_pos=q_start_pos,
         )
-        return self.context._finalize_projected_output(out, B, T_q), weights, layer_state
+        return (
+            self.context._finalize_projected_output(out, B, T_q, query=query),
+            weights,
+            layer_state,
+        )
