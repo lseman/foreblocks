@@ -36,5 +36,6 @@ def test_train_config_has_no_deprecated_alias_fields() -> None:
 def test_pc_darts_config_contains_only_canonical_controls() -> None:
     assert set(PC_DARTSEngineConfig.__dataclass_fields__) == {
         "enable_partial_channels",
+        "narrow_candidate_execution",
         "enable_edge_normalization",
     }

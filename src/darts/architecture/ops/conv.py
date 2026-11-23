@@ -106,7 +106,22 @@ class TimeConvOp(nn.Module):
             else nn.Identity()
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    supports_partial_channels = True
+
+    def forward(self, x: torch.Tensor, *, channels: torch.Tensor | None = None) -> torch.Tensor:
+        if channels is not None:
+            signal = x.transpose(1, 2)
+            depthwise = self.depthwise
+            if isinstance(depthwise, CausalConv1d):
+                signal = F.pad(signal, (depthwise.left_padding, 0))
+                depthwise = depthwise.conv
+            signal = F.conv1d(
+                signal, depthwise.weight.index_select(0, channels),
+                padding=depthwise.padding, groups=channels.numel(),
+            )
+            weights = self.pointwise.weight.index_select(0, channels).index_select(1, channels)
+            update = F.conv1d(signal, weights).transpose(1, 2)
+            return self.norm.forward_channels(x + self.dropout(self.activation(update)), channels)
         B, L, C = x.shape
         residual = self.residual_proj(x)
 

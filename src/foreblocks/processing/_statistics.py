@@ -87,3 +87,14 @@ def ljung_box(values, lags):
     )
     selected = q[requested - 1]
     return selected, chi2.sf(selected, requested)
+
+
+def safe_correlation(x: np.ndarray, y: np.ndarray) -> float:
+    """Return Pearson correlation, using zero for short or constant inputs."""
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    if x.size < 2:
+        return 0.0
+    if np.isclose(np.std(x), 0.0) or np.isclose(np.std(y), 0.0):
+        return 0.0
+    c = np.corrcoef(x, y)[0, 1]
+    return 0.0 if np.isnan(c) else float(c)

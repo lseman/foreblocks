@@ -14,12 +14,13 @@ Core API:
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.nn.modules.lazy import LazyModuleMixin
+from torch.nn.parameter import UninitializedParameter, is_lazy
 
-# Use your project modules
+from ._smoothing import moving_average
 
 
-class DLinear(nn.Module):
+class DLinear(LazyModuleMixin, nn.Module):
     def __init__(
         self,
         pred_len: int,
@@ -45,53 +46,26 @@ class DLinear(nn.Module):
         ):
             self.channel_mixer = nn.Linear(in_channels, out_channels, bias=True)
 
-        self.register_parameter("W_season", None)
-        self.register_parameter("b_season", None)
-        self.register_parameter("W_trend", None)
-        self.register_parameter("b_trend", None)
+        self.W_season = UninitializedParameter()
+        self.b_season = UninitializedParameter() if bias else None
+        self.W_trend = UninitializedParameter() if use_decomposition else None
+        self.b_trend = UninitializedParameter() if use_decomposition and bias else None
 
-    @staticmethod
-    def _moving_average(x: torch.Tensor, k: int) -> torch.Tensor:
-        if k <= 1:
-            return x
-        B, L, C = x.shape
-        x_n = x.permute(0, 2, 1)  # [B,C,L]
-        pad = (k - 1) // 2
-        x_pad = F.pad(x_n, (pad, pad), mode="reflect")
-        w = torch.ones(1, 1, k, device=x.device, dtype=x.dtype) / k
-        trend = F.conv1d(x_pad, w.expand(C, -1, -1), groups=C)  # [B,C,L]
-        return trend.permute(0, 2, 1)
+    _moving_average = staticmethod(moving_average)
 
-    def _lazy_build(self, L: int, C: int, device, dtype):
-
-        def make_params():
-            if self.individual:
-                W = nn.Parameter(
-                    torch.empty(C, self.pred_len, L, device=device, dtype=dtype)
-                )
-                b = (
-                    nn.Parameter(
-                        torch.zeros(C, self.pred_len, device=device, dtype=dtype)
-                    )
-                    if self.bias_flag
-                    else None
-                )
-            else:
-                W = nn.Parameter(
-                    torch.empty(self.pred_len, L, device=device, dtype=dtype)
-                )
-                b = (
-                    nn.Parameter(torch.zeros(self.pred_len, device=device, dtype=dtype))
-                    if self.bias_flag
-                    else None
-                )
-            nn.init.xavier_uniform_(W)
-            return W, b
-
-        if self.W_season is None:
-            self.W_season, self.b_season = make_params()
-        if self.use_decomposition and self.W_trend is None:
-            self.W_trend, self.b_trend = make_params()
+    @torch.no_grad()
+    def initialize_parameters(self, x: torch.Tensor) -> None:
+        if x.dim() != 3:
+            raise ValueError(f"Expected [B,L,C], got {tuple(x.shape)}")
+        _, length, channels = x.shape
+        output_shape = (channels, self.pred_len) if self.individual else (self.pred_len,)
+        for weight, bias in ((self.W_season, self.b_season), (self.W_trend, self.b_trend)):
+            if is_lazy(weight):
+                weight.materialize((*output_shape, length), device=x.device, dtype=x.dtype)
+                nn.init.xavier_uniform_(weight)
+            if is_lazy(bias):
+                bias.materialize(output_shape, device=x.device, dtype=x.dtype)
+                nn.init.zeros_(bias)
 
     def _proj(
         self, x: torch.Tensor, W: torch.Tensor, b: torch.Tensor | None, individual: bool
@@ -110,8 +84,6 @@ class DLinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() != 3:
             raise ValueError(f"Expected [B,L,C], got {tuple(x.shape)}")
-        B, L, C = x.shape
-        self._lazy_build(L, C, x.device, x.dtype)
 
         if self.use_decomposition:
             trend = self._moving_average(x, self.ma_kernel)

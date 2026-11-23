@@ -3,7 +3,24 @@
 from importlib import import_module
 from typing import TYPE_CHECKING
 
+from .blocks import (
+    AttnRes,
+    MHC,
+    Block,
+    DecoderBlock,
+    EncoderBlock,
+    GatedDeltaNet,
+    GQA,
+    LayerNorm,
+    MoE,
+    Residual,
+    RMSNorm,
+    RoPE,
+    SwiGLU,
+)
+
 if TYPE_CHECKING:
+    from foreblocks.models.encoder_decoder import EncoderDecoder as EncoderDecoder
     from foreblocks.nn.transformer.base import BaseTransformer as BaseTransformer
     from foreblocks.nn.transformer.config import (
         GenerationConfig as GenerationConfig,
@@ -35,6 +52,7 @@ if TYPE_CHECKING:
     )
 
 _EXPORTS = {
+    "EncoderDecoder": "foreblocks.models.encoder_decoder",
     "TransformerConfig": "foreblocks.nn.transformer.config",
     "GenerationConfig": "foreblocks.nn.transformer.config",
     "TransformerEncoder": "foreblocks.nn.transformer.encoder",
@@ -49,7 +67,22 @@ _EXPORTS = {
     "TransformerDecoderOutput": "foreblocks.nn.transformer.runtime.outputs",
     "TransformerGenerationOutput": "foreblocks.nn.transformer.runtime.outputs",
 }
-__all__ = list(_EXPORTS)
+__all__ = [
+    *_EXPORTS,
+    "AttnRes",
+    "MHC",
+    "EncoderBlock",
+    "DecoderBlock",
+    "Block",
+    "GQA",
+    "GatedDeltaNet",
+    "LayerNorm",
+    "MoE",
+    "Residual",
+    "RMSNorm",
+    "RoPE",
+    "SwiGLU",
+]
 
 
 def __getattr__(name: str):

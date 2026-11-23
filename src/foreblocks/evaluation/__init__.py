@@ -1,9 +1,4 @@
-"""foreblocks.evaluation.
-
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the evaluation and benchmarking helpers area of Foreblocks.
-
-"""
+"""Evaluate forecast errors and run sliding-window cross-validation with ModelEvaluator."""
 
 from importlib import import_module
 

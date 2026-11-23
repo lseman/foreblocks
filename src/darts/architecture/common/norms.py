@@ -33,6 +33,13 @@ class RMSNorm(nn.Module):
         else:
             self.register_parameter("scale", None)
 
+    def forward_channels(self, x: torch.Tensor, channels: torch.Tensor) -> torch.Tensor:
+        """Normalize a sampled subnetwork using its full model's learned scales."""
+        if self.scale is None:
+            return self.forward(x)
+        variance = x.square().mean(dim=-1, keepdim=True)
+        return x * torch.rsqrt(variance + self.eps) * self.scale.index_select(0, channels)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Simple RMSNorm: l2norm(x) * sqrt(dim), no learned gamma
         if self.use_simple_rmsnorm:

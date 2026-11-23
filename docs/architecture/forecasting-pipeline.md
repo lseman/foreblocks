@@ -12,20 +12,19 @@ This page describes the main execution flow for a typical `foreblocks` forecasti
 
 ```mermaid
 flowchart TD
-    A([Raw series\nT × D]) -->|fit_transform| B[TimeSeriesHandler]
-    B --> C[X: N×T×F\ny: N×H×D]
-    C -->|create_dataloaders| D[(DataLoader\ntrain / val / test)]
-
-    D --> E[ForecastingModel\nhead + backbone]
-    E --> F[Trainer]
-    F -->|train loop| G{converged?}
-    G -->|no| F
-    G -->|yes| H[ModelEvaluator]
-
-    H --> I[metrics\nMAE · RMSE · MAPE]
-    H --> J[CV windows\nrolling evaluation]
-    H --> K[learning curve\nplots]
-
-    E -.->|optional| L[ConformalPredictionEngine\ncalibrate → predict intervals]
-    E -.->|optional| M[DARTSSearcher\narchitecture search]
+    A[Raw series] --> B[TimeSeriesHandler]
+    B --> C[Prepared inputs and targets]
+    C -->|create_dataloaders| D[Training and validation loaders]
+    E[ForecastingModel] --> F[Trainer]
+    D -->|train| F
+    F --> G[ModelEvaluator]
+    G --> H[Metrics and rolling cross-validation]
+    G --> I[Learning curves]
+    F -->|optional calibration| J[Conformal prediction intervals]
 ```
+
+Inputs typically have shape `[samples, history, features]` and targets have
+shape `[samples, horizon, outputs]`. Pass the prepared arrays to
+`create_dataloaders`, construct `Trainer(model)`, and call `trainer.train`
+with the loaders. Architecture search has its own training workflow.
+[DARTS search pipeline](darts-pipeline.md)

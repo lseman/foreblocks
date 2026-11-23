@@ -14,97 +14,12 @@ Foreblocks provides:
 - **Core Training & Evaluation**: Training loops, loss functions, conformal prediction, quantization, and NAS utilities
 - **Studio UI**: Web-based studio server for model discovery and visualization
 
-## Directory Structure
+## Package organization
 
-```
-foreblocks/
-├── kernels/                      # Triton/CUDA accelerated kernels, no nn.Module surface
-│   ├── attention/                # Fused RoPE, paged/chunked attention kernels
-│   ├── mamba/                    # Causal conv1d, mamba2_combined, SSD, Triton ops
-│   ├── linear/                   # Grouped GEMM and related linear-algebra kernels
-│   ├── normalization/            # Layer norm, RMS norm kernels
-│   ├── activations/              # Softmax, GELU, SwiGLU kernels
-│   ├── elementwise/               # Elementwise ops
-│   ├── graph/                    # Graph message-passing kernels
-│   ├── experimental/              # Vendored attention_kernels sub-project (own setup.py)
-│   └── patching.py
-│
-├── ops/                           # Tensor ops and execution dispatch on top of kernels/
-│   ├── attention/                # fused_rope, paged_decode, chunked linear attention
-│   └── mamba/                    # ssd, causal_conv1d, mamba2_combined
-│
-├── integrations/                  # Optional external backends
-│   ├── fla/                      # flash-linear-attention adapters (delta rule, GLA, RAVEN, …)
-│   └── softpick.py
-│
-├── nn/                            # Reusable nn.Module primitives
-│   ├── attention/                 # Attention config, variants, KV cache, layer.py (AttentionLayer)
-│   ├── transformer/                # Encoder/decoder stack, patching, fusions
-│   ├── blocks/                    # Research blocks: TCN, ODE, Fourier, wavelets, xLSTM, recurrent.py (LSTM/GRU enc-dec)
-│   ├── heads/                     # Head composition: engine/composer.py (HeadComposer), core/types.py (HeadSpec), blocks/
-│   ├── moe/                       # Experts, routers, feed-forward MoE
-│   ├── routing/                   # Gate/skip routing (GateSkip, MoD)
-│   ├── sequence/                  # mamba/, raven/ alternative sequence backbones
-│   ├── normalization/             # Group/layer/RMS/temporal/RevIN norm modules
-│   ├── embeddings/                # Rotary, ALiBi, positional, time embeddings
-│   ├── residual/                  # Residual connection utilities
-│   └── graph/                     # Graph neural network layers
-│
-├── models/                        # Assembled models + composition APIs
-│   ├── forecasting.py             # ForecastingModel, BaseHead
-│   ├── graph.py                   # GraphForecastingModel
-│   ├── config.py                  # ModelConfig
-│   ├── distillation.py            # DistilledForecastingModel, QuantizedForecastingModel
-│   ├── sequence.py                 # Sequence-model composition
-│   ├── baselines/                 # Named end-to-end models (NBEATS, Informer, Autoformer, TimesNet, …)
-│   ├── kan/                       # Kolmogorov-Arnold Networks: backbone.py, model.py, router.py, poly/ (Chebyshev, Jacobi, …)
-│   └── anomaly/                   # Anomaly-detection applications layer
-│       ├── models/                # TranAD, OmniAnomaly, DAGMM, AnomalyTransformer, PatchTST, diffusion, …
-│       ├── detector.py
-│       ├── online.py
-│       ├── calibration.py
-│       └── windows.py
-│
-├── training/                      # Training orchestration
-│   ├── trainer.py                 # Trainer
-│   ├── config.py                  # TrainingConfig
-│   ├── sampling.py                # ScheduledSampling
-│   ├── losses.py
-│   ├── conformal/                 # Conformal prediction
-│   ├── optimization/              # nas.py, llrd.py (layer-wise LR decay)
-│   ├── execution/
-│   ├── state/
-│   └── telemetry/
-│
-├── evaluation/                    # Evaluation and benchmarking
-│   ├── model_evaluator.py         # ModelEvaluator
-│   ├── benchmark.py
-│   └── visualization.py
-│
-├── quantization/                  # FakeQuantize, DynamicQuantizedLinear
-│
-├── tuning/                        # Data-driven hyperparameter recommendations (TransformerTuner)
-│
-├── data/                          # Dataset and dataloader helpers
-│   ├── dataset.py                 # TimeSeriesDataset, create_dataloaders
-│   └── csv.py
-│
-├── processing/                    # Time-series preprocessing and filtering pipeline (TimeSeriesHandler)
-│   ├── core/
-│   ├── transforms/                # Time-series transformations, time features, windowing
-│   ├── filters/                   # Savitzky-Golay, Kalman (pure NumPy), LOESS, Wiener, EMD, SSA, STL
-│   ├── auto_filter/                # Optuna-based auto-tuning (auto_filter, tune_weights, tune_filter)
-│   └── tools/
-│
-├── studio/                        # Node/spec auto-discovery backend for apps/webui
-│   ├── auto_spec.py
-│   ├── discovery.py
-│   └── node_spec.py
-│
-├── studio_server.py               # Local HTTP server for the built Studio frontend
-├── __init__.py                    # Package initialization (lazy public exports)
-└── README.md                      # This file
-```
+Start in `models/` for assembled forecasters, `nn/` for reusable PyTorch layers,
+and `training/` for fitting and checkpointing. The contributor map describes
+the data, processing, feature, evaluation, and acceleration packages and their
+relationships. [Repository map](../../docs/reference/repository-map.md)
 
 ## Filter organization
 
@@ -174,9 +89,9 @@ from foreblocks.ops.attention import triton_apply_rope, triton_paged_decode
 from foreblocks.kernels.normalization.rms_norm import rms_norm
 from foreblocks.kernels.activations.swiglu import swiglu_gate
 from foreblocks.ops.mamba import (
-    causal_conv1d,
-    mamba2_combined,
-    ssd,
+    causal_depthwise_conv1d,
+    mamba2_split_conv1d_scan_combined,
+    chunked_ssd_forward,
 )
 ```
 

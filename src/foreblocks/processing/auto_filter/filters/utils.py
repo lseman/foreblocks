@@ -9,6 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from foreblocks.processing._statistics import safe_correlation as _safe_corr
+
 
 def _as_series(
     values: np.ndarray, index: pd.Index, name: str | None = None
@@ -46,16 +48,6 @@ def _valid_odd_window(n: int, preferred: int, minimum: int = 3) -> int:
     if w > n:
         w = n if n % 2 == 1 else n - 1
     return max(w, 1)
-
-
-def _safe_corr(x: np.ndarray, y: np.ndarray) -> float:
-    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
-    if x.size < 2:
-        return 0.0
-    if np.isclose(np.std(x), 0.0) or np.isclose(np.std(y), 0.0):
-        return 0.0
-    c = np.corrcoef(x, y)[0, 1]
-    return 0.0 if np.isnan(c) else float(c)
 
 
 def _autocorr(x: np.ndarray, lag: int) -> float:

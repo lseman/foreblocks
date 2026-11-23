@@ -21,6 +21,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from foreblocks.evaluation import _benchmark_results as results
+
 # NeuralForecast
 from neuralforecast import NeuralForecast
 from neuralforecast.models import (
@@ -671,55 +673,14 @@ class NPTimeseriesNFBenchmark:
         )
 
     def summarize(self) -> None:
-        """Pretty-print both tables + brief best-model summary."""
-        if self.metrics_normalized is None or self.metrics_original is None:
-            print("Run the benchmark first with .run().")
-            return
-
-        print("\n" + "=" * 80)
-        print("RESULTS (Normalized Space)")
-        print("=" * 80)
-        print(self.metrics_normalized.to_string(float_format=lambda x: f"{x:,.4f}"))
-
-        print("\n" + "=" * 80)
-        print("RESULTS (Original Scale)")
-        print("=" * 80)
-        print(self.metrics_original.to_string(float_format=lambda x: f"{x:,.4f}"))
-
-        try:
-            best_norm = self.metrics_normalized.index[0]
-            best_orig = self.metrics_original.index[0]
-            print("\n" + "=" * 80)
-            print("BEST MODELS")
-            print("=" * 80)
-            print(
-                f"Normalized: {best_norm}  "
-                f"(RMSE={self.metrics_normalized.loc[best_norm, 'RMSE']:.4f})"
-            )
-            print(
-                f"Original:   {best_orig}  "
-                f"(RMSE={self.metrics_original.loc[best_orig, 'RMSE']:.4f})"
-            )
-        except Exception:
-            pass
+        results.summarize(
+            self.metrics_normalized, self.metrics_original
+        )
 
     def latex_table_original(self) -> str:
-        """Return a LaTeX table string for original-scale results."""
-        if self.metrics_original is None or self.metrics_original.empty:
-            return "% Run the benchmark first."
-        df = self.metrics_original.copy()
-        lines = []
-        lines.append(
-            "Model        & RMSE      & MSE       & MAE       & MAPE      & Time      \\\\"
+        return results.latex_table_original(
+            self.metrics_original
         )
-        lines.append("\\hline")
-        for model in df.index:
-            row = df.loc[model]
-            lines.append(
-                f"{model:16} & {row['RMSE']:.2E} & {row['MSE']:.2E} "
-                f"& {row['MAE']:.2E} & {row['MAPE']:.2E} & {row['Time']:.2E} \\\\"
-            )
-        return "\n".join(lines)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Configuration helpers
@@ -924,25 +885,10 @@ class NPTimeseriesNFBenchmark:
         return v
 
     def _denorm_row_pred(self, uid: str, ds: pd.Timestamp, y_pred_norm: float) -> float:
-        """Inverse transform a single prediction using stored params and its time index."""
-        p = self._norm_params[uid]
-        val = float(y_pred_norm)
-
-        # de-normalize
-        if self.normalize:
-            val = val * float(p["std"]) + float(p["mean"])
-
-        # add back trend evaluated at absolute time index
-        if self.detrend and p["trend"] is not None:
-            # absolute index for this timestamp
-            t_idx = int(
-                (ds - self._date_index[0]) / pd.tseries.frequencies.to_offset(self.freq)
-            )
-            slope, intercept = p["trend"]
-            trend = slope * t_idx + intercept
-            val = val + trend
-
-        return float(val)
+        return results.denormalize_prediction(
+            self._norm_params[uid], ds, y_pred_norm, normalize=self.normalize,
+            detrend=self.detrend, date_index=self._date_index, freq=self.freq
+        )
 
     def _denorm_vectorized(
         self, unique_id: pd.Series, ds: pd.Series, y_pred_norm: pd.Series

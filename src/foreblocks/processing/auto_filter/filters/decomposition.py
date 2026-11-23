@@ -12,6 +12,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from foreblocks.processing.auto_filter.filters.classical import moving_average
 from foreblocks.processing.auto_filter.filters.utils import (
     _as_series,
     _resize_to_match_length,
@@ -170,11 +171,3 @@ def ceemdan_vmd_filter(
         vmd_recon = ceemdan_recon
 
     return _as_series(vmd_recon + grand_mean, ts.index, name="ceemdan_vmd")
-
-
-# Fallback for moving_average used in ceemdan_vmd_filter
-def moving_average(ts: pd.Series, window: int = 7) -> pd.Series:
-    from foreblocks.processing.auto_filter.filters.utils import _valid_odd_window
-
-    window = _valid_odd_window(len(ts), window, minimum=3)
-    return ts.rolling(window=window, center=True, min_periods=1).mean()

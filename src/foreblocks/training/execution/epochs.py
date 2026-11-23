@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+from itertools import islice
 from typing import Any
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 
 from foreblocks.training.execution.batch import (
     loader_len,
@@ -126,7 +127,10 @@ def backward_step(
     amp_enabled: bool,
     scheduler: Any = None,
 ) -> None:
-    loss = loss / config.gradient_accumulation_steps
+    steps = config.gradient_accumulation_steps
+    group_start = batch_idx - batch_idx % steps
+    group_size = min(steps, total_batches - group_start) if total_batches else steps
+    loss = loss / group_size
 
     clip_val = getattr(config, "gradient_clip_val", None)
 
@@ -213,13 +217,27 @@ def train_epoch(
         for p in nas_helper.get_alpha_parameters():
             p.requires_grad_(False)
 
+    if config.gradient_accumulation_steps < 1:
+        raise ValueError("gradient_accumulation_steps must be positive")
     total_batches = loader_len(train_loader)
-    if total_batches is None:
-        total_batches = 0
+    if total_batches is None or isinstance(getattr(train_loader, "dataset", None), IterableDataset):
+        # Iterable loader lengths can be estimates. Buffer one accumulation
+        # group so its divisor and final optimizer step use the actual count.
+        def batches_with_group_end():
+            iterator = iter(train_loader)
+            end = 0
+            while group := list(islice(iterator, config.gradient_accumulation_steps)):
+                end += len(group)
+                for batch in group:
+                    yield batch, end
 
-    batch_idx = 0
+        batches = batches_with_group_end()
+    else:
+        batches = ((batch, total_batches) for batch in train_loader)
+
+    batch_idx = -1
     try:
-        for batch_idx, batch in enumerate(train_loader):
+        for batch_idx, (batch, group_end) in enumerate(batches):
             X, y, time_feat, graph_kwargs = unpack_batch(batch)
             X, y, time_feat, graph_kwargs = move_batch_to_device(
                 X, y, time_feat, graph_kwargs, device
@@ -251,7 +269,7 @@ def train_epoch(
                 config,
                 optimizer,
                 batch_idx,
-                total_batches,
+                group_end,
                 scaler,
                 amp_enabled,
                 scheduler=scheduler,
@@ -267,8 +285,8 @@ def train_epoch(
                 p.requires_grad_(True)
 
     avg_components = {k: float(np.mean(v)) for k, v in all_components.items()}
-    batches_seen = max(1, batch_idx + 1) if "batch_idx" in locals() else 1
-    return total_loss / batches_seen, avg_components, batches_seen
+    batches_seen = batch_idx + 1
+    return total_loss / max(1, batches_seen), avg_components, batches_seen
 
 
 def evaluate(

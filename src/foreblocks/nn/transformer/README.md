@@ -15,6 +15,73 @@ memory = encoder(x).last_hidden_state
 forecast = decoder(tgt, memory).last_hidden_state
 ```
 
+## Compose an encoder from blocks
+
+Each block describes one layer. Reusing a description creates independent
+parameters at each depth. For example, this encoder alternates two recurrent
+mixers with a grouped-query attention layer that routes tokens to experts.
+
+```python
+from foreblocks.nn import transformer as tf
+
+local = tf.EncoderBlock(
+    mixer=tf.GatedDeltaNet(heads=4),
+    ffn=tf.SwiGLU(hidden_dim=256),
+)
+global_block = tf.EncoderBlock(
+    mixer=tf.GQA(heads=8, kv_heads=2, position=tf.RoPE(), qk_norm=True),
+    ffn=tf.MoE(expert=tf.SwiGLU(hidden_dim=512), num_experts=8, top_k=2),
+    norm=tf.RMSNorm(),
+    residual=tf.Residual(),
+)
+encoder = tf.TransformerEncoder(
+    input_size=5, d_model=128, patching="none",
+    blocks=[local, local, global_block] * 2,
+)
+```
+
+`hidden_dim` is the actual SwiGLU projection width. The list sets layer count
+and order. Each block owns its mixer, FFN, normalization and residual choices.
+Stack options such as dropout and checkpointing apply across layers. Final
+normalization uses the last block's norm. Use the same residual layout
+throughout a stack: `Residual()`, `MHC(streams=4)` or `AttnRes()`.
+
+Save the architecture with `encoder.config.to_dict()` and weights with
+`encoder.state_dict()`. Rebuild with `TransformerConfig.from_dict(...)`
+before loading the weights. The earlier `Block` name is an alias for `EncoderBlock`.
+
+## Connect an encoder and decoder
+
+A decoder block has a causal target mixer and a separate cross-attention
+module that reads encoder memory. The two can have different head counts.
+
+```python
+import torch
+from foreblocks.nn import transformer as tf
+
+encoder = tf.TransformerEncoder(
+    input_size=5, d_model=64, patching="none",
+    blocks=[tf.EncoderBlock(tf.GQA(4, 2), tf.SwiGLU(128))],
+)
+decoder = tf.TransformerDecoder(
+    input_size=1, output_size=1, d_model=64,
+    blocks=[tf.DecoderBlock(
+        mixer=tf.GatedDeltaNet(heads=4),
+        cross_attention=tf.GQA(heads=8, kv_heads=2),
+        ffn=tf.SwiGLU(128),
+    )],
+)
+model = tf.EncoderDecoder(encoder, decoder, target_len=12)
+history = torch.randn(3, 96, 5)
+forecast = model.eval()(history)  # [3, 12, 1]
+```
+
+During training, `model(history, targets)` supports teacher forcing. The
+connector projects the history prompt into decoder input space, encodes the
+history once, and feeds each prediction or previous target into the next step.
+A learned projection connects stacks with different model widths. For direct
+control over decoder inputs, call `decoder(prefix, encoder(history).last_hidden_state)`.
+
 ## Directory structure
 
 ```text

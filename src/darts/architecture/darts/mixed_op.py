@@ -78,6 +78,7 @@ class MixedOp(nn.Module):
         self.performance_ema_decay = performance_ema_decay
         self.pc_ratio = float(min(max(pc_ratio, 0.0), 1.0))
         self.pc_darts_enabled = False
+        self.narrow_candidate_execution = False
 
         # Operation map and family grouping, derived from the central
         # registry (op_registry.py) rather than duplicated literals.
@@ -303,7 +304,8 @@ class MixedOp(nn.Module):
             group_weights = group_weights.clamp_min(self.group_min_prob)
             group_weights = group_weights / group_weights.sum()
 
-        candidates = []
+        group_scores = []
+        selected_ops = []
         for group_name, group_weight in zip(self.group_names, group_weights):
             op_logits = self.op_alphas[group_name]
             if self.adaptive_sampling and self.training:
@@ -329,14 +331,13 @@ class MixedOp(nn.Module):
                 op_scores = op_scores.pow(self.competition_power)
                 op_scores = op_scores / op_scores.sum().clamp_min(1e-8)
 
-            for op_idx, op_score in zip(self.group_op_indices[group_name], op_scores):
-                candidates.append((op_idx, group_weight * op_score))
+            selected_ops.extend(self.group_op_indices[group_name])
+            group_scores.append(group_weight * op_scores)
 
-        if not candidates:
+        if not group_scores:
             return []
 
-        selected_ops = [op_idx for op_idx, _ in candidates]
-        weight_tensor = torch.stack([w for _, w in candidates]).clamp_min(1e-8)
+        weight_tensor = torch.cat(group_scores).clamp_min(1e-8)
 
         if top_k is not None and len(selected_ops) > top_k:
             top_vals, top_idx = torch.topk(weight_tensor, top_k)
@@ -417,34 +418,15 @@ class MixedOp(nn.Module):
         number of candidates (``len(logits)``) so that the total gradient
         magnitude remains stable regardless of search-space size.
         """
-        if self.use_hierarchical and hasattr(self, "group_names"):
-            # Flatten to a joint logit vector: group_logit[g] + op_logit[g][k].
-            # This approximates sampling from the joint product distribution.
-            all_logits: list[torch.Tensor] = []
-            all_global_indices: list[int] = []
-            for g_idx, group_name in enumerate(self.group_names):
-                g_logit = self.group_alphas[g_idx]
-                op_logits = self.op_alphas[group_name]
-                for k, global_idx in enumerate(self.group_op_indices[group_name]):
-                    all_logits.append(g_logit + op_logits[k])
-                    all_global_indices.append(global_idx)
-            logits = torch.stack(all_logits)
+        if self.use_hierarchical:
+            logits = self._hierarchical_probability_vector().float().log()
         else:
             logits = self._alphas
-            all_global_indices = list(range(len(self.available_ops)))
 
         tau = max(self.op_temperature, 1e-3)
-        # Sample Gumbel noise and compute soft probabilities.
-        gumbels = -torch.log(
-            -torch.log(torch.rand_like(logits).clamp_(1e-10, 1 - 1e-10))
-        )
-        soft = F.softmax((logits + gumbels) / tau, dim=0)
-
-        # Hard argmax index — no gradient through this selection.
-        with torch.no_grad():
-            sampled_pos = int(soft.argmax().item())
-
-        op_global_idx = all_global_indices[sampled_pos]
+        soft = F.gumbel_softmax(logits, tau=tau, hard=False, dim=0)
+        sampled_pos = int(soft.detach().argmax().item())
+        op_global_idx = sampled_pos
         out = self.ops[op_global_idx](x)
         out = self._ensure_output_dim(out)
 
@@ -461,7 +443,10 @@ class MixedOp(nn.Module):
         # in the backward pass.  Divide by candidate count so total gradient
         # magnitude stays stable regardless of search-space size.
         n_candidates = max(len(logits), 1)
-        scale = soft[sampled_pos] / (soft[sampled_pos].detach() * n_candidates)
+        probability = soft[sampled_pos]
+        scale = 1 + (probability - probability.detach()) / (
+            probability.detach() * n_candidates
+        )
         return out * scale
 
     def forward(self, x: torch.Tensor, top_k: int | None = None) -> torch.Tensor:
@@ -506,28 +491,32 @@ class MixedOp(nn.Module):
         else:
             drop_mask = [False] * len(op_weights)
 
+        sampled_input = None
+        if channel_mask is not None and self.narrow_candidate_execution:
+            sampled_input = x.index_select(-1, indices)
+        masked_input = None
         for path_idx, (op_idx, weight) in enumerate(op_weights):
             if drop_mask[path_idx]:
                 continue
 
-            op_input = (
-                x * channel_mask.reshape(1, 1, -1)
-                if channel_mask is not None
-                else x
-            )
-
+            op = self.ops[op_idx]
             try:
-                out = self.ops[op_idx](op_input)
+                if sampled_input is not None and getattr(op, "supports_partial_channels", False):
+                    update = op(sampled_input, channels=indices)
+                    out = x.index_copy(-1, indices, update.to(x.dtype))
+                elif channel_mask is not None:
+                    if masked_input is None:
+                        masked_input = x * channel_mask
+                    out = self._ensure_output_dim(op(masked_input))
+                    out = out * channel_mask + x * (1.0 - channel_mask)
+                else:
+                    out = self._ensure_output_dim(op(x))
             except Exception as e:
                 op_name = self.available_ops[op_idx]
                 raise RuntimeError(
                     f"MixedOp forward failed for operation '{op_name}' (index={op_idx})"
                 ) from e
 
-            out = self._ensure_output_dim(out)
-            if channel_mask is not None:
-                mask = channel_mask.reshape(1, 1, -1)
-                out = out * mask + x * (1.0 - mask)
             outputs.append(out * weight)
             # Accumulate the normaliser as a tensor; dividing once at the end
             # avoids a per-op ``.item()`` sync (see DropPath note above).

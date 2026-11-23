@@ -94,6 +94,8 @@ def _configure_pc_darts(model: nn.Module, engine_cfg: Any) -> None:
             m.op_gdas = False  # PC-DARTS uses dense forward, not GDAS
         if hasattr(m, "pc_darts_enabled"):
             m.pc_darts_enabled = bool(engine_cfg.pc_darts.enable_partial_channels)
+        if hasattr(m, "narrow_candidate_execution"):
+            m.narrow_candidate_execution = engine_cfg.pc_darts.narrow_candidate_execution
     # Normalize competing incoming edges as described by PC-DARTS.
     for cell in getattr(model, "cells", []):
         if not hasattr(cell, "edges"):
@@ -331,6 +333,7 @@ def build_engine_config(
         "pc_darts": {
             "enable_partial_channels": True,
             "enable_edge_normalization": True,
+            "narrow_candidate_execution": False,
         },
         "bi_darts": {
             "bidirectional_training": True,

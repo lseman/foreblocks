@@ -21,6 +21,12 @@ from torch.utils.data import DataLoader, Dataset
 
 
 class TimeSeriesDataset(Dataset):
+    """Index prepared inputs and optional targets along their shared sample axis.
+
+    Samples are X or (X, y). With time features, each sample pairs that result
+    with its time-feature tensor. Inputs and targets are float32.
+    """
+
     def __init__(
         self,
         X: np.ndarray,
@@ -56,6 +62,7 @@ def create_dataloaders(
     time_feat_train: np.ndarray | None = None,
     time_feat_val: np.ndarray | None = None,
 ) -> tuple[DataLoader, DataLoader | None]:
+    """Batch prepared training and optional validation arrays, shuffling only training by default."""
     train_loader = DataLoader(
         TimeSeriesDataset(X_train, y_train, time_feat_train),
         batch_size=batch_size,

@@ -14,6 +14,8 @@ Core API:
 
 import torch
 
+from foreblocks.kernels._launch import num_warps_for_block as _num_warps_for_block
+
 try:
     import triton
     import triton.language as tl
@@ -52,16 +54,6 @@ def _block_size_for_num_cols(n_cols: int, element_size: int) -> int:
             f"for element size {element_size}; got {n_cols}."
         )
     return block_size
-
-
-def _num_warps_for_block(block_size: int) -> int:
-    if block_size <= 64:
-        return 2
-    if block_size <= 512:
-        return 4
-    if block_size <= 2048:
-        return 8
-    return 16
 
 
 # =============================== Triton kernels ===============================

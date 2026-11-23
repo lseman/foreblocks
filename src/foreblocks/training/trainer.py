@@ -22,7 +22,7 @@ import copy
 import random
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -32,8 +32,6 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
 from foreblocks.training.config import TrainingConfig
-from foreblocks.evaluation import visualization as _viz
-from foreblocks.evaluation.model_evaluator import ModelEvaluator
 from foreblocks.training.conformal import workflows as _conf
 from foreblocks.training.execution import epochs as training_loop
 from foreblocks.training.losses import LossComputer
@@ -47,12 +45,8 @@ from foreblocks.training.telemetry import mltracker as _log
 
 # ── Optional imports ────────────────────────────────────────────────────
 
-try:
+if TYPE_CHECKING:
     import matplotlib.pyplot as plt
-    from matplotlib.colors import ListedColormap
-except ImportError:
-    plt = None  # type: ignore[assignment]
-    ListedColormap = None  # type: ignore[assignment]
 
 try:
     from foreblocks.nn.moe.layer import MoEFeedForwardDMoE
@@ -76,6 +70,12 @@ except Exception:
 
 
 class Trainer:
+    """Fit a PyTorch forecast model and track training and validation losses.
+
+    Pass batched inputs and targets to train(). Use evaluate() for a loss on
+    held-out batches and save()/load() to persist model and optimizer state.
+    """
+
     # ── Device resolution ──────────────────────────────────────────────
 
     @staticmethod
@@ -172,64 +172,13 @@ class Trainer:
         self.nas_helper = NASHelper(self.model, self.config)
 
         if getattr(self.config, "train_nas", False) and self.nas_helper.has_nas:
-            _weight_params = self.nas_helper.get_weight_parameters()
-            _alpha_params = self.nas_helper.get_alpha_parameters()
-            self._alpha_params = _alpha_params
-            self._weight_params = _weight_params
-            print(
-                f"[NAS] Training with NAS. Found {len(_alpha_params)} architecture parameters."
-            )
-            # LLRD only applies to weight params, not alpha params
-            if getattr(self.config, "use_llrd", False):
-                from foreblocks.training.optimization.llrd import (
-                    get_llrd_param_groups,
-                )
-
-                param_groups = get_llrd_param_groups(
-                    self.model,
-                    base_lr=self.config.learning_rate,
-                    weight_decay=self.config.weight_decay,
-                    decay=getattr(self.config, "llrd_decay", 0.9),
-                )
-                # Filter to only include NAS weight params
-                weight_param_ids = {id(p) for p in _weight_params}
-                param_groups = [
-                    {
-                        **g,
-                        "params": [p for p in g["params"] if id(p) in weight_param_ids],
-                    }
-                    for g in param_groups
-                ]
-                param_groups = [g for g in param_groups if g["params"]]
-            else:
-                param_groups = _weight_params
-            self.optimizer = optimizer or torch.optim.AdamW(
-                param_groups,
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay,
-            )
+            self._weight_params = self.nas_helper.get_weight_parameters()
+            self._alpha_params = self.nas_helper.get_alpha_parameters()
+            print(f"[NAS] Training with NAS. Found {len(self._alpha_params)} architecture parameters.")
         else:
-            self._alpha_params: list[torch.nn.Parameter] = []
             self._weight_params = list(self.model.parameters())
-            # LLRD: build param groups by layer depth
-            if getattr(self.config, "use_llrd", False):
-                from foreblocks.training.optimization.llrd import (
-                    get_llrd_param_groups,
-                )
-
-                param_groups = get_llrd_param_groups(
-                    self.model,
-                    base_lr=self.config.learning_rate,
-                    weight_decay=self.config.weight_decay,
-                    decay=getattr(self.config, "llrd_decay", 0.9),
-                )
-            else:
-                param_groups = self.model.parameters()
-            self.optimizer = optimizer or torch.optim.AdamW(
-                param_groups,
-                lr=self.config.learning_rate,
-                weight_decay=self.config.weight_decay,
-            )
+            self._alpha_params = []
+        self.optimizer = optimizer or self._create_optimizer()
 
         # ── Scheduler ──────────────────────────────────────────────────
         self.scheduler = self._create_scheduler()
@@ -366,8 +315,24 @@ class Trainer:
     # ── Optimizer & scheduler factories ────────────────────────────────
 
     def _create_optimizer(self) -> torch.optim.Optimizer:
+        """Build AdamW for model weights, optionally decaying rates across layers."""
+        params = self._weight_params
+        if self.config.use_llrd:
+            from foreblocks.training.optimization.llrd import get_llrd_param_groups
+
+            params = get_llrd_param_groups(
+                self.model, base_lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay, decay=self.config.llrd_decay,
+            )
+            if self._alpha_params:
+                alpha_ids = {id(p) for p in self._alpha_params}
+                params = [
+                    {**group, "params": [p for p in group["params"] if id(p) not in alpha_ids]}
+                    for group in params
+                ]
+                params = [group for group in params if group["params"]]
         return torch.optim.AdamW(
-            self.model.parameters(),
+            params,
             lr=self.config.learning_rate,
             weight_decay=self.config.weight_decay,
         )
@@ -784,6 +749,8 @@ class Trainer:
         batch_size: int = 256,
         graph_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, float]:
+        from foreblocks.evaluation.model_evaluator import ModelEvaluator
+
         evaluator = ModelEvaluator(self)
         result = evaluator.compute_metrics(
             X_val, y_val, batch_size, graph_kwargs=graph_kwargs
@@ -803,6 +770,8 @@ class Trainer:
         batch_size: int = 256,
         graph_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        from foreblocks.evaluation.model_evaluator import ModelEvaluator
+
         evaluator = ModelEvaluator(self)
         return evaluator.cross_validation(
             X, y, n_windows, horizon, step_size, batch_size, graph_kwargs=graph_kwargs
@@ -825,6 +794,8 @@ class Trainer:
         series_color: str = "blue",
         save_path: str | None = None,
     ) -> plt.Figure:  # type: ignore[name-defined]
+        from foreblocks.evaluation import visualization as _viz
+
         _viz._require_matplotlib()
         fig = _viz.plot_prediction(
             self,
@@ -864,6 +835,8 @@ class Trainer:
         min_count: int = 1,
         do_update: bool = False,
     ) -> plt.Figure:  # type: ignore[name-defined]
+        from foreblocks.evaluation import visualization as _viz
+
         _viz._require_matplotlib()
         return _viz.plot_intervals(
             self,
@@ -894,6 +867,8 @@ class Trainer:
         show: bool = True,
         sequential: bool | None = None,
     ) -> plt.Figure:  # type: ignore[name-defined]
+        from foreblocks.evaluation import visualization as _viz
+
         _viz._require_matplotlib()
         return _viz.plot_violation_heatmap_streaming(
             self,

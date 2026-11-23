@@ -38,14 +38,21 @@ class TransformerDecoderLayer(
 
         # Recurrent/linear backends are self-attention only, so cross-attention
         # falls back to standard softmax attention for them.
-        cross_name = (
-            config.attention
-            if config.attention in ATTENTION_VARIANTS.names()
-            else "standard"
-        )
-        self.cross_attn = MultiAttention(
-            replace(config, attention=cross_name).attention_config(cross=True)
-        )
+        cross = config.cross_attention
+        if cross is None:
+            cross_name = (
+                config.attention
+                if config.attention in ATTENTION_VARIANTS.names()
+                else "standard"
+            )
+            cross_config = replace(config, attention=cross_name)
+        else:
+            cross_config = replace(
+                config, attention="standard", n_heads=cross.heads,
+                n_kv_heads=cross.kv_heads, position="rope", rope_base=cross.position.base,
+                attention_options={"use_mla": False, "qk_norm": cross.qk_norm},
+            )
+        self.cross_attn = MultiAttention(cross_config.attention_config(cross=True))
 
         self.self_attn_norm = self._norm_wrapper()
         self.cross_attn_norm = self._norm_wrapper()

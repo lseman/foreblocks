@@ -12,12 +12,12 @@ This page gives a quick path through the repository for contributors and power u
 
 | Path | Purpose |
 | --- | --- |
-| [`README.md`](https://github.com/lseman/foreblocks/blob/main/README) | GitHub landing page |
+| [`README.md`](https://github.com/lseman/foreblocks/blob/main/README.md) | GitHub landing page |
 | [`.github/scripts/compile_docs.py`](https://github.com/lseman/foreblocks/blob/main/.github/scripts/compile_docs.py) | Python compiler and navigation for the `/docs/` site |
 | `site/landing/` | Hand-authored source for the published site root (`site/` itself is otherwise CI-generated build output, gitignored) |
 | `docs/` | Markdown source for the versioned documentation site |
 | `examples/` | Notebooks and runnable examples |
-| `apps/` | Frontends: `apps/webui/` (Studio node editor), `apps/mltracker-dashboard/` (MLTracker dashboard v2) |
+| `apps/` | Frontends: `apps/studio/` (docs playground), `apps/webui/` (Studio node editor), `apps/mltracker-dashboard/` (MLTracker dashboard v2) |
 | `src/foreblocks/` | Main forecasting library |
 | `src/foretools/` | Companion tooling |
 | `src/darts/` | Neural architecture search (DARTS) |
@@ -33,11 +33,13 @@ This page gives a quick path through the repository for contributors and power u
 | `foreblocks/ops/` | Tensor operations and execution dispatch on top of `kernels/`: `attention/` (fused RoPE, paged/chunked decode), `mamba/` (SSD, conv1d) |
 | `foreblocks/integrations/` | Optional external backends: `fla/` (flash-linear-attention adapters — delta rule, gated deltanet, GLA, RAVEN), `softpick.py` |
 | `foreblocks/nn/` | Reusable `nn.Module` building blocks: `attention/`, `transformer/`, `blocks/`, `heads/`, `moe/`, `routing/`, `sequence/` (`mamba/`, `raven/`), `normalization/`, `embeddings/`, `residual/`, `graph/` |
-| `foreblocks/models/` | Assembled models + composition APIs: `forecasting.py` (`ForecastingModel`), `graph.py` (`GraphForecastingModel`), `config.py` (`ModelConfig`), `sequence.py`, `distillation.py`, `baselines/` (NBEATS, Informer, Autoformer, TimesNet, …), `kan/` (Kolmogorov-Arnold backbone), `anomaly/` (anomaly-detection applications layer) |
+| `foreblocks/models/` | Assembled models + composition APIs: `forecasting.py` (`ForecastingModel`), `graph.py` (`GraphForecastingModel`), `config.py` (`ModelConfig`), `sequence.py`, `distillation.py`, `baselines/` (NBEATS, Informer, Autoformer, TimesNet, …), `kan/` (Kolmogorov-Arnold backbone), `anomaly/` (anomaly detection), `discharge/` (discharge classification) |
 | `foreblocks/training/` | Training orchestration: `trainer.py` (`Trainer`), `config.py` (`TrainingConfig`), `losses.py`, `sampling.py`, `conformal/`, `optimization/`, `execution/`, `state/`, `telemetry/` |
 | `foreblocks/evaluation/` | `model_evaluator.py` (`ModelEvaluator`), `benchmark.py`, `visualization.py` |
 | `foreblocks/quantization/` | Quantization configs and modules (`FakeQuantize`, `DynamicQuantizedLinear`) |
-| `foreblocks/data/` | Dataset and dataloader helpers (`dataset.py`, `csv.py`) |
+| `foreblocks/data/` | Dataset and dataloader helpers, CSV ingestion, and window construction (`windowing.py`) |
+| `foreblocks/features/` | Signal descriptors, ROCKET-family transforms and classifiers |
+| `foreblocks/tuning/` | Transformer configuration search and signal analysis |
 | `foreblocks/processing/` | Preprocessing, filtering, imputation, and sequence construction (`TimeSeriesHandler`): `core/`, `filters/`, `auto_filter/`, `transforms/`, `tools/` |
 | `foreblocks/studio/` | Studio node/spec auto-discovery backend consumed by `apps/webui` |
 | `foreblocks/studio_server.py` | Local HTTP server for the built Studio frontend (`apps/webui/dist`) |
@@ -60,7 +62,7 @@ Conventions:
 - `nn/blocks/` holds research blocks; `models/baselines/` holds the named end-to-end models.
 - `models/anomaly/` is nested under `models/` because it's an applications layer built on `models/`+`nn/`, not a foundational tier.
 - `studio/` avoids the naming collision with the `apps/webui` frontend it serves specs to.
-- Frontend assets under `apps/webui/dist/` and `apps/mltracker-dashboard/dist/`: package only built `dist` assets; keep `node_modules`, runtime databases, and local tracker artifacts out of git and release archives.
+- The local Studio launcher reads built assets from `apps/webui/dist/` in a source checkout.
 - `src/mltracker/mltracker_data/`: prefer `.foreblocks/mltracker_data`, `~/.foreblocks/mltracker_data`, or an explicit user-configured run directory rather than the package tree.
 
 ## `foretools/`
@@ -91,7 +93,7 @@ distribution (no entry in `pyproject.toml`, not importable as `foreblocks.*`):
 
 | Task | Entry point |
 | --- | --- |
-| Training a baseline model | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README), [Getting Started](../getting-started) |
+| Training a baseline model | [`README.md`](https://github.com/lseman/foreblocks/blob/main/README.md), [Getting Started](../getting-started) |
 | Understanding architecture composition | [`src/foreblocks/models/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/models) |
 | Working with graph forecasting | [`src/foreblocks/models/graph.py`](https://github.com/lseman/foreblocks/blob/main/src/foreblocks/models/graph.py), [`src/foreblocks/nn/graph/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/nn/graph) |
 | Writing Triton kernels | [`src/foreblocks/kernels/`](https://github.com/lseman/foreblocks/tree/main/src/foreblocks/kernels) |

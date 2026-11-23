@@ -15,7 +15,7 @@ constructor arguments, never config fields, so a config is always plain data.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Any, Literal
 
@@ -27,6 +27,8 @@ from foreblocks.nn.attention.config import (
     AttentionShapeConfig,
     AttentionVariantConfig,
 )
+
+from .blocks import Block, DecoderBlock, GQA, RoPE
 
 AttentionPattern = Literal["uniform", "hybrid", "3to1"]
 Position = Literal["rope", "alibi", "sinusoidal", "learnable", "none"]
@@ -168,7 +170,45 @@ class TransformerConfig:
     label_len: int = 0
     kv_cache: KVCache = "auto"
 
+    blocks: Sequence[Block] | None = None
+    cross_attention: GQA | None = None
+
     def __post_init__(self) -> None:
+        if isinstance(self.cross_attention, Mapping):
+            values = dict(self.cross_attention)
+            values["position"] = RoPE(**values["position"])
+            object.__setattr__(self, "cross_attention", GQA(**values))
+        if self.cross_attention is not None and self.d_model % self.cross_attention.heads:
+            raise ValueError("cross_attention heads must divide d_model")
+        if self.blocks is not None:
+            blocks = tuple(
+                Block.from_dict(b) if isinstance(b, Mapping) else b for b in self.blocks
+            )
+            if not blocks or any(not isinstance(b, Block) for b in blocks):
+                raise ValueError(
+                    "blocks must be a nonempty sequence of Block descriptions"
+                )
+            if self.share_layers or self.attention_pattern != "uniform":
+                raise ValueError(
+                    "blocks defines independent layers and their attention order"
+                )
+            if self.variate_attention or self.moe_latent:
+                raise ValueError(
+                    "explicit blocks require token attention and full-width FFNs"
+                )
+            if any(b.residual != blocks[0].residual for b in blocks):
+                raise ValueError("all blocks must use the same residual stream layout")
+            for block in blocks:
+                if self.d_model % block.mixer.heads or block.norm.eps <= 0:
+                    raise ValueError(
+                        "each block requires heads dividing d_model and a positive norm epsilon"
+                    )
+            object.__setattr__(self, "blocks", blocks)
+            object.__setattr__(self, "num_layers", len(blocks))
+            # Stack-level reporting and final normalization follow the last block.
+            for name, value in blocks[-1].layer_options().items():
+                if name not in {"moe_options", "attention_options"}:
+                    object.__setattr__(self, name, value)
         object.__setattr__(self, "attention_options", dict(self.attention_options))
         object.__setattr__(self, "moe_options", dict(self.moe_options))
         object.__setattr__(self, "quantiles", tuple(float(q) for q in self.quantiles))
@@ -254,6 +294,10 @@ class TransformerConfig:
 
     def validate_for(self, role: Role) -> None:
         """Checks that depend on whether the config builds an encoder or decoder."""
+        if self.blocks is not None and any(
+            isinstance(block, DecoderBlock) != (role == "decoder") for block in self.blocks
+        ):
+            raise ValueError(f"{role} stack requires {role.title()}Block descriptions")
         if role == "decoder":
             if self.variate_attention:
                 raise ValueError("variate_attention is only supported by the encoder")
@@ -269,6 +313,8 @@ class TransformerConfig:
 
     def layer_attention(self, index: int) -> str:
         """Attention backend of the layer at depth ``index``."""
+        if self.blocks is not None:
+            return self.blocks[index].attention_name
         if self.attention_pattern == "uniform":
             return self.attention
         if self.attention_pattern == "hybrid":
@@ -282,6 +328,13 @@ class TransformerConfig:
     ) -> TransformerConfig:
         """The uniform config of the layer at depth ``index``."""
         changes: dict[str, Any] = {}
+        if self.blocks is not None:
+            block = self.blocks[index]
+            changes.update(block.layer_options(), blocks=None)
+            if isinstance(block, DecoderBlock):
+                changes["cross_attention"] = block.cross_attention
+            for name in ("attention_options", "moe_options"):
+                changes[name] = {**getattr(self, name), **changes[name]}
         if self.attention_pattern != "uniform":
             changes["attention"] = self.layer_attention(index)
             changes["attention_pattern"] = "uniform"
@@ -330,7 +383,10 @@ class TransformerConfig:
 
     # ---- Serialization --------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if self.blocks is not None:
+            data["blocks"] = [block.to_dict() for block in self.blocks]
+        return data
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> TransformerConfig:

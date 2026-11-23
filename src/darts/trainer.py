@@ -16,6 +16,7 @@ Heavy logic is delegated to focused sub-modules:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import torch
@@ -237,8 +238,9 @@ class DARTSTrainer:
             transformer_ffn_variant=cfg.get("transformer_ffn_variant", "swiglu"),
         ).to(self.device)
 
-    def _create_bilevel_loaders(self, train_loader, seed: int = 42):
-        return create_bilevel_loaders(train_loader, seed=seed)
+    def _create_bilevel_loaders(self, train_loader, seed: int = 42, *, window_stride: int = 1):
+        return create_bilevel_loaders(train_loader, seed=seed, window_stride=window_stride,
+                                     forecast_horizon=getattr(self, "forecast_horizon", 1))
 
     def _plot_training_curve(
         self,
@@ -393,6 +395,9 @@ class DARTSTrainer:
         """
         if train_config is None:
             train_config = DARTSTrainConfig()
+
+        if train_config.bilevel_forecast_horizon is None and not hasattr(model, "forecast_horizon"):
+            train_config = replace(train_config, bilevel_forecast_horizon=self.forecast_horizon)
 
         results = _dl_mod.train_darts_model(
             model,

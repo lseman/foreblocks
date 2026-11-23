@@ -230,7 +230,11 @@ def train_darts_model(
     train_arch_loader = None
     if config.use_bilevel_optimization:
         train_arch_loader, train_model_loader = create_bilevel_loaders(
-            train_loader, seed=config.bilevel_split_seed
+            train_loader, seed=config.bilevel_split_seed,
+            forecast_horizon=(config.bilevel_forecast_horizon
+                              if config.bilevel_forecast_horizon is not None
+                              else getattr(model, "forecast_horizon", 1)),
+            window_stride=config.bilevel_window_stride,
         )
     else:
         train_model_loader = train_loader

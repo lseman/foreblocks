@@ -44,6 +44,9 @@ def _require_matplotlib() -> None:
 
 
 class ModelEvaluator:
+    """Compute forecast metrics and cross-validation results for a configured Trainer.
+    """
+
     def __init__(self, trainer: Trainer):
         self.trainer = trainer
         self.model = trainer.model

@@ -1,9 +1,4 @@
-"""foreblocks.kernels.experimental.attention_kernels.
-
-Package initializer that exposes the public symbols for this namespace.
-It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
-
-"""
+"""Experimental flash-attention operators for training and incremental decoding."""
 
 from foreblocks.kernels.experimental.attention_kernels.src import (
     FlashAttnRMSNorm,

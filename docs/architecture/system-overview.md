@@ -8,12 +8,11 @@ editLink: true
 
 This page explains how the repository is organized at a subsystem level.
 
-## Two layers
+## Python packages
 
-The repository contains two related but distinct layers:
-
-- `foreblocks`: the main forecasting library
-- `foretools`: auxiliary tools for generation, decomposition, and analysis
+The distribution includes four import packages. Use `foreblocks` to build and
+train forecasting models, `darts` for architecture search, `foretools` for
+companion analysis workflows, and `mltracker` for experiment tracking.
 
 ## Core runtime path
 
@@ -50,39 +49,13 @@ from foreblocks import ForecastingModel, Trainer, ModelEvaluator
 
 That boundary is safer than importing deep internal modules unless you are extending the library itself.
 
-## Dependency graph
+## How the packages fit together
 
-```text
-foreblocks (main)
-├── foreblocks/kernels           — Triton/CUDA compute: attention/, mamba/, linear/, normalization/, activations/, graph/
-├── foreblocks/ops                — tensor ops + dispatch on top of kernels/: attention/, mamba/
-├── foreblocks/integrations       — optional external backends: fla/ (flash-linear-attention), softpick
-├── foreblocks/nn                 — attention/, transformer/, blocks/, heads/, moe/, routing/, sequence/, normalization/, embeddings/, graph/
-├── foreblocks/models
-│   ├── forecasting.py            — ForecastingModel
-│   ├── graph.py                  — GraphForecastingModel
-│   ├── baselines/                — NBEATS, Informer, Autoformer, TimesNet, …
-│   ├── kan/                      — Kolmogorov-Arnold Network
-│   └── anomaly/                  — anomaly-detection applications layer
-├── foreblocks/training           — Trainer, config, sampling, conformal, optimization (LLRD, NAS)
-├── foreblocks/evaluation         — ModelEvaluator, benchmarking, metrics
-├── foreblocks/quantization       — FakeQuantize, DynamicQuantizedLinear
-├── foreblocks/studio             — Studio node/spec auto-discovery backend
-├── foreblocks/processing         — TimeSeriesHandler, preprocessing, filtering
-├── mltracker                     — Experiment tracking
-└── darts (standalone)            — Neural architecture search
-
-foretools (companion)
-├── foretools/tsgen           — Synthetic time-series generation
-├── foretools/bohb            — Bayesian hyperparameter search
-├── foretools/decomposition   — emd/ (VMD, EMD-family), ewt/ (Empirical Wavelet Transform)
-├── foretools/tsaug           — AutoDA augmentation
-├── foretools/fengineer       — Feature engineering pipeline
-├── foretools/foreminer       — Changepoint detection & mining
-├── foretools/stats           — mutual information, distance correlation, HSIC, Bayesian Blocks binning
-├── foretools/arima           — ARIMA model utilities
-└── foretools/benchmarking    — benchmarking frameworks
-```
+Forecasting models compose layers from `foreblocks.nn`. Tensor operations in
+`foreblocks.ops` use kernels or optional external backends where available.
+Training and evaluation consume the assembled model. DARTS builds search
+models using some of the same layers and kernels. The contributor map lists
+the source locations for each subsystem. [Repository map](../reference/repository-map.md)
 
 ## Choosing where to start
 

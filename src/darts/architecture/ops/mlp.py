@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from ..common.norms import RMSNorm
 
@@ -53,7 +54,14 @@ class ResidualMLPOp(nn.Module):
             else nn.Identity()
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    supports_partial_channels = True
+
+    def forward(self, x: torch.Tensor, *, channels: torch.Tensor | None = None) -> torch.Tensor:
+        if channels is not None:
+            expand, activation, contract, dropout = self.mlp
+            hidden = activation(F.linear(x, expand.weight.index_select(1, channels)))
+            update = F.linear(hidden, contract.weight.index_select(0, channels))
+            return self.norm.forward_channels(x + dropout(update), channels)
         residual = self.residual_proj(x)
         output = self.mlp(x)
         return self.norm(output + residual)

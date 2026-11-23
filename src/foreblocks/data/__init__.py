@@ -1,15 +1,7 @@
-"""foreblocks.data.
+"""Wrap prepared time-series arrays for PyTorch training.
 
-Dataset loaders and time-series data preprocessing pipelines.
-
-Provides PyTorch Dataset and DataLoader factories for time-series data,
-handling common preprocessing (normalization, windowing, split strategies).
-Used by ForecastingModel.fit() to prepare training batches.
-
-Core API:
-- TimeSeriesDataset: PyTorch dataset for time-series data with windowing and normalization
-- create_dataloaders: factory for creating PyTorch DataLoaders from datasets
-
+Use TimeSeriesDataset for indexed samples and create_dataloaders for paired
+training and validation loaders. Window construction lives in data.windowing.
 """
 
 from foreblocks.data.dataset import TimeSeriesDataset, create_dataloaders

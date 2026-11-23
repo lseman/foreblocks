@@ -40,6 +40,7 @@ class _StandardFeedForwardBlock(nn.Module):
         use_triton: bool = True,
         triton_use_fp16_acc: bool = False,
         triton_use_shared_b: bool = False,
+        swiglu_hidden_dim: int | None = None,
     ):
         super().__init__()
         self.use_swiglu = bool(use_swiglu)
@@ -48,7 +49,7 @@ class _StandardFeedForwardBlock(nn.Module):
         self.triton_use_fp16_acc = bool(triton_use_fp16_acc)
         self.triton_use_shared_b = bool(triton_use_shared_b)
         if self.use_swiglu:
-            swiglu_dim = int(dim_ff * 4 // 3)
+            swiglu_dim = swiglu_hidden_dim if swiglu_hidden_dim is not None else int(dim_ff * 4 // 3)
             self.swiglu_dim = int(swiglu_dim)
             self.w1 = nn.Linear(d_model, swiglu_dim, bias=False)
             self.w2 = nn.Linear(d_model, swiglu_dim, bias=False)
@@ -187,6 +188,7 @@ class FeedForwardBlock(nn.Module):
         moe_router_bias_balance: bool = True,
         moe_router_bias_warmup_steps: int = 0,
         moe_router_bias_min_usage: float = 0.01,
+        swiglu_hidden_dim: int | None = None,
     ):
         super().__init__()
         self.use_moe = bool(use_moe)
@@ -263,6 +265,7 @@ class FeedForwardBlock(nn.Module):
             self.block = _StandardFeedForwardBlock(
                 d_model=d_model,
                 dim_ff=dim_ff,
+                swiglu_hidden_dim=swiglu_hidden_dim,
                 dropout=dropout,
                 use_swiglu=use_swiglu,
                 activation=activation,

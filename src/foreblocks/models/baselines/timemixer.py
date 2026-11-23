@@ -111,7 +111,9 @@ class UpSample(nn.Module):
 # =========================================================
 # 3) Temporal Mixing (MLP across time within a granularity)
 # =========================================================
-class TemporalMix(nn.Module):
+class _ResidualMix(nn.Module):
+    """Apply a normalized residual MLP to the final input dimension."""
+
     def __init__(
         self,
         d_model: int,
@@ -132,14 +134,9 @@ class TemporalMix(nn.Module):
         for i in range(n_layers):
             in_dim = d_model if i == 0 else d_hidden
             layers.append(nn.Linear(in_dim, d_hidden if i < n_layers - 1 else d_model))
-            if i < n_layers - 1:
-                layers.append(nn.GELU() if activation == "gelu" else nn.ReLU())
-                if i > 0 or n_layers > 1:
-                    layers.append(nn.Dropout(dropout))
-            else:
-                layers.append(nn.GELU() if activation == "gelu" else nn.ReLU())
-                if n_layers > 1:
-                    layers.append(nn.Dropout(dropout))
+            layers.append(nn.GELU() if activation == "gelu" else nn.ReLU())
+            if n_layers > 1:
+                layers.append(nn.Dropout(dropout))
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -149,50 +146,14 @@ class TemporalMix(nn.Module):
         return res + out
 
 
-# =========================================================
-# 4) Channel Mixing (MLP across channels)
-# =========================================================
-class ChannelMix(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        n_layers: int = 2,
-        dropout: float = 0.0,
-        expansion: float = 0.5,
-        activation: str = "gelu",
-        norm_type: str = "rms",
-        eps: float = 1e-5,
-    ):
-        super().__init__()
-        self.d_model = d_model
-        d_hidden = max(int(d_model * expansion), 1)
-
-        self.norm = create_norm_layer(norm_type, d_model, eps=eps)
-
-        layers: list[nn.Module] = []
-        for i in range(n_layers):
-            in_dim = d_model if i == 0 else d_hidden
-            layers.append(nn.Linear(in_dim, d_hidden if i < n_layers - 1 else d_model))
-            if i < n_layers - 1:
-                layers.append(nn.GELU() if activation == "gelu" else nn.ReLU())
-                if i > 0 or n_layers > 1:
-                    layers.append(nn.Dropout(dropout))
-            else:
-                layers.append(nn.GELU() if activation == "gelu" else nn.ReLU())
-                if n_layers > 1:
-                    layers.append(nn.Dropout(dropout))
-        self.mlp = nn.Sequential(*layers)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        res = x
-        x = self.norm(x)
-        out = self.mlp(x)
-        return res + out
+class TemporalMix(_ResidualMix):
+    """Residual mixer used in the temporal branch."""
 
 
-# =========================================================
-# 5) PMS: Past-Mixer Stage (one granularity's processing block)
-# =========================================================
+class ChannelMix(_ResidualMix):
+    """Residual mixer used in the channel branch."""
+
+
 class PMS(nn.Module):
     def __init__(
         self,
@@ -243,6 +204,18 @@ class PMS(nn.Module):
 # =========================================================
 # 6) PDM/FMM: multiscale decomposition, mixing, and prediction
 # =========================================================
+def _resize_sequence(x: torch.Tensor, target_len: int) -> torch.Tensor:
+    """Linearly resample the time axis of a batch-first sequence."""
+    if x.size(1) == target_len:
+        return x
+    return F.interpolate(
+        x.transpose(1, 2),
+        size=target_len,
+        mode="linear",
+        align_corners=False,
+    ).transpose(1, 2)
+
+
 class PastDecomposableMixing(nn.Module):
     def __init__(
         self,
@@ -298,16 +271,7 @@ class PastDecomposableMixing(nn.Module):
             ]
         )
 
-    @staticmethod
-    def _resize(x: torch.Tensor, target_len: int) -> torch.Tensor:
-        if x.size(1) == target_len:
-            return x
-        return F.interpolate(
-            x.transpose(1, 2),
-            size=target_len,
-            mode="linear",
-            align_corners=False,
-        ).transpose(1, 2)
+    _resize = staticmethod(_resize_sequence)
 
     def forward(
         self,
@@ -356,16 +320,7 @@ class FutureMultipredictorMixing(nn.Module):
         )
         self.scale_logits = nn.Parameter(torch.zeros(n_levels))
 
-    @staticmethod
-    def _resize(x: torch.Tensor, target_len: int) -> torch.Tensor:
-        if x.size(1) == target_len:
-            return x
-        return F.interpolate(
-            x.transpose(1, 2),
-            size=target_len,
-            mode="linear",
-            align_corners=False,
-        ).transpose(1, 2)
+    _resize = staticmethod(_resize_sequence)
 
     def forward(self, scales: list[torch.Tensor], pred_len: int) -> torch.Tensor:
         weights = torch.softmax(self.scale_logits[: len(scales)], dim=0)
@@ -388,6 +343,8 @@ def _downsample_lengths(L: int, n_levels: int) -> list[int]:
 
 
 class TimeMixer(nn.Module):
+    """Combine forecasts from multiple temporal resolutions using seasonal and trend mixers."""
+
     def __init__(
         self,
         pred_len: int,

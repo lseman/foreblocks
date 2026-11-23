@@ -138,3 +138,40 @@ def test_complete_search_owns_history_and_does_not_mutate_config():
     assert len(result["train_losses"]) == 2
     assert torch.isfinite(torch.tensor(result["best_val_loss"]))
     assert all(future is not None for future, _, _ in model.calls)
+
+
+def test_bilevel_nested_fold_uses_only_eligible_chronological_origins():
+    base = TensorDataset(torch.arange(25))
+    nested = torch.utils.data.Subset(torch.utils.data.Subset(base, range(24, -1, -1)), range(22))
+    sampler = torch.utils.data.SubsetRandomSampler([1, 2, 4, 5, 6, 8, 11, 13, 15, 16])
+    arch, weights = create_bilevel_loaders(DataLoader(nested, sampler=sampler, batch_size=2),
+                                          forecast_horizon=5, window_stride=2)
+    def values(loader):
+        return sorted(int(v) for batch, in loader for v in batch)
+    assert values(arch) == [20, 22, 23]
+    assert values(weights) == [8, 9, 11, 13, 16]
+
+
+def test_bilevel_irregular_target_ends_and_tied_origins():
+    data = TensorDataset(torch.arange(10))
+    data.forecast_origins = [3, 0, 1, 2, 5, 6, 8, 8, 9, 10]
+    data.target_ends = [8, 1, 2, 4, 6, 7, 9, 9, 11, 12]
+    arch, weights = create_bilevel_loaders(DataLoader(data, batch_size=1))
+    assert weights.dataset.indices == [1, 2, 3, 4, 5]
+    assert arch.dataset.indices == [6, 7, 8, 9]
+
+
+def test_bilevel_regular_windows_purge_only_overlapping_targets():
+    loader = DataLoader(TensorDataset(torch.arange(30)), batch_size=1, shuffle=True)
+    arch, weights = create_bilevel_loaders(loader, forecast_horizon=5, window_stride=2)
+    assert list(weights.dataset.indices) == list(range(19))
+    assert list(arch.dataset.indices) == list(range(21, 30))
+    with pytest.raises(ValueError, match="purging"):
+        create_bilevel_loaders(loader, forecast_horizon=50)
+
+
+def test_bilevel_rejects_samplers_with_unknown_fold_membership():
+    data = TensorDataset(torch.arange(10))
+    sampler = torch.utils.data.WeightedRandomSampler(torch.ones(10), 4)
+    with pytest.raises(ValueError, match="sampler"):
+        create_bilevel_loaders(DataLoader(data, sampler=sampler, batch_size=2))

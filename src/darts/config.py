@@ -96,6 +96,7 @@ class PC_DARTSEngineConfig:
 
     enable_partial_channels: bool = True
     enable_edge_normalization: bool = True
+    narrow_candidate_execution: bool = False
 
 
 @dataclass
@@ -292,6 +293,9 @@ class DARTSTrainConfig:
     # ── Batching overrides ────────────────────────────────────────────────
     max_train_batches: int | None = None
     max_val_batches: int | None = None
+
+    bilevel_window_stride: int = 1
+    bilevel_forecast_horizon: int | None = None  # Defaults to the model horizon.
 
     def resolve_device(self) -> str:
         """Resolve to a concrete device string (used when wrapping in DARTSConfig)."""

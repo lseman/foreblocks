@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+from ._smoothing import moving_average
 
 from foreblocks.nn.embeddings import PositionalEncoding
 from foreblocks.nn.normalization import create_norm_layer
@@ -91,17 +92,7 @@ class ETSformer(nn.Module):
             nn.Linear(d_model, self.pred_len * self.out_channels),
         )
 
-    @staticmethod
-    def _moving_average(x: torch.Tensor, k: int) -> torch.Tensor:
-        if k <= 1:
-            return x
-        B, L, C = x.shape
-        x_n = x.permute(0, 2, 1)
-        pad = (k - 1) // 2
-        x_pad = F.pad(x_n, (pad, pad), mode="reflect")
-        w = torch.ones(1, 1, k, device=x.device, dtype=x.dtype) / float(k)
-        trend = F.conv1d(x_pad, w.expand(C, -1, -1), groups=C)
-        return trend.permute(0, 2, 1)
+    _moving_average = staticmethod(moving_average)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() != 3:

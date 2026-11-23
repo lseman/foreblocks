@@ -1,9 +1,4 @@
-"""foreblocks.kernels.experimental.attention_kernels.setup.
-
-Build and setup helpers for the local extension package.
-It belongs to the experimental attention kernel implementations and benchmarks area of Foreblocks.
-
-"""
+"""Build the standalone custom_att distribution from the experimental kernel sources."""
 
 from setuptools import setup
 

@@ -79,54 +79,11 @@ class DiffusionConv(nn.Module):
         return self.dropout(self.proj(h))
 
 
-class BackwardDiffusionConv(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        gcn_depth: int = 2,
-        prop_alpha: float = 0.05,
-        dropout: float = 0.0,
-        add_self_loops: bool = True,
-    ):
-        super().__init__()
-        self.gcn_depth = int(gcn_depth)
-        self.prop_alpha = float(prop_alpha)
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.add_self_loops = bool(add_self_loops)
-        self.proj = nn.Linear(in_channels, out_channels)
-        xavier_zero_bias(self.proj)
-
-    def _row_normalize_adjacency(self, adj: Tensor) -> Tensor:
-        if adj.dim() not in (2, 3):
-            raise ValueError("adj must have shape [N, N] or [B, N, N]")
-
-        if self.add_self_loops:
-            eye = torch.eye(adj.size(-1), device=adj.device, dtype=adj.dtype)
-            if is_batched_adj(adj):
-                adj = adj + eye.unsqueeze(0)
-            else:
-                adj = adj + eye
-
-        denom = adj.sum(dim=-1, keepdim=True).clamp_min_(1e-9)
-        return adj / denom
-
-    def _node_propagate(self, x: Tensor, adj: Tensor) -> Tensor:
-        if is_batched_adj(adj):
-            if adj.size(0) != x.size(0):
-                raise ValueError("Batched adjacency must match x.size(0).")
-            return torch.einsum("btmf,bnm->btnf", x, adj)
-        return torch.einsum("btmf,nm->btnf", x, adj)
+class BackwardDiffusionConv(DiffusionConv):
+    """Propagate over reversed edges, normalizing after transposing the adjacency."""
 
     def forward(self, x: Tensor, adj: Tensor) -> Tensor:
-        # Use transpose adjacency for backward diffusion
-        a = self._row_normalize_adjacency(adj.transpose(-1, -2))
-        h = x
-        for _ in range(self.gcn_depth):
-            h = self.prop_alpha * x + (1.0 - self.prop_alpha) * self._node_propagate(
-                h, a
-            )
-        return self.dropout(self.proj(h))
+        return super().forward(x, adj.transpose(-1, -2))
 
 
 class GraphWaveNetTemporalConv(nn.Module):

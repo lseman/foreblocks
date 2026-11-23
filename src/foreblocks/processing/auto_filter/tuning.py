@@ -13,6 +13,8 @@ import numpy as np
 import optuna
 import pandas as pd
 
+from foreblocks.processing._statistics import safe_correlation as _safe_corr
+
 from foreblocks.processing.auto_filter.filters import (
     bilateral_filter,
     butter_lowpass,
@@ -343,16 +345,6 @@ def _band_penalty(
         "derivative_corr": derivative_corr,
     }
     return penalty, diagnostics
-
-
-def _safe_corr(x: np.ndarray, y: np.ndarray) -> float:
-    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
-    if x.size < 2:
-        return 0.0
-    if np.isclose(np.std(x), 0.0) or np.isclose(np.std(y), 0.0):
-        return 0.0
-    c = np.corrcoef(x, y)[0, 1]
-    return 0.0 if np.isnan(c) else float(c)
 
 
 def _unsupervised_proxy(

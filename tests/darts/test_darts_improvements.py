@@ -200,15 +200,19 @@ class TestPerformanceTrackerMetric(unittest.TestCase):
         x = torch.randn(1, 8, 4)
         op.train()
 
-        out1 = op(x)
-        out2 = op(x * 2.0)
-
-        score1 = 1.0 / (out1.detach().square().mean().item() + 1e-6)
-        score2 = 1.0 / (out2.detach().square().mean().item() + 1e-6)
-
-        if score1 > 1e-6:
-            ratio = score1 / score2
-            self.assertGreater(ratio, 2.5)  # mean-square behavior
+        for inputs in (x, 2 * x):
+            before = op.performance_tracker.clone()
+            usage = op.usage_counter.clone()
+            output = op(inputs)
+            selected = op.usage_counter > usage
+            self.assertEqual(selected.sum().item(), 1)
+            energy_score = (output.detach().square().mean() + 1e-6).reciprocal()
+            expected = before.clone()
+            expected[selected] = (
+                before[selected] * op.performance_ema_decay
+                + energy_score * (1 - op.performance_ema_decay)
+            )
+            torch.testing.assert_close(op.performance_tracker, expected)
 
 
 # ── 3. Adaptive edge-gate threshold ─────────────────────────────────────────

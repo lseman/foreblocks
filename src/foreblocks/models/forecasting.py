@@ -1,17 +1,7 @@
-"""foreblocks.models.forecasting.
+"""Compose encoders, decoders and forecast heads into a ForecastingModel.
 
-Forecasting model wrappers and head composition utilities.
-
-Defines the BaseHead wrapper and the ForecastingModel class used by foreblocks
-to assemble modular forecasting pipelines. BaseHead standardizes aux_loss
-handling, naming, and attribute delegation for wrapped modules. ForecastingModel
-provides head-based modular forecasting with support for multiple strategies
-(seq2seq, autoregressive, direct, transformer_seq2seq) and model types.
-
-Core API:
-- BaseHead: base class for all heads in the forecasting model
-- ForecastingModel: head-based modular forecasting model for time series tasks
-
+The strategy selects direct prediction or decoder rollout. Input and output
+heads can adapt the sequence before and after the forecasting step.
 """
 
 import contextlib
@@ -24,17 +14,6 @@ import torch.nn as nn
 from foreblocks.nn.heads.base import BaseHead
 from foreblocks.studio.node_spec import node
 
-# =============================================================================
-# Base head wrapper
-# =============================================================================
-
-
-
-
-# =============================================================================
-# ForecastingModel
-# =============================================================================
-
 
 @node(
     type_id="forecasting_model",
@@ -45,6 +24,12 @@ from foreblocks.studio.node_spec import node
     color="bg-gradient-to-br from-blue-700 to-blue-800",
 )
 class ForecastingModel(nn.Module):
+    """Forecast from batch-first sequences with a direct head or an encoder/decoder.
+
+    Source tensors have shape [batch, history, features]. The forecast horizon
+    is target_len. Sequence decoders use output_size features per forecast step.
+    """
+
     VALID_STRATEGIES = ("seq2seq", "autoregressive", "direct", "transformer_seq2seq")
     BACKBONE_MODEL_TYPES = ("mamba", "mamba2", "mamba3", "hybrid_mamba", "raven")
     VALID_MODEL_TYPES = (
@@ -206,6 +191,10 @@ class ForecastingModel(nn.Module):
         if self.head_composer is not None:
             self._to_model_device_dtype(self.head_composer)
 
+        if (self.strategy == "direct" and self.model_type in self.BACKBONE_MODEL_TYPES
+                and self.encoder is not None and self.output_size is not None):
+            self._direct_backbone_projection = nn.LazyLinear(self.target_len * self.output_size)
+
     # -------------------------------------------------------------------------
     # Properties
     # -------------------------------------------------------------------------
@@ -364,10 +353,11 @@ class ForecastingModel(nn.Module):
         return self._kl
 
     def get_model_size(self) -> dict[str, Any]:
-        params = sum(p.numel() for p in self.parameters())
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        materialized = [p for p in self.parameters() if not nn.parameter.is_lazy(p)]
+        params = sum(p.numel() for p in materialized)
+        trainable_params = sum(p.numel() for p in materialized if p.requires_grad)
         buffers = sum(b.numel() for b in self.buffers())
-        size_bytes = sum(p.numel() * p.element_size() for p in self.parameters()) + sum(
+        size_bytes = sum(p.numel() * p.element_size() for p in materialized) + sum(
             b.numel() * b.element_size() for b in self.buffers()
         )
         return {
@@ -822,25 +812,10 @@ class ForecastingModel(nn.Module):
 
         memory = encoded[0] if isinstance(encoded, tuple) else encoded
         features = memory[:, -1, :] if memory.dim() == 3 else memory
-        out_dim = self.target_len * self.output_size
-
-        if (
-            self._direct_backbone_projection is None
-            or not isinstance(self._direct_backbone_projection, nn.Linear)
-            or self._direct_backbone_projection.in_features != features.size(-1)
-            or self._direct_backbone_projection.out_features != out_dim
-        ):
-            self._direct_backbone_projection = nn.Linear(features.size(-1), out_dim).to(
-                device=features.device,
-                dtype=features.dtype,
-            )
-        else:
-            self._direct_backbone_projection = self._direct_backbone_projection.to(
-                device=features.device,
-                dtype=features.dtype,
-            )
-
-        out = self._direct_backbone_projection(features)
+        projection = self._direct_backbone_projection
+        if isinstance(projection, nn.LazyLinear) and projection.has_uninitialized_params():
+            projection.to(device=features.device, dtype=features.dtype)
+        out = projection(features)
         return out.view(features.size(0), self.target_len, self.output_size)
 
     def _forward_autoregressive(

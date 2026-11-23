@@ -29,7 +29,7 @@ from foreblocks.nn.attention.config import (
 )
 from foreblocks.nn.attention.multihead import MultiAttention
 from foreblocks.nn.embeddings import PositionalEncoding
-from foreblocks.nn.normalization import create_norm_layer
+from ._token_forecast import TokenEncoder, TokenForecastHead
 
 
 class _TemporalCompressor(nn.Module):
@@ -86,63 +86,16 @@ class _TemporalCompressor(nn.Module):
         return self.dropout(tok)
 
 
-class VariableTokenEncoder(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        n_layers: int,
-        n_heads: int,
-        dim_feedforward: int = 512,
-        dropout: float = 0.1,
-        activation: str = "swiglu",
-        att_type: str = "standard",
-        freq_modes: int = 32,
-        norm_strategy: str = "pre_norm",
-        custom_norm: str = "rms",
-        use_swiglu: bool = True,
-        use_moe: bool = False,
-        num_experts: int = 8,
-        top_k: int = 2,
-        layer_norm_eps: float = 1e-5,
-        use_final_norm: bool = True,
-    ):
-        super().__init__()
-        from foreblocks.nn.transformer import TransformerEncoderLayer as _EncLayer
-
-        layer_kwargs = dict(
-            d_model=d_model,
-            n_heads=n_heads,
-            ff_dim=dim_feedforward,
-            dropout=dropout,
-            activation=activation,
-            attention=att_type,
-            frequency_modes=freq_modes,
-            swiglu=use_swiglu,
-            norm_eps=layer_norm_eps,
-            norm_placement=norm_strategy.removesuffix("_norm"),
-            norm=custom_norm,
-            moe_experts=num_experts if use_moe else 0,
-            moe_top_k=top_k,
-        )
-        self.layers = nn.ModuleList(
-            [_EncLayer(**layer_kwargs) for _ in range(n_layers)]
-        )
-        self.final_norm = (
-            create_norm_layer(custom_norm, d_model, layer_norm_eps)
-            if use_final_norm
-            else nn.Identity()
-        )
+class VariableTokenEncoder(TokenEncoder):
+    """Encode variables as a fixed-length token sequence."""
 
     def forward(self, tok: torch.Tensor) -> torch.Tensor:
-        # tok: [B, Nv, D]
-        h = tok
-        for layer in self.layers:
-            # No padding mask by default (Nv is fixed per batch)
-            h, _ = layer(h, src_mask=None, src_key_padding_mask=None)  # shape preserved
-        return self.final_norm(h)
+        return super().forward(tok)
 
 
-class ITransformer(nn.Module):
+class ITransformer(TokenForecastHead):
+    """Forecast from variable tokens, each encoding the history of one input channel."""
+
     def __init__(
         self,
         input_len: int,
@@ -281,41 +234,6 @@ class ITransformer(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
         self._reset_parameters()
-
-    # ---------- builders & init ----------
-    @staticmethod
-    def _make_horizon_mlp(
-        d_in: int, pred_len: int, hidden: int, dropout: float
-    ) -> nn.Sequential:
-        if hidden and hidden > 0:
-            return nn.Sequential(
-                nn.Linear(d_in, hidden),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden, pred_len),
-            )
-        return nn.Sequential(nn.Linear(d_in, pred_len))
-
-    @staticmethod
-    def _make_out_proj(d_in: int, hidden: int, dropout: float) -> nn.Sequential:
-        # D -> 1 with optional hidden
-        if hidden and hidden > 0:
-            return nn.Sequential(
-                nn.Linear(d_in, hidden),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden, 1),
-            )
-        return nn.Sequential(nn.Linear(d_in, 1))
-
-    def _reset_parameters(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-        if self.cls_token is not None:
-            nn.init.normal_(self.cls_token, mean=0.0, std=0.02)
 
     # ---------- utils ----------
     def _maybe_instance_norm_time(

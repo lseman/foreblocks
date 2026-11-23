@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 from scipy import signal
 
+from foreblocks.processing._statistics import safe_correlation as _safe_corr
+
 
 @dataclass
 class ScoringWeights:
@@ -275,13 +277,3 @@ def _robust_scale(x: np.ndarray) -> float:
     if scale <= 1e-12:
         scale = float(np.std(x))
     return max(scale, 1e-12)
-
-
-def _safe_corr(x: np.ndarray, y: np.ndarray) -> float:
-    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
-    if x.size < 2:
-        return 0.0
-    if np.isclose(np.std(x), 0.0) or np.isclose(np.std(y), 0.0):
-        return 0.0
-    c = np.corrcoef(x, y)[0, 1]
-    return 0.0 if np.isnan(c) else float(c)

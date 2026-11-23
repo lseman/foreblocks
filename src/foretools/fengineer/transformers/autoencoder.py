@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -13,32 +12,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from .support import BaseFeatureTransformer, AutoencoderConfig
-
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-@dataclass
-class AutoencoderConfig:
-    """Configuration for AutoencoderTransformer."""
-
-    enabled: bool = False
-    latent_dim: int = 8
-    encoder_arch: list[int] = field(default_factory=lambda: [64, 32])
-    decoder_arch: list[int] = field(default_factory=lambda: [32, 64])
-    activation: str = "relu"
-    dropout: float = 0.1
-    learning_rate: float = 1e-3
-    batch_size: int = 64
-    epochs: int = 50
-    patience: int = 10
-    min_delta: float = 1e-4
-    weight_decay: float = 1e-5
-    use_bn: bool = True
-    device: str = "auto"
-    random_state: int = 42
-    max_features: int = 100
-    min_features: int = 4
 
 
 # ---------------------------------------------------------------------------
